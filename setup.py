@@ -127,6 +127,7 @@ setup(name=NAME,
           'sklearn',
           'tqdm',
       ],
+      include_package_data=True,
       setup_requires=["Cython>=0.24"],
       ext_modules= define_extensions(use_cython),
       zip_safe=False)
