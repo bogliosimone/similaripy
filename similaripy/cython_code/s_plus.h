@@ -1,6 +1,6 @@
 /*
     @author: Simone Boglio
-    @mail: simone.boglio@mail.polimi.it
+    @mail: bogliosimone@gmail.com
 */
 
 #ifndef SPLUS_H_

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
     author: Simone Boglio
-    mail: simone.boglio@mail.polimi.it
+    mail: bogliosimone@gmail.com
 """
 
 import glob
@@ -118,7 +118,7 @@ setup(name=NAME,
       description='knn similarity package for sparse matrix',
       url='http://github.com/bogliosimone/similaripy',
       author='Simone Boglio',
-      author_email='simone.boglio@mail.polimi.it',
+      author_email='bogliosimone@gmail.com',
       license='MIT',
       packages=['similaripy'],
       install_requires=[
