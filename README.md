@@ -37,10 +37,10 @@ import similaripy as sim
 import scipy.sparse as sps
 
 # create a random user-rating matrix (URM)
-urm = sps.random(100, 100, density=0.2)
+urm = sps.random(1000, 2000, density=0.025)
 
-# train the model with 100 knn per item 
-model = sim.cosine(urm.T, k=100)
+# train the model with 50 knn per item 
+model = sim.cosine(urm.T, k=50)
 
 # recommend items for users 1, 14 and 8
 user_recommendations = dot_product(urm, model, target_rows=[1,14,8], k=100)
