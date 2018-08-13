@@ -69,5 +69,23 @@ This library has been tested with Python 3.6 on Ubuntu, OSX and Windows.
 I recommend configuring SciPy/Numpy to use Intel's MKL matrix libraries.
 The easiest way of doing this is by installing the Anaconda Python distribution.
 
+#### Future work
+
+I plan to release in the next future some utilities:
+- Utilities for sparse matrices
+- Pre-processing / post-processing functions (TF-IDF, BM25 and more)
+- New similarity functions ( good ideas are welcome :)  )
+
+#### History
+The idea of build this library comes from the **[RecSys Challenge 2018](https://recsys-challenge.spotify.com)** organized by Spotify. 
+
+My team, the Creamy Fireflies, had problem in compute very huge similarity models in a reasonable time (66 million of interactions in the user-rating matrix).
+
+Using python and numpy were not suitable since a full day was required to compute one single model.
+
+As a member of the the team I spent a lot of hours to develop these high-performance similarities to overcome the problem. At the end of the competition, pushed by my team friends, I decide to release my work to help people that one day will encounter our same problem.
+
+Thanks to my Creamy Fireflies friends for the support
+
 Released under the MIT License
 
