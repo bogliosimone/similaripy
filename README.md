@@ -79,13 +79,11 @@ I plan to release in the next future some utilities:
 #### History
 The idea of build this library comes from the **[RecSys Challenge 2018](https://recsys-challenge.spotify.com)** organized by Spotify. 
 
-My team, the Creamy Fireflies, had problem in compute very huge similarity models in a reasonable time (66 million of interactions in the user-rating matrix).
+My team, the Creamy Fireflies, had problem in compute very huge similarity models in a reasonable time (66 million of interactions in the user-rating matrix) and using python and numpy were not suitable since a full day was required to compute one single model.
 
-Using python and numpy were not suitable since a full day was required to compute one single model.
+As a member of the the team I spent a lot of hours to develop these high-performance similarities in Cython to overcome the problem. At the end of the competition, pushed by my team friends, I decide to release my work to help people that one day will encounter our same problem.
 
-As a member of the the team I spent a lot of hours to develop these high-performance similarities to overcome the problem. At the end of the competition, pushed by my team friends, I decide to release my work to help people that one day will encounter our same problem.
-
-Thanks to my Creamy Fireflies friends for the support
+Thanks to my Creamy Fireflies friends for support me.
 
 Released under the MIT License
 
