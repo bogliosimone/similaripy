@@ -8,7 +8,6 @@
 import glob
 import logging
 import os.path
-import os
 import platform
 import sys
 
@@ -34,9 +33,6 @@ use_openmp = True
 # compile args from https://msdn.microsoft.com/en-us/library/fwkeyyhe.aspx
 # define_extensions from https://github.com/benfred/implicit
 def define_extensions(use_cython=False):
-    files = [f for f in os.listdir('.') if os.path.isfile(f)]
-    for f in files:
-        print(f)
     if sys.platform.startswith("win"):
         compile_args = ['/O2', '/openmp']
         link_args = []
