@@ -25,5 +25,12 @@
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
 
+### VisualStudioCode ###
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
 ### Private Folder ###
 /private/

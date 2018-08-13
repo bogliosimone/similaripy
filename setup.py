@@ -108,9 +108,8 @@ def set_gcc():
 set_gcc()
 
 try:
-    import pypandoc
-    long_description = pypandoc.convert_file("README.md", "rst")
-
+    with open('README.md', encoding='utf-8') as f:
+        long_description = f.read()
 except ImportError:
     long_description = ''
 
@@ -119,6 +118,7 @@ setup(name=NAME,
       version=VERSION,
       description='KNN Similarities for Collaborative Filtering models',
       long_description = long_description,
+      long_description_content_type='text/markdown',
       url='http://github.com/bogliosimone/similaripy',
       author='Simone Boglio',
       author_email='bogliosimone@gmail.com',
@@ -139,12 +139,12 @@ setup(name=NAME,
              'Collaborative Filtering, Recommender Systems',
       packages=['similaripy'],
       install_requires=[
-          'scipy',
-          'numpy',
-          'sklearn',
-          'tqdm',
+          'scipy>=1.0.0',
+          'numpy>=1.14.0',
+          'sklearn>=0.19.1',
+          'tqdm>=4.19.6',
       ],
       include_package_data=True,
-      setup_requires=["Cython>=0.24"],
+      setup_requires=["Cython>=0.28.1"],
       ext_modules= define_extensions(use_cython),
       zip_safe=False)

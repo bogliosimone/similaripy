@@ -52,14 +52,16 @@ For more information see the [documentation](http://similaripy.readthedocs.io/).
 
 #### Requirements
 
-This library requires:
-- SciPy
-- Numpy
-- Cython
-- Tqdm
-- Sklearn (plan to remove it in future versions)
+| Package                         | Version        |
+| --------------------------------|:--------------:|   
+| numpy                           |   >= 1.14      |   
+| scipy                           |   >= 1.0.0     |
+| tqdm                            |   >= 4.19.6    |
+| sklearn                         |   >= 0.19.1    |
+| cython                          |   >= 0.28.1    |
 
-In order to compile the Cython code it is required a GCC compiler with OpenMP 
+
+NOTE: In order to compile the Cython code it is required a GCC compiler with OpenMP 
 (on OSX it can be installed with homebrew: ```brew install gcc```).
 
 This library has been tested with Python 3.6 on Ubuntu, OSX and Windows.
