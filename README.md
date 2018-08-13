@@ -5,7 +5,7 @@ Fast Python KNN-Similarities for Collaborative Filtering models in Recommender S
 
 This project provides fast Python implementations of several different popular KNN (topK - Nearest Neighbors) similarities for Recommender System models.
 
-Base similarites:
+Base similarity models:
  * Dot Product
  * Cosine
  * Asymmetric Cosine
@@ -13,11 +13,11 @@ Base similarites:
  * Dice
  * Tversky
 
- Graph-based similarities:
+ Graph-based similarity models:
  * P3Alpha
  * RP3Beta
 
- Advanced similarity:
+ Advanced similarity model:
  * S-plus
 
 [ Complete documentation coming soon... ] [ TODO ]
