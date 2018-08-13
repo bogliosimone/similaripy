@@ -1,9 +1,9 @@
 SimilariPy
 ==========
 
-Fast Python KNN-Similarities for Collaborative Filtering models in Recommender System and others.
+Fast Python KNN-Similarity algorithms for Collaborative Filtering models in Recommender System and others.
 
-This project provides fast Python implementations of several different popular KNN (topK - Nearest Neighbors) similarities for Recommender System models.
+This project provides fast Python implementations of several different popular KNN (K-Nearest Neighbors) similarity algorithms for Recommender System models.
 
 Base similarity models:
  * Dot Product
@@ -18,7 +18,7 @@ Base similarity models:
  * RP3Beta
 
  Advanced similarity model:
- * S-plus
+ * S-Plus
 
 [ Complete documentation coming soon... ] [ TODO ]
 
@@ -87,5 +87,6 @@ As a member of the the team I spent a lot of hours to develop these high-perform
 
 Thanks to my Creamy Fireflies friends for support me.
 
+#### License
 Released under the MIT License
 

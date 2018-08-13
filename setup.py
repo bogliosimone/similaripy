@@ -116,7 +116,7 @@ except ImportError:
 
 setup(name=NAME,
       version=VERSION,
-      description='KNN Similarities for Collaborative Filtering models',
+      description='KNN Similarity Algorithms for Collaborative Filtering Models',
       long_description = long_description,
       long_description_content_type='text/markdown',
       url='http://github.com/bogliosimone/similaripy',
