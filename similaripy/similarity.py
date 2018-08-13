@@ -1,4 +1,4 @@
-from .cython_code.s_plus import s_plus
+from .cython_code import s_plus as s
 from sklearn.preprocessing import normalize
 import scipy.sparse as sp
 import numpy as np
@@ -14,21 +14,7 @@ TARGET_ROWS = None # compute all the rows
 M2 = None
 
 
-def dot_product(matrix1, matrix2=M2,
-    k=K, threshold=THRESHOLD,
-    target_rows=TARGET_ROWS,
-    verbose=VERBOSE,
-    format_output=FORMAT_OUTPUT
-    ):
-    return s_plus(
-        matrix1, matrix2=matrix2,
-        k=k, threshold=threshold,
-        target_rows=target_rows,
-        verbose=verbose,
-        format_output=format_output) 
-
-
-def dot_product_similarity(
+def dot_product(
     matrix1, matrix2=M2,
     k=K, shrink=SHRINK, threshold=THRESHOLD,
     binary=BINARY,
@@ -36,7 +22,7 @@ def dot_product_similarity(
     verbose=VERBOSE,
     format_output=FORMAT_OUTPUT
     ):
-    return s_plus(
+    return s.s_plus(
         matrix1, matrix2=matrix2,
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
@@ -45,7 +31,7 @@ def dot_product_similarity(
         format_output=format_output) 
 
 
-def cosine_similarity(
+def cosine(
     matrix1, matrix2=M2,
     alpha=0.5,
     k=K, shrink=SHRINK, threshold=THRESHOLD,
@@ -54,7 +40,7 @@ def cosine_similarity(
     verbose=VERBOSE,
     format_output=FORMAT_OUTPUT
     ):
-    return s_plus(
+    return s.s_plus(
         matrix1, matrix2=matrix2,
         l2=1,
         c1=alpha, c2=1-alpha,
@@ -65,7 +51,7 @@ def cosine_similarity(
         format_output=format_output)
 
 
-def tversky_similarity(
+def tversky(
     matrix1, matrix2=M2,
     alpha=1,beta=1,
     k=K, shrink=SHRINK, threshold=THRESHOLD,
@@ -74,7 +60,7 @@ def tversky_similarity(
     verbose=VERBOSE,
     format_output=FORMAT_OUTPUT
     ):
-    return s_plus(
+    return s.s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=alpha, t2=beta,
@@ -85,7 +71,7 @@ def tversky_similarity(
         format_output=format_output) 
 
 
-def jaccard_similarity(
+def jaccard(
     matrix1, matrix2=M2,
     k=K, shrink=SHRINK, threshold=THRESHOLD,
     binary=BINARY,
@@ -93,7 +79,7 @@ def jaccard_similarity(
     verbose=VERBOSE,
     format_output=FORMAT_OUTPUT
     ):
-    return s_plus(
+    return s.s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=1, t2=1,
@@ -104,7 +90,7 @@ def jaccard_similarity(
         format_output=format_output) 
 
 
-def dice_similarity(
+def dice(
     matrix1, matrix2=M2,
     k=K, shrink=SHRINK, threshold=THRESHOLD,
     binary=BINARY,
@@ -112,7 +98,7 @@ def dice_similarity(
     verbose=VERBOSE,
     format_output=FORMAT_OUTPUT
     ):
-    return s_plus(
+    return s.s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=0.5, t2=0.5,
@@ -123,7 +109,7 @@ def dice_similarity(
         format_output=format_output)
 
 
-def p3alpha_similarity(
+def p3alpha(
     matrix1, matrix2=M2,
     alpha=1,
     k=K, shrink=SHRINK, threshold=THRESHOLD,
@@ -136,7 +122,7 @@ def p3alpha_similarity(
         matrix2=matrix1
     matrix1 = normalize(matrix1, norm='l1', axis=1)
     matrix2 = normalize(matrix2, norm='l1', axis=1)
-    m = s_plus(
+    m = s.s_plus(
         matrix1=matrix1, matrix2=matrix2,
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
@@ -147,7 +133,7 @@ def p3alpha_similarity(
     return m
 
 
-def rp3beta_similarity(
+def rp3beta(
     matrix1, matrix2=M2,
     alpha=1,
     beta=1,
@@ -162,7 +148,7 @@ def rp3beta_similarity(
     pop_m2 = matrix2.sum(axis = 0).A1
     matrix1 = normalize(matrix1, norm='l1', axis=1)
     matrix2 = normalize(matrix2, norm='l1', axis=1)
-    m = s_plus(
+    m = s.s_plus(
         matrix1=matrix1, matrix2=matrix2,
         weight_depop_matrix2=pop_m2,
         p2=beta,
@@ -176,7 +162,7 @@ def rp3beta_similarity(
     return m
 
 
-def s_plus_similarity(
+def s_plus(
     matrix1, matrix2=M2,
     l=0.5,
     t1=1, t2=1,
@@ -187,7 +173,7 @@ def s_plus_similarity(
     verbose=VERBOSE,
     format_output=FORMAT_OUTPUT
     ):
-    return s_plus(
+    return s.s_plus(
         matrix1, matrix2=matrix2,
         l1=l, l2=1-l,
         t1=t1, t2=t2,

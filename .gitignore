@@ -17,3 +17,10 @@
 
 # macOS file
 .DS_Store
+
+# pipy
+.pypirc
+
+### JupyterNotebook ###
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*

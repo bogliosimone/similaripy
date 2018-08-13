@@ -1,2 +1,3 @@
-include README.rst
+include README.md
 include LICENSE
+recursive-include implicit *.h *.pyx *.py *.cpp

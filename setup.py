@@ -111,11 +111,18 @@ def set_gcc():
 
 set_gcc()
 
-print('ciao')
+try:
+    import pypandoc
+    long_description = pypandoc.convert_file("README.md", "rst")
+
+except ImportError:
+    long_description = ''
+
 
 setup(name=NAME,
       version=VERSION,
-      description='knn similarity package for sparse matrix',
+      description='KNN Similarity Models for Collaborative Filtering',
+      long_description = long_description,
       url='http://github.com/bogliosimone/similaripy',
       author='Simone Boglio',
       author_email='bogliosimone@gmail.com',
