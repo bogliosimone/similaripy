@@ -24,3 +24,6 @@
 ### JupyterNotebook ###
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
+
+### Private Folder ###
+/private/

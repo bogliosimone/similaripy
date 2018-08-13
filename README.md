@@ -3,7 +3,7 @@ SimilariPy
 
 Fast Python KNN-Similarities for Collaborative Filtering models in Recommender System and others.
 
-This project provides fast Python implementations of several different popular KNN (topK-Nearest Neighbors) similarities for Recommender System models.
+This project provides fast Python implementations of several different popular KNN (topK - Nearest Neighbors) similarities for Recommender System models.
 
 Base similarites:
  * Dot Product
@@ -53,9 +53,11 @@ For more information see the [documentation](http://similaripy.readthedocs.io/).
 #### Requirements
 
 This library requires:
-- SciPy >> 0.16
-- Numpy >>
-- Cython.
+- SciPy
+- Numpy
+- Cython
+- Tqdm
+- Sklearn (plan to remove it in future versions)
 
 In order to compile the Cython code it is required a GCC compiler with OpenMP 
 (on OSX it can be installed with homebrew: ```brew install gcc```).
