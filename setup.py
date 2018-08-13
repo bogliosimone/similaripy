@@ -121,12 +121,26 @@ except ImportError:
 
 setup(name=NAME,
       version=VERSION,
-      description='KNN Similarity Models for Collaborative Filtering',
+      description='KNN Similarities for Collaborative Filtering models',
       long_description = long_description,
       url='http://github.com/bogliosimone/similaripy',
       author='Simone Boglio',
       author_email='bogliosimone@gmail.com',
       license='MIT',
+        classifiers=[
+        'Development Status :: 2 - Pre-Alpha',
+        'Natural Language :: English',
+        'Intended Audience :: Science/Research',
+        'License :: OSI Approved :: MIT License',
+        'Programming Language :: Python',
+        #'Programming Language :: Python :: 2', # not tested atm
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Cython',
+        'Operating System :: OS Independent',
+        'Topic :: Software Development :: Libraries :: Python Modules'],
+
+    keywords='Similarity, KNN, Nearest Neighbors,'
+             'Collaborative Filtering, Recommender Systems',
       packages=['similaripy'],
       install_requires=[
           'scipy',
