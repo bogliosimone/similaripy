@@ -32,6 +32,25 @@ def dot_product(
 
 def cosine(
     matrix1, matrix2=_M2,
+    k=_K, shrink=_SHRINK, threshold=_THRESHOLD,
+    binary=_BINARY,
+    target_rows=_TARGET_ROWS,
+    verbose=_VERBOSE,
+    format_output=_FORMAT_OUTPUT
+    ):
+    return _sim.s_plus(
+        matrix1, matrix2=matrix2,
+        l2=1,
+        c1=0.5, c2=0.5,
+        k=k, shrink=shrink, threshold=threshold,
+        binary=binary,
+        target_rows=target_rows,
+        verbose=verbose,
+        format_output=format_output)
+
+
+def asymmetric_cosine(
+    matrix1, matrix2=_M2,
     alpha=0.5,
     k=_K, shrink=_SHRINK, threshold=_THRESHOLD,
     binary=_BINARY,
@@ -118,7 +137,7 @@ def p3alpha(
     format_output=_FORMAT_OUTPUT
     ):
     if matrix2==_M2:
-        matrix2=matrix1
+        matrix2=matrix1.T
     matrix1 = _normalize(matrix1, norm='l1', axis=1)
     matrix2 = _normalize(matrix2, norm='l1', axis=1)
     m = _sim.s_plus(
