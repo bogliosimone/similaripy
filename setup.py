@@ -141,7 +141,7 @@ setup(name=NAME,
       install_requires=[
           'scipy>=1.0.0',
           'numpy>=1.14.0',
-          'sklearn>=0.19.1',
+          'scikit-learn>=0.19.1',
           'tqdm>=4.19.6',
       ],
       include_package_data=True,

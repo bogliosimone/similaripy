@@ -57,7 +57,7 @@ For more information see the [documentation](http://similaripy.readthedocs.io/).
 | numpy                           |   >= 1.14      |   
 | scipy                           |   >= 1.0.0     |
 | tqdm                            |   >= 4.19.6    |
-| sklearn                         |   >= 0.19.1    |
+| scikit-learn                    |   >= 0.19.1    |
 | cython                          |   >= 0.28.1    |
 
 
