@@ -269,7 +269,7 @@ def s_plus(
             del values, rows, cols
             res = sp.csr_matrix((data, indices32, indptr32) ,shape=(item_count, user_count), dtype=np.float32)
             del indptr32,indices32
-        elif idx_dtype==np.int64:
+        else: # idx_dtype==np.int64:
             indptr64 = np.empty(M + 1, dtype=np.int64)
             indices64 = np.empty(n_targets * k, dtype=np.int64)
             data = np.empty(n_targets * k, dtype=np.float32)
