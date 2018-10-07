@@ -3,7 +3,7 @@ SimilariPy
 
 Fast Python KNN-Similarity algorithms for Collaborative Filtering models in Recommender System and others.
 
-This project provides fast Python implementations of several different popular KNN (K-Nearest Neighbors) similarity algorithms for Recommender System models.
+This project provides fast Python implementations of several different popular KNN (K-Nearest Neighbors) similarity algorithms for Recommender System models using sparse matrices.
 
 Base similarity models:
  * Dot Product
@@ -14,13 +14,15 @@ Base similarity models:
  * Tversky
 
  Graph-based similarity models:
- * P3Alpha
- * RP3Beta
+ * P3&alpha;
+ * RP3&beta;
 
  Advanced similarity model:
  * S-Plus
 
-[ Complete documentation coming soon... ] [ TODO ]
+[Similarities Documentation](https://github.com/bogliosimone/similaripy/blob/master/guide/temp_guide.md)
+
+[ Complete documentation coming soon... ]
 
 All models have multi-threaded routines, using Cython and OpenMP to fit the models in parallel among all available CPU cores.
 
@@ -47,7 +49,7 @@ user_recommendations = sim.dot_product(urm, model, target_rows=[1,14,8], k=100)
 
 ```
 
-For more information see the [documentation](http://similaripy.readthedocs.io/). [ TODO ]
+For more information see the [documentation](). [ TODO ]
 
 
 #### Requirements
