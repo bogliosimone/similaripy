@@ -42,8 +42,8 @@ urm = sps.random(1000, 2000, density=0.025)
 # train the model with 50 knn per item 
 model = sim.cosine(urm.T, k=50)
 
-# recommend items for users 1, 14 and 8
-user_recommendations = dot_product(urm, model, target_rows=[1,14,8], k=100)
+# recommend 100 items to users 1, 14 and 8
+user_recommendations = sim.dot_product(urm, model, target_rows=[1,14,8], k=100)
 
 ```
 
@@ -65,6 +65,8 @@ NOTE: In order to compile the Cython code it is required a GCC compiler with Ope
 (on OSX it can be installed with homebrew: ```brew install gcc```).
 
 This library has been tested with Python 3.6 on Ubuntu, OSX and Windows.
+
+(Note: on Windows there are problem with flag *format_output='csr'*, just let it equals to the default value *'coo'*)
 
 #### Optimal Configuration
 

@@ -3,7 +3,7 @@ from sklearn.preprocessing import normalize as _normalize
 import numpy as _np
 
 
-_FORMAT_OUTPUT='csr'
+_FORMAT_OUTPUT='coo'
 _VERBOSE = True
 _K = 100
 _SHRINK = 0
