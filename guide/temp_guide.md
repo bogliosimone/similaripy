@@ -8,6 +8,8 @@ This is a first guide, full documentation coming soon.
 
 **_k_** : top k items per row (default *[k=100]*)
 
+**_h_** : shrink term in normalization
+
 **_threshold_** : all the values under this value are cutted from the final result (default *[threshold=0]*)
 
 **_binary_** : *False* use the real values in the input matrix, *True* use binary values (0 or 1)
@@ -27,36 +29,28 @@ This is a first guide, full documentation coming soon.
 
 - #### Cosine Similarity
     ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\left%20\|%20x%20\right%20\|\left%20\|%20y%20\right%20\|+h})
-    
-    *h* : shrink term
 
 - #### Asymmetric Cosine Similarity
     ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}%20=%20\frac{xy}{(\sum%20x_{i}^{2})^{\alpha%20}(\sum%20y_{i}^{2})^{1-\alpha}+h})
 
-    *&alpha;* : asymmetric coefficient 
+    *&alpha;* : asymmetric coefficient *[0,1]*
 
-    *h* : shrink term 
 - #### Jaccard Similarity
     ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\left|x\right|+\left|y\right|-xy+h})
     
-    *h* : shrink term 
 - #### Dice Similarity
     ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\frac{1}{2}\left|x\right|+\frac{1}{2}\left|y\right|-xy+h})
 
-    *h* : shrink term 
 - #### Tversky Similarity
     ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\alpha(\left|x\right|-xy)+\beta(\left|y\right|-xy)+xy+h})
 
-    *&alpha;* : Tversky coefficient
+    *&alpha;* : Tversky coefficient  *[0,1]*
 
-    *&beta;* : Tversky coefficient
-    
-    *h* : shrink term 
+    *&beta;* : Tversky coefficient  *[0,1]*
+
 - #### P3&alpha; Similarity
     
     *&alpha;* : P3&alpha; coefficient
-
-    *h* : shrink term 
 
 - #### RP3&beta; Similarity 
 
@@ -64,17 +58,13 @@ This is a first guide, full documentation coming soon.
 
     *&beta;* : RP3&beta; coefficient
 
-    *h* : shrink term 
-
 - #### S-Plus Similarity 
     ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{l(t_{1}(\left|x\right|-xy)+t_{2}(\left|y\right|-xy)+xy)+(1-l)(\sum%20x_{i}^{2})^{c}(\sum%20y_{i}^{2})^{1-c}+h})
 
-    *l* : balance coefficient
+    *l* : balance coefficient  *[0,1]*
 
-    *t1* : Tversky coefficient
+    *t1* : Tversky coefficient  *[0,1]*
 
-    *t2* : Tversky coefficient
+    *t2* : Tversky coefficient  *[0,1]*
     
-    *c* : cosine coefficient
-    
-    *h* : shrink term 
+    *c* : cosine coefficient  *[0,1]*
