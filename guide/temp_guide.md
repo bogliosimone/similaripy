@@ -28,7 +28,7 @@ This is a first guide, full documentation coming soon.
     ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}%20=%20{x\cdot%20y})
 
 - #### Cosine Similarity
-    ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\left%20\|%20x%20\right%20\|\left%20\|%20y%20\right%20\|+h})
+    ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\left%20\||%20x%20|\right%20\|\left%20\||%20y%20|\right%20\|+h})
 
 - #### Asymmetric Cosine Similarity
     ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}%20=%20\frac{xy}{(\sum%20x_{i}^{2})^{\alpha%20}(\sum%20y_{i}^{2})^{1-\alpha}+h})
