@@ -45,7 +45,7 @@ urm = sps.random(1000, 2000, density=0.025)
 model = sim.cosine(urm.T, k=50)
 
 # recommend 100 items to users 1, 14 and 8
-user_recommendations = sim.dot_product(urm, model, target_rows=[1,14,8], k=100)
+user_recommendations = sim.dot_product(urm, model.T, target_rows=[1,14,8], k=100)
 
 ```
 
