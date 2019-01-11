@@ -139,7 +139,9 @@ def p3alpha(
     if matrix2==_M2:
         matrix2=matrix1.T
     matrix1 = _normalize(matrix1, norm='l1', axis=1)
+    matrix1.data = _np.power(matrix1.data, alpha)
     matrix2 = _normalize(matrix2, norm='l1', axis=1)
+    matrix2.data = _np.power(matrix2.data, alpha)
     m = _sim.s_plus(
         matrix1=matrix1, matrix2=matrix2,
         k=k, shrink=shrink, threshold=threshold,
@@ -147,7 +149,6 @@ def p3alpha(
         target_rows=target_rows,
         verbose=verbose,
         format_output=format_output)
-    m.data = _np.power(m.data, alpha)
     return m
 
 
@@ -165,13 +166,14 @@ def rp3beta(
         matrix2=matrix1.T
     pop_m2 = matrix2.sum(axis = 0).A1
     matrix1 = _normalize(matrix1, norm='l1', axis=1)
+    matrix1.data = _np.power(matrix1.data, alpha)
     matrix2 = _normalize(matrix2, norm='l1', axis=1)
+    matrix2.data = _np.power(matrix2.data, alpha)
     m = _sim.s_plus(
         matrix1=matrix1, matrix2=matrix2,
         weight_depop_matrix2=pop_m2,
         p2=beta,
         l3=1,
-        a1=alpha,
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
         target_rows=target_rows,
