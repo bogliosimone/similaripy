@@ -1,6 +1,6 @@
 SimilariPy
 ==========
-[![DOI](https://zenodo.org/badge/144209989.svg)](https://zenodo.org/badge/latestdoi/144209989)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.2584192.svg)](https://doi.org/10.5281/zenodo.2584192)
 [![LICENSE](https://img.shields.io/github/license/bogliosimone/similaripy.svg)](https://github.com/bogliosimone/similaripy/blob/master/LICENSE)
 
 Fast Python KNN-Similarity algorithms for Collaborative Filtering models in Recommender System and others.
@@ -38,10 +38,6 @@ All the functions are compiled at low-level and could operate in-place, on csr-m
 
 For tf-idf, bm25, bm25+ you could chose the log-base and how the term-frequency (TF) and the inverse document frequency (IDF) are computed.
 
-(TF options: binary, raw, sqrt, freq, log; IDF options: unary, base, smooth, prob, bm25)
- 
-
-
 #### Installation and usage
 
 To install:
@@ -58,6 +54,9 @@ import scipy.sparse as sps
 
 # create a random user-rating matrix (URM)
 urm = sps.random(1000, 2000, density=0.025)
+
+# normalize matrix with bm25
+urm = sim.normalization.bm25(urm)
 
 # train the model with 50 knn per item 
 model = sim.cosine(urm.T, k=50)
@@ -107,15 +106,15 @@ Thanks to my Creamy Fireflies friends for support me.
 #### License
 Released under the MIT License
 
-Citation information: [![DOI](https://zenodo.org/badge/144209989.svg)](https://zenodo.org/badge/latestdoi/144209989)
+Citation information: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.2584192.svg)](https://doi.org/10.5281/zenodo.2584192)
 
 ```
-@misc{boglio_simone_2019_2583852,
+@misc{boglio_simone_2019_2584192,
   author       = {Boglio Simone},
-  title        = {bogliosimone/similaripy: v.0.0.11 stable release},
+  title        = {bogliosimone/similaripy: v0.0.12 stable release},
   month        = mar,
   year         = 2019,
-  doi          = {10.5281/zenodo.2583852},
-  url          = {https://doi.org/10.5281/zenodo.2583852}
+  doi          = {10.5281/zenodo.2584192},
+  url          = {https://doi.org/10.5281/zenodo.2584192}
 }
 ```
