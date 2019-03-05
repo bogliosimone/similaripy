@@ -17,7 +17,7 @@ NAME = 'similaripy'
 VERSION = [l.split("'")[1] for l in open("similaripy/__init__.py")
            if l.startswith("__version__ =")][0]
 
-files_to_compile = ['s_plus']
+files_to_compile = ['s_plus','normalization']
 
 try:
     from Cython.Build import cythonize
@@ -136,12 +136,11 @@ setup(name=NAME,
         'Topic :: Software Development :: Libraries :: Python Modules'],
 
     keywords='Similarity, KNN, Nearest Neighbors,'
-             'Collaborative Filtering, Recommender Systems',
+             'Collaborative Filtering, Normalization, Recommender Systems',
       packages=['similaripy'],
       install_requires=[
           'scipy>=1.0.0',
           'numpy>=1.14.0',
-          'scikit-learn>=0.19.1',
           'tqdm>=4.19.6',
       ],
       include_package_data=True,

@@ -1,5 +1,5 @@
 from .cython_code import s_plus as _sim
-from sklearn.preprocessing import normalize as _normalize
+from .normalization import normalize as _normalize
 import numpy as _np
 
 
@@ -138,9 +138,9 @@ def p3alpha(
     ):
     if matrix2==_M2:
         matrix2=matrix1.T
-    matrix1 = _normalize(matrix1, norm='l1', axis=1)
+    matrix1 = _normalize(matrix1, norm='l1', axis=1, inplace=False)
     matrix1.data = _np.power(matrix1.data, alpha)
-    matrix2 = _normalize(matrix2, norm='l1', axis=1)
+    matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
     matrix2.data = _np.power(matrix2.data, alpha)
     m = _sim.s_plus(
         matrix1=matrix1, matrix2=matrix2,
@@ -165,9 +165,9 @@ def rp3beta(
     if matrix2==_M2:
         matrix2=matrix1.T
     pop_m2 = matrix2.sum(axis = 0).A1
-    matrix1 = _normalize(matrix1, norm='l1', axis=1)
+    matrix1 = _normalize(matrix1, norm='l1', axis=1, inplace=False)
     matrix1.data = _np.power(matrix1.data, alpha)
-    matrix2 = _normalize(matrix2, norm='l1', axis=1)
+    matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
     matrix2.data = _np.power(matrix2.data, alpha)
     m = _sim.s_plus(
         matrix1=matrix1, matrix2=matrix2,

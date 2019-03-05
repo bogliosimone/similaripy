@@ -7,6 +7,10 @@ Fast Python KNN-Similarity algorithms for Collaborative Filtering models in Reco
 
 This project provides fast Python implementations of several different popular KNN (K-Nearest Neighbors) similarity algorithms for Recommender System models using sparse matrices.
 
+The package include  also some normalization functions that could be useful in the pre-processing phase before the similarity computation.
+
+#### Similarities
+
 Base similarity models:
  * Dot Product
  * Cosine
@@ -24,9 +28,21 @@ Base similarity models:
 
 [Similarities Documentation](https://github.com/bogliosimone/similaripy/blob/master/guide/temp_guide.md)
 
-[ Complete documentation coming soon... ]
-
 All models have multi-threaded routines, using Cython and OpenMP to fit the models in parallel among all available CPU cores.
+
+#### Normalizations
+
+The package contains normalization functions like: l1, l2, max, tf-idf ,bm25, bm25+.
+
+All the functions are compiled at low-level and could operate in-place, on csr-matrixes, if you need to save memory.
+
+For tf-idf, bm25, bm25+ you could chose the log-base and how the term-frequency (TF) and the inverse document frequency (IDF) are computed.
+
+(TF options: binary, raw, sqrt, freq, log; IDF options: unary, base, smooth, prob, bm25)
+ 
+
+
+#### Installation and usage
 
 To install:
 
@@ -51,9 +67,6 @@ user_recommendations = sim.dot_product(urm, model.T, target_rows=[1,14,8], k=100
 
 ```
 
-For more information see the [documentation](). [ TODO ]
-
-
 #### Requirements
 
 | Package                         | Version        |
@@ -61,7 +74,6 @@ For more information see the [documentation](). [ TODO ]
 | numpy                           |   >= 1.14      |   
 | scipy                           |   >= 1.0.0     |
 | tqdm                            |   >= 4.19.6    |
-| scikit-learn                    |   >= 0.19.1    |
 | cython                          |   >= 0.28.1    |
 
 
@@ -81,7 +93,6 @@ The easiest way of doing this is by installing the Anaconda Python distribution.
 
 I plan to release in the next future some utilities:
 - Utilities for sparse matrices
-- Pre-processing / post-processing functions (TF-IDF, BM25 and more)
 - New similarity functions ( good ideas are welcome :)  )
 
 #### History
@@ -96,3 +107,15 @@ Thanks to my Creamy Fireflies friends for support me.
 #### License
 Released under the MIT License
 
+Citation information: [![DOI](https://zenodo.org/badge/144209989.svg)](https://zenodo.org/badge/latestdoi/144209989)
+
+```
+@misc{boglio_simone_2019_2583852,
+  author       = {Boglio Simone},
+  title        = {bogliosimone/similaripy: v.0.0.11 stable release},
+  month        = mar,
+  year         = 2019,
+  doi          = {10.5281/zenodo.2583852},
+  url          = {https://doi.org/10.5281/zenodo.2583852}
+}
+```
