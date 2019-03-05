@@ -1,5 +1,6 @@
 SimilariPy
 ==========
+[![DOI](https://zenodo.org/badge/144209989.svg)](https://zenodo.org/badge/latestdoi/144209989)
 
 Fast Python KNN-Similarity algorithms for Collaborative Filtering models in Recommender System and others.
 
