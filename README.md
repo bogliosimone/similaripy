@@ -111,18 +111,18 @@ Released under the MIT License
 Citation information: [![DOI_PIC]][DOI_LINK]
 
 ```
-@misc{boglio_simone_2019_2584192,
+@misc{boglio_simone_2019_2616944,
   author       = {Boglio Simone},
-  title        = {bogliosimone/similaripy: v0.0.12 stable release},
+  title        = {bogliosimone/similaripy: v0.0.13 stable release},
   month        = mar,
   year         = 2019,
-  doi          = {10.5281/zenodo.2584192},
-  url          = {https://doi.org/10.5281/zenodo.2584192}
+  doi          = {10.5281/zenodo.2616944},
+  url          = {https://doi.org/10.5281/zenodo.2616944}
 }
 ```
 
-[DOI_PIC]: https://zenodo.org/badge/DOI/10.5281/zenodo.2584192.svg
-[DOI_LINK]: https://doi.org/10.5281/zenodo.2584192
+[DOI_PIC]: https://zenodo.org/badge/DOI/10.5281/zenodo.2616944.svg
+[DOI_LINK]: https://doi.org/10.5281/zenodo.2616944
 [LICENSE_PIC]: https://img.shields.io/github/license/bogliosimone/similaripy.svg
 [LICENSE_LINK]: https://github.com/bogliosimone/similaripy/blob/master/LICENSE
 [PYPI_PIC]: https://img.shields.io/pypi/v/similaripy.svg?color=blue
