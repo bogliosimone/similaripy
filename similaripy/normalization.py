@@ -1,6 +1,8 @@
 from .cython_code import normalization as _norm
-import scipy.sparse as sps
 from math import e
+import scipy.sparse as sps
+import numpy as np
+
 
 _NORMALIZATIONS = ('l1', 'l2', 'max')
 _TF = ('binary', 'raw', 'sqrt', 'freq', 'log')
@@ -8,7 +10,7 @@ _IDF = ('unary', 'base', 'smooth', 'prob', 'bm25')
 
 def normalize(X, norm='l2', axis=1, inplace=False):
     assert(norm in _NORMALIZATIONS)
-    assert(sps.isspmatrix(X))
+    X = check_matrix(X)
 
     if not inplace: X = X.copy()
     if axis == 0: X = X.T
@@ -28,7 +30,7 @@ def normalize(X, norm='l2', axis=1, inplace=False):
 def bm25(X, axis=1, k1=1.2, b=0.75, logbase=e, tf_mode='raw', idf_mode='bm25', inplace=False):
     assert(tf_mode in _TF)
     assert(idf_mode in _IDF)
-    assert(sps.isspmatrix(X))
+    X = check_matrix(X)
 
     if not inplace: X = X.copy()
     if axis == 0: X = X.T
@@ -45,7 +47,7 @@ def bm25(X, axis=1, k1=1.2, b=0.75, logbase=e, tf_mode='raw', idf_mode='bm25', i
 def bm25plus(X, axis=1, k1=1.2, b=0.75, delta=1.0, logbase=e, tf_mode='raw', idf_mode='bm25', inplace=False):
     assert(tf_mode in _TF)
     assert(idf_mode in _IDF)
-    assert(sps.isspmatrix(X))
+    X = check_matrix(X)
 
     if not inplace: X = X.copy()
     if axis == 0: X = X.T
@@ -62,7 +64,7 @@ def bm25plus(X, axis=1, k1=1.2, b=0.75, delta=1.0, logbase=e, tf_mode='raw', idf
 def tfidf(X, axis=1, logbase=e, tf_mode='sqrt', idf_mode='smooth', inplace=False):
     assert(tf_mode in _TF)
     assert(idf_mode in _IDF)
-    assert(sps.isspmatrix(X))
+    X = check_matrix(X)
 
     if not inplace: X = X.copy()
     if axis == 0: X = X.T
@@ -73,4 +75,12 @@ def tfidf(X, axis=1, logbase=e, tf_mode='sqrt', idf_mode='smooth', inplace=False
 
     if axis == 0: X = X.T
     return X.tocsr()
+
+
+def check_matrix(X):
+	assert sps.issparse(X), 'X must be a sparse matrix'
+	if not X.data.dtype == np.float32 or not X.data.dtype == np.float64:
+		X = sps.csr_matrix(X, dtype=np.float32)
+	return X
+
     

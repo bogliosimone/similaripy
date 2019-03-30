@@ -7,12 +7,9 @@ SimilariPy
 [![DOI_PIC]][DOI_LINK]
 
 
+This project provides fast Python implementation of several KNN (K-Nearest Neighbors) similarity algorithms using sparse matrices, useful in Collaborative Filtering Recommender Systems and others.
 
-Fast Python KNN-Similarity algorithms for Collaborative Filtering models in Recommender System and others.
-
-This project provides fast Python implementations of several different popular KNN (K-Nearest Neighbors) similarity algorithms for Recommender System models using sparse matrices.
-
-The package include  also some normalization functions that could be useful in the pre-processing phase before the similarity computation.
+The package also include some normalization functions that could be useful in the pre-processing phase before the similarity computation.
 
 #### Similarities
 
@@ -37,7 +34,7 @@ All models have multi-threaded routines, using Cython and OpenMP to fit the mode
 
 #### Normalizations
 
-The package contains normalization functions like: l1, l2, max, tf-idf ,bm25, bm25+.
+The package contains normalization functions like: l1, l2, max, tf-idf, bm25, bm25+.
 
 All the functions are compiled at low-level and could operate in-place, on csr-matrixes, if you need to save memory.
 

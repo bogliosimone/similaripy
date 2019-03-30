@@ -124,7 +124,7 @@ setup(name=NAME,
       author_email='bogliosimone@gmail.com',
       license='MIT',
         classifiers=[
-        'Development Status :: 2 - Pre-Alpha',
+        'Development Status :: 4 - Beta',
         'Natural Language :: English',
         'Intended Audience :: Science/Research',
         'License :: OSI Approved :: MIT License',
