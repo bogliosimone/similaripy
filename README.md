@@ -1,3 +1,5 @@
+<div style="text-align:center"><img src="logo.png" alt="similaripy" width="350"/></div>
+
 SimilariPy
 ==========
 
@@ -111,20 +113,18 @@ Released under the MIT License
 Citation information: [![DOI_PIC]][DOI_LINK]
 
 ```
-@misc{boglio_simone_2019_2616944,
+@misc{boglio_simone_similaripy,
   author       = {Boglio Simone},
-  title        = {bogliosimone/similaripy: v0.0.13 stable release},
-  month        = mar,
-  year         = 2019,
-  doi          = {10.5281/zenodo.2616944},
-  url          = {https://doi.org/10.5281/zenodo.2616944}
+  title        = {bogliosimone/similaripy},
+  doi          = {10.5281/zenodo.2583851},
+  url          = {https://doi.org/10.5281/zenodo.2583851}
 }
 ```
 
-[DOI_PIC]: https://zenodo.org/badge/DOI/10.5281/zenodo.2616944.svg
-[DOI_LINK]: https://doi.org/10.5281/zenodo.2616944
+[DOI_PIC]: https://zenodo.org/badge/DOI/10.5281/zenodo.2583851.svg
+[DOI_LINK]: https://doi.org/10.5281/zenodo.2583851
 [LICENSE_PIC]: https://img.shields.io/github/license/bogliosimone/similaripy.svg
 [LICENSE_LINK]: https://github.com/bogliosimone/similaripy/blob/master/LICENSE
-[PYPI_PIC]: https://img.shields.io/pypi/v/similaripy.svg?color=blue
+[PYPI_PIC]: https://img.shields.io/pypi/v/similaripy.svg
 [PYPI_LINK]: https://pypi.org/project/similaripy/
 [PY_PIC]: https://img.shields.io/pypi/pyversions/similaripy.svg
