@@ -1,12 +1,12 @@
-<div style="text-align:center"><img src="logo.png" alt="similaripy" width="350"/></div>
+<p align="center"><img src="logo.png" alt="similaripy" width="350"/></p>
 
 SimilariPy
 ==========
-
 ![PY_PIC]
 [![PYPI_PIC]][PYPI_LINK]
 [![LICENSE_PIC]][LICENSE_LINK]
 [![DOI_PIC]][DOI_LINK]
+
 
 
 This project provides fast Python implementation of several KNN (K-Nearest Neighbors) similarity algorithms using sparse matrices, useful in Collaborative Filtering Recommender Systems and others.
