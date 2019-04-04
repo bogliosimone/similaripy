@@ -4,6 +4,7 @@ SimilariPy
 ==========
 ![PY_PIC]
 [![PYPI_PIC]][PYPI_LINK]
+[![BUILD_STATUS_PIC]][BUILD_STATUS_LINK]
 [![LICENSE_PIC]][LICENSE_LINK]
 [![DOI_PIC]][DOI_LINK]
 
@@ -128,3 +129,6 @@ Citation information: [![DOI_PIC]][DOI_LINK]
 [PYPI_PIC]: https://img.shields.io/pypi/v/similaripy.svg
 [PYPI_LINK]: https://pypi.org/project/similaripy/
 [PY_PIC]: https://img.shields.io/pypi/pyversions/similaripy.svg
+[BUILD_STATUS_PIC]: https://travis-ci.org/bogliosimone/similaripy.svg?branch=master
+[BUILD_STATUS_LINK]: https://travis-ci.org/bogliosimone/similaripy
+
