@@ -34,3 +34,6 @@
 
 ### Private Folder ###
 /private/
+
+### cache
+.cache/*
