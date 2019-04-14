@@ -1,4 +1,4 @@
-<p align="center"><img src="logo.png" alt="similaripy" width="350"/></p>
+<p align="center"><img src="https://raw.githubusercontent.com/bogliosimone/similaripy/master/logo.png" alt="similaripy" width="350"/></p>
 
 SimilariPy
 ==========
