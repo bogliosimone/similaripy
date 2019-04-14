@@ -1,5 +1,5 @@
 from .similarity import *
 
-__version__ = '0.0.14'
+__version__ = '0.1.00'
 
 __all__ = []
