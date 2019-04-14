@@ -32,7 +32,14 @@ cdef extern from "s_plus.h" namespace "s_plus" nogil:
                                 Value l1, Value l2, Value l3,
                                 Value t1, Value t2,
                                 Value c1, Value c2,
-                                Value shrink, Value threshold)
+                                Value shrink, Value threshold,
+                                Index filter_mode,
+                                Index * filter_m_indptr,
+                                Index * filter_m_indices,
+                                Index target_col_mode,
+                                Index * target_col_m_indptr,
+                                Index * target_col_m_indices
+                                )
         void add(Index index, Value value)
         void setIndexRow(Index index)
         void foreach[Function](Function & f)
@@ -55,21 +62,28 @@ def s_plus(
     unsigned int k=100, float shrink=0, float threshold=0,
     binary=False,
     target_rows=None,
+    filter_cols=None,
+    target_cols=None,
     verbose=True,
     format_output='csr',
     int num_threads=0):  
 
+    assert sp.issparse(matrix1), 'matrix m1 must be a sparse matrix'
     # if receive only matrix1 in input
     if matrix2 is None:
         matrix2=matrix1.T
+    assert sp.issparse(matrix2), 'matrix m2 must be a sparse matrix'
 
     # check that all parameters are consistent
-    assert(matrix1.shape[1]==matrix2.shape[0])
-    assert(len(weight_depop_matrix1)==matrix1.shape[0] or weight_depop_matrix1 in ('none','sum'))
-    assert(len(weight_depop_matrix2)==matrix2.shape[1] or weight_depop_matrix2 in ('none','sum'))
-    assert(target_rows is None or len(target_rows)<=matrix1.shape[0])
-    assert(verbose==True or verbose==False)
-    assert(format_output=='coo' or format_output=='csr')
+    assert matrix1.shape[1]==matrix2.shape[0], 'error shape matrixs'
+    assert k >= 1 and k <= matrix2.shape[1], 'k must be >=1 and <= m2.shape[1]'
+    assert len(weight_depop_matrix1)==matrix1.shape[0] or weight_depop_matrix1 in ('none','sum'), 'error format weighs_depop matrix1'
+    assert len(weight_depop_matrix2)==matrix2.shape[1] or weight_depop_matrix2 in ('none','sum'), 'error format weighs_depop matrix2'
+    assert target_rows is None or len(target_rows)<=matrix1.shape[0], 'error target rows'
+    assert filter_cols is None or sp.issparse(filter_cols) or isinstance(filter_cols,(list,np.ndarray)), 'error format filter_cols'
+    assert target_cols is None or sp.issparse(target_cols) or isinstance(target_cols,(list,np.ndarray)), 'error format target_cols' 
+    assert verbose==True or verbose==False, 'verbose must be boolean'
+    assert format_output=='coo' or format_output=='csr', 'output format must be \'coo\' or \'csr\''
 
     # build target rows (only the row that must be computed)
     if target_rows is None:
@@ -168,6 +182,57 @@ def s_plus(
 
     ### END OF PREPROCESSING ###
 
+    # filter col matrix
+    # mode: 0 no filter, 1 filter array, 2 filter matrix
+    cdef int filter_col_mode
+    cdef int[:] filter_m_indptr
+    cdef int[:] filter_m_indices
+
+    if sp.issparse(filter_cols) and filter_cols.data.shape[0] != 0:
+        assert filter_cols.shape == (item_count, user_count), 'shape filter_cols matrix not correct'
+        filter_col_mode = 2
+        # build indices and indptrs and sort indices since we will use binary search
+        filter_cols = filter_cols.tocsr()
+        filter_cols.eliminate_zeros()
+        filter_cols.sort_indices()
+        filter_m_indptr = np.array(filter_cols.indptr, dtype=np.int32)
+        filter_m_indices = np.array(filter_cols.indices, dtype=np.int32)
+    elif isinstance(filter_cols, (list, np.ndarray)) and len(filter_cols) != 0:
+        filter_col_mode = 1
+        # sort array since we will use binary search
+        filter_m_indptr = np.array([0,len(filter_cols)], dtype=np.int32)
+        filter_m_indices = np.array(filter_cols, dtype=np.int32)
+    else:
+        # filter cols is empty or None
+        filter_col_mode = 0
+        filter_m_indptr = np.array([],dtype=np.int32)
+        filter_m_indices = np.array([],dtype=np.int32)
+
+    # target col matrix
+    # mode: 0 target all, 1 target array, 2 target matrix
+    cdef int target_col_mode = 0
+    cdef int[:] target_m_indptr
+    cdef int[:] target_m_indices
+
+    if sp.issparse(target_cols):
+        assert target_cols.shape == (item_count, user_count), 'shape target_cols matrix not correct'
+        target_col_mode = 2
+        # build indices and indptrs and sort indices since we will use binary search
+        target_cols = target_cols.tocsr()
+        target_cols.eliminate_zeros()
+        target_cols.sort_indices()
+        target_m_indptr = np.array(target_cols.indptr, dtype=np.int32)
+        target_m_indices = np.array(target_cols.indices, dtype=np.int32)
+    elif isinstance(target_cols, (list, np.ndarray)):
+        target_col_mode = 1
+        target_m_indptr = np.array([0,len(target_cols)], dtype=np.int32)
+        target_m_indices = np.array(target_cols, dtype=np.int32)
+    else:
+        # target cols is None
+        target_col_mode = 0
+        target_m_indptr = np.array([],dtype=np.int32)
+        target_m_indices = np.array([],dtype=np.int32)
+
     # set progress bar
     cdef int counter = 0
     cdef int * counter_add = address(counter)
@@ -198,7 +263,12 @@ def s_plus(
                                                             l1, l2, l3,
                                                             t1, t2,
                                                             c1, c2,
-                                                            shrink, threshold)
+                                                            shrink, threshold,
+                                                            filter_col_mode, 
+                                                            &filter_m_indptr[0], &filter_m_indices[0],
+                                                            target_col_mode, 
+                                                            &target_m_indptr[0], &target_m_indices[0],
+                                                            )
         topk = new TopK[int, float](k)
         try:
             for i in prange(n_targets, schedule='dynamic'):

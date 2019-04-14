@@ -53,7 +53,12 @@ class SparseMatrixMultiplier {
                                     Value l1, Value l2, Value l3, // weights tversky and cosine and depop
                                     Value t1, Value t2, // tversky coefficients
                                     Value c1, Value c2, // cosine exponents
-                                    Value shrink, Value threshold)
+                                    Value shrink, Value threshold,
+                                    Index filter_mode, 
+                                    Index * filter_m_indptr, Index * filter_m_indices,
+                                    Index target_col_mode,
+                                    Index * target_col_m_indptr, Index * target_col_m_indices
+                                    )
         :
         sums(column_count, 0),
         nonzeros(column_count, -1),
@@ -65,6 +70,12 @@ class SparseMatrixMultiplier {
         t1(t1), t2(t2), 
         c1(c1), c2(c2),
         shrink(shrink), threshold(threshold),
+        filter_mode(filter_mode),
+        filter_m_indptr(filter_m_indptr),
+        filter_m_indices(filter_m_indices),
+        target_col_mode(target_col_mode),
+        target_col_m_indptr(target_col_m_indptr),
+        target_col_m_indices(target_col_m_indices),
         head(-2), length(0) {
     }
 
@@ -91,6 +102,8 @@ class SparseMatrixMultiplier {
             Index col = head;
             Value xy = sums[col];
             Value valTversky=0, valCosine=0, valDepop=0, val=xy;
+            bool filter = false;
+            bool target_col = true;
 
             if(l1!=0) // tversky
                 valTversky = l1 * (t1 * (Xtversky[row] - xy) + t2 * (Ytversky[col] - xy) + xy);
@@ -103,7 +116,43 @@ class SparseMatrixMultiplier {
             if(l1!=0 || l2!=0 || l3!=0 ||shrink!=0)
                 val = xy/(valTversky + valCosine + valDepop + shrink);
 
-            if (val >= threshold)
+            // filter cols, filter_mode = 0:none, 1:array, 2:matrix
+            if (filter_mode !=0 ){
+                if(filter_mode == 1){
+                    Index start = filter_m_indptr[0];
+                    Index end = filter_m_indptr[1];
+                    if(std::binary_search(&filter_m_indices[start], &filter_m_indices[end], col))
+                        filter = true;
+                }
+                else{
+                    if(filter_mode == 2){
+                        Index start = filter_m_indptr[row];
+                        Index end = filter_m_indptr[row+1];
+                        if(std::binary_search(&filter_m_indices[start], &filter_m_indices[end], col))
+                            filter = true;
+                    }
+                }
+            }
+
+            // keep only the target cols, target_mode = 0:all, 1:array, 2:matrix
+            if (target_col_mode !=0 ){
+                if(target_col_mode == 1){
+                    Index start = target_col_m_indptr[0];
+                    Index end = target_col_m_indptr[1];
+                    if(!std::binary_search(&target_col_m_indices[start], &target_col_m_indices[end], col))
+                        target_col = false;
+                }
+                else{
+                    if(target_col_mode == 2){
+                        Index start = target_col_m_indptr[row];
+                        Index end = target_col_m_indptr[row+1];
+                        if(!std::binary_search(&target_col_m_indices[start], &target_col_m_indices[end], col))
+                            target_col = false;
+                    }
+                }
+            }
+
+            if (val >= threshold && !filter && target_col)
                 f(col, val);
             // clear up memory and advance linked list
             head = nonzeros[head];
@@ -128,7 +177,12 @@ class SparseMatrixMultiplier {
     Value c1, c2;
     Value shrink, threshold;
     Index row;
+    Index filter_mode;
+    Index * filter_m_indptr, * filter_m_indices;
+    Index target_col_mode;
+    Index * target_col_m_indptr, * target_col_m_indices;
     Index head, length;
+
 };
 }  // namespace similarity
 #endif  // SPLUS

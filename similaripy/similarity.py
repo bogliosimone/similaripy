@@ -9,7 +9,9 @@ _K = 100
 _SHRINK = 0
 _THRESHOLD = 0
 _BINARY = False
-_TARGET_ROWS = None # compute all the rows
+_TARGET_ROWS = None # compute all rows
+_TARGET_COLS = None # compute all cols
+_FILTER_COLS = None # do not filter cols
 _M2 = None
 
 
@@ -18,6 +20,8 @@ def dot_product(
     k=_K, shrink=_SHRINK, threshold=_THRESHOLD,
     binary=_BINARY,
     target_rows=_TARGET_ROWS,
+    target_cols=_TARGET_COLS,
+    filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
     format_output=_FORMAT_OUTPUT
     ):
@@ -26,6 +30,8 @@ def dot_product(
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
         target_rows=target_rows,
+        target_cols=target_cols,
+        filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output) 
 
@@ -35,6 +41,8 @@ def cosine(
     k=_K, shrink=_SHRINK, threshold=_THRESHOLD,
     binary=_BINARY,
     target_rows=_TARGET_ROWS,
+    target_cols=_TARGET_COLS,
+    filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
     format_output=_FORMAT_OUTPUT
     ):
@@ -45,6 +53,8 @@ def cosine(
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
         target_rows=target_rows,
+        target_cols=target_cols,
+        filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output)
 
@@ -55,6 +65,8 @@ def asymmetric_cosine(
     k=_K, shrink=_SHRINK, threshold=_THRESHOLD,
     binary=_BINARY,
     target_rows=_TARGET_ROWS,
+    target_cols=_TARGET_COLS,
+    filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
     format_output=_FORMAT_OUTPUT
     ):
@@ -65,6 +77,8 @@ def asymmetric_cosine(
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
         target_rows=target_rows,
+        target_cols=target_cols,
+        filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output)
 
@@ -75,6 +89,8 @@ def tversky(
     k=_K, shrink=_SHRINK, threshold=_THRESHOLD,
     binary=_BINARY,
     target_rows=_TARGET_ROWS,
+    target_cols=_TARGET_COLS,
+    filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
     format_output=_FORMAT_OUTPUT
     ):
@@ -85,6 +101,8 @@ def tversky(
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
         target_rows=target_rows,
+        target_cols=target_cols,
+        filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output) 
 
@@ -94,6 +112,8 @@ def jaccard(
     k=_K, shrink=_SHRINK, threshold=_THRESHOLD,
     binary=_BINARY,
     target_rows=_TARGET_ROWS,
+    target_cols=_TARGET_COLS,
+    filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
     format_output=_FORMAT_OUTPUT
     ):
@@ -104,6 +124,8 @@ def jaccard(
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
         target_rows=target_rows,
+        target_cols=target_cols,
+        filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output) 
 
@@ -113,6 +135,8 @@ def dice(
     k=_K, shrink=_SHRINK, threshold=_THRESHOLD,
     binary=_BINARY,
     target_rows=_TARGET_ROWS,
+    target_cols=_TARGET_COLS,
+    filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
     format_output=_FORMAT_OUTPUT
     ):
@@ -123,6 +147,8 @@ def dice(
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
         target_rows=target_rows,
+        target_cols=target_cols,
+        filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output)
 
@@ -133,6 +159,8 @@ def p3alpha(
     k=_K, shrink=_SHRINK, threshold=_THRESHOLD,
     binary=_BINARY,
     target_rows=_TARGET_ROWS,
+    target_cols=_TARGET_COLS,
+    filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
     format_output=_FORMAT_OUTPUT
     ):
@@ -147,6 +175,8 @@ def p3alpha(
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
         target_rows=target_rows,
+        target_cols=target_cols,
+        filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output)
     return m
@@ -159,6 +189,8 @@ def rp3beta(
     k=_K, shrink=_SHRINK, threshold=_THRESHOLD,
     binary=_BINARY,
     target_rows=_TARGET_ROWS,
+    target_cols=_TARGET_COLS,
+    filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
     format_output=_FORMAT_OUTPUT
     ):
@@ -177,6 +209,8 @@ def rp3beta(
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
         target_rows=target_rows,
+        target_cols=target_cols,
+        filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output)
     return m
@@ -190,6 +224,8 @@ def s_plus(
     k=_K, shrink=_SHRINK, threshold=_THRESHOLD,
     binary=_BINARY,
     target_rows=_TARGET_ROWS,
+    target_cols=_TARGET_COLS,
+    filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
     format_output=_FORMAT_OUTPUT
     ):
@@ -201,5 +237,7 @@ def s_plus(
         k=k, shrink=shrink, threshold=threshold,
         binary=binary,
         target_rows=target_rows,
+        target_cols=target_cols,
+        filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output)

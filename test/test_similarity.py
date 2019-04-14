@@ -3,6 +3,7 @@ import numpy as np
 import scipy.sparse as sp
 from similaripy.normalization import normalize
 
+
 def check_sum(x):
     # function used for testing the library
     # sum of each row, next square of each value, next sum the values
@@ -26,6 +27,7 @@ def check_full(x1, x2, rtol=0.001):
             np.testing.assert_allclose(x1[r,c], x2[r,c], rtol=rtol, err_msg='error test_full')
     return 0
 
+
 def py_dot(m, k):
     s = m * m.T
     return top_k(s, k)
@@ -48,6 +50,7 @@ def py_cosine(m, k):
     s = sp.csr_matrix((v,(r,c)),shape=(m.shape[0],m.shape[0]))
     return top_k(s, k)
 
+
 def py_asy_cosine(m, alpha, k):
     m2 = m.copy()
     m2.data = np.power(m2.data,2)
@@ -66,6 +69,7 @@ def py_asy_cosine(m, alpha, k):
     s = sp.csr_matrix((v,(r,c)),shape=(m.shape[0],m.shape[0]))
     return top_k(s, k)
 
+
 def py_jaccard(m, k):
     X = m.power(2).sum(axis=1).A1
     m_aux = (m * m.T).tocsr()
@@ -80,6 +84,7 @@ def py_jaccard(m, k):
             v.append(val/ (X[row] + X[col] - val))
     s = sp.csr_matrix((v,(r,c)),shape=(m.shape[0],m.shape[0]))
     return top_k(s, k)
+
 
 def py_dice(m, k):
     X = m.power(2).sum(axis=1).A1
@@ -96,6 +101,7 @@ def py_dice(m, k):
     s = sp.csr_matrix((v,(r,c)),shape=(m.shape[0],m.shape[0]))
     return top_k(s, k)
 
+
 def py_tversky(m, alpha, beta, k):
     X = m.power(2).sum(axis=1).A1
     m_aux = (m * m.T).tocsr()
@@ -111,6 +117,7 @@ def py_tversky(m, alpha, beta, k):
     s = sp.csr_matrix((v,(r,c)),shape=(m.shape[0],m.shape[0]))
     return top_k(s, k)
 
+
 def py_p3alpha(m, alpha, k):
     m2 = m.copy().T
     m1 = normalize(m, axis=1, norm='l1')
@@ -119,6 +126,7 @@ def py_p3alpha(m, alpha, k):
     m2.data = np.power(m2.data, alpha)
     m_aux =  m1 * m2
     return top_k(m_aux, k)
+
 
 def py_rp3beta(m, alpha, beta, k):
     pop = np.power(m.sum(axis=1).A1, beta)
@@ -131,6 +139,7 @@ def py_rp3beta(m, alpha, beta, k):
     m_aux = m1 * m2
     m_aux = col_scale(m_aux, pop_inv)
     return top_k(m_aux, k)
+
 
 def top_k(X, k):
     X = X.tocsr()
@@ -146,6 +155,7 @@ def top_k(X, k):
         c += indices.tolist()
         d += data.tolist()
     return sp.csr_matrix((d, (r, c)), shape=X.shape)
+
 
 def col_scale(X, array_scale):
     X = X.tocsr()
@@ -195,8 +205,8 @@ def check_similarity(m, k, rtol=0.0001, full=False):
         np.testing.assert_(check_full(p3alpha, p3alpha2, rtol) == 0, msg='p3alpha error')
         np.testing.assert_(check_full(rp3beta, rp3beta2, rtol) == 0, msg='rp3beta error')
 
+    return
 
-    return 0
 
 def test_similarity_topk():
     rows = 1000
@@ -210,6 +220,7 @@ def test_similarity_topk():
     check_similarity(m=m, k=k, rtol=rtol, full=False)
 
     print('All similarity topk tests passed!!!')
+
 
 def test_similarity_full():
     rows = 400
@@ -225,10 +236,28 @@ def test_similarity_full():
     print('All similarity full row tests passed!!!')
 
 
+def test_readme_code():
+    import similaripy as sim
+    import scipy.sparse as sps
+
+    # create a random user-rating matrix (URM)
+    urm = sps.random(1000, 2000, density=0.025)
+
+    # normalize matrix with bm25
+    urm = sim.normalization.bm25(urm)
+
+    # train the model with 50 knn per item 
+    model = sim.cosine(urm.T, k=50)
+
+    # recommend 100 items to users 1, 14 and 8 filtering the items already seen by each users
+    user_recommendations = sim.dot_product(urm, model.T, k=100, target_rows=[1,14,8], filter_cols=urm)
+
+    print('Test README.md code passed!!!')
 
 if __name__ == "__main__":
     test_similarity_topk()
     test_similarity_full()
+    test_readme_code()
 
 
 

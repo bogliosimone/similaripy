@@ -16,6 +16,12 @@ This is a first guide, full documentation coming soon.
 
 **_target_rows_** : if setted to *None* it compute the whole matrix otherwise it compute only the targets rows (default *[target_rows=None]*)
 
+**_target_cols_** : if setted to *None* it compute the whole matrix otherwise it compute only the targets cols before apply KNN; _target_cols_ could be an array/list with the indexes of the columns that you want keep, so in this way is applied equally on all the rows, or it could be a sparse matrix where the ones identifies the columns that you want keep, so each row in the similarity is match with the corresponding row in the _target_cols_ matrix(default *[target_cols=None]*)
+_Note_: this filter could slow down the computation.
+
+**_filter_cols_** : if setted to *None* it compute the whole matrix otherwise it filter the targets cols before apply the KNN; _filter_cols_ could be an array/list with the indexes of the columns that you want filter, so in this way is applied equally on all the rows, or it could be a sparse matrix where the ones identifies the columns that you want filter, so each row in the similarity is match with the corresponding row in the _filter_cols_ matrix(default *[filter_cols=None]*)
+_Note_: this filter could slow down the computation.
+
 **_verbose_** : *True* show progress bar, *False* hide progress bar (default *[verbose=True]*)
 
 **_format_output_** : output format for the model matrix, support values are *coo* and *csr* (default *[format_output='coo']*)

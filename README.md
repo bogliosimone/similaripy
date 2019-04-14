@@ -66,8 +66,8 @@ urm = sim.normalization.bm25(urm)
 # train the model with 50 knn per item 
 model = sim.cosine(urm.T, k=50)
 
-# recommend 100 items to users 1, 14 and 8
-user_recommendations = sim.dot_product(urm, model.T, target_rows=[1,14,8], k=100)
+# recommend 100 items to users 1, 14 and 8 filtering the items already seen by each users
+user_recommendations = sim.dot_product(urm, model.T, k=100, target_rows=[1,14,8], filter_cols=urm)
 
 ```
 
