@@ -76,7 +76,7 @@ def s_plus(
 
     # check that all parameters are consistent
     assert matrix1.shape[1]==matrix2.shape[0], 'error shape matrixs'
-    assert k >= 1 and k <= matrix2.shape[1], 'k must be >=1 and <= m2.shape[1]'
+    assert k >= 1, 'k must be >=1'
     assert len(weight_depop_matrix1)==matrix1.shape[0] or weight_depop_matrix1 in ('none','sum'), 'error format weighs_depop matrix1'
     assert len(weight_depop_matrix2)==matrix2.shape[1] or weight_depop_matrix2 in ('none','sum'), 'error format weighs_depop matrix2'
     assert target_rows is None or len(target_rows)<=matrix1.shape[0], 'error target rows'
@@ -84,6 +84,10 @@ def s_plus(
     assert target_cols is None or sp.issparse(target_cols) or isinstance(target_cols,(list,np.ndarray)), 'error format target_cols' 
     assert verbose==True or verbose==False, 'verbose must be boolean'
     assert format_output=='coo' or format_output=='csr', 'output format must be \'coo\' or \'csr\''
+
+    # do not allocate unecessary space
+    if k > matrix2.shape[1]:
+        k = matrix2.shape[1]
 
     # build target rows (only the row that must be computed)
     if target_rows is None:
@@ -201,7 +205,7 @@ def s_plus(
         filter_col_mode = 1
         # sort array since we will use binary search
         filter_m_indptr = np.array([0,len(filter_cols)], dtype=np.int32)
-        filter_m_indices = np.array(filter_cols, dtype=np.int32)
+        filter_m_indices = np.array(np.sort(filter_cols), dtype=np.int32)
     else:
         # filter cols is empty or None
         filter_col_mode = 0
@@ -226,7 +230,7 @@ def s_plus(
     elif isinstance(target_cols, (list, np.ndarray)):
         target_col_mode = 1
         target_m_indptr = np.array([0,len(target_cols)], dtype=np.int32)
-        target_m_indices = np.array(target_cols, dtype=np.int32)
+        target_m_indices = np.array(np.sort(target_cols), dtype=np.int32)
     else:
         # target cols is None
         target_col_mode = 0
