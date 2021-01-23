@@ -123,6 +123,6 @@ Citation information: [![DOI_PIC]][DOI_LINK]
 [PYPI_PIC]: https://img.shields.io/pypi/v/similaripy.svg
 [PYPI_LINK]: https://pypi.org/project/similaripy/
 [PY_PIC]: https://img.shields.io/pypi/pyversions/similaripy.svg
-[BUILD_STATUS_PIC]: https://travis-ci.com/bogliosimone/similaripy.svg?branch=master
-[BUILD_STATUS_LINK]: https://travis-ci.com/bogliosimone/similaripy
+[BUILD_STATUS_PIC]: https://github.com/bogliosimone/similaripy/workflows/Python%20package/badge.svg?branch=master
+[BUILD_STATUS_LINK]: https://github.com/bogliosimone/similaripy/actions?query=workflow%3A%22Python+package%22
 
