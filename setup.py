@@ -53,11 +53,16 @@ def define_extensions(use_cython=False):
         link_args.append("-std=c++11")
 
     src_ext = '.pyx' if use_cython else '.cpp'
-    modules = [Extension("similaripy.cython_code." + name,
-                         [os.path.join("similaripy", "cython_code", name + src_ext)],
-                         language='c++',
-                         extra_compile_args=compile_args, extra_link_args=link_args)
-               for name in files_to_compile]
+    modules = [
+        Extension(
+            "similaripy.cython_code." + name,
+            [os.path.join("similaripy", "cython_code", name + src_ext)],
+            language='c++',
+            extra_compile_args=compile_args, 
+            extra_link_args=link_args
+        )
+        for name in files_to_compile
+    ]
 
     if use_cython:
         return cythonize(modules)
@@ -70,11 +75,13 @@ def define_extensions(use_cython=False):
 
 def extract_gcc_binaries():
     """Try to find GCC on OSX for OpenMP support."""
-    patterns = ['/opt/local/bin/g++-mp-[0-9].[0-9]',
-                '/opt/local/bin/g++-mp-[0-9]',
-                '/usr/local/bin/g++-[0-9].[0-9]',
-                '/usr/local/bin/g++-[0-9]']
-    if 'darwin' in platform.platform().lower():
+    patterns = [
+        "/opt/local/bin/g++-mp-[0-9]*.[0-9]*",
+        "/opt/local/bin/g++-mp-[0-9]*",
+        "/usr/local/bin/g++-[0-9]*.[0-9]*",
+        "/usr/local/bin/g++-[0-9]*",
+    ]
+    if platform.system() == "Darwin":
         gcc_binaries = []
         for pattern in patterns:
             gcc_binaries += glob.glob(pattern)
@@ -92,7 +99,7 @@ def set_gcc():
     """Try to use GCC on OSX for OpenMP support."""
     # For macports and homebrew
 
-    if 'darwin' in platform.platform().lower():
+    if platform.system() == "Darwin":
         gcc = extract_gcc_binaries()
 
         if gcc is not None:
@@ -114,16 +121,17 @@ except ImportError:
     long_description = ''
 
 
-setup(name=NAME,
-      version=VERSION,
-      description='Fast KNN Similarity Algorithms for Collaborative Filtering Models using sparse matrices',
-      long_description = long_description,
-      long_description_content_type='text/markdown',
-      url='http://github.com/bogliosimone/similaripy',
-      author='Simone Boglio',
-      author_email='bogliosimone@gmail.com',
-      license='MIT',
-        classifiers=[
+setup(
+    name=NAME,
+    version=VERSION,
+    description='Fast KNN Similarity Algorithms for Collaborative Filtering Models using sparse matrices',
+    long_description = long_description,
+    long_description_content_type='text/markdown',
+    url='http://github.com/bogliosimone/similaripy',
+    author='Simone Boglio',
+    author_email='bogliosimone@gmail.com',
+    license='MIT',
+    classifiers=[
         'Development Status :: 4 - Beta',
         'Natural Language :: English',
         'Intended Audience :: Science/Research',
@@ -135,19 +143,22 @@ setup(name=NAME,
         'Programming Language :: Python :: 3.5',
         'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
         'Programming Language :: Cython',
         'Operating System :: OS Independent',
-        'Topic :: Software Development :: Libraries :: Python Modules'],
-
+        'Topic :: Software Development :: Libraries :: Python Modules'
+    ],
     keywords='Similarity, KNN, Nearest Neighbors,'
-             'Collaborative Filtering, Normalization, Recommender Systems',
-      packages=['similaripy'],
-      install_requires=[
-          'scipy>=1.0.0',
-          'numpy>=1.14.0',
-          'tqdm>=4.19.6',
-      ],
-      include_package_data=True,
-      setup_requires=["Cython>=0.28.1"],
-      ext_modules= define_extensions(use_cython),
-      zip_safe=False)
+        'Collaborative Filtering, Normalization, Recommender Systems',
+    packages=['similaripy'],
+    install_requires=[
+        'scipy>=1.0.0',
+        'numpy>=1.14.0',
+        'tqdm>=4.19.6',
+    ],
+    include_package_data=True,
+    setup_requires=["Cython>=0.28.1"],
+    ext_modules= define_extensions(use_cython),
+    zip_safe=False
+)

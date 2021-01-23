@@ -86,18 +86,12 @@ NOTE: In order to compile the Cython code it is required a GCC compiler with Ope
 
 This library has been tested with Python 3.6 on Ubuntu, OSX and Windows.
 
-(Note: on Windows there are problem with flag *format_output='csr'*, just let it equals to the default value *'coo'*)
+(Note: on Windows there are problem with flag *format_output='csr'*, just leave it set to the default value *'coo'*)
 
 #### Optimal Configuration
 
 I recommend configuring SciPy/Numpy to use Intel's MKL matrix libraries.
 The easiest way of doing this is by installing the Anaconda Python distribution.
-
-#### Future work
-
-I plan to release in the next future some utilities:
-- Utilities for sparse matrices
-- New similarity functions ( good ideas are welcome :)  )
 
 #### History
 The idea of build this library comes from the **[RecSys Challenge 2018](https://recsys-challenge.spotify.com)** organized by Spotify. 
@@ -129,6 +123,6 @@ Citation information: [![DOI_PIC]][DOI_LINK]
 [PYPI_PIC]: https://img.shields.io/pypi/v/similaripy.svg
 [PYPI_LINK]: https://pypi.org/project/similaripy/
 [PY_PIC]: https://img.shields.io/pypi/pyversions/similaripy.svg
-[BUILD_STATUS_PIC]: https://travis-ci.org/bogliosimone/similaripy.svg?branch=master
-[BUILD_STATUS_LINK]: https://travis-ci.org/bogliosimone/similaripy
+[BUILD_STATUS_PIC]: https://travis-ci.com/bogliosimone/similaripy.svg?branch=master
+[BUILD_STATUS_LINK]: https://travis-ci.com/bogliosimone/similaripy
 
