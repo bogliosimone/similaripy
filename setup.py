@@ -156,6 +156,7 @@ setup(
         'scipy>=1.0.0',
         'numpy>=1.14.0',
         'tqdm>=4.19.6',
+        'Cython>=0.28.1'
     ],
     include_package_data=True,
     setup_requires=["Cython>=0.28.1"],

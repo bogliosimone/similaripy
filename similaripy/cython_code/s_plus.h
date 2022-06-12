@@ -10,6 +10,7 @@
 #include <vector>
 #include <utility>
 #include <functional>
+#include <cmath>
 
 namespace s_plus {
 

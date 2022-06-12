@@ -1,57 +1,46 @@
 <p align="center"><img src="https://raw.githubusercontent.com/bogliosimone/similaripy/master/logo.png" alt="similaripy" width="350"/></p>
 
-SimilariPy
-==========
+# SimilariPy
+
 ![PY_PIC]
 [![PYPI_PIC]][PYPI_LINK]
 [![BUILD_STATUS_PIC]][BUILD_STATUS_LINK]
 [![LICENSE_PIC]][LICENSE_LINK]
 [![DOI_PIC]][DOI_LINK]
 
-
-
 This project provides fast Python implementation of several KNN (K-Nearest Neighbors) similarity algorithms using sparse matrices, useful in Collaborative Filtering Recommender Systems and others.
 
 The package also include some normalization functions that could be useful in the pre-processing phase before the similarity computation.
 
-#### Similarities
+## Similarities
 
 Base similarity models:
- * Dot Product
- * Cosine
- * Asymmetric Cosine
- * Jaccard
- * Dice
- * Tversky
+
+* Dot Product
+* Cosine and Asymmetric Cosine
+* Tversky, Jaccard and Dice
 
  Graph-based similarity models:
- * P3&alpha;
- * RP3&beta;
+
+* P3&alpha; and RP3&beta;
 
  Advanced similarity model:
- * S-Plus
 
-[Similarities Documentation](https://github.com/bogliosimone/similaripy/blob/master/guide/temp_guide.md)
+* S-Plus
 
-All models have multi-threaded routines, using Cython and OpenMP to fit the models in parallel among all available CPU cores.
+For additional information see the [similarities documentation](https://github.com/bogliosimone/similaripy/blob/master/guide/temp_guide.md).
 
-#### Normalizations
+All the models have multi-threaded routines, using Cython and OpenMP to fit the models in parallel among all available CPU cores.
+
+## Normalizations
 
 The package contains normalization functions like: l1, l2, max, tf-idf, bm25, bm25+.
 
-All the functions are compiled at low-level and could operate in-place, on csr-matrixes, if you need to save memory.
-
 For tf-idf, bm25, bm25+ you could chose the log-base and how the term-frequency (TF) and the inverse document frequency (IDF) are computed.
 
-#### Installation and usage
+All the functions are compiled at low-level and could operate in-place on csr-matrixes, if you need to save memory.
 
-To install:
-
-```cmd
-pip install similaripy
-```
-
-Basic usage:
+## Usage
 
 ```python
 import similaripy as sim
@@ -71,43 +60,77 @@ user_recommendations = sim.dot_product(urm, model.T, k=100, target_rows=[1,14,8]
 
 ```
 
-#### Requirements
+## Installation
+
+Similaripy can be installed from PyPI with:
+
+```cmd
+pip install similaripy
+```
+
+### Requirements
 
 | Package                         | Version        |
-| --------------------------------|:--------------:|   
-| numpy                           |   >= 1.14      |   
+| --------------------------------|:--------------:|
+| numpy                           |   >= 1.14      |
 | scipy                           |   >= 1.0.0     |
 | tqdm                            |   >= 4.19.6    |
 | cython                          |   >= 0.28.1    |
 
+### GCC compiler
 
-NOTE: In order to compile the Cython code it is required a GCC compiler with OpenMP 
-(on OSX it can be installed with homebrew: ```brew install gcc```).
+In order to compile the Cython code it is required a GCC compiler with OpenMP.
 
-This library has been tested with Python 3.6 on Ubuntu, OSX and Windows.
+To install it you can follow the next steps according to your OS.
 
-(Note: on Windows there are problem with flag *format_output='csr'*, just leave it set to the default value *'coo'*)
+#### Ubuntu / Debian
 
-#### Optimal Configuration
+It can be installed with the dev-tools:
+
+```cmd
+sudo apt update && sudo apt install build-essential
+```
+
+#### MacOS
+
+It can be installed with homebrew:
+
+```cmd
+brew install gcc
+```
+
+NOTE: the package works on both Intel and Apple Silicon chips.
+
+#### Windows
+
+It can be installed with the Visual C++ Build Tools.
+
+They can be downloaded directly from Microsoft: **https://visualstudio.microsoft.com/en/visual-cpp-build-tools/**.
+
+NOTE: on Windows there are issues with the flag *format_output='csr'*, just leave it set to the default value *'coo'*.
+
+#### Optimal Configuration for Intel CPUs
 
 I recommend configuring SciPy/Numpy to use Intel's MKL matrix libraries.
 The easiest way of doing this is by installing the Anaconda Python distribution.
 
-#### History
-The idea of build this library comes from the **[RecSys Challenge 2018](https://recsys-challenge.spotify.com)** organized by Spotify. 
+## History
 
-My team, the Creamy Fireflies, had problem in compute very huge similarity models in a reasonable time (66 million of interactions in the user-rating matrix) and using python and numpy were not suitable since a full day was required to compute one single model.
+The idea of build this library comes from the **[RecSys Challenge 2018](https://recsys-challenge.spotify.com)** organized by Spotify.
 
-As a member of the the team I spent a lot of hours to develop these high-performance similarities in Cython to overcome the problem. At the end of the competition, pushed by my team friends, I decide to release my work to help people that one day will encounter our same problem.
+My team, the Creamy Fireflies, had problems in computing huge similarity models in a reasonable time (66 million interactions in the user-rating matrix), and the use of Python and Numpy was not suitable as a full day was required to compute one single model.
 
-Thanks to my Creamy Fireflies friends for support me.
+As a member of the team, I have spent a lot of time developing these high-performance similarities in Cython to overcome this issue. At the end of the competition, pushed by my teammates, I decided to release my job to help people who will one day face the same problem.
 
-#### License
+Thanks to my Creamy Fireflies friends for supporting me.
+
+## License
+
 Released under the MIT License
 
 Citation information: [![DOI_PIC]][DOI_LINK]
 
-```
+```text
 @misc{boglio_simone_similaripy,
   author       = {Boglio Simone},
   title        = {bogliosimone/similaripy},
@@ -125,4 +148,3 @@ Citation information: [![DOI_PIC]][DOI_LINK]
 [PY_PIC]: https://img.shields.io/pypi/pyversions/similaripy.svg
 [BUILD_STATUS_PIC]: https://github.com/bogliosimone/similaripy/workflows/Python%20package/badge.svg?branch=master
 [BUILD_STATUS_LINK]: https://github.com/bogliosimone/similaripy/actions?query=workflow%3A%22Python+package%22
-
