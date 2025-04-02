@@ -8,7 +8,7 @@ import numpy as np
 import scipy.sparse as sp
 import tqdm
 
-from scipy.sparse.sputils import get_index_dtype
+from scipy.sparse._sputils import get_index_dtype
 
 from cython.operator import dereference
 from cython.parallel import parallel, prange
