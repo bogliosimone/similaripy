@@ -1,0 +1,36 @@
+[project]
+name = "similaripy"
+version = "0.2.0"
+description = "Fast KNN Similarity Algorithms for Collaborative Filtering Models using sparse matrices"
+authors = [{ name = "Simone Boglio", email = "bogliosimone@gmail.com" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = [
+  "Similarity", "KNN", "Nearest Neighbors",
+  "Collaborative Filtering", "Normalization", "Recommender Systems"
+]
+dependencies = [
+    "numpy>=2.2.4",
+    "scipy>=1.15.2",
+    "tqdm>=4.67.1",
+]
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["similaripy"]
+build.verbose = true
+logging.level = "INFO"
+
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11", "cython"]
+build-backend = "scikit_build_core.build"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.scikit-build.cmake.define]
+USE_OPENMP = "ON"
+
+

@@ -40,3 +40,7 @@
 
 ### vscode
 .vscode/
+*.code-workspace
+
+### uv
+*.lock

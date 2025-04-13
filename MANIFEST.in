@@ -1,4 +1,6 @@
 include README.md
 include LICENSE
+include pyproject.toml
+
 recursive-include similaripy *.py
-recursive-include similaripy/cython_code *.h *.pyx *.py *.cpp
+recursive-include similaripy/cython_code *.h *.pyx *.py *.cpp *pxd
