@@ -11,7 +11,7 @@ keywords = [
   "Collaborative Filtering", "Normalization", "Recommender Systems"
 ]
 dependencies = [
-    "numpy>=2.2.4",
+    "numpy>=1.21",
     "scipy>=1.15.2",
     "tqdm>=4.67.1",
 ]
