@@ -5,7 +5,7 @@ description = "Fast KNN Similarity Algorithms for Collaborative Filtering Models
 authors = [{ name = "Simone Boglio", email = "bogliosimone@gmail.com" }]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 keywords = [
   "Similarity", "KNN", "Nearest Neighbors",
   "Collaborative Filtering", "Normalization", "Recommender Systems"
