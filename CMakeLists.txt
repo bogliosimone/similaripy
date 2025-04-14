@@ -73,6 +73,8 @@ if(USE_OPENMP)
   endif()
 endif()
 
+
+# Set optimization flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   add_compile_options(
     -O3
@@ -86,6 +88,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   )
 elseif(MSVC)
   add_compile_options(/O2)
+  if(USE_OPENMP)
+    add_compile_options(/openmp)
+  endif()
 endif()
 
 # Find packages
@@ -111,7 +116,6 @@ macro(add_cython_module name)
   target_compile_features(${module_name} PRIVATE cxx_std_17)
 
   if(OpenMP_FOUND)
-    target_compile_options(${module_name} PRIVATE ${OpenMP_CXX_FLAGS})
     target_link_libraries(${module_name} PRIVATE OpenMP::OpenMP_CXX)
     set_target_properties(${module_name} PROPERTIES INSTALL_RPATH "${HOMEBREW_LIBOMP_PREFIX}/lib")
   endif()
@@ -123,7 +127,7 @@ endmacro()
 
 # Log environment summary
 message(STATUS "🧠 Compiler: ${CMAKE_CXX_COMPILER}")
-message(STATUS "🐍 Python executable: ${Python_EXECUTABLE}")
+message(STATUS "🐍 Python path: ${Python_EXECUTABLE}")
 message(STATUS "🐍 Python version: ${Python_VERSION}")
 
 # Cython modules

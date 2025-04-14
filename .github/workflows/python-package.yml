@@ -11,11 +11,12 @@ on:
 
 jobs:
   build:
-    name: Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
 
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
 
     steps:
@@ -25,6 +26,11 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: ${{ matrix.python-version }}
+
+    - name: Install Homebrew GCC on macOS
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install gcc
 
     - name: Install build tools
       run: |

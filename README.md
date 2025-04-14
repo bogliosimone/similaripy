@@ -72,9 +72,9 @@ pip install similaripy
 
 | Package                         | Version        |
 | --------------------------------|:--------------:|
-| numpy                           |   >= 1.14      |
-| scipy                           |   >= 1.0.0     |
-| tqdm                            |   >= 4.19.6    |
+| numpy                           |   >= 1.21      |
+| scipy                           |   >= 1.10.1    |
+| tqdm                            |   >= 4.65.2    |
 | cython                          |   >= 0.28.1    |
 
 ### GCC compiler
