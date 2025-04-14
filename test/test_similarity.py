@@ -3,6 +3,7 @@ import numpy as np
 import scipy.sparse as sp
 from similaripy.normalization import normalize
 
+VERBOSE = False
 
 def check_sum(x):
     # function used for testing the library
@@ -165,14 +166,14 @@ def col_scale(X, array_scale):
 
 def check_similarity(m, k, rtol=0.0001, full=False):
     # cython
-    dot = sim.dot_product(m, k=k)
-    cosine = sim.cosine(m, k=k)
-    asy_cosine = sim.asymmetric_cosine(m, alpha=0.2, k=k)
-    jaccard = sim.jaccard(m, k=k)
-    dice = sim.dice(m, k=k)
-    tversky = sim.tversky(m, alpha=0.8, beta=0.4, k=k)
-    p3alpha = sim.p3alpha(m, alpha=0.8, k=k)
-    rp3beta = sim.rp3beta(m, alpha=0.8, beta= 0.4, k=k)
+    dot = sim.dot_product(m, k=k, verbose=VERBOSE)
+    cosine = sim.cosine(m, k=k, verbose=VERBOSE)
+    asy_cosine = sim.asymmetric_cosine(m, alpha=0.2, k=k, verbose=VERBOSE)
+    jaccard = sim.jaccard(m, k=k, verbose=VERBOSE)
+    dice = sim.dice(m, k=k, verbose=VERBOSE)
+    tversky = sim.tversky(m, alpha=0.8, beta=0.4, k=k, verbose=VERBOSE)
+    p3alpha = sim.p3alpha(m, alpha=0.8, k=k, verbose=VERBOSE)
+    rp3beta = sim.rp3beta(m, alpha=0.8, beta= 0.4, k=k, verbose=VERBOSE)
 
     # python
     dot2 = py_dot(m, k)
@@ -219,7 +220,7 @@ def test_similarity_topk():
     
     check_similarity(m=m, k=k, rtol=rtol, full=False)
 
-    print('All similarity topk tests passed!!!')
+    print('✅ All similarity topk tests passed')
 
 
 def test_similarity_full():
@@ -233,7 +234,7 @@ def test_similarity_full():
     
     check_similarity(m=m, k=k, rtol=rtol, full=True)
 
-    print('All similarity full row tests passed!!!')
+    print('✅ All similarity full row tests passed')
 
 
 def test_readme_code():
@@ -247,14 +248,25 @@ def test_readme_code():
     urm = sim.normalization.bm25(urm)
 
     # train the model with 50 knn per item 
-    model = sim.cosine(urm.T, k=50)
+    model = sim.cosine(urm.T, k=50, verbose=VERBOSE)
 
     # recommend 100 items to users 1, 14 and 8 filtering the items already seen by each users
-    user_recommendations = sim.dot_product(urm, model.T, k=100, target_rows=[1,14,8], filter_cols=urm)
+    user_recommendations = sim.dot_product(urm, model.T, k=100, target_rows=[1,14,8], filter_cols=urm, verbose=VERBOSE)
 
-    print('Test README.md code passed!!!')
+    print('✅ Test README.md sample code passed')
+
+
+def test_openmp_enabled():
+    try:
+        threads = sim.cython_code.s_plus.get_num_threads()
+        print("✅ OpenMP detected — using {} threads".format(threads))
+        assert threads >= 1
+    except AttributeError:
+        print("⚠️ OpenMP not detected or extension built without OpenMP — skipping test")
+
 
 if __name__ == "__main__":
+    test_openmp_enabled()
     test_similarity_topk()
     test_similarity_full()
     test_readme_code()

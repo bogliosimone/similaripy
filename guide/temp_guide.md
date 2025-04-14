@@ -26,6 +26,8 @@ _Note_: this filter could slow down the computation.
 
 **_format_output_** : output format for the model matrix, support values are *coo* and *csr* (default *[format_output='coo']*)
 
+**_num_threads_** : number of threads to be used in the computation (default *[num_threads=0]* use all the available cores)
+
 *Note: on Windows the format_output value 'csr' is not currently supported, just use the default value 'coo'*
 
 ### Similarity Algorithms
