@@ -1,12 +1,60 @@
 # 📘 Similaripy - Guide
 
-This is the documentation for using Similaripy.
+Welcome to the official **SimilariPy** documentation, a high-performance library for sparse KNN similarity models in Python.
 
----
+## 📌 Getting Started
 
-## ⚙️ Common Parameters
+Here’s a minimal example to get you up and running with SimilariPy:
 
-All similarity functions in Similaripy accept the following parameters:
+
+```python
+import similaripy as sim
+import scipy.sparse as sps
+
+# Create a random User-Rating Matrix (URM)
+urm = sps.random(1000, 2000, density=0.025)
+
+# Normalize the URM using BM25
+urm = sim.normalization.bm25(urm)
+
+# Train an item-item cosine similarity model
+model = sim.cosine(urm.T, k=50)
+
+# Compute recommendations for user 1, 14, 8 
+# filtering out already-seen items
+recommendations = sim.dot_product(
+    urm,
+    similarity_matrix.T,
+    k=100,
+    target_rows=[1, 14, 8],
+    filter_cols=urm
+)
+```
+Tips:
+- `urm.T` is used to switch from user-item to item-user when training the similarity model.
+- You can use `bm25plus`, `tfidf`, or `normalize` for different pre-processing strategies.
+- All operations are multithreaded and scale with available CPU cores.
+
+
+## 🔍 Similarity Functions
+
+SimilariPy provides a suite of similarity functions, all implemented in Cython and parallelized with OpenMP. These models compute item-to-item or user-to-user similarity based on vector math or graph-based transformations.
+
+| Function           | Description |
+|--------------------|-------------|
+| `dot_product()`    | Basic dot product between rows of the input matrix. |
+| `cosine()`         | Cosine similarity with optional shrinkage. Normalized using `l2`. |
+| `asymmetric_cosine(alpha=0.5)` | Asymmetric variant of cosine similarity, where alpha controls the weighting between vectors. |
+| `tversky(alpha=1.0, beta=1.0)` | Tversky similarity, a generalization of Jaccard and Dice. |
+| `jaccard()`        | Set-based similarity defined as the intersection over union. |
+| `dice()`           | Harmonic mean of two vectors' lengths, useful for binary inputs. |
+| `p3alpha(alpha=1.0)` | Graph-based similarity computed as normalized matrix multiplication with alpha exponentiation. |
+| `rp3beta(alpha=1.0, beta=1.0)` | P3alpha variant that penalizes popular items with a `beta` exponent. |
+| `s_plus(l=0.5, t1=1.0, t2=1.0, c=0.5)` | Hybrid model combining Tversky and Cosine with tunable weights. |
+
+### ⚙️ Common Parameters
+
+All similarity functions in Similaripy share the following parameters:
 
 | Parameter        | Description |
 |------------------|-------------|
@@ -23,11 +71,8 @@ All similarity functions in Similaripy accept the following parameters:
 | `format_output`  | Output format: `'coo'` or `'csr'`. *(default: `'coo'`)*<br/>*Note: `'csr'` not currently supported on Windows.* |
 | `num_threads`    | Number of threads to use. `0` means use all available cores. *(default: `0`)* |
 
----
 
-## 📈 Similarity Metrics
-
-### 🔹 Core
+### 📈 Similarity Functions Math
 
 #### Dot Product
 
@@ -57,10 +102,6 @@ All similarity functions in Similaripy accept the following parameters:
 
 - **`α`**, **`β`**: Tversky coefficients ∈ [0, 1]
 
----
-
-### 🔸 Graph-Based
-
 #### P3α
 
 - **`α`**: P3α coefficient ∈ [0, 1]
@@ -70,10 +111,6 @@ All similarity functions in Similaripy accept the following parameters:
 - **`α`**: P3α coefficient ∈ [0, 1]  
 - **`β`**: Popularity penalization coefficient ∈ [0, 1]
 
----
-
-### 🧪 Hybrid
-
 #### S-Plus
 
 ![splus](https://latex.codecogs.com/svg.latex?&space;s_{xy}=\frac{xy}{l(t_1(|x|-xy)+t_2(|y|-xy)+xy)+(1-l)(\sum{x_{i}^{2}})^{c}(\sum{y_{i}^{2}})^{1-c}+h})
@@ -82,33 +119,57 @@ All similarity functions in Similaripy accept the following parameters:
 - **`t1`**, **`t2`**: Tversky coefficients ∈ [0, 1]  
 - **`c`**: Cosine weighting exponent ∈ [0, 1]
 
----
-
-## ⚡ Performance Notes
+### 📝 Notes
 
 - All similarity functions are implemented in **Cython + OpenMP** for maximum speed
 - Computations are fully **multi-threaded** and scale with CPU cores
 - Supports **CSR** and **COO** sparse matrix formats
-- Can operate in-place to reduce memory overhead
+- ⚠️ **Windows**: use `format_output='coo'` (CSR output is not supported on Windows due to a platform limitation)
 
-**Windows note**: use `format_output='coo'` (CSR output is not supported on Windows due to a platform limitation)
+## 🔍 Normalization Functions
 
----
+SimilariPy includes several normalization functions designed for sparse matrix pre-processing. All functions are implemented in Cython and support in-place operation for memory efficiency.
 
-## 📌 Example Usage
+| Function        | Description |
+|-----------------|-------------|
+| `normalize(X, norm='l2')` | Standard row or column-wise normalization. Supports `'l1'`, `'l2'`, and `'max'`. |
+| `tfidf(X, tf_mode='sqrt', idf_mode='smooth')` | TF-IDF weighting with customizable term-frequency and inverse-document-frequency modes. |
+| `bm25(X, k1=1.2, b=0.75)` | BM25 weighting, a standard IR normalization used for relevance scoring. |
+| `bm25plus(X, k1=1.2, b=0.75, delta=1.0)` | BM25+ variant with an additional smoothing delta parameter. |
 
-```python
-import similaripy as sim
-import scipy.sparse as sps
+### ⚙️ Common Parameters
 
-# Create a random user-rating matrix
-urm = sps.random(1000, 2000, density=0.025)
+All normalization functions in SimilariPy share the following parameters:
 
-# Normalize with BM25
-urm = sim.normalization.bm25(urm)
+| Parameter     | Description |
+|---------------|-------------|
+| `axis`        | `1` for row-wise (default), `0` for column-wise normalization |
+| `logbase`     | Base of the logarithm (e.g. `e`, `2`) |
+| `inplace`     | If `True`, modifies the input matrix in-place |
+| `tf_mode`     | Term frequency transformation mode for TF-IDF and BM25 (see TF table) |
+| `idf_mode`    | Inverse document frequency mode for TF-IDF and BM25 (see IDF table) |
 
-# Fit cosine similarity model
-model = sim.cosine(urm.T, k=50)
+### 🔸 TF Modes
 
-# Recommend 100 items for users 1, 14, and 8
-recommendations = sim.dot_product(urm, model.T, k=100, target_rows=[1, 14, 8], filter_cols=urm)
+| Mode     | Description |
+|----------|-------------|
+| `'binary'` | 1 if non-zero |
+| `'raw'`    | Raw frequency |
+| `'sqrt'`   | √(raw frequency) |
+| `'freq'`   | Row-normalized frequency |
+| `'log'`    | log(1 + frequency) |
+
+### 🔸 IDF Modes
+
+| Mode     | Description |
+|----------|-------------|
+| `'unary'`  | No IDF applied |
+| `'base'`   | log(N / df) |
+| `'smooth'` | log(1 + N / df) |
+| `'prob'`   | log((N - df) / df) |
+| `'bm25'`   | BM25-style IDF weighting |
+
+### 📝 Notes
+
+- All normalizations can operate in-place on **CSR** format to reduce memory overhead.
+- `bm25` and `tfidf` are ideal for text, user-item, or interaction data.

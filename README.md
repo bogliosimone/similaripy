@@ -12,29 +12,29 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.2583851.svg)](https://doi.org/10.5281/zenodo.2583851)
 
 
-Similaripy provides high-performance KNN (K-Nearest Neighbors) similarity functions in Python, optimized for sparse matrices. 
+High-performance KNN similarity functions in Python, optimized for sparse matrices.
 
-It's primarily designed for Recommender Systems and IR tasks, but can be applied to other domains as well.
+SimilariPy is primarily designed for Recommender Systems and Information Retrieval (IR) tasks, but can be applied to other domains as well.
 
 The package also includes a set of normalization functions useful for pre-processing data before the similarity computation.
 
-## Similarities
+## Similarity Functions
 
-**Base similarity models:**
+**Core similarities:**
 
 - Dot Product
 - Cosine and Asymmetric Cosine
 - Tversky, Jaccard, and Dice
 
-**Graph-based similarity models:**
+**Graph-based similarities:**
 
 - P3&alpha; and RP3&beta;
 
-**Advanced similarity model:**
+**Advanced similarities:**
 
 - S-Plus
 
-For additional details about parameters and mathematical formulas, check the [📘 Similarity Guide](docs/guide.md).
+For additional details about parameters and mathematical formulas, check the **[📘 Similarity Guide](docs/guide.md)**.
 
 ## Normalizations
 
@@ -46,7 +46,6 @@ For *tf-idf*, *bm25*, and *bm25+*, you can chose how the *log base*, the *term f
 
 All functions are compiled and optimized to operate in-place on CSR matrices for memory efficiency.
 
----
 
 ## 🚀 Usage Example
 
@@ -74,14 +73,6 @@ SimilariPy can be installed from PyPI with:
 ```cmd
 pip install similaripy
 ```
-
-### Requirements
-
-| Package                         | Version        |
-| --------------------------------|:--------------:|
-| numpy                           |   >= 1.21      |
-| scipy                           |   >= 1.10.1    |
-| tqdm                            |   >= 4.65.2    |
 
 ### 🔧 GCC Compiler - Required
 
@@ -112,12 +103,20 @@ Install the official **[Visual C++ Build Tools](https://visualstudio.microsoft.c
 ⚠️ On Windows, set *format_output='coo'* (default) in all similarity functions, as *'csr'* is currently not supported.
 
 
-#### 🧠 Optional Optimization: Intel MKL for Intel CPUs
+#### Optional Optimization: Intel MKL for Intel CPUs
 
 For Intel CPUs, using SciPy/Numpy with MKL (Math Kernel Library) is highly recommended for best performance.
 The easiest way to achieve this is to install them via Anaconda.
 
-## History
+## 📦 Requirements
+
+| Package                         | Version        |
+| --------------------------------|:--------------:|
+| numpy                           |   >= 1.21      |
+| scipy                           |   >= 1.10.1    |
+| tqdm                            |   >= 4.65.2    |
+
+## 📜 History
 
 This library originated during the **[Spotify Recsys Challenge 2018](https://research.atspotify.com/publications/recsys-challenge-2018-automatic-music-playlist-continuation/)**.
 
@@ -125,13 +124,13 @@ Our team, The Creamy Fireflies, faced major challenges computing large similarit
 
 To overcome this, I developed high-performance versions of the core similarity functions in Cython and OpenMP. Encouraged by my teammates, I open-sourced this work to help others solve similar challenges.
 
-🙏 Thanks to my Creamy Fireflies friends for their support!
+Thanks to my Creamy Fireflies friends for the support! 🙏 
 
-## License
+## 📄 License
 
 This project is released under the MIT License.
 
-## Citation
+## 🔖 Citation
 
 If you use SimilariPy in your research, please cite:
 
