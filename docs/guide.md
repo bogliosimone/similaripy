@@ -43,12 +43,12 @@ SimilariPy provides a suite of similarity functions, all implemented in Cython a
 | Function           | Description |
 |--------------------|-------------|
 | `dot_product()`    | Basic dot product between rows of the input matrix. |
-| `cosine()`         | Cosine similarity with optional shrinkage. Normalized using `l2`. |
-| `asymmetric_cosine(alpha=0.5)` | Asymmetric variant of cosine similarity, where alpha controls the weighting between vectors. |
-| `tversky(alpha=1.0, beta=1.0)` | Tversky similarity, a generalization of Jaccard and Dice. |
+| `cosine()`         | Cosine similarity with optional shrinkage. |
+| `asymmetric_cosine(alpha=0.5)` | Asymmetric variant of cosine similarity, where `alpha` controls the weighting between vectors. |
 | `jaccard()`        | Set-based similarity defined as the intersection over union. |
-| `dice()`           | Harmonic mean of two vectors' lengths, useful for binary inputs. |
-| `p3alpha(alpha=1.0)` | Graph-based similarity computed as normalized matrix multiplication with alpha exponentiation. |
+| `dice()`           | Harmonic mean of two vectors' lengths. |
+| `tversky(alpha=1.0, beta=1.0)` | Tversky similarity, a generalization of Jaccard and Dice. |
+| `p3alpha(alpha=1.0)` | Graph-based similarity computed as normalized matrix multiplication with `alpha` exponentiation. |
 | `rp3beta(alpha=1.0, beta=1.0)` | P3alpha variant that penalizes popular items with a `beta` exponent. |
 | `s_plus(l=0.5, t1=1.0, t2=1.0, c=0.5)` | Hybrid model combining Tversky and Cosine with tunable weights. |
 
@@ -65,8 +65,8 @@ All similarity functions in Similaripy share the following parameters:
 | `threshold`      | Minimum similarity value to retain. Values below are set to zero. *(default: `0`)* |
 | `binary`         | If `True`, binarizes the input matrix. *(default: `False`)* |
 | `target_rows`    | List or array of row indices to compute. If `None`, computes for all rows. *(default: `None`)* |
-| `target_cols`    | Subset of columns to consider **before** applying top-k. Can be a list (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
-| `filter_cols`    | Subset of columns to filter **before** applying top-k. Can be a list (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
+| `target_cols`    | Subset of columns to consider **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
+| `filter_cols`    | Subset of columns to filter **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
 | `verbose`        | If `True`, shows a progress bar. *(default: `True`)* |
 | `format_output`  | Output format: `'coo'` or `'csr'`. *(default: `'coo'`)*<br/>*Note: `'csr'` not currently supported on Windows.* |
 | `num_threads`    | Number of threads to use. `0` means use all available cores. *(default: `0`)* |
@@ -121,10 +121,10 @@ All similarity functions in Similaripy share the following parameters:
 
 ### 📝 Notes
 
-- All similarity functions are implemented in **Cython + OpenMP** for maximum speed
-- Computations are fully **multi-threaded** and scale with CPU cores
+- All similarity functions are implemented in **Cython + OpenMP** for high-performance computation.
+- Computations are fully **multi-threaded** and scale with CPU cores,
 - Supports **CSR** and **COO** sparse matrix formats
-- ⚠️ **Windows**: use `format_output='coo'` (CSR output is not supported on Windows due to a platform limitation)
+- ⚠️ **Windows**: use `format_output='coo'` (CSR output is not supported on Windows due to a platform issue).
 
 ## 🧮 Normalization Functions
 
@@ -135,7 +135,7 @@ SimilariPy includes several normalization functions designed for sparse matrix p
 | `normalize(X, norm='l2')` | Standard row or column-wise normalization. Supports `'l1'`, `'l2'`, and `'max'`. |
 | `tfidf(X, tf_mode='sqrt', idf_mode='smooth')` | TF-IDF weighting with customizable term-frequency and inverse-document-frequency modes. |
 | `bm25(X, k1=1.2, b=0.75)` | BM25 weighting, a standard IR normalization used for relevance scoring. |
-| `bm25plus(X, k1=1.2, b=0.75, delta=1.0)` | BM25+ variant with an additional smoothing delta parameter. |
+| `bm25plus(X, k1=1.2, b=0.75, delta=1.0)` | BM25+ variant with an additional smoothing `delta` parameter. |
 
 ### ⚙️ Common Parameters
 
