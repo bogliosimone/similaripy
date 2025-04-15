@@ -18,7 +18,7 @@ urm = sps.random(1000, 2000, density=0.025)
 urm = sim.normalization.bm25(urm)
 
 # Train an item-item cosine similarity model
-model = sim.cosine(urm.T, k=50)
+similarity_matrix = sim.cosine(urm.T, k=50)
 
 # Compute recommendations for user 1, 14, 8 
 # filtering out already-seen items
@@ -72,33 +72,33 @@ All similarity functions in Similaripy share the following parameters:
 | `num_threads`    | Number of threads to use. `0` means use all available cores. *(default: `0`)* |
 
 
-### 📈 Similarity Functions Math
+### 📈 Similarity Math
 
 #### Dot Product
 
-![dot](https://latex.codecogs.com/svg.latex?&space;s_{xy}%20=%20x%20\cdot%20y)
+![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}%20=%20{x\cdot%20y})
 
 #### Cosine
 
-![cosine](https://latex.codecogs.com/svg.latex?&space;s_{xy}=\frac{xy}{\|x\|\|y\|+h})
+![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\left%20\||%20x%20|\right%20\|\left%20\||%20y%20|\right%20\|+h})
 
 #### Asymmetric Cosine
 
-![asymcos](https://latex.codecogs.com/svg.latex?&space;s_{xy}=\frac{xy}{\left(\sum{x_{i}^{2}}\right)^{\alpha}\left(\sum{y_{i}^{2}}\right)^{1-\alpha}+h})
+![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}%20=%20\frac{xy}{(\sum%20x_{i}^{2})^{\alpha%20}(\sum%20y_{i}^{2})^{1-\alpha}+h})
 
 - **`α`**: Asymmetry coefficient ∈ [0, 1]
 
 #### Jaccard
 
-![jaccard](https://latex.codecogs.com/svg.latex?&space;s_{xy}=\frac{xy}{|x|+|y|-xy+h})
+![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\left|x\right|+\left|y\right|-xy+h})
 
 #### Dice
 
-![dice](https://latex.codecogs.com/svg.latex?&space;s_{xy}=\frac{2xy}{|x|+|y|+h})
+ ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\frac{1}{2}\left|x\right|+\frac{1}{2}\left|y\right|-xy+h})
 
 #### Tversky
 
-![tversky](https://latex.codecogs.com/svg.latex?&space;s_{xy}=\frac{xy}{\alpha(|x|-xy)+\beta(|y|-xy)+xy+h})
+![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\alpha(\left|x\right|-xy)+\beta(\left|y\right|-xy)+xy+h})
 
 - **`α`**, **`β`**: Tversky coefficients ∈ [0, 1]
 
@@ -113,7 +113,7 @@ All similarity functions in Similaripy share the following parameters:
 
 #### S-Plus
 
-![splus](https://latex.codecogs.com/svg.latex?&space;s_{xy}=\frac{xy}{l(t_1(|x|-xy)+t_2(|y|-xy)+xy)+(1-l)(\sum{x_{i}^{2}})^{c}(\sum{y_{i}^{2}})^{1-c}+h})
+![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{l(t_{1}(\left|x\right|-xy)+t_{2}(\left|y\right|-xy)+xy)+(1-l)(\sum%20x_{i}^{2})^{c}(\sum%20y_{i}^{2})^{1-c}+h})
 
 - **`l`**: Balance between Tversky and Cosine parts ∈ [0, 1]  
 - **`t1`**, **`t2`**: Tversky coefficients ∈ [0, 1]  

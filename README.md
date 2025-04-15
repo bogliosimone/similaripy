@@ -39,7 +39,7 @@ All functions are multi-threaded and implemented in Cython + OpenMP for fast par
 
 - **S-Plus** – A hybrid model combining Tversky and Cosine components, with full control over weights and smoothing.
 
-📘 For mathematical definitions, formulas, and parameter details, see the **[📘 SimilariPy Guide](docs/guide.md)**.
+For mathematical definitions and parameter details, see the **[📘 SimilariPy Guide](docs/guide.md)**.
 
 ## 🧮 Normalization Functions
 
@@ -56,21 +56,30 @@ For more details, check the **[📘 SimilariPy Guide](docs/guide.md)**.
 
 ## 🚀 Usage Example
 
+Here’s a minimal example to get you up and running with SimilariPy:
+
 ```python
 import similaripy as sim
 import scipy.sparse as sps
 
-# Create a random user-rating matrix (URM)
+# Create a random User-Rating Matrix (URM)
 urm = sps.random(1000, 2000, density=0.025)
 
-# Normalize matrix with BM25
+# Normalize the URM using BM25
 urm = sim.normalization.bm25(urm)
 
-# Train the model with 50 nearest neighbors per item 
-model = sim.cosine(urm.T, k=50)
+# Train an item-item cosine similarity model
+similarity_matrix = sim.cosine(urm.T, k=50)
 
-# Recommend 100 items to users 1, 14, and 8, filtering already seen items
-user_recommendations = sim.dot_product(urm, model.T, k=100, target_rows=[1, 14, 8], filter_cols=urm)
+# Compute recommendations for user 1, 14, 8 
+# filtering out already-seen items
+recommendations = sim.dot_product(
+    urm,
+    similarity_matrix.T,
+    k=100,
+    target_rows=[1, 14, 8],
+    filter_cols=urm
+)
 ```
 
 ## 📦 Installation
