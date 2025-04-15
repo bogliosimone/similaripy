@@ -26,21 +26,18 @@
 */.ipynb_checkpoints/*
 
 ### VisualStudioCode ###
-.vscode/*
+.vscode/
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+*.code-workspace
 
 ### Private Folder ###
 /private/
 
 ### cache
 .cache/
-
-### vscode
-.vscode/
-*.code-workspace
 
 ### uv
 *.lock

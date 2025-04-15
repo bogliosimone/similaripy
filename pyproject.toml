@@ -15,7 +15,10 @@ classifiers = [
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
-  "Operating System :: OS Independent",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX",
+  "Operating System :: Unix",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
@@ -39,6 +42,7 @@ build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
+sdist.reproducible = false
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["similaripy"]
 build.verbose = true
