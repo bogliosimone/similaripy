@@ -18,33 +18,40 @@ SimilariPy is primarily designed for Recommender Systems and Information Retriev
 
 The package also includes a set of normalization functions useful for pre-processing data before the similarity computation.
 
-## Similarity Functions
+## 🔍 Similarity Functions
 
-**Core similarities:**
+SimilariPy provides a range of high-performance similarity functions for sparse matrices.  
+All functions are multi-threaded and implemented in Cython + OpenMP for fast parallel computation.
 
-- Dot Product
-- Cosine and Asymmetric Cosine
-- Tversky, Jaccard, and Dice
+### Core 
 
-**Graph-based similarities:**
+- **Dot Product** – Fast unnormalized similarity between row vectors.
+- **Cosine** – Normalized dot product based on L2 norm.
+- **Asymmetric Cosine** – Skewed cosine similarity using an `alpha` parameter.
+- **Jaccard**, **Dice**, **Tversky** – Set-based similarities suitable for binary data.
 
-- P3&alpha; and RP3&beta;
+### Graph-Based
 
-**Advanced similarities:**
+- **P3α** – Graph-based similarity computed through random walk propagation with exponentiation.
+- **RP3β** – Similar to P3α but includes popularity penalization using a `beta` parameter.
 
-- S-Plus
+### Advanced 
 
-For additional details about parameters and mathematical formulas, check the **[📘 Similarity Guide](docs/guide.md)**.
+- **S-Plus** – A hybrid model combining Tversky and Cosine components, with full control over weights and smoothing.
 
-## Normalizations
+📘 For mathematical definitions, formulas, and parameter details, see the **[📘 SimilariPy Guide](docs/guide.md)**.
 
-The package includes normalization methods such as:
+## 🧮 Normalization Functions
 
-- **L1**, **L2**, **max**, **tf-idf**, **bm25**, **bm25+**
+SimilariPy provides a suite of normalization functions for sparse matrix pre-processing.  
+All functions are implemented in Cython and support in-place execution for maximum performance and memory efficiency.
 
-For *tf-idf*, *bm25*, and *bm25+*, you can chose how the *log base*, the *term frequency* (TF) and the *inverse document frequency* (IDF) are computed.
+- **L1, L2** – Applies row- or column-wise normalization.
+- **TF-IDF** – Computes TF-IDF weighting with customizable term-frequency and IDF modes.
+- **BM25** – Applies classic BM25 weighting used in information retrieval.
+- **BM25+** – Variant of BM25 with additive smoothing for low-frequency terms.
 
-All functions are compiled and optimized to operate in-place on CSR matrices for memory efficiency.
+For more details, check the **[📘 SimilariPy Guide](docs/guide.md)**.
 
 
 ## 🚀 Usage Example
@@ -75,8 +82,6 @@ pip install similaripy
 ```
 
 ### 🔧 GCC Compiler - Required
-
-All similarities are multi-threaded using Cython and OpenMP for fast parallel computation across CPU cores.
 
 To install the package and compile the Cython code, a GCC-compatible compiler with OpenMP is required.
 

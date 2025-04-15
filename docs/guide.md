@@ -126,7 +126,7 @@ All similarity functions in Similaripy share the following parameters:
 - Supports **CSR** and **COO** sparse matrix formats
 - ⚠️ **Windows**: use `format_output='coo'` (CSR output is not supported on Windows due to a platform limitation)
 
-## 🔍 Normalization Functions
+## 🧮 Normalization Functions
 
 SimilariPy includes several normalization functions designed for sparse matrix pre-processing. All functions are implemented in Cython and support in-place operation for memory efficiency.
 
