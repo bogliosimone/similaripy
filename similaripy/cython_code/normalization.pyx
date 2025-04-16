@@ -1,11 +1,6 @@
-"""
-    author: Simone Boglio
-    mail: bogliosimone@gmail.com
-"""
-
-#!python
-#distutils: language = c++
-#cython: boundscheck=False, wraparound=False, cdivision=True
+# cython: language_level=3
+# cython: language=c++
+# cython: boundscheck=False, wraparound=False, cdivision=True
 
 from libc.math cimport fabs, sqrt, log
 from libc.math cimport M_E  # base of natural logarithm

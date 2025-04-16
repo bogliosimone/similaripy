@@ -1,134 +1,152 @@
-<p align="center"><img src="https://raw.githubusercontent.com/bogliosimone/similaripy/master/logo.png" alt="similaripy" width="350"/></p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/bogliosimone/similaripy/master/logo.png" alt="similaripy" width="350"/>
+</p>
 
 # SimilariPy
 
-![PY_PIC]
-[![PYPI_PIC]][PYPI_LINK]
-[![BUILD_STATUS_PIC]][BUILD_STATUS_LINK]
-[![LICENSE_PIC]][LICENSE_LINK]
-[![DOI_PIC]][DOI_LINK]
+[![PyPI version](https://img.shields.io/pypi/v/similaripy.svg?logo=pypi&logoColor=white)](https://pypi.org/project/similaripy/)
+[![Build and Test](https://github.com/bogliosimone/similaripy/actions/workflows/python-package.yml/badge.svg)](https://github.com/bogliosimone/similaripy/actions/workflows/python-package.yml)
+[![Publish to PyPI](https://github.com/bogliosimone/similaripy/actions/workflows/pypi-publish.yml/badge.svg)](https://github.com/bogliosimone/similaripy/actions/workflows/pypi-publish.yml)
+[![Python versions](https://img.shields.io/pypi/pyversions/similaripy.svg?logo=python&logoColor=white)](https://pypi.org/project/similaripy/)
+[![License](https://img.shields.io/github/license/bogliosimone/similaripy.svg)](https://github.com/bogliosimone/similaripy/blob/master/LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.2583851.svg)](https://doi.org/10.5281/zenodo.2583851)
 
-This project provides fast Python implementation of several KNN (K-Nearest Neighbors) similarity algorithms using sparse matrices, useful in Collaborative Filtering Recommender Systems and others.
 
-The package also include some normalization functions that could be useful in the pre-processing phase before the similarity computation.
+High-performance KNN similarity functions in Python, optimized for sparse matrices.
 
-## Similarities
+SimilariPy is primarily designed for Recommender Systems and Information Retrieval (IR) tasks, but can be applied to other domains as well.
 
-Base similarity models:
+The package also includes a set of normalization functions useful for pre-processing data before the similarity computation.
 
-* Dot Product
-* Cosine and Asymmetric Cosine
-* Tversky, Jaccard and Dice
+## 🔍 Similarity Functions
 
- Graph-based similarity models:
+SimilariPy provides a range of high-performance similarity functions for sparse matrices.  
+All functions are multi-threaded and implemented in Cython + OpenMP for fast parallel computation on CSR matrixes.
 
-* P3&alpha; and RP3&beta;
+### Core 
 
- Advanced similarity model:
+- **Dot Product** – Simple raw inner product between vectors.
+- **Cosine** – Normalized dot product based on L2 norm.
+- **Asymmetric Cosine** – Skewed cosine similarity using an `alpha` parameter.
+- **Jaccard**, **Dice**, **Tversky** – Set-based generalized similarities.
 
-* S-Plus
+### Graph-Based
 
-For additional information see the [similarities documentation](https://github.com/bogliosimone/similaripy/blob/master/guide/temp_guide.md).
+- **P3α** – Graph-based similarity computed through random walk propagation with exponentiation.
+- **RP3β** – Similar to P3α but includes popularity penalization using a `beta` parameter.
 
-All the models have multi-threaded routines, using Cython and OpenMP to fit the models in parallel among all available CPU cores.
+### Advanced 
 
-## Normalizations
+- **S-Plus** – A hybrid model combining Tversky and Cosine components, with full control over weights and smoothing.
 
-The package contains normalization functions like: l1, l2, max, tf-idf, bm25, bm25+.
+For mathematical definitions and parameter details, see the **[📘 SimilariPy Guide](docs/guide.md)**.
 
-For tf-idf, bm25, bm25+ you could chose the log-base and how the term-frequency (TF) and the inverse document frequency (IDF) are computed.
+## 🧮 Normalization Functions
 
-All the functions are compiled at low-level and could operate in-place on csr-matrixes, if you need to save memory.
+SimilariPy provides a suite of normalization functions for sparse matrix pre-processing.  
+All functions are implemented in Cython and support in-place execution for maximum performance and memory efficiency.
 
-## Usage
+- **L1, L2** – Applies row- or column-wise normalization.
+- **TF-IDF** – Computes TF-IDF weighting with customizable term-frequency and IDF modes.
+- **BM25** – Applies classic BM25 weighting used in information retrieval.
+- **BM25+** – Variant of BM25 with additive smoothing for low-frequency terms.
+
+For more details, check the **[📘 SimilariPy Guide](docs/guide.md)**.
+
+
+## 🚀 Usage Example
+
+Here’s a minimal example to get you up and running with SimilariPy:
 
 ```python
 import similaripy as sim
 import scipy.sparse as sps
 
-# create a random user-rating matrix (URM)
+# Create a random User-Rating Matrix (URM)
 urm = sps.random(1000, 2000, density=0.025)
 
-# normalize matrix with bm25
+# Normalize the URM using BM25
 urm = sim.normalization.bm25(urm)
 
-# train the model with 50 knn per item 
-model = sim.cosine(urm.T, k=50)
+# Train an item-item cosine similarity model
+similarity_matrix = sim.cosine(urm.T, k=50)
 
-# recommend 100 items to users 1, 14 and 8 filtering the items already seen by each users
-user_recommendations = sim.dot_product(urm, model.T, k=100, target_rows=[1,14,8], filter_cols=urm)
-
+# Compute recommendations for user 1, 14, 8 
+# filtering out already-seen items
+recommendations = sim.dot_product(
+    urm,
+    similarity_matrix.T,
+    k=100,
+    target_rows=[1, 14, 8],
+    filter_cols=urm
+)
 ```
 
-## Installation
+## 📦 Installation
 
-Similaripy can be installed from PyPI with:
+SimilariPy can be installed from PyPI with:
 
 ```cmd
 pip install similaripy
 ```
 
-### Requirements
+### 🔧 GCC Compiler - Required
 
-| Package                         | Version        |
-| --------------------------------|:--------------:|
-| numpy                           |   >= 1.14      |
-| scipy                           |   >= 1.0.0     |
-| tqdm                            |   >= 4.19.6    |
-| cython                          |   >= 0.28.1    |
-
-### GCC compiler
-
-In order to compile the Cython code it is required a GCC compiler with OpenMP.
-
-To install it you can follow the next steps according to your OS.
+To install the package and compile the Cython code, a GCC-compatible compiler with OpenMP is required.
 
 #### Ubuntu / Debian
 
-It can be installed with the dev-tools:
+Install the official dev-tools:
 
-```cmd
+```bash
 sudo apt update && sudo apt install build-essential
 ```
 
-#### MacOS
+#### MacOS (Intel & Apple Silicon)
 
-It can be installed with homebrew:
+Install GCC with homebrew:
 
-```cmd
+```bash
 brew install gcc
 ```
 
-NOTE: the package works on both Intel and Apple Silicon chips.
-
 #### Windows
 
-It can be installed with the Visual C++ Build Tools.
+Install the official **[Visual C++ Build Tools](https://visualstudio.microsoft.com/en/visual-cpp-build-tools/)**.
 
-They can be downloaded directly from Microsoft: **https://visualstudio.microsoft.com/en/visual-cpp-build-tools/**.
+⚠️ On Windows, use the default *format_output='coo'* in all similarity functions, as *'csr'* is currently not supported.
 
-NOTE: on Windows there are issues with the flag *format_output='csr'*, just leave it set to the default value *'coo'*.
 
-#### Optimal Configuration for Intel CPUs
+#### Optional Optimization: Intel MKL for Intel CPUs
 
-I recommend configuring SciPy/Numpy to use Intel's MKL matrix libraries.
-The easiest way of doing this is by installing the Anaconda Python distribution.
+For Intel CPUs, using SciPy/Numpy with MKL (Math Kernel Library) is highly recommended for best performance.
+The easiest way to achieve this is to install them via Anaconda.
 
-## History
+## 📦 Requirements
 
-The idea of build this library comes from the **[RecSys Challenge 2018](https://recsys-challenge.spotify.com)** organized by Spotify.
+| Package                         | Version        |
+| --------------------------------|:--------------:|
+| numpy                           |   >= 1.21      |
+| scipy                           |   >= 1.10.1    |
+| tqdm                            |   >= 4.65.2    |
 
-My team, the Creamy Fireflies, had problems in computing huge similarity models in a reasonable time (66 million interactions in the user-rating matrix), and the use of Python and Numpy was not suitable as a full day was required to compute one single model.
+## 📜 History
 
-As a member of the team, I have spent a lot of time developing these high-performance similarities in Cython to overcome this issue. At the end of the competition, pushed by my teammates, I decided to release my job to help people who will one day face the same problem.
+This library originated during the **[Spotify Recsys Challenge 2018](https://research.atspotify.com/publications/recsys-challenge-2018-automatic-music-playlist-continuation/)**.
 
-Thanks to my Creamy Fireflies friends for supporting me.
+Our team, The Creamy Fireflies, faced major challenges computing large similarity models on a dataset with over 66 million interactions. Standard Python/Numpy solutions were too slow as a whole day was required to compute one single model.
 
-## License
+To overcome this, I developed high-performance versions of the core similarity functions in Cython and OpenMP. Encouraged by my teammates, I open-sourced this work to help others solve similar challenges.
 
-Released under the MIT License
+Thanks to my Creamy Fireflies friends for the support! 🙏 
 
-Citation information: [![DOI_PIC]][DOI_LINK]
+## 📄 License
+
+This project is released under the MIT License.
+
+## 🔖 Citation
+
+If you use SimilariPy in your research, please cite:
 
 ```text
 @misc{boglio_simone_similaripy,
@@ -138,13 +156,3 @@ Citation information: [![DOI_PIC]][DOI_LINK]
   url          = {https://doi.org/10.5281/zenodo.2583851}
 }
 ```
-
-[DOI_PIC]: https://zenodo.org/badge/DOI/10.5281/zenodo.2583851.svg
-[DOI_LINK]: https://doi.org/10.5281/zenodo.2583851
-[LICENSE_PIC]: https://img.shields.io/github/license/bogliosimone/similaripy.svg
-[LICENSE_LINK]: https://github.com/bogliosimone/similaripy/blob/master/LICENSE
-[PYPI_PIC]: https://img.shields.io/pypi/v/similaripy.svg
-[PYPI_LINK]: https://pypi.org/project/similaripy/
-[PY_PIC]: https://img.shields.io/pypi/pyversions/similaripy.svg
-[BUILD_STATUS_PIC]: https://github.com/bogliosimone/similaripy/workflows/Python%20package/badge.svg?branch=master
-[BUILD_STATUS_LINK]: https://github.com/bogliosimone/similaripy/actions?query=workflow%3A%22Python+package%22

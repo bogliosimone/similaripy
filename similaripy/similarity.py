@@ -12,6 +12,7 @@ _BINARY = False
 _TARGET_ROWS = None # compute all rows
 _TARGET_COLS = None # compute all cols
 _FILTER_COLS = None # do not filter cols
+_NUM_THREADS = 0 # use all threads
 _M2 = None
 
 
@@ -23,7 +24,8 @@ def dot_product(
     target_cols=_TARGET_COLS,
     filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
-    format_output=_FORMAT_OUTPUT
+    format_output=_FORMAT_OUTPUT,
+    num_threads=_NUM_THREADS
     ):
     return _sim.s_plus(
         matrix1, matrix2=matrix2,
@@ -33,7 +35,8 @@ def dot_product(
         target_cols=target_cols,
         filter_cols=filter_cols,
         verbose=verbose,
-        format_output=format_output) 
+        format_output=format_output,
+        num_threads=num_threads)
 
 
 def cosine(
@@ -44,7 +47,8 @@ def cosine(
     target_cols=_TARGET_COLS,
     filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
-    format_output=_FORMAT_OUTPUT
+    format_output=_FORMAT_OUTPUT,
+    num_threads=_NUM_THREADS
     ):
     return _sim.s_plus(
         matrix1, matrix2=matrix2,
@@ -56,7 +60,8 @@ def cosine(
         target_cols=target_cols,
         filter_cols=filter_cols,
         verbose=verbose,
-        format_output=format_output)
+        format_output=format_output,
+        num_threads=num_threads)
 
 
 def asymmetric_cosine(
@@ -68,7 +73,8 @@ def asymmetric_cosine(
     target_cols=_TARGET_COLS,
     filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
-    format_output=_FORMAT_OUTPUT
+    format_output=_FORMAT_OUTPUT,
+    num_threads=_NUM_THREADS
     ):
     return _sim.s_plus(
         matrix1, matrix2=matrix2,
@@ -80,7 +86,8 @@ def asymmetric_cosine(
         target_cols=target_cols,
         filter_cols=filter_cols,
         verbose=verbose,
-        format_output=format_output)
+        format_output=format_output,
+        num_threads=num_threads)
 
 
 def tversky(
@@ -92,7 +99,8 @@ def tversky(
     target_cols=_TARGET_COLS,
     filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
-    format_output=_FORMAT_OUTPUT
+    format_output=_FORMAT_OUTPUT,
+    num_threads=_NUM_THREADS
     ):
     return _sim.s_plus(
         matrix1, matrix2=matrix2,
@@ -104,7 +112,8 @@ def tversky(
         target_cols=target_cols,
         filter_cols=filter_cols,
         verbose=verbose,
-        format_output=format_output) 
+        format_output=format_output,
+        num_threads=num_threads) 
 
 
 def jaccard(
@@ -115,7 +124,8 @@ def jaccard(
     target_cols=_TARGET_COLS,
     filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
-    format_output=_FORMAT_OUTPUT
+    format_output=_FORMAT_OUTPUT,
+    num_threads=_NUM_THREADS
     ):
     return _sim.s_plus(
         matrix1, matrix2=matrix2,
@@ -127,7 +137,8 @@ def jaccard(
         target_cols=target_cols,
         filter_cols=filter_cols,
         verbose=verbose,
-        format_output=format_output) 
+        format_output=format_output,
+        num_threads=num_threads) 
 
 
 def dice(
@@ -138,7 +149,8 @@ def dice(
     target_cols=_TARGET_COLS,
     filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
-    format_output=_FORMAT_OUTPUT
+    format_output=_FORMAT_OUTPUT,
+    num_threads=_NUM_THREADS
     ):
     return _sim.s_plus(
         matrix1, matrix2=matrix2,
@@ -150,7 +162,8 @@ def dice(
         target_cols=target_cols,
         filter_cols=filter_cols,
         verbose=verbose,
-        format_output=format_output)
+        format_output=format_output,
+        num_threads=num_threads)
 
 
 def p3alpha(
@@ -162,7 +175,8 @@ def p3alpha(
     target_cols=_TARGET_COLS,
     filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
-    format_output=_FORMAT_OUTPUT
+    format_output=_FORMAT_OUTPUT,
+    num_threads=_NUM_THREADS
     ):
     if matrix2==_M2:
         matrix2=matrix1.T
@@ -178,7 +192,8 @@ def p3alpha(
         target_cols=target_cols,
         filter_cols=filter_cols,
         verbose=verbose,
-        format_output=format_output)
+        format_output=format_output,
+        num_threads=num_threads)
     return m
 
 
@@ -192,7 +207,8 @@ def rp3beta(
     target_cols=_TARGET_COLS,
     filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
-    format_output=_FORMAT_OUTPUT
+    format_output=_FORMAT_OUTPUT,
+    num_threads=_NUM_THREADS
     ):
     if matrix2==_M2:
         matrix2=matrix1.T
@@ -212,7 +228,8 @@ def rp3beta(
         target_cols=target_cols,
         filter_cols=filter_cols,
         verbose=verbose,
-        format_output=format_output)
+        format_output=format_output,
+        num_threads=num_threads)
     return m
 
 
@@ -227,7 +244,8 @@ def s_plus(
     target_cols=_TARGET_COLS,
     filter_cols=_FILTER_COLS,
     verbose=_VERBOSE,
-    format_output=_FORMAT_OUTPUT
+    format_output=_FORMAT_OUTPUT,
+    num_threads=_NUM_THREADS
     ):
     return _sim.s_plus(
         matrix1, matrix2=matrix2,
@@ -240,4 +258,5 @@ def s_plus(
         target_cols=target_cols,
         filter_cols=filter_cols,
         verbose=verbose,
-        format_output=format_output)
+        format_output=format_output,
+        num_threads=num_threads)
