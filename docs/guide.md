@@ -1,4 +1,4 @@
-# 📘 Similaripy - Guide
+# 📘 SimilariPy - Guide
 
 Welcome to the official **SimilariPy** documentation, a high-performance library for sparse KNN similarity models in Python.
 
@@ -38,11 +38,11 @@ Tips:
 
 ## 🔍 Similarity Functions
 
-SimilariPy provides a suite of similarity functions, all implemented in Cython and parallelized with OpenMP. These models compute item-to-item or user-to-user similarity based on vector math or graph-based transformations.
+SimilariPy provides a suite of similarity functions for sparse matrixes, all implemented in Cython and parallelized with OpenMP. These models compute item-to-item or user-to-user similarity based on vector math or graph-based transformations.
 
 | Function           | Description |
 |--------------------|-------------|
-| `dot_product()`    | Basic dot product between rows of the input matrix. |
+| `dot_product()`    | Basic dot product. |
 | `cosine()`         | Cosine similarity with optional shrinkage. |
 | `asymmetric_cosine(alpha=0.5)` | Asymmetric variant of cosine similarity, where `alpha` controls the weighting between vectors. |
 | `jaccard()`        | Set-based similarity defined as the intersection over union. |
@@ -71,8 +71,14 @@ All similarity functions in Similaripy share the following parameters:
 | `format_output`  | Output format: `'coo'` or `'csr'`. *(default: `'coo'`)*<br/>*Note: `'csr'` not currently supported on Windows.* |
 | `num_threads`    | Number of threads to use. `0` means use all available cores. *(default: `0`)* |
 
+### 📝 Notes
 
-### 📈 Similarity Math
+- All similarity functions are implemented in **Cython + OpenMP** for high-performance computation on CSR matrixes.
+- Computations are fully **multi-threaded** and scale with CPU cores.
+- Supports **CSR** and **COO** sparse matrix formats as output.
+- ⚠️ **Windows**: use `format_output='coo'` (CSR output is not supported on Windows due to a platform data type mismatch).
+
+### 📈 Math Equations
 
 #### Dot Product
 
@@ -119,13 +125,6 @@ All similarity functions in Similaripy share the following parameters:
 - **`t1`**, **`t2`**: Tversky coefficients ∈ [0, 1]  
 - **`c`**: Cosine weighting exponent ∈ [0, 1]
 
-### 📝 Notes
-
-- All similarity functions are implemented in **Cython + OpenMP** for high-performance computation.
-- Computations are fully **multi-threaded** and scale with CPU cores,
-- Supports **CSR** and **COO** sparse matrix formats
-- ⚠️ **Windows**: use `format_output='coo'` (CSR output is not supported on Windows due to a platform issue).
-
 ## 🧮 Normalization Functions
 
 SimilariPy includes several normalization functions designed for sparse matrix pre-processing. All functions are implemented in Cython and support in-place operation for memory efficiency.
@@ -143,11 +142,11 @@ All normalization functions in SimilariPy share the following parameters:
 
 | Parameter     | Description |
 |---------------|-------------|
-| `axis`        | `1` for row-wise (default), `0` for column-wise normalization |
-| `logbase`     | Base of the logarithm (e.g. `e`, `2`) |
-| `inplace`     | If `True`, modifies the input matrix in-place |
-| `tf_mode`     | Term frequency transformation mode for TF-IDF and BM25 (see TF table) |
-| `idf_mode`    | Inverse document frequency mode for TF-IDF and BM25 (see IDF table) |
+| `axis`        | `1` for row-wise (default), `0` for column-wise normalization. |
+| `inplace`     | If `True`, modifies the input matrix in-place. |
+| `logbase`     | Base of the logarithm (e.g. `e`, `2`) for TF-IDF and BM25. |
+| `tf_mode`     | Term frequency transformation mode for TF-IDF and BM25 (see TF table). |
+| `idf_mode`    | Inverse document frequency mode for TF-IDF and BM25 (see IDF table). |
 
 ### 🔸 TF Modes
 
@@ -171,5 +170,5 @@ All normalization functions in SimilariPy share the following parameters:
 
 ### 📝 Notes
 
-- All normalizations can operate in-place on **CSR** format to reduce memory overhead.
+- All normalization functions can operate in-place on **CSR** format to reduce memory overhead.
 - `bm25` and `tfidf` are ideal for text, user-item, or interaction data.

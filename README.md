@@ -21,14 +21,14 @@ The package also includes a set of normalization functions useful for pre-proces
 ## 🔍 Similarity Functions
 
 SimilariPy provides a range of high-performance similarity functions for sparse matrices.  
-All functions are multi-threaded and implemented in Cython + OpenMP for fast parallel computation.
+All functions are multi-threaded and implemented in Cython + OpenMP for fast parallel computation on CSR matrixes.
 
 ### Core 
 
-- **Dot Product** – Fast unnormalized similarity between row vectors.
+- **Dot Product** – Simple raw inner product between vectors.
 - **Cosine** – Normalized dot product based on L2 norm.
 - **Asymmetric Cosine** – Skewed cosine similarity using an `alpha` parameter.
-- **Jaccard**, **Dice**, **Tversky** – Set-based similarities suitable for binary data.
+- **Jaccard**, **Dice**, **Tversky** – Set-based generalized similarities.
 
 ### Graph-Based
 
@@ -114,7 +114,7 @@ brew install gcc
 
 Install the official **[Visual C++ Build Tools](https://visualstudio.microsoft.com/en/visual-cpp-build-tools/)**.
 
-⚠️ On Windows, set *format_output='coo'* (default) in all similarity functions, as *'csr'* is currently not supported.
+⚠️ On Windows, use the default *format_output='coo'* in all similarity functions, as *'csr'* is currently not supported.
 
 
 #### Optional Optimization: Intel MKL for Intel CPUs
