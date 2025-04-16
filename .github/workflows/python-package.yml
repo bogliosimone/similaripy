@@ -30,7 +30,11 @@ jobs:
     - name: Install Homebrew GCC on macOS
       if: matrix.os == 'macos-latest'
       run: |
-        brew install gcc
+        if ! command -v gcc-13 && ! command -v gcc-14; then
+          brew install gcc
+        else
+          echo "GCC already installed"
+        fi
 
     - name: Install build tools
       run: |
