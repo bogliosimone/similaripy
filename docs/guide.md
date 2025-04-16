@@ -42,7 +42,7 @@ SimilariPy provides a suite of similarity functions for sparse matrixes, all imp
 
 | Function           | Description |
 |--------------------|-------------|
-| `dot_product()`    | Basic dot product. |
+| `dot_product()`    | Simple raw inner product between vectors. |
 | `cosine()`         | Cosine similarity with optional shrinkage. |
 | `asymmetric_cosine(alpha=0.5)` | Asymmetric variant of cosine similarity, where `alpha` controls the weighting between vectors. |
 | `jaccard()`        | Set-based similarity defined as the intersection over union. |
