@@ -1,42 +1,44 @@
-# Compiled python modules.
+# ============================
+# Python / Build Artifacts
+# ============================
+
 *.pyc
-
-# Setuptools distribution folder.
-/dist/
-
-# Python egg metadata, regenerated from source files by setuptools.
-/*.egg-info
-
-# other folder
-/other/
-
-# cython file
-*.cpp
 *.so
-/build/
+*.cpp
+*.lock
+*.egg-info/
+build/
+dist/
+.cache/
 
-# macOS file
+# =======================
+# Project-specific Files
+# =======================
+
+/other/
+/private/
+/pypirc
+
+# ==================
+# macOS System Files
+# ==================
+
 .DS_Store
 
-# pipy
-.pypirc
+# ==================
+# Jupyter Notebooks
+# ==================
 
-### JupyterNotebook ###
-.ipynb_checkpoints
+.ipynb_checkpoints/
 */.ipynb_checkpoints/*
 
-### VisualStudioCode ###
-.vscode/*
+# ======================
+# Visual Studio Code
+# ======================
+
+.vscode/
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
-
-### Private Folder ###
-/private/
-
-### cache
-.cache/
-
-### vscode
-.vscode/
+*.code-workspace
