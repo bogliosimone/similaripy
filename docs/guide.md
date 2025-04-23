@@ -81,30 +81,25 @@ All similarity functions in Similaripy share the following parameters:
 ### 📈 Math Equations
 
 #### Dot Product
-
-![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}%20=%20{x\cdot%20y})
+$s_{xy} = x \cdot y$
 
 #### Cosine
-
-![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\left%20\||%20x%20|\right%20\|\left%20\||%20y%20|\right%20\|+h})
+$s_{xy} = \frac{x \cdot y}{\|x\| \cdot \|y\| + h}$
 
 #### Asymmetric Cosine
-
-![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}%20=%20\frac{xy}{(\sum%20x_{i}^{2})^{\alpha%20}(\sum%20y_{i}^{2})^{1-\alpha}+h})
+$s_{xy} = \frac{x \cdot y}{\left(\sum x_i^2\right)^\alpha \left(\sum y_i^2\right)^{1 - \alpha} + h}$
 
 - **`α`**: Asymmetry coefficient ∈ [0, 1]
 
 #### Jaccard
-
-![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\left|x\right|+\left|y\right|-xy+h})
+$s_{xy} = \frac{x \cdot y}{|x| + |y| - x \cdot y + h}$
 
 #### Dice
 
- ![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\frac{1}{2}\left|x\right|+\frac{1}{2}\left|y\right|-xy+h})
+$s_{xy} = \frac{x \cdot y}{\frac{1}{2}|x| + \frac{1}{2}|y| - x \cdot y + h}$
 
 #### Tversky
-
-![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{\alpha(\left|x\right|-xy)+\beta(\left|y\right|-xy)+xy+h})
+$s_{xy} = \frac{x \cdot y}{\alpha(|x| - x \cdot y) + \beta(|y| - x \cdot y) + x \cdot y + h}$
 
 - **`α`**, **`β`**: Tversky coefficients ∈ [0, 1]
 
@@ -119,7 +114,7 @@ All similarity functions in Similaripy share the following parameters:
 
 #### S-Plus
 
-![equation](https://latex.codecogs.com/svg.latex?\Large&space;s_{xy}=\frac{xy}{l(t_{1}(\left|x\right|-xy)+t_{2}(\left|y\right|-xy)+xy)+(1-l)(\sum%20x_{i}^{2})^{c}(\sum%20y_{i}^{2})^{1-c}+h})
+$s_{xy} = \frac{x \cdot y}{l \left(t_1(|x| - x \cdot y) + t_2(|y| - x \cdot y) + x \cdot y\right) + (1 - l)\left(\sum x_i^2\right)^c \left(\sum y_i^2\right)^{1 - c} + h}$
 
 - **`l`**: Balance between Tversky and Cosine parts ∈ [0, 1]  
 - **`t1`**, **`t2`**: Tversky coefficients ∈ [0, 1]  

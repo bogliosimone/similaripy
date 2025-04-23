@@ -39,19 +39,19 @@ All functions are multi-threaded and implemented in Cython + OpenMP for fast par
 
 - **S-Plus** – A hybrid model combining Tversky and Cosine components, with full control over weights and smoothing.
 
-For mathematical definitions and parameter details, see the **[📘 SimilariPy Guide](docs/guide.md)**.
+For mathematical definitions and parameter details, see the **[📘 SimilariPy Guide](https://github.com/bogliosimone/similaripy/blob/master/docs/guide.md)**.
 
 ## 🧮 Normalization Functions
 
 SimilariPy provides a suite of normalization functions for sparse matrix pre-processing.  
-All functions are implemented in Cython and support in-place execution for maximum performance and memory efficiency.
+All functions are implemented in Cython and can operate in-place on CSR matrixes for maximum performance and memory efficiency.
 
 - **L1, L2** – Applies row- or column-wise normalization.
 - **TF-IDF** – Computes TF-IDF weighting with customizable term-frequency and IDF modes.
 - **BM25** – Applies classic BM25 weighting used in information retrieval.
 - **BM25+** – Variant of BM25 with additive smoothing for low-frequency terms.
 
-For more details, check the **[📘 SimilariPy Guide](docs/guide.md)**.
+For more details, check the **[📘 SimilariPy Guide](https://github.com/bogliosimone/similaripy/blob/master/docs/guide.md)**.
 
 
 ## 🚀 Usage Example
