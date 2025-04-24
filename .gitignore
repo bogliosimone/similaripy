@@ -10,6 +10,7 @@
 build/
 dist/
 .cache/
+.tox/
 
 # =======================
 # Project-specific Files

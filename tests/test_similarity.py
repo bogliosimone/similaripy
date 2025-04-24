@@ -237,7 +237,7 @@ def test_similarity_full():
     print('✅ All similarity full row tests passed')
 
 
-def test_readme_code():
+def test_example_code():
     import similaripy as sim
     import scipy.sparse as sps
 
@@ -251,7 +251,7 @@ def test_readme_code():
     model = sim.cosine(urm.T, k=50, verbose=VERBOSE)
 
     # recommend 100 items to users 1, 14 and 8 filtering the items already seen by each users
-    user_recommendations = sim.dot_product(urm, model.T, k=100, target_rows=[1,14,8], filter_cols=urm, verbose=VERBOSE)
+    sim.dot_product(urm, model.T, k=100, target_rows=[1,14,8], filter_cols=urm, verbose=VERBOSE)
 
     print('✅ Test README.md sample code passed')
 
@@ -269,7 +269,7 @@ if __name__ == "__main__":
     test_openmp_enabled()
     test_similarity_topk()
     test_similarity_full()
-    test_readme_code()
+    test_example_code()
 
 
 

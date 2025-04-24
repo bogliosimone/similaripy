@@ -17,7 +17,6 @@ def generate_sparse_matrix(n_rows, n_cols, density=0.01, random_state=42):
 
 
 @pytest.mark.perf
-@pytest.mark.benchmark(group="s_plus_topk")
 @pytest.mark.parametrize("n_rows,n_cols,density,k", [
     (6_000, 4_000, 0.04, 50),      # small test case (MovieLens1M)
     (30_000, 140_000, 0.005, 50),  # medium-scale test (MovieLens20M)

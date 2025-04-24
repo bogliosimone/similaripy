@@ -58,4 +58,12 @@ logging.level = "INFO"
 USE_OPENMP = "ON"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-benchmark"]
+dev = [
+  "pytest",
+  "pytest-benchmark",
+  "build",
+  "tox",
+]
+
+[tool.tox]
+requires = ["tox>=4.19"]
