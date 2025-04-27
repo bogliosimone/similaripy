@@ -208,6 +208,10 @@ def check_similarity(m, k, rtol=0.0001, full=False):
 
     return
 
+def generate_random_matrix(n_rows=100, n_cols=50, density=0.05, seed=42):
+    rng = np.random.default_rng(seed)
+    return sp.random(n_rows, n_cols, density=density, format='csr', dtype=np.float32, random_state=rng)
+
 
 def test_similarity_topk():
     rows = 1000
@@ -216,7 +220,7 @@ def test_similarity_topk():
     rtol= 0.0001
     k = 50
 
-    m = sp.random(rows, cols, density=density).tocsr()
+    m = generate_random_matrix(rows, cols, density=density).tocsr()
     
     check_similarity(m=m, k=k, rtol=rtol, full=False)
 
@@ -230,7 +234,7 @@ def test_similarity_full():
     rtol= 0.0001
     k = cols
 
-    m = sp.random(rows, cols, density=density).tocsr()
+    m = generate_random_matrix(rows, cols, density=density).tocsr()
     
     check_similarity(m=m, k=k, rtol=rtol, full=True)
 
