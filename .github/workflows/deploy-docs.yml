@@ -24,11 +24,10 @@ jobs:
       - name: Install uv and make
         run: |
           pip install uv
-          sudo apt update && sudo apt install -y make
 
       - name: Install project dev dependencies
         run: |
-          make install
+          uv pip install --system '.[dev]'
 
       - name: Deploy documentation
         run: |
