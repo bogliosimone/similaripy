@@ -23,3 +23,7 @@ benchmark:
 # Clean build artifacts
 clean:
 	rm -rf build/ dist/ *.egg-info
+
+# Run
+mkdocs:
+	uv run mkdocs serve

@@ -11,7 +11,7 @@ keywords = [
   "Collaborative Filtering", "Normalization", "Recommender Systems"
 ]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
@@ -38,7 +38,7 @@ dependencies = [
 
 [project.urls]
 homepage = "https://github.com/bogliosimone/similaripy"
-documentation = "https://github.com/bogliosimone/similaripy/blob/master/docs/guide.md"
+documentation = "https://bogliosimone.github.io/similaripy/"
 repository = "https://github.com/bogliosimone/similaripy.git"
 changelog = "https://github.com/bogliosimone/similaripy/releases"
 
@@ -63,6 +63,10 @@ dev = [
   "pytest-benchmark",
   "build",
   "tox",
+  "mkdocs",
+  "mkdocs-material",
+  "mkdocs-material-extensions",
+  "mkdocstrings[python]"
 ]
 
 [tool.tox]
