@@ -1,0 +1,65 @@
+site_name: SimilariPy
+repo_url: https://github.com/bogliosimone/similaripy
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - palette.toggle   # 👈 enables Dark/Light mode switch
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+
+markdown_extensions:
+  - pymdownx.arithmatex:
+      generic: true
+  - codehilite:
+      guess_lang: false
+      linenums: false
+  - pymdownx.highlight:
+      anchor_linenums: false
+      guess_lang: false
+      pygments_lang_class: true
+  - pymdownx.superfences
+  - pymdownx.details
+
+extra_javascript:
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+extra_css:
+  - https://unpkg.com/katex@0/dist/katex.min.css
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Getting Started: guide.md
+  - Similarities: similarity.md
+  - Normalizations: normalization.md
+  - Full API Reference:
+      - Similarity API: api/similarity.md
+      - Normalization API: api/normalization.md
+

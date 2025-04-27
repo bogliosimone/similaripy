@@ -208,6 +208,10 @@ def check_similarity(m, k, rtol=0.0001, full=False):
 
     return
 
+def generate_random_matrix(n_rows=100, n_cols=50, density=0.05, seed=42):
+    rng = np.random.default_rng(seed)
+    return sp.random(n_rows, n_cols, density=density, format='csr', dtype=np.float32, random_state=rng)
+
 
 def test_similarity_topk():
     rows = 1000
@@ -216,7 +220,7 @@ def test_similarity_topk():
     rtol= 0.0001
     k = 50
 
-    m = sp.random(rows, cols, density=density).tocsr()
+    m = generate_random_matrix(rows, cols, density=density).tocsr()
     
     check_similarity(m=m, k=k, rtol=rtol, full=False)
 
@@ -230,14 +234,14 @@ def test_similarity_full():
     rtol= 0.0001
     k = cols
 
-    m = sp.random(rows, cols, density=density).tocsr()
+    m = generate_random_matrix(rows, cols, density=density).tocsr()
     
     check_similarity(m=m, k=k, rtol=rtol, full=True)
 
     print('✅ All similarity full row tests passed')
 
 
-def test_readme_code():
+def test_example_code():
     import similaripy as sim
     import scipy.sparse as sps
 
@@ -251,7 +255,7 @@ def test_readme_code():
     model = sim.cosine(urm.T, k=50, verbose=VERBOSE)
 
     # recommend 100 items to users 1, 14 and 8 filtering the items already seen by each users
-    user_recommendations = sim.dot_product(urm, model.T, k=100, target_rows=[1,14,8], filter_cols=urm, verbose=VERBOSE)
+    sim.dot_product(urm, model.T, k=100, target_rows=[1,14,8], filter_cols=urm, verbose=VERBOSE)
 
     print('✅ Test README.md sample code passed')
 
@@ -269,7 +273,7 @@ if __name__ == "__main__":
     test_openmp_enabled()
     test_similarity_topk()
     test_similarity_full()
-    test_readme_code()
+    test_example_code()
 
 
 
