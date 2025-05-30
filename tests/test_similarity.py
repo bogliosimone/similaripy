@@ -241,22 +241,50 @@ def test_similarity_full():
     print('✅ All similarity full row tests passed')
 
 
+def test_output_format():
+    rows = 1000
+    cols = 800
+    density = 0.025
+    k = 50
+    m = generate_random_matrix(rows, cols, density=density).tocsr()
+
+    # CSR output
+    sim_csr = sim.cosine(m, format_output='csr', k=k, verbose=VERBOSE)
+    assert sp.issparse(sim_csr), "Output is not a sparse matrix"
+    assert isinstance(sim_csr, sp.csr_matrix), "CSR format not returned"
+
+    # COO output
+    sim_coo = sim.cosine(m, format_output='coo', k=k, verbose=VERBOSE)
+    assert sp.issparse(sim_coo), "Output is not a sparse matrix"
+    assert isinstance(sim_coo, sp.coo_matrix), "COO format not returned"
+
+    assert sim_csr.nnz > 0, "CSR output is empty"
+    assert sim_coo.nnz > 0, "COO output is empty"
+
+    print("✅ Test output CSR and COO passed")
+
 def test_example_code():
     import similaripy as sim
     import scipy.sparse as sps
 
-    # create a random user-rating matrix (URM)
+   # Create a random User-Rating Matrix (URM)
     urm = sps.random(1000, 2000, density=0.025)
 
-    # normalize matrix with bm25
+    # Normalize the URM using BM25
     urm = sim.normalization.bm25(urm)
 
-    # train the model with 50 knn per item 
-    model = sim.cosine(urm.T, k=50, verbose=VERBOSE)
+    # Train an item-item cosine similarity model
+    similarity_matrix = sim.cosine(urm.T, k=50)
 
-    # recommend 100 items to users 1, 14 and 8 filtering the items already seen by each users
-    sim.dot_product(urm, model.T, k=100, target_rows=[1,14,8], filter_cols=urm, verbose=VERBOSE)
-
+    # Compute recommendations for user 1, 14, 8 
+    # filtering out already-seen items
+    recommendations = sim.dot_product(
+        urm,
+        similarity_matrix.T,
+        k=100,
+        target_rows=[1, 14, 8],
+        filter_cols=urm
+    )
     print('✅ Test README.md sample code passed')
 
 
@@ -273,6 +301,7 @@ if __name__ == "__main__":
     test_openmp_enabled()
     test_similarity_topk()
     test_similarity_full()
+    test_output_format()
     test_example_code()
 
 

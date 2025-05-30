@@ -343,7 +343,7 @@ def s_plus(
         progress.refresh()
         M = item_count
         N = user_count
-        idx_dtype = get_index_dtype(maxval=max(n_targets*k,long(N))) #32/64 bit dtype based on total entry and max value
+        idx_dtype = get_index_dtype(maxval=max(n_targets*k,N)) #32/64 bit dtype based on total entry and max value
         if idx_dtype==np.int32:
             indptr32 = np.empty(M + 1, dtype=np.int32)
             indices32 = np.empty(n_targets * k, dtype=np.int32)
