@@ -9,7 +9,7 @@ theme:
     - search.suggest
     - search.highlight
     - content.code.copy
-    - palette.toggle   # 👈 enables Dark/Light mode switch
+    - palette.toggle
   palette:
     - scheme: default
       primary: indigo

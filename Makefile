@@ -1,4 +1,4 @@
-.PHONY: install test build wheelcheck benchmark all clean
+.PHONY: install test build wheelcheck benchmark all clean mkdocs
 
 # Install all dev dependencies using uv
 install:
