@@ -54,8 +54,10 @@ class SparseMatrixMultiplier {
                                     Value l1, Value l2, Value l3, // weights tversky and cosine and depop
                                     Value t1, Value t2, // tversky coefficients
                                     Value c1, Value c2, // cosine exponents
-                                    Value shrink, Value threshold,
-                                    Index filter_mode, 
+                                    Value stabilized_shrink,
+                                    Value bayesian_shrink,
+                                    Value threshold,
+                                    Index filter_mode,
                                     Index * filter_m_indptr, Index * filter_m_indices,
                                     Index target_col_mode,
                                     Index * target_col_m_indptr, Index * target_col_m_indices
@@ -70,7 +72,9 @@ class SparseMatrixMultiplier {
         l1(l1), l2(l2), l3(l3),
         t1(t1), t2(t2), 
         c1(c1), c2(c2),
-        shrink(shrink), threshold(threshold),
+        stabilized_shrink(stabilized_shrink),
+        bayesian_shrink(bayesian_shrink),
+        threshold(threshold),
         filter_mode(filter_mode),
         filter_m_indptr(filter_m_indptr),
         filter_m_indices(filter_m_indices),
@@ -106,6 +110,7 @@ class SparseMatrixMultiplier {
             bool filter = false;
             bool target_col = true;
 
+            // compute normalization terms
             if(l1!=0) // tversky
                 valTversky = l1 * (t1 * (Xtversky[row] - xy) + t2 * (Ytversky[col] - xy) + xy);
             if(l2!=0) // cosine
@@ -114,8 +119,13 @@ class SparseMatrixMultiplier {
                 valDepop = l3 * (Xdepop[row] * Ydepop[col]);
             if(a1!=1) // power product
                 xy = std::pow(xy, a1); // very slow operation
-            if(l1!=0 || l2!=0 || l3!=0 ||shrink!=0)
-                val = xy/(valTversky + valCosine + valDepop + shrink);
+
+            // compute similarity value
+            if(l1!=0 || l2!=0 || l3!=0 || stabilized_shrink!=0 || bayesian_shrink!=0){
+                val = xy / (valTversky + valCosine + valDepop + stabilized_shrink);
+                if(bayesian_shrink != 0)
+                    val = val * (xy / (xy + bayesian_shrink) );
+            }
 
             // filter cols, filter_mode = 0:none, 1:array, 2:matrix
             if (filter_mode !=0 ){
@@ -176,14 +186,16 @@ class SparseMatrixMultiplier {
     Value l1, l2,l3;
     Value t1, t2;
     Value c1, c2;
-    Value shrink, threshold;
+    Value stabilized_shrink;
+    Value bayesian_shrink;
+    Value threshold;
     Index row;
     Index filter_mode;
     Index * filter_m_indptr, * filter_m_indices;
     Index target_col_mode;
     Index * target_col_m_indptr, * target_col_m_indices;
     Index head, length;
-
 };
+
 }  // namespace similarity
 #endif  // SPLUS

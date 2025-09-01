@@ -11,6 +11,8 @@ def dot_product(
     matrix2: Optional[spmatrix] = None,
     k: int = 100,
     shrink: float = 0.0,
+    bayesian_shrink: float = 0.0,
+    additive_shrink: float = 0.0,
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
@@ -27,8 +29,9 @@ def dot_product(
         matrix1: Input sparse matrix (e.g., user-item or item-user).
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row.
-        shrink: Shrinkage value applied to similarity scores.
+        shrink: Shrinkage value that prevents instability when normalizations are small
         threshold: Minimum similarity value to retain.
+        shrink_type: Type of shrinkage: 'stabilized', 'bayesian'.
         binary: Whether to binarize the input matrix before similarity computation.
         target_rows: List or array of row indices to compute. If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -43,7 +46,11 @@ def dot_product(
     """
     return _sim.s_plus(
         matrix1, matrix2=matrix2,
-        k=k, shrink=shrink, threshold=threshold,
+        k=k,
+        stabilized_shrink=shrink,
+        bayesian_shrink=bayesian_shrink,
+        additive_shrink=additive_shrink,
+        threshold=threshold,
         binary=binary,
         target_rows=target_rows,
         target_cols=target_cols,
@@ -59,6 +66,8 @@ def cosine(
     matrix2: Optional[spmatrix] = None,
     k: int = 100,
     shrink: float = 0.0,
+    bayesian_shrink: float = 0.0,
+    additive_shrink: float = 0.0,
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
@@ -75,8 +84,9 @@ def cosine(
         matrix1: Input sparse matrix.
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value applied to similarity scores.
+        shrink: Shrinkage value that prevents instability when normalizations are small
         threshold: Minimum similarity value to retain.
+        shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute. If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -92,7 +102,11 @@ def cosine(
         matrix1, matrix2=matrix2,
         l2=1,
         c1=0.5, c2=0.5,
-        k=k, shrink=shrink, threshold=threshold,
+        k=k,
+        stabilized_shrink=shrink,
+        bayesian_shrink=bayesian_shrink,
+        additive_shrink=additive_shrink,
+        threshold=threshold,
         binary=binary,
         target_rows=target_rows,
         target_cols=target_cols,
@@ -109,6 +123,8 @@ def asymmetric_cosine(
     alpha: float = 0.5,
     k: int = 100,
     shrink: float = 0.0,
+    bayesian_shrink: float = 0.0,
+    additive_shrink: float = 0.0,
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
@@ -127,8 +143,9 @@ def asymmetric_cosine(
         alpha: Controls asymmetry in cosine weighting.
                `alpha=1` weighs only matrix1; `alpha=0.5` is symmetric.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value applied to similarity scores.
+        shrink: Shrinkage value that prevents instability when normalizations are small
         threshold: Minimum similarity value to retain.
+        shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute. If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -145,7 +162,11 @@ def asymmetric_cosine(
         matrix1, matrix2=matrix2,
         l2=1,
         c1=alpha, c2=1-alpha,
-        k=k, shrink=shrink, threshold=threshold,
+        k=k,
+        stabilized_shrink=shrink,
+        bayesian_shrink=bayesian_shrink,
+        additive_shrink=additive_shrink,
+        threshold=threshold,
         binary=binary,
         target_rows=target_rows,
         target_cols=target_cols,
@@ -163,6 +184,8 @@ def tversky(
     beta: float = 1.0,
     k: int = 100,
     shrink: float = 0.0,
+    bayesian_shrink: float = 0.0,
+    additive_shrink: float = 0.0,
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
@@ -181,8 +204,9 @@ def tversky(
         alpha: Tversky weight for elements unique to matrix1.
         beta: Tversky weight for elements unique to matrix2.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value applied to similarity scores.
+        shrink: Shrinkage value that prevents instability when normalizations are small
         threshold: Minimum similarity value to retain.
+        shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute. If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -198,7 +222,11 @@ def tversky(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=alpha, t2=beta,
-        k=k, shrink=shrink, threshold=threshold,
+        k=k,
+        stabilized_shrink=shrink,
+        bayesian_shrink=bayesian_shrink,
+        additive_shrink=additive_shrink,
+        threshold=threshold,
         binary=binary,
         target_rows=target_rows,
         target_cols=target_cols,
@@ -214,6 +242,8 @@ def jaccard(
     matrix2: Optional[spmatrix] = None,
     k: int = 100,
     shrink: float = 0.0,
+    bayesian_shrink: float = 0.0,
+    additive_shrink: float = 0.0,
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
@@ -230,8 +260,9 @@ def jaccard(
         matrix1: Input sparse matrix.
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value applied to similarity scores.
+        shrink: Shrinkage value that prevents instability when normalizations are small
         threshold: Minimum similarity value to retain.
+        shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute. If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -247,7 +278,11 @@ def jaccard(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=1, t2=1,
-        k=k, shrink=shrink, threshold=threshold,
+        k=k,
+        stabilized_shrink=shrink,
+        bayesian_shrink=bayesian_shrink,
+        additive_shrink=additive_shrink,
+        threshold=threshold,
         binary=binary,
         target_rows=target_rows,
         target_cols=target_cols,
@@ -263,6 +298,8 @@ def dice(
     matrix2: Optional[spmatrix] = None,
     k: int = 100,
     shrink: float = 0.0,
+    bayesian_shrink: float = 0.0,
+    additive_shrink: float = 0.0,
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
@@ -279,8 +316,9 @@ def dice(
         matrix1: Input sparse matrix.
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value applied to similarity scores.
+        shrink: Shrinkage value that prevents instability when normalizations are small
         threshold: Minimum similarity value to retain.
+        shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute. If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -296,7 +334,11 @@ def dice(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=0.5, t2=0.5,
-        k=k, shrink=shrink, threshold=threshold,
+        k=k,
+        stabilized_shrink=shrink,
+        bayesian_shrink=bayesian_shrink,
+        additive_shrink=additive_shrink,
+        threshold=threshold,
         binary=binary,
         target_rows=target_rows,
         target_cols=target_cols,
@@ -313,6 +355,8 @@ def p3alpha(
     alpha: float = 1.0,
     k: int = 100,
     shrink: float = 0.0,
+    bayesian_shrink: float = 0.0,
+    additive_shrink: float = 0.0,
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
@@ -330,8 +374,9 @@ def p3alpha(
         matrix2: Optional second matrix. If None, uses matrix1.T.
         alpha: Exponent for transition probabilities to control popularity effect.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value applied to similarity scores.
+        shrink: Shrinkage value that prevents instability when normalizations are small
         threshold: Minimum similarity value to retain.
+        shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute. If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -351,7 +396,11 @@ def p3alpha(
     matrix2.data = np.power(matrix2.data, alpha)
     return _sim.s_plus(
         matrix1=matrix1, matrix2=matrix2,
-        k=k, shrink=shrink, threshold=threshold,
+        k=k,
+        stabilized_shrink=shrink,
+        bayesian_shrink=bayesian_shrink,
+        additive_shrink=additive_shrink,
+        threshold=threshold,
         binary=binary,
         target_rows=target_rows,
         target_cols=target_cols,
@@ -369,6 +418,8 @@ def rp3beta(
     beta: float = 1.0,
     k: int = 100,
     shrink: float = 0.0,
+    bayesian_shrink: float = 0.0,
+    additive_shrink: float = 0.0,
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
@@ -387,8 +438,9 @@ def rp3beta(
         alpha: Exponent for transition probabilities.
         beta: Exponent to penalize popularity based on column sums.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value applied to similarity scores.
+        shrink: Shrinkage value that prevents instability when normalizations are small
         threshold: Minimum similarity value to retain.
+        shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute. If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -412,7 +464,11 @@ def rp3beta(
         weight_depop_matrix2=pop_m2,
         p2=beta,
         l3=1,
-        k=k, shrink=shrink, threshold=threshold,
+        k=k,
+        stabilized_shrink=shrink,
+        bayesian_shrink=bayesian_shrink,
+        additive_shrink=additive_shrink,
+        threshold=threshold,
         binary=binary,
         target_rows=target_rows,
         target_cols=target_cols,
@@ -432,6 +488,8 @@ def s_plus(
     c: float = 0.5,
     k: int = 100,
     shrink: float = 0.0,
+    bayesian_shrink: float = 0.0,
+    additive_shrink: float = 0.0,
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
@@ -452,8 +510,9 @@ def s_plus(
         t2: Tversky beta for matrix2.
         c: Cosine exponent coefficient.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value applied to similarity scores.
+        shrink: Shrinkage value that prevents instability when normalizations are small
         threshold: Minimum similarity value to retain.
+        shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute. If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -470,7 +529,11 @@ def s_plus(
         l1=l, l2=1-l,
         t1=t1, t2=t2,
         c1=c, c2=1-c,
-        k=k, shrink=shrink, threshold=threshold,
+        k=k,
+        stabilized_shrink=shrink,
+        bayesian_shrink=bayesian_shrink,
+        additive_shrink=additive_shrink,
+        threshold=threshold,
         binary=binary,
         target_rows=target_rows,
         target_cols=target_cols,

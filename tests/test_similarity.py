@@ -30,14 +30,20 @@ def check_full(x1, x2, rtol=0.001):
 
 
 def py_dot(m, k):
+
     s = m * m.T
     return top_k(s, k)
 
 
-def py_cosine(m, k):
+def py_cosine(m, k, h=0, shrink_mode='stabilized'):
+    additive_h = 0
+    if shrink_mode == 'additive':
+        additive_h = h
+
     m2 = m.copy()
     m2.data = np.power(m2.data,2)
-    X = np.power(m2.sum(axis=1).A1,0.5)
+
+    X = np.power((m2.sum(axis=1).A1) + additive_h,0.5)
     m_aux = (m * m.T).tocsr()
     r, c, v = [], [], []
     for idx1 in range(0,m.shape[0]):
@@ -47,7 +53,12 @@ def py_cosine(m, k):
             val = m_aux.data[idx2]
             r.append(row)
             c.append(col)
-            v.append(val/ (X[row] * X[col]))
+            if shrink_mode == 'stabilized':
+                v.append(val/ (X[row] * X[col] + h))
+            elif shrink_mode == 'bayesian':
+                v.append(val / (X[row] * X[col]) * (val / (val + h)))
+            elif shrink_mode == 'additive':
+                v.append(val / (X[row] * X[col]))
     s = sp.csr_matrix((v,(r,c)),shape=(m.shape[0],m.shape[0]))
     return top_k(s, k)
 

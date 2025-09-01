@@ -27,6 +27,7 @@ All similarity functions in Similaripy share the following parameters:
 | `k`              | Number of top-k items per row. *(default: `100`)* |
 | `h`              | Shrinkage coefficient applied during normalization. |
 | `threshold`      | Minimum similarity value to retain. Values below are set to zero. *(default: `0`)* |
+| `shrink_type`    | Shrinkage type: `stabilized`, `bayesian`, or `additive`.  *(default: `stabilized`)* |
 | `binary`         | If `True`, binarizes the input matrix. *(default: `False`)* |
 | `target_rows`    | List or array of row indices to compute. If `None`, computes for all rows. *(default: `None`)* |
 | `target_cols`    | Subset of columns to consider **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
@@ -89,3 +90,30 @@ $s_{xy} = \frac{x \cdot y}{l \left(t_1(|x| - x \cdot y) + t_2(|y| - x \cdot y) +
 - **`l`**: Balance between Tversky and Cosine parts ∈ [0, 1]  
 - **`t1`**, **`t2`**: Tversky coefficients ∈ [0, 1]  
 - **`c`**: Cosine weighting exponent ∈ [0, 1]
+
+### Shrinkage Modes
+
+The shrinkage equations are displayed with the cosine normalization for simplicity, however, they are available in all the similarities.
+
+#### Stabilized Shrinkage
+$s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i x_i^2} \cdot \sqrt{\sum_i y_i^2} + h}$
+
+- Prevents instability when norms are small.
+- **`h`** acts as the shrinkage strength.
+- `shrink_type = 'stabilized'`
+
+#### Bayesian Shrinkage
+$s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i x_i^2} \cdot \sqrt{\sum_i y_i^2}} \cdot \frac{x \cdot y}{x \cdot y + h}$
+
+- Penalizes similarities with items with low overlap support.  
+- **`h`** acts as the shrinkage strength.
+- `shrink_type = 'bayesian'`
+
+#### Additive Shrinkage
+$s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i (x_i^2 + h)} \cdot \sqrt{\sum_i (y_i^2 + h)}}$
+
+- Penalizes similarities with items with low support.
+- Adds shrinkage directly into the cosine denominator norms.
+- **`h`** acts as the shrinkage strength.
+- `shrink_type = 'additive'`
+
