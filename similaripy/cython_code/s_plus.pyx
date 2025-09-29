@@ -152,10 +152,10 @@ def s_plus(
         elif weight_depop_matrix1 == 'sum':
             weight_depop_matrix1 = np.power(np.array(matrix1.sum(axis = 1).A1, dtype=np.float32), p1, dtype=np.float32)
         
-        if isinstance(weight_depop_matrix1,(list,np.ndarray)): 
+        if isinstance(weight_depop_matrix2,(list,np.ndarray)): 
             weight_depop_matrix2 = np.power(weight_depop_matrix2, p2, dtype=np.float32)    
         elif weight_depop_matrix2=='none':
-            weight_depop_matrix2 = np.power(np.ones(matrix1.shape[1]), p2, dtype=np.float32)  
+            weight_depop_matrix2 = np.power(np.ones(matrix2.shape[1]), p2, dtype=np.float32)  
         elif weight_depop_matrix2 == 'sum':
             weight_depop_matrix2 = np.power(np.array(matrix2.sum(axis = 0).A1, dtype=np.float32), p2, dtype=np.float32)
 
