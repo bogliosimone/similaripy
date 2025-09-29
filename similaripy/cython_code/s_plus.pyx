@@ -35,7 +35,9 @@ cdef extern from "s_plus.h" namespace "s_plus" nogil:
                                 Value l1, Value l2, Value l3,
                                 Value t1, Value t2,
                                 Value c1, Value c2,
-                                Value shrink, Value threshold,
+                                Value stabilized_shrink,
+                                Value bayesian_shrink,
+                                Value threshold,
                                 Index filter_mode,
                                 Index * filter_m_indptr,
                                 Index * filter_m_indices,
@@ -68,7 +70,11 @@ def s_plus(
     float l1=0, float l2=0, float l3=0,
     float t1=1, float t2=1,
     float c1=0.5,float c2=0.5,
-    unsigned int k=100, float shrink=0, float threshold=0,
+    unsigned int k=100, 
+    float stabilized_shrink=0,
+    float bayesian_shrink=0,
+    float additive_shrink=0,
+    float threshold=0,
     binary=False,
     target_rows=None,
     filter_cols=None,
@@ -113,12 +119,12 @@ def s_plus(
     matrix1 = matrix1.tocsr()
     matrix2 = matrix2.tocsr()
 
-    # eliminates zeros to avoid 0 division and get right values if use binary flag (also speed up the computation)
-    # note: is an implace operation implemented for csr matrix in the sparse package
+    # eliminates zeros to avoid 0 division and get right values when using the binary flag (also speed up the computation)
+    # note: this is an in-place operation implemented for csr matrix in the sparse package
     matrix1.eliminate_zeros()
     matrix2.eliminate_zeros()
 
-    # usefull variables
+    # useful variables
     cdef int item_count = matrix1.shape[0]
     cdef int user_count = matrix2.shape[1]
     cdef int i, u, t, index1, index2
@@ -146,10 +152,10 @@ def s_plus(
         elif weight_depop_matrix1 == 'sum':
             weight_depop_matrix1 = np.power(np.array(matrix1.sum(axis = 1).A1, dtype=np.float32), p1, dtype=np.float32)
         
-        if isinstance(weight_depop_matrix1,(list,np.ndarray)): 
+        if isinstance(weight_depop_matrix2,(list,np.ndarray)): 
             weight_depop_matrix2 = np.power(weight_depop_matrix2, p2, dtype=np.float32)    
         elif weight_depop_matrix2=='none':
-            weight_depop_matrix2 = np.power(np.ones(matrix1.shape[1]), p2, dtype=np.float32)  
+            weight_depop_matrix2 = np.power(np.ones(matrix2.shape[1]), p2, dtype=np.float32)  
         elif weight_depop_matrix2 == 'sum':
             weight_depop_matrix2 = np.power(np.array(matrix2.sum(axis = 0).A1, dtype=np.float32), p2, dtype=np.float32)
 
@@ -167,18 +173,18 @@ def s_plus(
     cdef float[:] Xcosine
     cdef float[:] Ycosine 
     cdef float[:] Xdepop
-    cdef float[:] Ydepop 
+    cdef float[:] Ydepop
 
     if l1!=0:
-        Xtversky = np.array(matrix1.power(2).sum(axis = 1).A1, dtype=np.float32)
-        Ytversky = np.array(matrix2.power(2).sum(axis = 0).A1, dtype=np.float32)
+        Xtversky = np.array((matrix1.power(2).sum(axis = 1).A1), dtype=np.float32)
+        Ytversky = np.array((matrix2.power(2).sum(axis = 0).A1), dtype=np.float32)
     else:
         Xtversky = np.array([],dtype=np.float32)
         Ytversky = np.array([],dtype=np.float32)
 
     if l2!=0:
-        Xcosine = np.power(matrix1.power(2).sum(axis = 1).A1, c1, dtype=np.float32)
-        Ycosine = np.power(matrix2.power(2).sum(axis = 0).A1, c2, dtype=np.float32)
+        Xcosine = np.power((matrix1.power(2).sum(axis = 1).A1) + additive_shrink, c1, dtype=np.float32)
+        Ycosine = np.power((matrix2.power(2).sum(axis = 0).A1) + additive_shrink, c2, dtype=np.float32)
     else:
         Xcosine = np.array([],dtype=np.float32)
         Ycosine = np.array([],dtype=np.float32)
@@ -276,7 +282,9 @@ def s_plus(
                                                             l1, l2, l3,
                                                             t1, t2,
                                                             c1, c2,
-                                                            shrink, threshold,
+                                                            stabilized_shrink, 
+                                                            bayesian_shrink,
+                                                            threshold,
                                                             filter_col_mode, 
                                                             &filter_m_indptr[0], &filter_m_indices[0],
                                                             target_col_mode, 
@@ -287,7 +295,7 @@ def s_plus(
             for i in prange(n_targets, schedule='dynamic'):
                 # progress bar (note: update once per 500 rows or with big matrix taking gil at each cycle destroy the performance)
                 if verb==1:
-                    # here, without gil, we can get some war, waw, raw error but is not so much important (it is better doesn't lost performance)
+                    # here, without gil, we can get war/waw/raw errors, it's not important as it's just a counter for the progress bar
                     counter_add[0]=counter_add[0]+1
                     if counter_add[0]%(n_targets/500)==0:
                         with gil:
