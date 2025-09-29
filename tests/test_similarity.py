@@ -36,14 +36,17 @@ def py_dot(m, k):
 
 
 def py_cosine(m, k, h=0, shrink_mode='stabilized'):
-    additive_h = 0
     if shrink_mode == 'additive':
         additive_h = h
+    else:
+        additive_h = 0
 
     m2 = m.copy()
     m2.data = np.power(m2.data,2)
 
-    X = np.power((m2.sum(axis=1).A1) + additive_h,0.5)
+    # normalization terms
+    X = np.power((m2.sum(axis=1).A1) + additive_h, 0.5)
+
     m_aux = (m * m.T).tocsr()
     r, c, v = [], [], []
     for idx1 in range(0,m.shape[0]):
@@ -252,6 +255,26 @@ def test_similarity_full():
     print('✅ All similarity full row tests passed')
 
 
+def test_shrink_types():
+    rows = 400
+    cols = 50
+    density = 0.025
+    rtol= 0.0001
+    k = cols
+    m = generate_random_matrix(rows, cols, density=density).tocsr()
+    
+    for mode in ('stabilized', 'bayesian', 'additive'):
+        # cython
+        cosine = sim.cosine(m, k=k, shrink=10, shrink_type=mode, verbose=VERBOSE)
+        # python
+        cosine2 = py_cosine(m, k, h=10, shrink_mode=mode).tocsr()
+
+        np.testing.assert_allclose(check_sum(cosine), check_sum(cosine2), rtol=rtol, err_msg=f'Mismatch for shrink_type={mode}')
+        np.testing.assert_(check_full(cosine, cosine2, rtol) == 0, msg=f'Mismatch for shrink_type={mode}')
+
+    print('✅ All shrink tests passed!')
+
+
 def test_output_format():
     rows = 1000
     cols = 800
@@ -312,6 +335,7 @@ if __name__ == "__main__":
     test_openmp_enabled()
     test_similarity_topk()
     test_similarity_full()
+    test_shrink_types()
     test_output_format()
     test_example_code()
 

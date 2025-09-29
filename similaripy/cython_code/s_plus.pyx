@@ -295,7 +295,7 @@ def s_plus(
             for i in prange(n_targets, schedule='dynamic'):
                 # progress bar (note: update once per 500 rows or with big matrix taking gil at each cycle destroy the performance)
                 if verb==1:
-                    # here, without gil, we can get some war, waw, raw error but is not so much important (it is better doesn't lost performance)
+                    # here, without gil, we can get war/waw/raw errors, it's not important as it's just a counter for the progress bar
                     counter_add[0]=counter_add[0]+1
                     if counter_add[0]%(n_targets/500)==0:
                         with gil:
