@@ -1,32 +1,32 @@
 ## Basic Similarities
 
 ??? info "Raw Dot Product"
-    ::: similaripy.dot_product
+    ::: similaripy.similarity.dot_product
 
 ??? info "Cosine Similarity"
-    ::: similaripy.cosine
+    ::: similaripy.similarity.cosine
 
 ??? info "Asymmetric Cosine"
-    ::: similaripy.asymmetric_cosine
+    ::: similaripy.similarity.asymmetric_cosine
 
 ??? info "Jaccard Similarity"
-    ::: similaripy.jaccard
+    ::: similaripy.similarity.jaccard
 
 ??? info "Dice Similarity"
-    ::: similaripy.dice
+    ::: similaripy.similarity.dice
 
 ??? info "Tversky Similarity"
-    ::: similaripy.tversky
+    ::: similaripy.similarity.tversky
 
 ## Graph-Based Similarities
 
 ??? info "P3α"
-    ::: similaripy.p3alpha
+    ::: similaripy.similarity.p3alpha
 
 ??? info "RP3β"
-    ::: similaripy.rp3beta
+    ::: similaripy.similarity.rp3beta
 
 ## Hybrid Similarity
 
 ??? info "S Plus"
-    ::: similaripy.s_plus
+    ::: similaripy.similarity.s_plus

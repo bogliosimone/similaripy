@@ -32,13 +32,13 @@ plugins:
           options:
             docstring_style: google
             show_source: true
+            show_signature: true 
+            separate_signature: true
+            show_signature_annotations: true
 
 markdown_extensions:
   - pymdownx.arithmatex:
       generic: true
-  - codehilite:
-      guess_lang: false
-      linenums: false
   - pymdownx.highlight:
       anchor_linenums: false
       guess_lang: false

@@ -156,6 +156,59 @@ def py_rp3beta(m, alpha, beta, k):
     return top_k(m_aux, k)
 
 
+def py_s_plus(m, k,
+              l1=0.5, l2=0.5, l3=0.0,
+              t1=1.0, t2=1.0,
+              c1=0.5, c2=0.5,
+              alpha=1.0,
+              beta1=0.0, beta2=0.0,
+              pop1='none', pop2='none'
+              ):
+    m_aux = (m * m.T).tocsr()
+
+    # squared norms
+    sq = m.copy()
+    sq.data **= 2
+    Xtversky = sq.sum(axis=1).A1
+    Ytversky = Xtversky.copy()
+
+    # cosine exponents
+    Xcosine = np.power(Xtversky, c1)
+    Ycosine = np.power(Ytversky, c2)
+
+    # popularity (sum)
+    if pop1 == 'sum':
+        Xdepop = np.power(m.sum(axis=1).A1, beta1)
+    else:
+        Xdepop = np.ones(m.shape[0])
+    if pop2 == 'sum':
+        Ydepop = np.power(m.sum(axis=1).A1, beta2)
+    else:
+        Ydepop = np.ones(m.shape[0])
+    
+    r, c, v = [], [], []
+    for i in range(m_aux.shape[0]):
+        for j in range(m_aux.indptr[i], m_aux.indptr[i+1]):
+            row = i
+            col = m_aux.indices[j]
+            xy = m_aux.data[j]
+
+            valTversky = l1 * (t1 * (Xtversky[row] - xy) + t2 * (Ytversky[col] - xy) + xy) if l1 != 0 else 0
+            valCosine  = l2 * (Xcosine[row] * Ycosine[col]) if l2 != 0 else 0
+            valDepop   = l3 * (Xdepop[row] * Ydepop[col]) if l3 != 0 else 0
+
+            denom = valTversky + valCosine + valDepop
+            if alpha != 1.0:
+                xy = np.power(xy, alpha)
+            val = xy / denom if denom > 0 else 0
+            r.append(row)
+            c.append(col)
+            v.append(val)
+
+    s = sp.csr_matrix((v, (r, c)), shape=(m.shape[0], m.shape[0]))
+    return top_k(s, k)
+
+
 def top_k(X, k):
     X = X.tocsr()
     r, c, d = [], [], []
@@ -188,6 +241,8 @@ def check_similarity(m, k, rtol=0.0001, full=False):
     tversky = sim.tversky(m, alpha=0.8, beta=0.4, k=k, verbose=VERBOSE)
     p3alpha = sim.p3alpha(m, alpha=0.8, k=k, verbose=VERBOSE)
     rp3beta = sim.rp3beta(m, alpha=0.8, beta= 0.4, k=k, verbose=VERBOSE)
+    splus = sim.s_plus(m, l1=0.5, l2=0.5, l3=1, t1=1, t2=1, c1=0.5, c2=0.5, 
+                       alpha=1, beta1=0, beta2=0, pop1='none',pop2='sum', k=k, verbose=VERBOSE)
 
     # python
     dot2 = py_dot(m, k)
@@ -198,6 +253,8 @@ def check_similarity(m, k, rtol=0.0001, full=False):
     tversky2 = py_tversky(m, alpha=0.8, beta=0.4, k=k)
     p3alpha2 = py_p3alpha(m, alpha=0.8, k=k)
     rp3beta2 = py_rp3beta(m, alpha=0.8, beta=0.4, k=k)
+    splus2 = py_s_plus(m, l1=0.5, l2=0.5, l3=1, t1=1, t2=1, c1=0.5, c2=0.5, 
+                       alpha=1, beta1=0, beta2=0, pop1='none',pop2='sum', k=k)
 
     # test
     np.testing.assert_allclose(check_sum(dot), check_sum(dot2), rtol=rtol, err_msg='dot error')
@@ -208,6 +265,7 @@ def check_similarity(m, k, rtol=0.0001, full=False):
     np.testing.assert_allclose(check_sum(tversky), check_sum(tversky2), rtol=rtol, err_msg='tversky error')
     np.testing.assert_allclose(check_sum(p3alpha), check_sum(p3alpha2), rtol=rtol, err_msg='p3alpha error')
     np.testing.assert_allclose(check_sum(rp3beta), check_sum(rp3beta2), rtol=rtol, err_msg='rp3beta error')
+    np.testing.assert_allclose(check_sum(splus), check_sum(splus2), rtol=rtol, err_msg='splus error')
 
     # test full rows
     if full:
@@ -219,6 +277,7 @@ def check_similarity(m, k, rtol=0.0001, full=False):
         np.testing.assert_(check_full(tversky, tversky2, rtol) == 0, msg='tversky error')
         np.testing.assert_(check_full(p3alpha, p3alpha2, rtol) == 0, msg='p3alpha error')
         np.testing.assert_(check_full(rp3beta, rp3beta2, rtol) == 0, msg='rp3beta error')
+        np.testing.assert_(check_full(splus, splus2, rtol) == 0, msg='splus error')
 
     return
 
@@ -272,7 +331,7 @@ def test_shrink_types():
         np.testing.assert_allclose(check_sum(cosine), check_sum(cosine2), rtol=rtol, err_msg=f'Mismatch for shrink_type={mode}')
         np.testing.assert_(check_full(cosine, cosine2, rtol) == 0, msg=f'Mismatch for shrink_type={mode}')
 
-    print('✅ All shrink tests passed!')
+    print('✅ All shrink tests passed')
 
 
 def test_output_format():

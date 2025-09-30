@@ -491,8 +491,7 @@ def s_plus(
     c2: float = 0.5,
     pop1: Optional[Union[Literal['none','sum'], np.ndarray]]= 'none',
     pop2: Optional[Union[Literal['none','sum'], np.ndarray]]= 'none',
-    alpha1: float = 1.0,
-    alpha2: float = 1.0,
+    alpha: float = 1.0,
     beta1: float = 0.0,
     beta2: float = 0.0,
     k: int = 100,
@@ -522,10 +521,9 @@ def s_plus(
         c2: Cosine exponent coefficient for matrix2.
         pop1: Popularity weights for matrix1. 'none', 'sum', or custom array.
         pop2: Popularity weights for matrix2. 'none', 'sum', or custom array.
-        alpha1: Exponent for transition probabilities for matrix1.
-        alpha2: Exponent for transition probabilities for matrix2.
-        beta1: Item-based popularity penalization term for matrix1 items.
-        beta2: Item-based popularity penalization term for matrix2 items.
+        alpha: Coefficient applied on the raw similarity value before normalizations.
+        beta1: Popularity penalization coefficient for matrix1 items.
+        beta2: Popularity penalization coefficient for matrix2 items.
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value that prevents instability when normalizations are small.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
@@ -541,21 +539,17 @@ def s_plus(
     Returns:
         A sparse matrix of top-k s_plus similarities in the specified format.
     """
-    if matrix2 is None:
-        matrix2 = matrix1.T
-    matrix1.data = np.power(matrix1.data, alpha1)
-    matrix2.data = np.power(matrix2.data, alpha2)
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
     return _sim.s_plus(
         matrix1, matrix2=matrix2,
-        l1=l1, l2=l2,
+        l1=l1, l2=l2,l3=l3,
         t1=t1, t2=t2, 
         c1=c1, c2=c2,
+        a1=alpha,
         weight_depop_matrix1=pop1,
         weight_depop_matrix2=pop2,
         p1=beta1,
         p2=beta2,
-        l3=l3,
         k=k,
         stabilized_shrink=stabilized_shrink,
         bayesian_shrink=bayesian_shrink,
