@@ -1,4 +1,4 @@
-.PHONY: install test build wheelcheck benchmark all clean mkdocs test_local
+.PHONY: install test build wheelcheck benchmark all clean mkdocs test-local
 
 # Install all dev dependencies using uv
 install:
@@ -9,7 +9,7 @@ test:
 	uv run tox -e py311
 
 # Run unit test locally (excluding performance tests)
-test_local:
+test-local:
 	uv run pytest -m "not perf"
 
 # Build wheel + sdist
