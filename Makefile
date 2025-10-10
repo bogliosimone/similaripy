@@ -10,6 +10,7 @@ test:
 
 # Run unit test locally (excluding performance tests)
 test-local:
+	uv pip install '.[dev]'
 	uv run pytest -m "not perf"
 
 # Build wheel + sdist

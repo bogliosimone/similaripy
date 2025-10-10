@@ -1,3 +1,10 @@
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("similaripy")
+except PackageNotFoundError:
+    __version__ = "unknown"
+
 from .normalization import normalize, bm25, bm25plus, tfidf
 from .similarity import (
     dot_product,
@@ -12,6 +19,7 @@ from .similarity import (
 )
 
 __all__ = [
+    "__version__",
     "normalize",
     "bm25",
     "bm25plus",

@@ -13,6 +13,9 @@ import numpy as np
 import scipy.sparse as sp
 import tqdm
 
+DEF PROGRESS_BAR_THRESHOLD = 5000  # Show progress bar only for large computations
+DEF PROGRESS_UPDATE_FREQUENCY = 500  # Update progress bar every N rows
+
 from cython.operator import dereference
 from cython.parallel import parallel, prange
 from cython import float, address
@@ -97,8 +100,8 @@ def s_plus(
     assert target_rows is None or len(target_rows)<=matrix1.shape[0], 'error target rows'
     assert filter_cols is None or sp.issparse(filter_cols) or isinstance(filter_cols,(list,np.ndarray)), 'error format filter_cols'
     assert target_cols is None or sp.issparse(target_cols) or isinstance(target_cols,(list,np.ndarray)), 'error format target_cols' 
-    assert verbose==True or verbose==False, 'verbose must be boolean'
-    assert format_output=='coo' or format_output=='csr', 'output format must be \'coo\' or \'csr\''
+    assert verbose in (True, False), 'verbose must be boolean'
+    assert format_output in ('coo', 'csr'), "output format must be 'coo' or 'csr'"
 
     # do not allocate unecessary space
     if k > matrix2.shape[1]:
@@ -159,42 +162,59 @@ def s_plus(
         elif weight_depop_matrix2 == 'sum':
             weight_depop_matrix2 = np.power(np.array(matrix2.sum(axis = 0).A1, dtype=np.float32), p2, dtype=np.float32)
 
-    # build the data terms 
-    cdef float[:] m1_data = np.array(matrix1.data, dtype=np.float32)
-    cdef float[:] m2_data = np.array(matrix2.data, dtype=np.float32)
+    # build the data terms (avoid copy if already float32)
+    cdef float[:] m1_data = matrix1.data.astype(np.float32, copy=False)
+    cdef float[:] m2_data = matrix2.data.astype(np.float32, copy=False)
 
-    # build indices and indptrs
-    cdef int[:] m1_indptr = np.array(matrix1.indptr, dtype=np.int32), m1_indices = np.array(matrix1.indices, dtype=np.int32)
-    cdef int[:] m2_indptr = np.array(matrix2.indptr, dtype=np.int32), m2_indices = np.array(matrix2.indices, dtype=np.int32)
+    # build indices and indptrs (avoid copy if already int32)
+    cdef int[:] m1_indptr = matrix1.indptr.astype(np.int32, copy=False)
+    cdef int[:] m1_indices = matrix1.indices.astype(np.int32, copy=False)
+    cdef int[:] m2_indptr = matrix2.indptr.astype(np.int32, copy=False)
+    cdef int[:] m2_indices = matrix2.indices.astype(np.int32, copy=False)
 
     # build normalization terms for tversky, cosine and depop
     cdef float[:] Xtversky
     cdef float[:] Ytversky
     cdef float[:] Xcosine
-    cdef float[:] Ycosine 
+    cdef float[:] Ycosine
     cdef float[:] Xdepop
     cdef float[:] Ydepop
+    cdef float[:] m1_sq_norms
+    cdef float[:] m2_sq_norms
 
-    if l1!=0:
-        Xtversky = np.array((matrix1.power(2).sum(axis = 1).A1), dtype=np.float32)
-        Ytversky = np.array((matrix2.power(2).sum(axis = 0).A1), dtype=np.float32)
-    else:
-        Xtversky = np.array([],dtype=np.float32)
-        Ytversky = np.array([],dtype=np.float32)
+    # Compute squared norms once if needed by either Tversky or Cosine
+    cdef bint need_sq_norms = (l1 != 0 or l2 != 0)
 
-    if l2!=0:
-        Xcosine = np.power((matrix1.power(2).sum(axis = 1).A1) + additive_shrink, c1, dtype=np.float32)
-        Ycosine = np.power((matrix2.power(2).sum(axis = 0).A1) + additive_shrink, c2, dtype=np.float32)
+    if need_sq_norms:
+        m1_sq_norms = np.array(matrix1.power(2).sum(axis=1).A1, dtype=np.float32)
+        m2_sq_norms = np.array(matrix2.power(2).sum(axis=0).A1, dtype=np.float32)
+
+        if l1 != 0:
+            Xtversky = m1_sq_norms
+            Ytversky = m2_sq_norms
+        else:
+            Xtversky = np.array([], dtype=np.float32)
+            Ytversky = np.array([], dtype=np.float32)
+
+        if l2 != 0:
+            Xcosine = np.power(np.asarray(m1_sq_norms) + additive_shrink, c1, dtype=np.float32)
+            Ycosine = np.power(np.asarray(m2_sq_norms) + additive_shrink, c2, dtype=np.float32)
+        else:
+            Xcosine = np.array([], dtype=np.float32)
+            Ycosine = np.array([], dtype=np.float32)
     else:
-        Xcosine = np.array([],dtype=np.float32)
-        Ycosine = np.array([],dtype=np.float32)
-    
-    if l3!=0:
-        Xdepop = np.array(weight_depop_matrix1,dtype=np.float32)
-        Ydepop = np.array(weight_depop_matrix2,dtype=np.float32)
+        # Neither l1 nor l2 used
+        Xtversky = np.array([], dtype=np.float32)
+        Ytversky = np.array([], dtype=np.float32)
+        Xcosine = np.array([], dtype=np.float32)
+        Ycosine = np.array([], dtype=np.float32)
+
+    if l3 != 0:
+        Xdepop = np.array(weight_depop_matrix1, dtype=np.float32)
+        Ydepop = np.array(weight_depop_matrix2, dtype=np.float32)
     else:
-        Xdepop = np.array([],dtype=np.float32)
-        Ydepop = np.array([],dtype=np.float32)
+        Xdepop = np.array([], dtype=np.float32)
+        Ydepop = np.array([], dtype=np.float32)
 
     # restore original data terms
     matrix1.data, matrix2.data = old_m1_data, old_m2_data
@@ -256,8 +276,13 @@ def s_plus(
     cdef int counter = 0
     cdef int * counter_add = address(counter)
     cdef int verb
-    if n_targets<=5000 or verbose==False: verb = 0
-    else: verb = 1
+    cdef int progress_update_interval
+    if n_targets <= PROGRESS_BAR_THRESHOLD or not verbose:
+        verb = 0
+        progress_update_interval = 1  # Not used but must be defined
+    else:
+        verb = 1
+        progress_update_interval = max(1, n_targets // PROGRESS_UPDATE_FREQUENCY)
 
     
     # structures for multiplications
@@ -293,11 +318,11 @@ def s_plus(
         topk = new TopK[int, float](k)
         try:
             for i in prange(n_targets, schedule='dynamic'):
-                # progress bar (note: update once per 500 rows or with big matrix taking gil at each cycle destroy the performance)
+                # progress bar (note: update once per PROGRESS_UPDATE_FREQUENCY rows or with big matrix taking gil at each cycle destroy the performance)
                 if verb==1:
                     # here, without gil, we can get war/waw/raw errors, it's not important as it's just a counter for the progress bar
                     counter_add[0]=counter_add[0]+1
-                    if counter_add[0]%(n_targets/500)==0:
+                    if counter_add[0] % progress_update_interval == 0:
                         with gil:
                             progress.desc = 'Computing'
                             progress.n = counter_add[0]

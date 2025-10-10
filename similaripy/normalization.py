@@ -26,7 +26,7 @@ def normalize(
     Returns:
         Normalized CSR matrix.
     """
-    assert(norm in _NORMALIZATIONS)
+    assert norm in _NORMALIZATIONS, f"norm must be one of {_NORMALIZATIONS}, got '{norm}'"
     X = check_matrix(X)
 
     if not inplace: 
@@ -72,13 +72,13 @@ def bm25(
     Returns:
         BM25-normalized CSR matrix.
     """
-    assert(tf_mode in _TF)
-    assert(idf_mode in _IDF)
+    assert tf_mode in _TF, f"tf_mode must be one of {_TF}, got '{tf_mode}'"
+    assert idf_mode in _IDF, f"idf_mode must be one of {_IDF}, got '{idf_mode}'"
     X = check_matrix(X)
 
-    if not inplace: 
+    if not inplace:
         X = X.copy()
-    if axis == 0: 
+    if axis == 0:
         X = X.T
 
     X = X.tocsr()
@@ -118,13 +118,13 @@ def bm25plus(
     Returns:
         BM25+ normalized CSR matrix.
     """
-    assert(tf_mode in _TF)
-    assert(idf_mode in _IDF)
+    assert tf_mode in _TF, f"tf_mode must be one of {_TF}, got '{tf_mode}'"
+    assert idf_mode in _IDF, f"idf_mode must be one of {_IDF}, got '{idf_mode}'"
     X = check_matrix(X)
 
-    if not inplace: 
+    if not inplace:
         X = X.copy()
-    if axis == 0: 
+    if axis == 0:
         X = X.T
 
     X = X.tocsr()
@@ -159,13 +159,13 @@ def tfidf(
     Returns:
         TF-IDF normalized CSR matrix.
     """
-    assert(tf_mode in _TF)
-    assert(idf_mode in _IDF)
+    assert tf_mode in _TF, f"tf_mode must be one of {_TF}, got '{tf_mode}'"
+    assert idf_mode in _IDF, f"idf_mode must be one of {_IDF}, got '{idf_mode}'"
     X = check_matrix(X)
 
-    if not inplace: 
+    if not inplace:
         X = X.copy()
-    if axis == 0: 
+    if axis == 0:
         X = X.T
 
     X = X.tocsr()

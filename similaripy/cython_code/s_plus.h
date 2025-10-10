@@ -46,10 +46,10 @@ struct TopK {
 template <typename Index, typename Value>
 class SparseMatrixMultiplier {
  public:
-    explicit SparseMatrixMultiplier(Index column_count, 
-                                    Value * Xtversky, Value * Ytversky, //normalization terms tversky
-                                    Value * Xcosine, Value * Ycosine, //normalization terms cosine
-                                    Value * Xdepop, Value *Ydepop, //depop terms tversky
+    explicit SparseMatrixMultiplier(Index column_count,
+                                    const Value * Xtversky, const Value * Ytversky, //normalization terms tversky
+                                    const Value * Xcosine, const Value * Ycosine, //normalization terms cosine
+                                    const Value * Xdepop, const Value * Ydepop, //depop terms tversky
                                     Value a1, // power weight for product term
                                     Value l1, Value l2, Value l3, // weights tversky and cosine and depop
                                     Value t1, Value t2, // tversky coefficients
@@ -179,11 +179,14 @@ class SparseMatrixMultiplier {
  protected:
     std::vector<Value> sums;
     std::vector<Index> nonzeros;
-    Value * Xtversky, * Ytversky;
-    Value * Xcosine, * Ycosine;
-    Value * Xdepop, * Ydepop;
+    const Value * Xtversky;
+    const Value * Ytversky;
+    const Value * Xcosine;
+    const Value * Ycosine;
+    const Value * Xdepop;
+    const Value * Ydepop;
     Value a1;
-    Value l1, l2,l3;
+    Value l1, l2, l3;
     Value t1, t2;
     Value c1, c2;
     Value stabilized_shrink;
