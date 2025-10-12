@@ -542,8 +542,8 @@ def s_plus(
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
     return _sim.s_plus(
         matrix1, matrix2=matrix2,
-        l1=l1, l2=l2,l3=l3,
-        t1=t1, t2=t2, 
+        l1=l1, l2=l2, l3=l3,
+        t1=t1, t2=t2,
         c1=c1, c2=c2,
         a1=alpha,
         weight_depop_matrix1=pop1,
@@ -565,7 +565,17 @@ def s_plus(
     )
 
 
-def __get_shrink_values__(shrink: float, shrink_type: str):
+def __get_shrink_values__(shrink: float, shrink_type: str) -> tuple[float, float, float]:
+    """
+    Convert shrink parameter to specific shrink type values.
+
+    Args:
+        shrink: Shrinkage value to apply.
+        shrink_type: Type of shrinkage ('stabilized', 'bayesian', or 'additive').
+
+    Returns:
+        Tuple of (stabilized_shrink, bayesian_shrink, additive_shrink).
+    """
     stabilized_shrink = 0.0
     bayesian_shrink = 0.0
     additive_shrink = 0.0

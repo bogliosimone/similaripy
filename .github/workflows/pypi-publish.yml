@@ -38,7 +38,7 @@ jobs:
           source testenv/bin/activate
           pip install dist/*.tar.gz
           pip install pytest
-          pytest -m "not perf"
+          pytest
 
       - name: Upload source to PyPI
         env:
