@@ -42,7 +42,8 @@ def normalize(
     elif norm == 'max':
         _norm.inplace_normalize_csr_max(shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr)
     
-    if axis == 0: X = X.T
+    if axis == 0:
+        X = X.T
     return X.tocsr()
 
 
@@ -86,7 +87,8 @@ def bm25(
                                          k1=k1, b=b, delta=0.0,
                                          tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase)
 
-    if axis == 0: X = X.T
+    if axis == 0:
+        X = X.T
     return X.tocsr()
     
 

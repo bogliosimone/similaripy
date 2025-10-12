@@ -59,6 +59,7 @@ nav:
   - Getting Started: guide.md
   - Similarities: similarity.md
   - Normalizations: normalization.md
+  - Benchmarking: benchmarking.md
   - Full API Reference:
       - Similarity API: api/similarity.md
       - Normalization API: api/normalization.md

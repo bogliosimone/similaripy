@@ -1,4 +1,4 @@
-.PHONY: install test build wheelcheck benchmark all clean mkdocs test-local
+.PHONY: install test build wheelcheck benchmark all clean mkdocs test-local benchmark-local benchmark-normalization benchmark-sim
 
 # Install all dev dependencies using uv
 install:
@@ -11,7 +11,7 @@ test:
 # Run unit test locally (excluding performance tests)
 test-local:
 	uv pip install '.[dev]'
-	uv run pytest -m "not perf"
+	uv run pytest
 
 # Build wheel + sdist
 build:
@@ -21,9 +21,21 @@ build:
 wheelcheck:
 	uv run tox -e package-test
 
-# Run performance benchmarks (tests marked with @pytest.mark.perf)
+# Run benchmarks (tests marked with @pytest.mark.perf)
 benchmark:
 	uv run tox -e benchmark
+
+# Run benchmarks locally
+benchmark-local:
+	uv run pytest tests/benchmarks.py --benchmark-only
+
+# Run only normalization benchmarks locally
+benchmark-normalization:
+	uv run pytest tests/benchmarks.py::TestNormalizationPerformance --benchmark-only
+
+# Run only similarity benchmarks locally
+benchmark-similarity:
+	uv run pytest tests/benchmarks.py::TestSPlusPerformance --benchmark-only
 
 # Clean build artifacts
 clean:
