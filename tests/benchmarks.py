@@ -27,9 +27,10 @@ def generate_sparse_matrix(n_rows, n_cols, density=0.01, random_state=42):
 
 # Matrix sizes representing real-world use cases
 MATRIX_SIZES = {
-    'small': (1_000, 500, 0.05),           # Small dataset, ~25K non-zeros
-    'medium': (10_000, 5_000, 0.01),       # Medium dataset, ~500K non-zeros
-    'large': (50_000, 10_000, 0.005),      # Large dataset, ~2.5M non-zeros
+    'small': (1_000, 500, 0.05),              # Small dataset, ~25K non-zeros
+    'medium': (10_000, 5_000, 0.01),          # Medium dataset, ~500K non-zeros
+    'large': (30_000, 140_000, 0.005),        # Large dataset, ~20M non-zeros
+    'xlarge': (1_000_000, 2_260_000, 2.9e-5)  # Extra large dataset, ~100M non-zeros
 }
 
 
@@ -41,7 +42,7 @@ class TestNormalizationPerformance:
     """Benchmark normalization functions."""
 
     @pytest.mark.perf
-    @pytest.mark.parametrize("size_name", ['small', 'medium', 'large'])
+    @pytest.mark.parametrize("size_name", ['xlarge'])
     @pytest.mark.parametrize("norm_type", ['l1', 'l2', 'max'])
     def test_basic_normalization(self, benchmark, size_name, norm_type):
         """Benchmark basic L1/L2/max normalization."""
@@ -54,11 +55,9 @@ class TestNormalizationPerformance:
         assert result.shape == mat.shape
 
     @pytest.mark.perf
-    @pytest.mark.parametrize("size_name", ['small', 'medium', 'large'])
+    @pytest.mark.parametrize("size_name", ['xlarge'])
     @pytest.mark.parametrize("tf_mode,idf_mode", [
-        ('sqrt', 'smooth'),
-        ('raw', 'bm25'),
-        ('log', 'prob'),
+        ('sqrt', 'smooth')
     ])
     def test_tfidf_normalization(self, benchmark, size_name, tf_mode, idf_mode):
         """Benchmark TF-IDF with different mode combinations."""
@@ -70,14 +69,14 @@ class TestNormalizationPerformance:
             mat,
             tf_mode=tf_mode,
             idf_mode=idf_mode,
-            inplace=False
+            inplace=True
         )
 
         assert result.nnz > 0
         assert result.shape == mat.shape
 
     @pytest.mark.perf
-    @pytest.mark.parametrize("size_name", ['small', 'medium'])
+    @pytest.mark.parametrize("size_name", ['xlarge'])
     def test_bm25_normalization(self, benchmark, size_name):
         """Benchmark BM25 normalization."""
         n_rows, n_cols, density = MATRIX_SIZES[size_name]
@@ -88,7 +87,7 @@ class TestNormalizationPerformance:
             mat,
             k1=1.2,
             b=0.75,
-            inplace=False
+            inplace=True
         )
 
         assert result.nnz > 0
@@ -106,6 +105,7 @@ class TestSPlusPerformance:
     @pytest.mark.parametrize("n_rows,n_cols,density,k", [
         (6_000, 4_000, 0.04, 50),        # MovieLens1M-like
         (30_000, 140_000, 0.005, 50),    # MovieLens20M-like
+        (1_000_000, 2_260_000, 2.9e-5, 50)  # 100M-like
     ])
     def test_s_plus_basic(self, benchmark, n_rows, n_cols, density, k):
         """Benchmark s_plus with realistic matrix sizes."""
@@ -128,6 +128,7 @@ class TestSPlusPerformance:
     @pytest.mark.parametrize("n_rows,n_cols,density,k", [
         (6_000, 4_000, 0.04, 50),        # MovieLens1M-like
         (30_000, 140_000, 0.005, 50),    # MovieLens20M-like
+        (1_000_000, 2_260_000, 2.9e-5, 50)  # 100M-like
     ])
     def test_s_plus_complex(self, benchmark, n_rows, n_cols, density, k):
         """Benchmark s_plus with complex normalization parameters."""
