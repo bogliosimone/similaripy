@@ -329,7 +329,7 @@ def s_plus(
                             progress.refresh()
                 # compute row
                 t = targets[i]
-                neighbours.setIndexRow(i)
+                neighbours.setIndexRow(t)
                 for index1 in range(m1_indptr[t], m1_indptr[t+1]):
                     u = m1_indices[index1]
                     v1 = m1_data[index1]
