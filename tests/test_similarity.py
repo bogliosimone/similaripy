@@ -390,6 +390,42 @@ def test_openmp_enabled():
         print("⚠️ OpenMP not detected or extension built without OpenMP — skipping test")
 
 
+def test_target_rows():
+    rows = 1000
+    cols = 800
+    density = 0.025
+    rtol= 0.001
+    k = 50
+
+    # 1. Generate a random matrix
+    m = generate_random_matrix(rows, cols, density=density).tocsr()
+
+    # 2. Select a random subset of rows to use as target rows
+    rng = np.random.default_rng(42)
+    num_target_rows = 100
+    target_rows = rng.choice(rows, size=num_target_rows, replace=False).tolist()
+    target_rows = sorted(target_rows)  # Sort for easier comparison
+
+    ## target_rows = [0,2]
+    # 3. Compute cosine similarity with similaripy using target_rows
+    sim_target = sim.cosine(m, k=k, target_rows=target_rows, verbose=VERBOSE)
+
+    # 4. Compute cosine similarity with py_cosine (full computation)
+    cosine_full = py_cosine(m, k).tocsr()
+
+    # 5. Create a matrix with the same shape but only target rows populated
+    # Use a mask to keep only the target rows
+    mask = np.zeros(rows, dtype=bool)
+    mask[target_rows] = True
+    cosine_subset = sp.diags(mask, dtype=np.float32).dot(cosine_full)
+
+    # 6. Use check_sum to verify the two matrices are equal
+    np.testing.assert_allclose(check_sum(sim_target), check_sum(cosine_subset), rtol=rtol,
+                               err_msg='target_rows cosine error')
+
+    print('✅ Test target_rows passed')
+
+
 if __name__ == "__main__":
     test_openmp_enabled()
     test_similarity_topk()
@@ -397,6 +433,7 @@ if __name__ == "__main__":
     test_shrink_types()
     test_output_format()
     test_example_code()
+    test_target_rows()
 
 
 
