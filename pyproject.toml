@@ -1,6 +1,6 @@
 [project]
 name = "similaripy"
-version = "0.2.4"
+version = "0.2.5"
 description = "High-performance KNN similarity functions in Python, optimized for sparse matrices"
 authors = [{ name = "Simone Boglio", email = "bogliosimone@gmail.com" }]
 license = { text = "MIT" }
@@ -60,6 +60,8 @@ USE_OPENMP = "ON"
 [project.optional-dependencies]
 dev = [
   "scikit-build-core",
+  "cmake",
+  "pybind11",
   "cython",
   "pytest",
   "pytest-benchmark",
