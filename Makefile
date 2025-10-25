@@ -1,16 +1,24 @@
-.PHONY: install test build wheelcheck benchmark all clean mkdocs test-local benchmark-local benchmark-normalization benchmark-sim
+.PHONY: install test build wheelcheck benchmark all clean mkdocs test-dev benchmark-local benchmark-normalization benchmark-sim install-dev install-dev-editable
 
 # Install all dev dependencies using uv
 install:
-	uv pip install '.[dev]'
+	uv pip install '.'
+
+# Install dev dependencies using uv
+install-dev:
+	uv pip install -e '.[dev]'
+
+# Install in editable mode with skbuild redirect
+# The first time, you must run install-dev before, to have dependencies installed
+install-dev-editable:
+	SKBUILD_EDITABLE_REBUILD=true uv pip install -e '.[dev]' --no-build-isolation
 
 # Run unit tests using tox (py311)
 test:
 	uv run tox -e py311
 
 # Run unit test locally (excluding performance tests)
-test-local:
-	uv pip install '.[dev]'
+test-dev:
 	uv run pytest
 
 # Build wheel + sdist

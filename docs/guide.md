@@ -25,7 +25,7 @@ All functions are multi-threaded and implemented in Cython + OpenMP for fast par
 
 ### Advanced 
 
-- **S-Plus** – A hybrid model combining Tversky and Cosine components, with full control over weights and smoothing.
+- **S-Plus** – A hybrid model combining Tversky and Cosine components, with RP3Beta-style depopularization and full control over weights and smoothing. 
 
 ## Normalization Functions
 
@@ -72,5 +72,9 @@ Tips:
 - You can use `bm25plus`, `tfidf`, or `normalize` for different pre-processing strategies.
 - All operations are multithreaded and scale with available CPU cores.
 
+## In-depth Introduction
 
+Looking for a more in depth introduction?
+
+Check the article [Item and User KNN Recommender models with similaripy in Python](https://www.stepbystepdatascience.com/knn-recommenders-python), an amazing resource from the [StepByStepDataScience](https://www.stepbystepdatascience.com) blog.
 

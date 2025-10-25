@@ -86,6 +86,8 @@ recommendations = sim.dot_product(
 )
 ```
 
+For a more in-depth introduction you can check the article [Item and User KNN Recommender models with similaripy in Python](https://www.stepbystepdatascience.com/knn-recommenders-python), an amazing resource from the [StepByStepDataScience](https://www.stepbystepdatascience.com) blog.
+
 ## 📦 Installation
 
 SimilariPy can be installed from PyPI with:

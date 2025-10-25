@@ -1,11 +1,11 @@
 [project]
 name = "similaripy"
-version = "0.2.4"
+version = "0.2.5"
 description = "High-performance KNN similarity functions in Python, optimized for sparse matrices"
 authors = [{ name = "Simone Boglio", email = "bogliosimone@gmail.com" }]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 keywords = [
   "Similarity", "KNN", "Nearest Neighbors",
   "Collaborative Filtering", "Normalization", "Recommender Systems"
@@ -22,11 +22,11 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Programming Language :: Cython",
   "Programming Language :: C++",
 ]
@@ -48,9 +48,8 @@ build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
-sdist.reproducible = false
-build-dir = "build/{wheel_tag}"
 wheel.packages = ["similaripy"]
+build-dir = "build/{wheel_tag}"
 build.verbose = true
 logging.level = "INFO"
 
@@ -60,6 +59,8 @@ USE_OPENMP = "ON"
 [project.optional-dependencies]
 dev = [
   "scikit-build-core",
+  "cmake",
+  "pybind11",
   "cython",
   "pytest",
   "pytest-benchmark",

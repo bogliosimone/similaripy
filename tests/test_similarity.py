@@ -390,6 +390,195 @@ def test_openmp_enabled():
         print("⚠️ OpenMP not detected or extension built without OpenMP — skipping test")
 
 
+def test_target_rows():
+    rows = 1000
+    cols = 800
+    density = 0.025
+    rtol= 0.001
+    k = 50
+
+    # 1. Generate a random matrix
+    m = generate_random_matrix(rows, cols, density=density).tocsr()
+
+    # 2. Select a random subset of rows to use as target rows
+    rng = np.random.default_rng(42)
+    num_target_rows = 100
+    target_rows = rng.choice(rows, size=num_target_rows, replace=False).tolist()
+
+    ## target_rows = [0,2]
+    # 3. Compute cosine similarity with similaripy using target_rows
+    sim_target = sim.cosine(m, k=k, target_rows=target_rows, verbose=VERBOSE)
+
+    # 4. Compute cosine similarity with py_cosine (full computation)
+    cosine_full = py_cosine(m, k).tocsr()
+
+    # 5. Create a matrix with the same shape but only target rows populated
+    # Use a mask to keep only the target rows
+    mask = np.zeros(rows, dtype=bool)
+    mask[target_rows] = True
+    cosine_subset = sp.diags(mask, dtype=np.float32).dot(cosine_full)
+
+    # 6. Use check_sum to verify the two matrices are equal
+    np.testing.assert_allclose(check_sum(sim_target), check_sum(cosine_subset), rtol=rtol,
+                               err_msg='target_rows cosine error')
+
+    print('✅ Test target_rows passed')
+
+
+def test_filter_cols():
+    rows = 1000
+    cols = 800
+    density = 0.025
+    rtol = 0.001
+    k = 50
+
+    # 1. Generate a random matrix
+    m = generate_random_matrix(rows, cols, density=density).tocsr()
+
+    # 2. Select a random subset of columns to filter out
+    # filter_cols filters the output columns (which are rows in the similarity matrix)
+    rng = np.random.default_rng(42)
+    num_filter_cols = 100
+    filter_cols = rng.choice(rows, size=num_filter_cols, replace=False).tolist()
+    filter_cols = sorted(filter_cols)  # Sort for easier comparison
+
+    # 3. Compute cosine similarity with similaripy using filter_cols
+    sim_filtered = sim.cosine(m, k=k, filter_cols=filter_cols, verbose=VERBOSE)
+
+    # 4. Compute cosine similarity WITHOUT top-k (to simulate pre-filtering)
+    cosine_full_no_topk = py_cosine(m, k=rows).tocsr()  # Get all similarities
+
+    # 5. Zero out the filtered columns BEFORE applying top-k
+    mask = np.ones(rows, dtype=bool)
+    mask[filter_cols] = False
+    col_mask = sp.diags(mask, dtype=np.float32)
+    cosine_filtered_ref = cosine_full_no_topk.dot(col_mask)
+
+    # 6. NOW apply top-k after filtering
+    cosine_filtered_ref = top_k(cosine_filtered_ref, k)
+
+    # 7. Use check_sum to verify the two matrices are equal
+    np.testing.assert_allclose(check_sum(sim_filtered), check_sum(cosine_filtered_ref), rtol=rtol,
+                               err_msg='filter_cols cosine error')
+
+    print('✅ Test filter_cols passed')
+
+
+def test_target_cols():
+    rows = 1000
+    cols = 800
+    density = 0.025
+    rtol = 0.001
+    k = 50
+
+    # 1. Generate a random matrix
+    m = generate_random_matrix(rows, cols, density=density).tocsr()
+
+    # 2. Select a random subset of columns to keep (target_cols includes only these)
+    # target_cols includes the output columns (which are rows in the similarity matrix)
+    rng = np.random.default_rng(42)
+    num_target_cols = 100
+    target_cols = rng.choice(rows, size=num_target_cols, replace=False).tolist()
+
+    # 3. Compute cosine similarity with similaripy using target_cols
+    sim_target = sim.cosine(m, k=k, target_cols=target_cols, verbose=VERBOSE)
+
+    # 4. Compute cosine similarity WITHOUT top-k (to simulate pre-filtering)
+    cosine_full_no_topk = py_cosine(m, k=rows).tocsr()  # Get all similarities
+
+    # 5. Keep only the target columns BEFORE applying top-k
+    mask = np.zeros(rows, dtype=bool)
+    mask[target_cols] = True
+    col_mask = sp.diags(mask, dtype=np.float32)
+    cosine_target_ref = cosine_full_no_topk.dot(col_mask)
+
+    # 6. NOW apply top-k after filtering
+    cosine_target_ref = top_k(cosine_target_ref, k)
+
+    # 7. Use check_sum to verify the two matrices are equal
+    np.testing.assert_allclose(check_sum(sim_target), check_sum(cosine_target_ref), rtol=rtol,
+                               err_msg='target_cols cosine error')
+
+    print('✅ Test target_cols passed')
+
+
+def test_filter_cols_matrix():
+    """Test filter_cols with a sparse matrix (real-world use case: filtering seen items)"""
+    num_users = 100
+    num_items = 200
+    density = 0.05
+    rtol = 0.001
+    k = 200
+
+    # 1. Generate a User-Rating Matrix (URM) - users x items
+    rng = np.random.default_rng(42)
+    urm = sp.random(num_users, num_items, density=density, format='csr', dtype=np.float32, random_state=rng)
+
+    # 2. Generate an item-item similarity matrix
+    # In practice this would be: sim.cosine(urm.T, k=50)
+    # For testing, we'll create a random similarity matrix fully populated
+    item_similarity = sp.random(num_items, num_items, density=1, format='csr', dtype=np.float32, random_state=rng)
+
+    # 3. Compute recommendations using filter_cols=urm to filter already-seen items
+    # This is the typical use case: urm @ item_similarity, filtering seen items per user
+    recommendations_filtered = sim.dot_product(
+        urm,
+        item_similarity,
+        k=k,
+        filter_cols=urm,  # Filter out items each user has already seen
+        verbose=VERBOSE
+    )
+
+    # 4. Compute the reference: manual matrix multiplication and filtering
+    # First compute the full recommendations matrix (users x items)
+    recommendations_full = (urm.dot(item_similarity)).tocsr()
+
+    # 5. For each user (row), zero out the items they've already seen
+    recommendations_ref = recommendations_full.copy()
+    recommendations_ref = recommendations_ref.tolil()  # Convert to LIL for efficient row updates
+
+    for user_idx in range(num_users):
+        seen_items = urm.indices[urm.indptr[user_idx]:urm.indptr[user_idx+1]]
+        recommendations_ref[user_idx, seen_items] = 0
+
+    recommendations_ref = recommendations_ref.tocsr()
+
+    # 6. Apply top-k after filtering (commented out to check full matrix)
+    recommendations_ref = top_k(recommendations_ref, k)
+
+    # 7. Verify the two matrices are equal
+    np.testing.assert_allclose(check_sum(recommendations_filtered), check_sum(recommendations_ref), rtol=rtol,
+                               err_msg='filter_cols with matrix (seen items) error')
+
+    # 8. Additional check: verify that for each user, the recommended item indices are the same
+    recommendations_filtered_csr = recommendations_filtered.tocsr()
+    recommendations_filtered_csr.eliminate_zeros()
+    recommendations_ref_csr = recommendations_ref.tocsr()
+    recommendations_ref_csr.eliminate_zeros()
+
+    for user_idx in range(num_users):
+        # Get the indices (item IDs) for this user from both matrices
+        filtered_indices = recommendations_filtered_csr.indices[
+            recommendations_filtered_csr.indptr[user_idx]:recommendations_filtered_csr.indptr[user_idx+1]
+        ]
+        ref_indices = recommendations_ref_csr.indices[
+            recommendations_ref_csr.indptr[user_idx]:recommendations_ref_csr.indptr[user_idx+1]
+        ]
+
+        # Sort indices since order might differ (but should have same items)
+        filtered_indices_sorted = np.sort(filtered_indices)
+        ref_indices_sorted = np.sort(ref_indices)
+
+        # Verify the indices are identical
+        np.testing.assert_array_equal(
+            filtered_indices_sorted,
+            ref_indices_sorted,
+            err_msg=f'Mismatch in recommended items for user {user_idx}'
+        )
+
+    print('✅ Test filter_cols with matrix (seen items) passed')
+
+
 if __name__ == "__main__":
     test_openmp_enabled()
     test_similarity_topk()
@@ -397,6 +586,7 @@ if __name__ == "__main__":
     test_shrink_types()
     test_output_format()
     test_example_code()
-
-
-
+    test_target_rows()
+    test_filter_cols()
+    test_target_cols()
+    test_filter_cols_matrix()

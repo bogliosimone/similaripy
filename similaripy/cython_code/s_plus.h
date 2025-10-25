@@ -122,7 +122,12 @@ class SparseMatrixMultiplier {
 
             // compute similarity value
             if(l1!=0 || l2!=0 || l3!=0 || stabilized_shrink!=0 || bayesian_shrink!=0){
-                val = xy / (valTversky + valCosine + valDepop + stabilized_shrink);
+                Value denominator = valTversky + valCosine + valDepop + stabilized_shrink;
+                if(denominator != 0) 
+                    val = xy / denominator;
+                else
+                    val = 0;
+
                 if(bayesian_shrink != 0)
                     val = val * (xy / (xy + bayesian_shrink) );
             }
