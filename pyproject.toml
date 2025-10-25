@@ -48,9 +48,8 @@ build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
-sdist.reproducible = false
-build-dir = "build/{wheel_tag}"
 wheel.packages = ["similaripy"]
+build-dir = "build/{wheel_tag}"
 build.verbose = true
 logging.level = "INFO"
 
