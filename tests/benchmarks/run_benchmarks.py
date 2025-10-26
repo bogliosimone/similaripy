@@ -186,7 +186,7 @@ def print_summary_table(all_results):
     )
 
     print(f"\n{'='*120}")
-    print(f"BENCHMARK SUMMARY")
+    print("BENCHMARK SUMMARY")
     print(f"{'='*120}")
     print(f"Similaripy version: {similaripy_version}")
     print(f"Architecture: {system} {arch}")
@@ -301,7 +301,7 @@ def write_report_file(output_path, datasets, similarities, k, shrink, threshold,
 
         # Section 2: Benchmark Summary
         f.write(f"\n{'=' * 120}\n")
-        f.write(f"BENCHMARK SUMMARY\n")
+        f.write("BENCHMARK SUMMARY\n")
         f.write(f"{'=' * 120}\n")
         f.write(f"Similaripy version: {similaripy_version}\n")
         f.write(f"Architecture: {system} {arch}\n")
