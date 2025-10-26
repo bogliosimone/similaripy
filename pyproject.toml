@@ -63,13 +63,19 @@ dev = [
   "pybind11",
   "cython",
   "pytest",
-  "pytest-benchmark",
   "build",
   "tox",
   "mkdocs",
   "mkdocs-material",
   "mkdocs-material-extensions",
   "mkdocstrings[python]"
+]
+
+bench = [
+  "pandas",
+  "datasets",
+  "pyarrow",
+  "pytest-benchmark",
 ]
 
 [tool.tox]
