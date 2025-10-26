@@ -12,6 +12,7 @@ import cython
 import numpy as np
 import scipy.sparse as sp
 import tqdm
+from .utils import build_coo_matrix, build_csr_matrix
 
 DEF PROGRESS_BAR_THRESHOLD = 5000  # Show progress bar only for large computations
 DEF PROGRESS_UPDATE_FREQUENCY = 500  # Update progress bar every N rows
@@ -51,10 +52,6 @@ cdef extern from "s_plus.h" namespace "s_plus" nogil:
         void add(Index index, Value value)
         void setIndexRow(Index index)
         void foreach[Function](Function & f)
-
-cdef extern from "coo_to_csr.h" nogil:
-    void coo32_to_csr64(int n_row,int n_col,long nnz,int Ai[],int Aj[],float Ax[],long Bp[],long Bj[],float Bx[])
-    void coo32_to_csr32(int n_row,int n_col,int nnz,int Ai[],int Aj[],float Ax[],int Bp[],int Bj[],float Bx[])
 
 cdef extern from "omp.h":
     int omp_get_max_threads()
@@ -357,85 +354,32 @@ def s_plus(
     del m2_data, m2_indices, m2_indptr
     del targets
 
-    # build result in coo or csr format
-    cdef int M,N
-    cdef float [:] data
-    cdef int [:] indices32, indptr32
-    cdef long [:] indices64, indptr64
+    progress.desc = f'Build {format_output} matrix'
+    progress.refresh()
 
-    if format_output=='coo':
-        # return the result matrix in coo format
-        progress.desc = 'Build coo matrix'
-        progress.refresh()
-        res = sp.coo_matrix((values, (rows, cols)),shape=(item_count, user_count), dtype=np.float32)
-        del values, rows, cols
+    # build result in coo or csr format
+    if format_output == 'coo':
+        res = build_coo_matrix(
+            rows=rows,
+            cols=cols,
+            values=values,
+            item_count=item_count,
+            user_count=user_count
+        )
     else:
-        # return the result matrix in csr format taking care of conversion in 32/64bit of indices if needed
-        # note: normally require less memory than coo at the end of the conversion, but require to allocate more memory during the conversion
-        progress.desc = 'Build csr matrix'
-        progress.refresh()
-        M = item_count
-        N = user_count
-        idx_dtype = get_index_dtype(maxval=max(n_targets*k,N)) #32/64 bit dtype based on total entry and max value
-        if idx_dtype==np.int32:
-            indptr32 = np.empty(M + 1, dtype=np.int32)
-            indices32 = np.empty(n_targets * k, dtype=np.int32)
-            data = np.empty(n_targets * k, dtype=np.float32)
-            coo32_to_csr32(M, N, n_targets*k, &rows[0], &cols[0], &values[0], &indptr32[0], &indices32[0], &data[0])
-            del values, rows, cols
-            res = sp.csr_matrix((data, indices32, indptr32) ,shape=(item_count, user_count), dtype=np.float32)
-            del indptr32,indices32
-        else: # idx_dtype==np.int64:
-            indptr64 = np.empty(M + 1, dtype=np.int64)
-            indices64 = np.empty(n_targets * k, dtype=np.int64)
-            data = np.empty(n_targets * k, dtype=np.float32)
-            coo32_to_csr64(M, N, n_targets*k, &rows[0], &cols[0], &values[0], &indptr64[0], &indices64[0], &data[0])
-            del values, rows, cols
-            res = sp.csr_matrix((data, indices64, indptr64) ,shape=(item_count, user_count), dtype=np.float32)
-            del indptr64,indices64
-        del data
+        res = build_csr_matrix(
+            rows=rows,
+            cols=cols,
+            values=values,
+            item_count=item_count,
+            user_count=user_count
+        )
         progress.desc = 'Remove zeros'
         progress.refresh()
-        res.eliminate_zeros() # routine for csr matrix
-    
+        res.eliminate_zeros()
+
     # finally update progress bar and return the result matrix
     progress.desc = 'Done'
-    progress.refresh()    
+    progress.refresh()
     progress.close()
     return res
-
-def get_index_dtype(arrays=(), maxval=None, check_contents=False):
-    """
-    Based on input (integer) arrays `a`, determine a suitable index data
-    type that can hold the data in the arrays.
-    """
-    # not using intc directly due to misinteractions with pythran
-    if np.intc().itemsize != 4:
-        return np.int64
-
-    int32min = np.int32(np.iinfo(np.int32).min)
-    int32max = np.int32(np.iinfo(np.int32).max)
-
-    if maxval is not None:
-        maxval = np.int64(maxval)
-        if maxval > int32max:
-            return np.int64
-
-    if isinstance(arrays, np.ndarray):
-        arrays = (arrays,)
-
-    for arr in arrays:
-        arr = np.asarray(arr)
-        if not np.can_cast(arr.dtype, np.int32):
-            if check_contents:
-                if arr.size == 0:
-                    # a bigger type not needed
-                    continue
-                elif np.issubdtype(arr.dtype, np.integer):
-                    maxval = arr.max()
-                    minval = arr.min()
-                    if minval >= int32min and maxval <= int32max:
-                        # a bigger type not needed
-                        continue
-            return np.int64
-    return np.int32
