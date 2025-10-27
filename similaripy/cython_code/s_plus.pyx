@@ -4,17 +4,21 @@
 # distutils: sources = s_plus.cpp, coo_to_csr.cpp
 
 """
-    author: Simone Boglio
-    mail: bogliosimone@gmail.com
+    s_plus: top-K similarity search between rows of two sparse matrices
 """
 
 import cython
 import numpy as np
-import scipy.sparse as sp
 import tqdm
-from .utils import build_coo_matrix, build_csr_matrix, get_num_threads
+
+from .utils import (
+    build_coo_matrix,
+    build_csr_matrix, 
+    get_num_threads
+)
 from .s_plus_utils import (
     validate_s_plus_inputs,
+    _build_matrix_data,
     _build_squared_norms,
     _build_tversky_normalization,
     _build_cosine_normalization,
@@ -71,12 +75,12 @@ cdef extern from "s_plus.h" namespace "s_plus" nogil:
 @cython.wraparound(False)
 def s_plus(
     matrix1, matrix2=None,
-    weight_depop_matrix1='none' , weight_depop_matrix2='none',
-    float p1=0, float p2=0, 
+    weight_depop_matrix1='none', weight_depop_matrix2='none',
+    float p1=0, float p2=0,
     float a1=1,
     float l1=0, float l2=0, float l3=0,
     float t1=1, float t2=1,
-    float c1=0.5,float c2=0.5,
+    float c1=0.5, float c2=0.5,
     unsigned int k=100, 
     float stabilized_shrink=0,
     float bayesian_shrink=0,
@@ -108,14 +112,14 @@ def s_plus(
         format_output=format_output
     )
 
-    # do not allocate unecessary space
+    # do not allocate unnecessary space
     if k > matrix2.shape[1]:
         k = matrix2.shape[1]
 
     # build target rows (only the row that must be computed)
     if target_rows is None:
-        target_rows=np.arange(matrix1.shape[0],dtype=np.int32)
-    cdef int[:] targets = np.array(target_rows,dtype=np.int32)
+        target_rows = np.arange(matrix1.shape[0], dtype=np.int32)
+    cdef int[:] targets = np.array(target_rows, dtype=np.int32)
     cdef int n_targets = targets.shape[0]
 
     # start progress bar
@@ -136,20 +140,13 @@ def s_plus(
     cdef int item_count = matrix1.shape[0]
     cdef int user_count = matrix2.shape[1]
     cdef int i, u, t, index1, index2
-    cdef int norm, depop
     cdef long index3
     cdef float v1
 
     ### START PREPROCESSING ###
 
-    # save original data
-    old_m1_data, old_m2_data = matrix1.data, matrix2.data
-
-    # if binary use set theory otherwise copy data and use float32
-    if binary:
-        matrix1.data, matrix2.data = np.ones(matrix1.data.shape[0], dtype= np.float32), np.ones(matrix2.data.shape[0], dtype=np.float32)
-    else:
-        matrix1.data, matrix2.data = np.array(matrix1.data, dtype=np.float32), np.array(matrix2.data, dtype=np.float32)
+    # Build matrix data (handle binary mode and float32 conversion)
+    old_m1_data, old_m2_data = _build_matrix_data(matrix1, matrix2, binary)
 
     # build the data terms (avoid copy if already float32)
     cdef float[:] m1_data = matrix1.data.astype(np.float32, copy=False)
@@ -194,12 +191,8 @@ def s_plus(
     cdef int[:] target_m_indptr
     cdef int[:] target_m_indices
 
-    filter_col_mode, filter_m_indptr, filter_m_indices = _build_column_selector(
-        filter_cols, item_count, user_count, 'filter_cols'
-    )
-    target_col_mode, target_m_indptr, target_m_indices = _build_column_selector(
-        target_cols, item_count, user_count, 'target_cols'
-    )
+    filter_col_mode, filter_m_indptr, filter_m_indices = _build_column_selector(filter_cols)
+    target_col_mode, target_m_indptr, target_m_indices = _build_column_selector(target_cols)
 
     # set progress bar
     cdef int counter = 0
@@ -248,9 +241,10 @@ def s_plus(
         try:
             for i in prange(n_targets, schedule='dynamic'):
                 # progress bar (note: update once per PROGRESS_UPDATE_FREQUENCY rows or with big matrix taking gil at each cycle destroy the performance)
-                if verb==1:
-                    # here, without gil, we can get war/waw/raw errors, it's not important as it's just a counter for the progress bar
-                    counter_add[0]=counter_add[0]+1
+                if verb == 1:
+                    # here, without gil, we can get WAR (Write-After-Read), WAW (Write-After-Write),
+                    # RAW (Read-After-Write) race conditions, it's not important as it's just a counter for the progress bar
+                    counter_add[0] = counter_add[0] + 1
                     if counter_add[0] % progress_update_interval == 0:
                         with gil:
                             progress.desc = 'Computing'

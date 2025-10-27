@@ -4,8 +4,6 @@
 
 """
     Utility functions for similaripy cython code
-    author: Simone Boglio
-    mail: bogliosimone@gmail.com
 """
 
 import cython

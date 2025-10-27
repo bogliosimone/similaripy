@@ -2,9 +2,7 @@
 # cython: boundscheck=False, wraparound=False, cdivision=True, initializedcheck=False
 
 """
-    S_plus specific utility functions
-    author: Simone Boglio
-    mail: bogliosimone@gmail.com
+    s_plus specific utility functions
 """
 
 import cython
@@ -276,7 +274,45 @@ def _build_depop_normalization(matrix1, matrix2, weight_spec1, weight_spec2, flo
     return Xdepop, Ydepop
 
 
-def _build_column_selector(cols, int item_count, int user_count, str name):
+def _build_matrix_data(matrix1, matrix2, binary):
+    """
+    Build matrix data arrays, handling binary mode.
+
+    In binary mode, all non-zero values become 1.0 (set theory).
+    Otherwise, convert data to float32.
+
+    Parameters
+    ----------
+    matrix1 : scipy.sparse.csr_matrix
+        First matrix
+    matrix2 : scipy.sparse.csr_matrix
+        Second matrix
+    binary : bool
+        If True, use set theory (all values = 1.0)
+
+    Returns
+    -------
+    tuple
+        (old_m1_data, old_m2_data) - original data arrays to restore later
+    """
+    # Save original data for restoration
+    old_m1_data = matrix1.data
+    old_m2_data = matrix2.data
+
+    # Build data arrays based on binary flag
+    if binary:
+        # Set theory: all non-zero values become 1.0
+        matrix1.data = np.ones(matrix1.data.shape[0], dtype=np.float32)
+        matrix2.data = np.ones(matrix2.data.shape[0], dtype=np.float32)
+    else:
+        # Convert to float32 (copy if needed)
+        matrix1.data = np.array(matrix1.data, dtype=np.float32)
+        matrix2.data = np.array(matrix2.data, dtype=np.float32)
+
+    return old_m1_data, old_m2_data
+
+
+def _build_column_selector(cols):
     """
     Build column selector (filter or target) for similarity computation.
 
@@ -285,16 +321,12 @@ def _build_column_selector(cols, int item_count, int user_count, str name):
     - List/array: MODE_ARRAY (1) - specific column indices
     - Sparse matrix: MODE_MATRIX (2) - row-specific column selections
 
+    Note: Shape validation is done in validate_s_plus_inputs() before calling this function.
+
     Parameters
     ----------
     cols : None, list, np.ndarray, or scipy.sparse matrix
         Column selector specification
-    item_count : int
-        Number of rows in the output matrix
-    user_count : int
-        Number of columns in the output matrix
-    name : str
-        Name for error messages ('filter_cols' or 'target_cols')
 
     Returns
     -------
