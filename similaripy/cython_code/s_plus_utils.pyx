@@ -8,6 +8,7 @@
 import cython
 import numpy as np
 import scipy.sparse as sp
+from typing import Union, Optional, Tuple, List
 
 # Column selector mode constants
 cdef int MODE_NONE = 0  # No filtering/targeting (use all columns)
@@ -16,42 +17,35 @@ cdef int MODE_MATRIX = 2  # Column selector is a sparse matrix
 
 
 def validate_s_plus_inputs(
-    matrix1, matrix2,
-    weight_depop_matrix1, weight_depop_matrix2,
-    k, target_rows, filter_cols, target_cols,
-    verbose, format_output):
+    matrix1: sp.spmatrix,
+    matrix2: sp.spmatrix,
+    weight_depop_matrix1: Union[str, np.ndarray],
+    weight_depop_matrix2: Union[str, np.ndarray],
+    k: int,
+    target_rows: Optional[Union[List, np.ndarray]],
+    filter_cols: Optional[Union[List, np.ndarray, sp.spmatrix]],
+    target_cols: Optional[Union[List, np.ndarray, sp.spmatrix]],
+    verbose: bool,
+    format_output: str
+) -> None:
     """
     Validate input parameters for s_plus function.
 
-    Parameters
-    ----------
-    matrix1 : scipy.sparse matrix
-        First input matrix
-    matrix2 : scipy.sparse matrix
-        Second input matrix
-    weight_depop_matrix1 : array-like or str
-        Depopularization weights for matrix1
-    weight_depop_matrix2 : array-like or str
-        Depopularization weights for matrix2
-    k : int
-        Number of top items to keep
-    target_rows : array-like or None
-        Rows to compute
-    filter_cols : array-like, sparse matrix, or None
-        Columns to filter out
-    target_cols : array-like, sparse matrix, or None
-        Columns to target
-    verbose : bool
-        Whether to show progress
-    format_output : str
-        Output format ('coo' or 'csr')
+    Args:
+        matrix1: First input matrix.
+        matrix2: Second input matrix.
+        weight_depop_matrix1: Depopularization weights for matrix1.
+        weight_depop_matrix2: Depopularization weights for matrix2.
+        k: Number of top items to keep.
+        target_rows: Rows to compute.
+        filter_cols: Columns to filter out.
+        target_cols: Columns to target.
+        verbose: Whether to show progress.
+        format_output: Output format ('coo' or 'csr').
 
-    Raises
-    ------
-    TypeError
-        If matrix1 or matrix2 are not sparse matrices
-    ValueError
-        If any parameter has invalid value or incompatible dimensions
+    Raises:
+        TypeError: If matrix1 or matrix2 are not sparse matrices.
+        ValueError: If any parameter has invalid value or incompatible dimensions.
     """
     # Check matrix types
     if not sp.issparse(matrix1):
@@ -131,47 +125,43 @@ def validate_s_plus_inputs(
         raise ValueError(f"format_output must be 'coo' or 'csr', got '{format_output}'")
 
 
-def _build_squared_norms(matrix1, matrix2):
+def _build_squared_norms(
+    matrix1: sp.csr_matrix,
+    matrix2: sp.csr_matrix
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Build squared norms for both matrices.
 
     This computation is shared between Tversky and Cosine normalizations
     and should only be computed once when needed by either.
 
-    Parameters
-    ----------
-    matrix1 : scipy.sparse.csr_matrix
-        First matrix (already in CSR format with zeros eliminated)
-    matrix2 : scipy.sparse.csr_matrix
-        Second matrix (already in CSR format with zeros eliminated)
+    Args:
+        matrix1: First matrix (already in CSR format with zeros eliminated).
+        matrix2: Second matrix (already in CSR format with zeros eliminated).
 
-    Returns
-    -------
-    tuple
-        (m1_sq_norms, m2_sq_norms) as float32 arrays
+    Returns:
+        Tuple of (m1_sq_norms, m2_sq_norms) as float32 arrays.
     """
     cdef float[:] m1_sq_norms = np.array(matrix1.power(2).sum(axis=1).A1, dtype=np.float32)
     cdef float[:] m2_sq_norms = np.array(matrix2.power(2).sum(axis=0).A1, dtype=np.float32)
     return m1_sq_norms, m2_sq_norms
 
 
-def _build_tversky_normalization(m1_sq_norms, m2_sq_norms, float l1):
+def _build_tversky_normalization(
+    m1_sq_norms: np.ndarray,
+    m2_sq_norms: np.ndarray,
+    float l1
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Build Tversky normalization arrays based on pre-computed squared norms.
 
-    Parameters
-    ----------
-    m1_sq_norms : np.ndarray
-        Squared norms for matrix1
-    m2_sq_norms : np.ndarray
-        Squared norms for matrix2
-    l1 : float
-        Weight for Tversky normalization
+    Args:
+        m1_sq_norms: Squared norms for matrix1.
+        m2_sq_norms: Squared norms for matrix2.
+        l1: Weight for Tversky normalization.
 
-    Returns
-    -------
-    tuple
-        (Xtversky, Ytversky) as float32 arrays.
+    Returns:
+        Tuple of (Xtversky, Ytversky) as float32 arrays.
         If l1 == 0, returns empty arrays.
     """
     cdef float[:] empty = np.array([], dtype=np.float32)
@@ -185,29 +175,27 @@ def _build_tversky_normalization(m1_sq_norms, m2_sq_norms, float l1):
     return Xtversky, Ytversky
 
 
-def _build_cosine_normalization(m1_sq_norms, m2_sq_norms, float l2, float c1, float c2, float additive_shrink):
+def _build_cosine_normalization(
+    m1_sq_norms: np.ndarray,
+    m2_sq_norms: np.ndarray,
+    float l2,
+    float c1,
+    float c2,
+    float additive_shrink
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Build Cosine normalization arrays based on squared norms.
 
-    Parameters
-    ----------
-    m1_sq_norms : np.ndarray or None
-        Squared norms for matrix1 (can be None if not computed)
-    m2_sq_norms : np.ndarray or None
-        Squared norms for matrix2 (can be None if not computed)
-    l2 : float
-        Weight for Cosine normalization
-    c1 : float
-        Power for Cosine normalization on matrix1
-    c2 : float
-        Power for Cosine normalization on matrix2
-    additive_shrink : float
-        Additive shrinkage for Cosine normalization
+    Args:
+        m1_sq_norms: Squared norms for matrix1 (can be None if not computed).
+        m2_sq_norms: Squared norms for matrix2 (can be None if not computed).
+        l2: Weight for Cosine normalization.
+        c1: Power for Cosine normalization on matrix1.
+        c2: Power for Cosine normalization on matrix2.
+        additive_shrink: Additive shrinkage for Cosine normalization.
 
-    Returns
-    -------
-    tuple
-        (Xcosine, Ycosine) as float32 arrays
+    Returns:
+        Tuple of (Xcosine, Ycosine) as float32 arrays.
     """
     cdef float[:] empty = np.array([], dtype=np.float32)
     cdef float[:] Xcosine = empty
@@ -220,31 +208,29 @@ def _build_cosine_normalization(m1_sq_norms, m2_sq_norms, float l2, float c1, fl
     return Xcosine, Ycosine
 
 
-def _build_depop_normalization(matrix1, matrix2, weight_spec1, weight_spec2, float p1, float p2, float l3):
+def _build_depop_normalization(
+    matrix1: sp.csr_matrix,
+    matrix2: sp.csr_matrix,
+    weight_spec1: Union[str, np.ndarray],
+    weight_spec2: Union[str, np.ndarray],
+    float p1,
+    float p2,
+    float l3
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Build Depopularization normalization arrays.
 
-    Parameters
-    ----------
-    matrix1 : scipy.sparse.csr_matrix
-        First matrix (already in CSR format with zeros eliminated)
-    matrix2 : scipy.sparse.csr_matrix
-        Second matrix (already in CSR format with zeros eliminated)
-    weight_spec1 : array-like or str
-        Either 'none', 'sum', or an array of custom weights for matrix1
-    weight_spec2 : array-like or str
-        Either 'none', 'sum', or an array of custom weights for matrix2
-    p1 : float
-        Power to raise weights to for matrix1
-    p2 : float
-        Power to raise weights to for matrix2
-    l3 : float
-        Weight for Depopularization normalization
+    Args:
+        matrix1: First matrix (already in CSR format with zeros eliminated).
+        matrix2: Second matrix (already in CSR format with zeros eliminated).
+        weight_spec1: Either 'none', 'sum', or an array of custom weights for matrix1.
+        weight_spec2: Either 'none', 'sum', or an array of custom weights for matrix2.
+        p1: Power to raise weights to for matrix1.
+        p2: Power to raise weights to for matrix2.
+        l3: Weight for Depopularization normalization.
 
-    Returns
-    -------
-    tuple
-        (Xdepop, Ydepop) as float32 arrays. Returns empty arrays if l3 == 0.
+    Returns:
+        Tuple of (Xdepop, Ydepop) as float32 arrays. Returns empty arrays if l3 == 0.
     """
     cdef float[:] empty = np.array([], dtype=np.float32)
     cdef float[:] Xdepop = empty
@@ -274,26 +260,24 @@ def _build_depop_normalization(matrix1, matrix2, weight_spec1, weight_spec2, flo
     return Xdepop, Ydepop
 
 
-def _build_matrix_data(matrix1, matrix2, binary):
+def _build_matrix_data(
+    matrix1: sp.csr_matrix,
+    matrix2: sp.csr_matrix,
+    binary: bool
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Build matrix data arrays, handling binary mode.
 
     In binary mode, all non-zero values become 1.0 (set theory).
     Otherwise, convert data to float32.
 
-    Parameters
-    ----------
-    matrix1 : scipy.sparse.csr_matrix
-        First matrix
-    matrix2 : scipy.sparse.csr_matrix
-        Second matrix
-    binary : bool
-        If True, use set theory (all values = 1.0)
+    Args:
+        matrix1: First matrix.
+        matrix2: Second matrix.
+        binary: If True, use set theory (all values = 1.0).
 
-    Returns
-    -------
-    tuple
-        (old_m1_data, old_m2_data) - original data arrays to restore later
+    Returns:
+        Tuple of (old_m1_data, old_m2_data) - original data arrays to restore later.
     """
     # Save original data for restoration
     old_m1_data = matrix1.data
@@ -312,7 +296,9 @@ def _build_matrix_data(matrix1, matrix2, binary):
     return old_m1_data, old_m2_data
 
 
-def _build_column_selector(cols):
+def _build_column_selector(
+    cols: Optional[Union[List, np.ndarray, sp.spmatrix]]
+) -> Tuple[int, np.ndarray, np.ndarray]:
     """
     Build column selector (filter or target) for similarity computation.
 
@@ -323,15 +309,11 @@ def _build_column_selector(cols):
 
     Note: Shape validation is done in validate_s_plus_inputs() before calling this function.
 
-    Parameters
-    ----------
-    cols : None, list, np.ndarray, or scipy.sparse matrix
-        Column selector specification
+    Args:
+        cols: Column selector specification.
 
-    Returns
-    -------
-    tuple
-        (mode, indptr, indices) where:
+    Returns:
+        Tuple of (mode, indptr, indices) where:
         - mode: int (0=none, 1=array, 2=matrix)
         - indptr: int32 array (CSR indptr format)
         - indices: int32 array (sorted column indices)

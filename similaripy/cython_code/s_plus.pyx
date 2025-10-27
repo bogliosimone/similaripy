@@ -9,11 +9,13 @@
 
 import cython
 import numpy as np
+import scipy.sparse as sp
 import tqdm
+from typing import Optional, Union, Literal
 
 from .utils import (
     build_coo_matrix,
-    build_csr_matrix, 
+    build_csr_matrix,
     get_num_threads
 )
 from .s_plus_utils import (
@@ -74,25 +76,71 @@ cdef extern from "s_plus.h" namespace "s_plus" nogil:
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def s_plus(
-    matrix1, matrix2=None,
-    weight_depop_matrix1='none', weight_depop_matrix2='none',
-    float p1=0, float p2=0,
-    float a1=1,
-    float l1=0, float l2=0, float l3=0,
-    float t1=1, float t2=1,
-    float c1=0.5, float c2=0.5,
-    unsigned int k=100, 
-    float stabilized_shrink=0,
-    float bayesian_shrink=0,
-    float additive_shrink=0,
-    float threshold=0,
-    binary=False,
-    target_rows=None,
-    filter_cols=None,
-    target_cols=None,
-    verbose=True,
-    format_output='csr',
-    int num_threads=0):  
+    matrix1: sp.csr_matrix,
+    matrix2: Optional[sp.csr_matrix] = None,
+    weight_depop_matrix1: Union[str, np.ndarray] = 'none',
+    weight_depop_matrix2: Union[str, np.ndarray] = 'none',
+    float p1 = 0,
+    float p2 = 0,
+    float a1 = 1,
+    float l1 = 0,
+    float l2 = 0,
+    float l3 = 0,
+    float t1 = 1,
+    float t2 = 1,
+    float c1 = 0.5,
+    float c2 = 0.5,
+    unsigned int k = 100,
+    float stabilized_shrink = 0,
+    float bayesian_shrink = 0,
+    float additive_shrink = 0,
+    float threshold = 0,
+    binary: bool = False,
+    target_rows: Optional[Union[list, np.ndarray]] = None,
+    filter_cols: Optional[Union[list, np.ndarray, sp.spmatrix]] = None,
+    target_cols: Optional[Union[list, np.ndarray, sp.spmatrix]] = None,
+    verbose: bool = True,
+    format_output: Literal['csr', 'coo'] = 'csr',
+    int num_threads = 0
+) -> Union[sp.csr_matrix, sp.coo_matrix]:
+    """
+    Compute top-K similarity between rows of two sparse matrices using the S_Plus algorithm.
+
+    The S_Plus algorithm combines multiple similarity metrics (Tversky, Cosine, Depopularization)
+    with configurable weights and supports various normalization strategies.
+
+    Args:
+        matrix1: First sparse matrix (typically item-user interactions).
+        matrix2: Optional second matrix. If None, uses matrix1.T (self-similarity).
+        weight_depop_matrix1: Depopularization weights for matrix1: 'none', 'sum', or custom array.
+        weight_depop_matrix2: Depopularization weights for matrix2: 'none', 'sum', or custom array.
+        p1: Power for depopularization weights on matrix1.
+        p2: Power for depopularization weights on matrix2.
+        a1: Power applied to dot product values.
+        l1: Weight for Tversky similarity term.
+        l2: Weight for Cosine similarity term.
+        l3: Weight for Depopularization term.
+        t1: Tversky parameter for matrix1.
+        t2: Tversky parameter for matrix2.
+        c1: Cosine power exponent for matrix1.
+        c2: Cosine power exponent for matrix2.
+        k: Number of top similar items to keep per row.
+        stabilized_shrink: Stabilized shrinkage parameter.
+        bayesian_shrink: Bayesian shrinkage parameter.
+        additive_shrink: Additive shrinkage for cosine normalization.
+        threshold: Minimum similarity threshold.
+        binary: If True, treat all non-zero values as 1.0 (set theory).
+        target_rows: Specific rows to compute. If None, compute all rows.
+        filter_cols: Columns to exclude from results (e.g., already seen items).
+        target_cols: Columns to include in results (only compute these).
+        verbose: Show progress bar during computation.
+        format_output: Output matrix format: 'csr' or 'coo'.
+        num_threads: Number of OpenMP threads (0 = use all available cores).
+
+    Returns:
+        A sparse matrix of shape (n_rows, n_cols) in the specified format,
+        containing the top-k similarity scores.
+    """
 
     # if receive only matrix1 in input
     if matrix2 is None:
@@ -167,8 +215,8 @@ def s_plus(
     cdef float[:] Ycosine = empty
     cdef float[:] Xdepop = empty
     cdef float[:] Ydepop = empty
-    cdef float[:] m1_sq_norms
-    cdef float[:] m2_sq_norms
+    cdef float[:] m1_sq_norms = empty
+    cdef float[:] m2_sq_norms = empty
 
     # Compute squared norms once if needed by either Tversky or Cosine (avoid redundant computation)
     if l1 != 0 or l2 != 0:

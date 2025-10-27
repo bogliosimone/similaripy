@@ -9,6 +9,7 @@
 import cython
 import numpy as np
 import scipy.sparse as sp
+from typing import Optional, Union, Tuple
 
 cdef extern from "coo_to_csr.h" nogil:
     void coo32_to_csr64(int n_row, int n_col, long nnz, int Ai[], int Aj[], float Ax[], long Bp[], long Bj[], float Bx[])
@@ -18,22 +19,31 @@ cdef extern from "omp.h":
     int omp_get_max_threads()
 
 
-def get_num_threads():
+def get_num_threads() -> int:
     """
     Get the maximum number of OpenMP threads available.
 
-    Returns
-    -------
-    int
-        Maximum number of threads that OpenMP can use
+    Returns:
+        Maximum number of threads that OpenMP can use.
     """
     return omp_get_max_threads()
 
 
-def get_index_dtype(arrays=(), maxval=None, check_contents=False):
+def get_index_dtype(
+    arrays: Union[Tuple, np.ndarray] = (),
+    maxval: Optional[int] = None,
+    check_contents: bool = False
+) -> type:
     """
-    Based on input (integer) arrays `a`, determine a suitable index data
-    type that can hold the data in the arrays.
+    Determine a suitable index data type that can hold the data in the arrays.
+
+    Args:
+        arrays: Input integer arrays to analyze.
+        maxval: Optional maximum value to check against int32 limits.
+        check_contents: Whether to check array contents for min/max values.
+
+    Returns:
+        Either np.int32 or np.int64 based on the data requirements.
     """
     # not using intc directly due to misinteractions with pythran
     if np.intc().itemsize != 4:
@@ -74,27 +84,20 @@ def build_coo_matrix(
     int[:] cols,
     float[:] values,
     int item_count,
-    int user_count):
+    int user_count
+) -> sp.coo_matrix:
     """
     Build a sparse matrix in COO (Coordinate) format.
 
-    Parameters
-    ----------
-    rows : int[:]
-        Row indices from computation
-    cols : int[:]
-        Column indices from computation
-    values : float[:]
-        Values from computation
-    item_count : int
-        Number of rows in output matrix
-    user_count : int
-        Number of columns in output matrix
+    Args:
+        rows: Row indices from computation.
+        cols: Column indices from computation.
+        values: Values from computation.
+        item_count: Number of rows in output matrix.
+        user_count: Number of columns in output matrix.
 
-    Returns
-    -------
-    scipy.sparse.coo_matrix
-        The result matrix in COO format
+    Returns:
+        The result matrix in COO format.
     """
     res = sp.coo_matrix((values, (rows, cols)), shape=(item_count, user_count), dtype=np.float32)
     del values, rows, cols
@@ -108,29 +111,22 @@ def build_csr_matrix_32(
     int[:] cols,
     float[:] values,
     int item_count,
-    int user_count):
+    int user_count
+) -> sp.csr_matrix:
     """
     Build a sparse matrix in CSR (Compressed Sparse Row) format using 32-bit indices.
 
     The resulting matrix has zeros eliminated.
 
-    Parameters
-    ----------
-    rows : int[:]
-        Row indices from computation
-    cols : int[:]
-        Column indices from computation
-    values : float[:]
-        Values from computation
-    item_count : int
-        Number of rows in output matrix
-    user_count : int
-        Number of columns in output matrix
+    Args:
+        rows: Row indices from computation.
+        cols: Column indices from computation.
+        values: Values from computation.
+        item_count: Number of rows in output matrix.
+        user_count: Number of columns in output matrix.
 
-    Returns
-    -------
-    scipy.sparse.csr_matrix
-        The result matrix in CSR format with 32-bit indices and zeros eliminated
+    Returns:
+        The result matrix in CSR format with 32-bit indices and zeros eliminated.
     """
     cdef int M = item_count
     cdef int N = user_count
@@ -157,29 +153,22 @@ def build_csr_matrix_64(
     int[:] cols,
     float[:] values,
     int item_count,
-    int user_count):
+    int user_count
+) -> sp.csr_matrix:
     """
     Build a sparse matrix in CSR (Compressed Sparse Row) format using 64-bit indices.
 
     The resulting matrix has zeros eliminated.
 
-    Parameters
-    ----------
-    rows : int[:]
-        Row indices from computation
-    cols : int[:]
-        Column indices from computation
-    values : float[:]
-        Values from computation
-    item_count : int
-        Number of rows in output matrix
-    user_count : int
-        Number of columns in output matrix
+    Args:
+        rows: Row indices from computation.
+        cols: Column indices from computation.
+        values: Values from computation.
+        item_count: Number of rows in output matrix.
+        user_count: Number of columns in output matrix.
 
-    Returns
-    -------
-    scipy.sparse.csr_matrix
-        The result matrix in CSR format with 64-bit indices and zeros eliminated
+    Returns:
+        The result matrix in CSR format with 64-bit indices and zeros eliminated.
     """
     cdef int M = item_count
     cdef int N = user_count
@@ -206,7 +195,8 @@ def build_csr_matrix(
     int[:] cols,
     float[:] values,
     int item_count,
-    int user_count):
+    int user_count
+) -> sp.csr_matrix:
     """
     Build a sparse matrix in CSR (Compressed Sparse Row) format.
 
@@ -214,23 +204,15 @@ def build_csr_matrix(
     matrix size and dispatches to the appropriate specialized function.
     The resulting matrix has zeros eliminated.
 
-    Parameters
-    ----------
-    rows : int[:]
-        Row indices from computation
-    cols : int[:]
-        Column indices from computation
-    values : float[:]
-        Values from computation
-    item_count : int
-        Number of rows in output matrix
-    user_count : int
-        Number of columns in output matrix
+    Args:
+        rows: Row indices from computation.
+        cols: Column indices from computation.
+        values: Values from computation.
+        item_count: Number of rows in output matrix.
+        user_count: Number of columns in output matrix.
 
-    Returns
-    -------
-    scipy.sparse.csr_matrix
-        The result matrix in CSR format with zeros eliminated
+    Returns:
+        The result matrix in CSR format with zeros eliminated.
     """
     cdef int nnz = len(values)
 
