@@ -31,7 +31,7 @@ def get_num_threads() -> int:
 
 def get_index_dtype(
     arrays: Union[Tuple, np.ndarray] = (),
-    maxval: Optional[int] = None,
+    maxval: Optional[Union[int, np.integer]] = None,
     check_contents: bool = False
 ) -> type:
     """
