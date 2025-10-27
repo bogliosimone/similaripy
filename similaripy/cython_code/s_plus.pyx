@@ -1,6 +1,6 @@
 # cython: language_level=3
 # cython: language=c++
-# cython: boundscheck=False, wraparound=False, cdivision=True
+# cython: boundscheck=False, wraparound=False, cdivision=True, initializedcheck=False
 # distutils: sources = s_plus.cpp, coo_to_csr.cpp
 
 """
@@ -12,10 +12,15 @@ import cython
 import numpy as np
 import scipy.sparse as sp
 import tqdm
-from .utils import build_coo_matrix, build_csr_matrix
-
-DEF PROGRESS_BAR_THRESHOLD = 5000  # Show progress bar only for large computations
-DEF PROGRESS_UPDATE_FREQUENCY = 500  # Update progress bar every N rows
+from .utils import build_coo_matrix, build_csr_matrix, get_num_threads
+from .s_plus_utils import (
+    validate_s_plus_inputs,
+    _build_squared_norms,
+    _build_tversky_normalization,
+    _build_cosine_normalization,
+    _build_depop_normalization,
+    _build_column_selector
+)
 
 from cython.operator import dereference
 from cython.parallel import parallel, prange
@@ -24,6 +29,15 @@ from cython import float, address
 from libcpp.vector cimport vector
 from libcpp.utility cimport pair
 from libcpp cimport bool
+
+# Progress bar configuration constants
+cdef int PROGRESS_BAR_THRESHOLD = 5000  # Show progress bar only for large computations
+cdef int PROGRESS_UPDATE_FREQUENCY = 500  # Update progress bar every N rows
+
+# Column selector mode constants
+cdef int MODE_NONE = 0  # No filtering/targeting (use all columns)
+cdef int MODE_ARRAY = 1  # Column selector is an array/list
+cdef int MODE_MATRIX = 2  # Column selector is a sparse matrix
 
 cdef extern from "s_plus.h" namespace "s_plus" nogil:
     cdef cppclass TopK[Index, Value]:
@@ -53,13 +67,6 @@ cdef extern from "s_plus.h" namespace "s_plus" nogil:
         void setIndexRow(Index index)
         void foreach[Function](Function & f)
 
-cdef extern from "omp.h":
-    int omp_get_max_threads()
-
-def get_num_threads():
-    return omp_get_max_threads()
-
-
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def s_plus(
@@ -83,22 +90,23 @@ def s_plus(
     format_output='csr',
     int num_threads=0):  
 
-    assert sp.issparse(matrix1), 'matrix m1 must be a sparse matrix'
     # if receive only matrix1 in input
     if matrix2 is None:
-        matrix2=matrix1.T
-    assert sp.issparse(matrix2), 'matrix m2 must be a sparse matrix'
+        matrix2 = matrix1.T
 
-    # check that all parameters are consistent
-    assert matrix1.shape[1]==matrix2.shape[0], 'error shape matrixs'
-    assert k >= 1, 'k must be >=1'
-    assert len(weight_depop_matrix1)==matrix1.shape[0] or weight_depop_matrix1 in ('none','sum'), 'error format weighs_depop matrix1'
-    assert len(weight_depop_matrix2)==matrix2.shape[1] or weight_depop_matrix2 in ('none','sum'), 'error format weighs_depop matrix2'
-    assert target_rows is None or len(target_rows)<=matrix1.shape[0], 'error target rows'
-    assert filter_cols is None or sp.issparse(filter_cols) or isinstance(filter_cols,(list,np.ndarray)), 'error format filter_cols'
-    assert target_cols is None or sp.issparse(target_cols) or isinstance(target_cols,(list,np.ndarray)), 'error format target_cols' 
-    assert verbose in (True, False), 'verbose must be boolean'
-    assert format_output in ('coo', 'csr'), "output format must be 'coo' or 'csr'"
+    # Validate all inputs
+    validate_s_plus_inputs(
+        matrix1=matrix1,
+        matrix2=matrix2,
+        weight_depop_matrix1=weight_depop_matrix1,
+        weight_depop_matrix2=weight_depop_matrix2,
+        k=k,
+        target_rows=target_rows,
+        filter_cols=filter_cols,
+        target_cols=target_cols,
+        verbose=verbose,
+        format_output=format_output
+    )
 
     # do not allocate unecessary space
     if k > matrix2.shape[1]:
@@ -143,22 +151,6 @@ def s_plus(
     else:
         matrix1.data, matrix2.data = np.array(matrix1.data, dtype=np.float32), np.array(matrix2.data, dtype=np.float32)
 
-    # build popularities array
-    if l3!=0:
-        if isinstance(weight_depop_matrix1,(list,np.ndarray)): 
-            weight_depop_matrix1 = np.power(weight_depop_matrix1, p1, dtype=np.float32)    
-        elif weight_depop_matrix1=='none':
-            weight_depop_matrix1 = np.ones(matrix1.shape[0], dtype=np.float32)
-        elif weight_depop_matrix1 == 'sum':
-            weight_depop_matrix1 = np.power(np.array(matrix1.sum(axis = 1).A1, dtype=np.float32), p1, dtype=np.float32)
-        
-        if isinstance(weight_depop_matrix2,(list,np.ndarray)): 
-            weight_depop_matrix2 = np.power(weight_depop_matrix2, p2, dtype=np.float32)    
-        elif weight_depop_matrix2=='none':
-            weight_depop_matrix2 = np.power(np.ones(matrix2.shape[1]), p2, dtype=np.float32)  
-        elif weight_depop_matrix2 == 'sum':
-            weight_depop_matrix2 = np.power(np.array(matrix2.sum(axis = 0).A1, dtype=np.float32), p2, dtype=np.float32)
-
     # build the data terms (avoid copy if already float32)
     cdef float[:] m1_data = matrix1.data.astype(np.float32, copy=False)
     cdef float[:] m2_data = matrix2.data.astype(np.float32, copy=False)
@@ -170,104 +162,44 @@ def s_plus(
     cdef int[:] m2_indices = matrix2.indices.astype(np.int32, copy=False)
 
     # build normalization terms for tversky, cosine and depop
-    cdef float[:] Xtversky
-    cdef float[:] Ytversky
-    cdef float[:] Xcosine
-    cdef float[:] Ycosine
-    cdef float[:] Xdepop
-    cdef float[:] Ydepop
+    # initialize all as empty arrays and fill only if needed
+    cdef float[:] empty = np.array([], dtype=np.float32)
+    cdef float[:] Xtversky = empty
+    cdef float[:] Ytversky = empty
+    cdef float[:] Xcosine = empty
+    cdef float[:] Ycosine = empty
+    cdef float[:] Xdepop = empty
+    cdef float[:] Ydepop = empty
     cdef float[:] m1_sq_norms
     cdef float[:] m2_sq_norms
 
-    # Compute squared norms once if needed by either Tversky or Cosine
-    cdef bint need_sq_norms = (l1 != 0 or l2 != 0)
+    # Compute squared norms once if needed by either Tversky or Cosine (avoid redundant computation)
+    if l1 != 0 or l2 != 0:
+        m1_sq_norms, m2_sq_norms = _build_squared_norms(matrix1, matrix2)
+        Xtversky, Ytversky = _build_tversky_normalization(m1_sq_norms, m2_sq_norms, l1)
+        Xcosine, Ycosine = _build_cosine_normalization(m1_sq_norms, m2_sq_norms, l2, c1, c2, additive_shrink)
 
-    if need_sq_norms:
-        m1_sq_norms = np.array(matrix1.power(2).sum(axis=1).A1, dtype=np.float32)
-        m2_sq_norms = np.array(matrix2.power(2).sum(axis=0).A1, dtype=np.float32)
-
-        if l1 != 0:
-            Xtversky = m1_sq_norms
-            Ytversky = m2_sq_norms
-        else:
-            Xtversky = np.array([], dtype=np.float32)
-            Ytversky = np.array([], dtype=np.float32)
-
-        if l2 != 0:
-            Xcosine = np.power(np.asarray(m1_sq_norms) + additive_shrink, c1, dtype=np.float32)
-            Ycosine = np.power(np.asarray(m2_sq_norms) + additive_shrink, c2, dtype=np.float32)
-        else:
-            Xcosine = np.array([], dtype=np.float32)
-            Ycosine = np.array([], dtype=np.float32)
-    else:
-        # Neither l1 nor l2 used
-        Xtversky = np.array([], dtype=np.float32)
-        Ytversky = np.array([], dtype=np.float32)
-        Xcosine = np.array([], dtype=np.float32)
-        Ycosine = np.array([], dtype=np.float32)
-
-    if l3 != 0:
-        Xdepop = np.array(weight_depop_matrix1, dtype=np.float32)
-        Ydepop = np.array(weight_depop_matrix2, dtype=np.float32)
-    else:
-        Xdepop = np.array([], dtype=np.float32)
-        Ydepop = np.array([], dtype=np.float32)
+    Xdepop, Ydepop = _build_depop_normalization(matrix1, matrix2, weight_depop_matrix1, weight_depop_matrix2, p1, p2, l3)
 
     # restore original data terms
     matrix1.data, matrix2.data = old_m1_data, old_m2_data
 
     ### END OF PREPROCESSING ###
 
-    # filter col matrix
-    # mode: 0 no filter, 1 filter array, 2 filter matrix
+    # Prepare filter and target column selectors
     cdef int filter_col_mode
     cdef int[:] filter_m_indptr
     cdef int[:] filter_m_indices
-
-    if sp.issparse(filter_cols) and filter_cols.data.shape[0] != 0:
-        assert filter_cols.shape == (item_count, user_count), 'shape filter_cols matrix not correct'
-        filter_col_mode = 2
-        # build indices and indptrs and sort indices since we will use binary search
-        filter_cols = filter_cols.tocsr()
-        filter_cols.eliminate_zeros()
-        filter_cols.sort_indices()
-        filter_m_indptr = np.array(filter_cols.indptr, dtype=np.int32)
-        filter_m_indices = np.array(filter_cols.indices, dtype=np.int32)
-    elif isinstance(filter_cols, (list, np.ndarray)) and len(filter_cols) != 0:
-        filter_col_mode = 1
-        # sort array since we will use binary search
-        filter_m_indptr = np.array([0,len(filter_cols)], dtype=np.int32)
-        filter_m_indices = np.array(np.sort(filter_cols), dtype=np.int32)
-    else:
-        # filter cols is empty or None
-        filter_col_mode = 0
-        filter_m_indptr = np.array([],dtype=np.int32)
-        filter_m_indices = np.array([],dtype=np.int32)
-
-    # target col matrix
-    # mode: 0 target all, 1 target array, 2 target matrix
-    cdef int target_col_mode = 0
+    cdef int target_col_mode
     cdef int[:] target_m_indptr
     cdef int[:] target_m_indices
 
-    if sp.issparse(target_cols):
-        assert target_cols.shape == (item_count, user_count), 'shape target_cols matrix not correct'
-        target_col_mode = 2
-        # build indices and indptrs and sort indices since we will use binary search
-        target_cols = target_cols.tocsr()
-        target_cols.eliminate_zeros()
-        target_cols.sort_indices()
-        target_m_indptr = np.array(target_cols.indptr, dtype=np.int32)
-        target_m_indices = np.array(target_cols.indices, dtype=np.int32)
-    elif isinstance(target_cols, (list, np.ndarray)):
-        target_col_mode = 1
-        target_m_indptr = np.array([0,len(target_cols)], dtype=np.int32)
-        target_m_indices = np.array(np.sort(target_cols), dtype=np.int32)
-    else:
-        # target cols is None
-        target_col_mode = 0
-        target_m_indptr = np.array([],dtype=np.int32)
-        target_m_indices = np.array([],dtype=np.int32)
+    filter_col_mode, filter_m_indptr, filter_m_indices = _build_column_selector(
+        filter_cols, item_count, user_count, 'filter_cols'
+    )
+    target_col_mode, target_m_indptr, target_m_indices = _build_column_selector(
+        target_cols, item_count, user_count, 'target_cols'
+    )
 
     # set progress bar
     cdef int counter = 0

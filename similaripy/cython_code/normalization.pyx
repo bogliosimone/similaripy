@@ -1,6 +1,6 @@
 # cython: language_level=3
 # cython: language=c++
-# cython: boundscheck=False, wraparound=False, cdivision=True
+# cython: boundscheck=False, wraparound=False, cdivision=True, initializedcheck=False
 
 from libc.math cimport fabs, sqrt, log
 from libc.math cimport M_E  # base of natural logarithm

@@ -383,7 +383,7 @@ def test_example_code():
 
 def test_openmp_enabled():
     try:
-        threads = sim.cython_code.s_plus.get_num_threads()
+        threads = sim.cython_code.utils.get_num_threads()
         print("✅ OpenMP detected — using {} threads".format(threads))
         assert threads >= 1
     except AttributeError:

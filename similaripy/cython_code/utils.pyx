@@ -16,6 +16,21 @@ cdef extern from "coo_to_csr.h" nogil:
     void coo32_to_csr64(int n_row, int n_col, long nnz, int Ai[], int Aj[], float Ax[], long Bp[], long Bj[], float Bx[])
     void coo32_to_csr32(int n_row, int n_col, int nnz, int Ai[], int Aj[], float Ax[], int Bp[], int Bj[], float Bx[])
 
+cdef extern from "omp.h":
+    int omp_get_max_threads()
+
+
+def get_num_threads():
+    """
+    Get the maximum number of OpenMP threads available.
+
+    Returns
+    -------
+    int
+        Maximum number of threads that OpenMP can use
+    """
+    return omp_get_max_threads()
+
 
 def get_index_dtype(arrays=(), maxval=None, check_contents=False):
     """

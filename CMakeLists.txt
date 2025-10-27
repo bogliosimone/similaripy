@@ -132,7 +132,7 @@ message(STATUS "🐍 Python version: ${Python_VERSION}")
 
 # Cython modules
 message(STATUS "🐍 Cythonizing .pyx files to C++")
-foreach(module IN ITEMS s_plus normalization utils)
+foreach(module IN ITEMS s_plus s_plus_utils normalization utils)
   add_cython_module(${module})
 endforeach()
 
