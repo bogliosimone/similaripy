@@ -221,10 +221,15 @@ def s_plus(
     # Compute squared norms once if needed by either Tversky or Cosine (avoid redundant computation)
     if l1 != 0 or l2 != 0:
         m1_sq_norms, m2_sq_norms = _build_squared_norms(matrix1, matrix2)
-        Xtversky, Ytversky = _build_tversky_normalization(m1_sq_norms, m2_sq_norms, l1)
-        Xcosine, Ycosine = _build_cosine_normalization(m1_sq_norms, m2_sq_norms, l2, c1, c2, additive_shrink)
 
-    Xdepop, Ydepop = _build_depop_normalization(matrix1, matrix2, weight_depop_matrix1, weight_depop_matrix2, p1, p2, l3)
+    if l1 != 0:
+        Xtversky, Ytversky = _build_tversky_normalization(m1_sq_norms, m2_sq_norms)
+
+    if l2 != 0:
+        Xcosine, Ycosine = _build_cosine_normalization(m1_sq_norms, m2_sq_norms, c1, c2, additive_shrink)
+
+    if l3 != 0:
+        Xdepop, Ydepop = _build_depop_normalization(matrix1, matrix2, weight_depop_matrix1, weight_depop_matrix2, p1, p2)
 
     # restore original data terms
     matrix1.data, matrix2.data = old_m1_data, old_m2_data

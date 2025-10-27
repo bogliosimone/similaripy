@@ -149,8 +149,7 @@ def _build_squared_norms(
 
 def _build_tversky_normalization(
     m1_sq_norms: np.ndarray,
-    m2_sq_norms: np.ndarray,
-    float l1
+    m2_sq_norms: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Build Tversky normalization arrays based on pre-computed squared norms.
@@ -158,27 +157,16 @@ def _build_tversky_normalization(
     Args:
         m1_sq_norms: Squared norms for matrix1.
         m2_sq_norms: Squared norms for matrix2.
-        l1: Weight for Tversky normalization.
 
     Returns:
         Tuple of (Xtversky, Ytversky) as float32 arrays.
-        If l1 == 0, returns empty arrays.
     """
-    cdef float[:] empty = np.array([], dtype=np.float32)
-    cdef float[:] Xtversky = empty
-    cdef float[:] Ytversky = empty
-
-    if l1 != 0:
-        Xtversky = m1_sq_norms
-        Ytversky = m2_sq_norms
-
-    return Xtversky, Ytversky
+    return m1_sq_norms, m2_sq_norms
 
 
 def _build_cosine_normalization(
     m1_sq_norms: np.ndarray,
     m2_sq_norms: np.ndarray,
-    float l2,
     float c1,
     float c2,
     float additive_shrink
@@ -187,9 +175,8 @@ def _build_cosine_normalization(
     Build Cosine normalization arrays based on squared norms.
 
     Args:
-        m1_sq_norms: Squared norms for matrix1 (can be None if not computed).
-        m2_sq_norms: Squared norms for matrix2 (can be None if not computed).
-        l2: Weight for Cosine normalization.
+        m1_sq_norms: Squared norms for matrix1.
+        m2_sq_norms: Squared norms for matrix2.
         c1: Power for Cosine normalization on matrix1.
         c2: Power for Cosine normalization on matrix2.
         additive_shrink: Additive shrinkage for Cosine normalization.
@@ -197,14 +184,8 @@ def _build_cosine_normalization(
     Returns:
         Tuple of (Xcosine, Ycosine) as float32 arrays.
     """
-    cdef float[:] empty = np.array([], dtype=np.float32)
-    cdef float[:] Xcosine = empty
-    cdef float[:] Ycosine = empty
-
-    if l2 != 0:
-        Xcosine = np.power(np.asarray(m1_sq_norms) + additive_shrink, c1, dtype=np.float32)
-        Ycosine = np.power(np.asarray(m2_sq_norms) + additive_shrink, c2, dtype=np.float32)
-
+    cdef float[:] Xcosine = np.power(np.asarray(m1_sq_norms) + additive_shrink, c1, dtype=np.float32)
+    cdef float[:] Ycosine = np.power(np.asarray(m2_sq_norms) + additive_shrink, c2, dtype=np.float32)
     return Xcosine, Ycosine
 
 
@@ -214,8 +195,7 @@ def _build_depop_normalization(
     weight_spec1: Union[str, np.ndarray],
     weight_spec2: Union[str, np.ndarray],
     float p1,
-    float p2,
-    float l3
+    float p2
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Build Depopularization normalization arrays.
@@ -227,35 +207,32 @@ def _build_depop_normalization(
         weight_spec2: Either 'none', 'sum', or an array of custom weights for matrix2.
         p1: Power to raise weights to for matrix1.
         p2: Power to raise weights to for matrix2.
-        l3: Weight for Depopularization normalization.
 
     Returns:
-        Tuple of (Xdepop, Ydepop) as float32 arrays. Returns empty arrays if l3 == 0.
+        Tuple of (Xdepop, Ydepop) as float32 arrays.
     """
-    cdef float[:] empty = np.array([], dtype=np.float32)
-    cdef float[:] Xdepop = empty
-    cdef float[:] Ydepop = empty
+    cdef float[:] Xdepop
+    cdef float[:] Ydepop
 
-    if l3 != 0:
-        # Build depopularization weights for matrix1
-        if isinstance(weight_spec1, (list, np.ndarray)):
-            Xdepop = np.power(weight_spec1, p1, dtype=np.float32)
-        elif weight_spec1 == 'none':
-            Xdepop = np.power(np.ones(matrix1.shape[0]), p1, dtype=np.float32)
-        elif weight_spec1 == 'sum':
-            Xdepop = np.power(np.array(matrix1.sum(axis=1).A1, dtype=np.float32), p1, dtype=np.float32)
-        else:
-            raise ValueError(f"Invalid weight_spec1: {weight_spec1}")
+    # Build depopularization weights for matrix1
+    if isinstance(weight_spec1, (list, np.ndarray)):
+        Xdepop = np.power(weight_spec1, p1, dtype=np.float32)
+    elif weight_spec1 == 'none':
+        Xdepop = np.power(np.ones(matrix1.shape[0]), p1, dtype=np.float32)
+    elif weight_spec1 == 'sum':
+        Xdepop = np.power(np.array(matrix1.sum(axis=1).A1, dtype=np.float32), p1, dtype=np.float32)
+    else:
+        raise ValueError(f"Invalid weight_spec1: {weight_spec1}")
 
-        # Build depopularization weights for matrix2
-        if isinstance(weight_spec2, (list, np.ndarray)):
-            Ydepop = np.power(weight_spec2, p2, dtype=np.float32)
-        elif weight_spec2 == 'none':
-            Ydepop = np.power(np.ones(matrix2.shape[1]), p2, dtype=np.float32)
-        elif weight_spec2 == 'sum':
-            Ydepop = np.power(np.array(matrix2.sum(axis=0).A1, dtype=np.float32), p2, dtype=np.float32)
-        else:
-            raise ValueError(f"Invalid weight_spec2: {weight_spec2}")
+    # Build depopularization weights for matrix2
+    if isinstance(weight_spec2, (list, np.ndarray)):
+        Ydepop = np.power(weight_spec2, p2, dtype=np.float32)
+    elif weight_spec2 == 'none':
+        Ydepop = np.power(np.ones(matrix2.shape[1]), p2, dtype=np.float32)
+    elif weight_spec2 == 'sum':
+        Ydepop = np.power(np.array(matrix2.sum(axis=0).A1, dtype=np.float32), p2, dtype=np.float32)
+    else:
+        raise ValueError(f"Invalid weight_spec2: {weight_spec2}")
 
     return Xdepop, Ydepop
 
