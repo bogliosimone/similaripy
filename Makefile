@@ -1,4 +1,4 @@
-.PHONY: install test build wheelcheck benchmark all clean mkdocs test-dev benchmark-local benchmark-normalization benchmark-sim install-dev install-dev-editable benchmark-similarity-rnd-seed
+.PHONY: install test build wheelcheck benchmark all clean mkdocs test-dev benchmark-local benchmark-normalization benchmark-sim install-dev install-dev-editable benchmark-similarity-rnd-seed benchmark-similarity-medium
 
 # Install all dev dependencies using uv
 install:
@@ -36,6 +36,10 @@ benchmark:
 # Run benchmarks locally
 benchmark-similarity:
 	uv run tests/benchmarks/run_benchmarks.py
+
+# Run benchmarks on yambda 50m dataset
+benchmark-similarity-medium:
+	uv run tests/benchmarks/run_benchmarks.py --dataset yambda --version 50m --rounds 3
 
 # Run only normalization benchmarks locally
 benchmark-normalization:
