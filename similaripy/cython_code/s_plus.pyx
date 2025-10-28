@@ -36,6 +36,10 @@ from libcpp.utility cimport pair
 from libcpp cimport bool
 from libcpp.string cimport string
 
+# Progress bar configuration constants
+cdef int PROGRESS_BAR_REFRESH_RATE = 3  # Refresh rate in Hz (updates per second)
+cdef int PROGRESS_BAR_WIDTH = 60        # Width of the progress bar in characters
+
 # Column selector mode constants
 cdef int MODE_NONE = 0  # No filtering/targeting (use all columns)
 cdef int MODE_ARRAY = 1  # Column selector is an array/list
@@ -173,8 +177,8 @@ def s_plus(
     cdef int[:] targets = np.array(target_rows, dtype=np.int32)
     cdef int n_targets = targets.shape[0]
 
-    # start progress bar
-    cdef ProgressBar * progress = new ProgressBar(n_targets, not verbose, 5, 60)
+    # Initialize progress bar
+    cdef ProgressBar * progress = new ProgressBar(n_targets, not verbose, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
     progress.set_description(b'Preprocessing')
 
     # be sure to use csr matrixes
@@ -249,7 +253,9 @@ def s_plus(
     filter_col_mode, filter_m_indptr, filter_m_indices = _build_column_selector(filter_cols)
     target_col_mode, target_m_indptr, target_m_indices = _build_column_selector(target_cols)
 
-    # structures for multiplications
+    ### START COMPUTATION ###
+
+    # Structures for multiplications
     cdef SparseMatrixMultiplier[int, float] * neighbours
     cdef TopK[int, float] * topk
     cdef pair[float, int] result
@@ -281,9 +287,10 @@ def s_plus(
         topk = new TopK[int, float](k)
         try:
             for i in prange(n_targets, schedule='dynamic'):
-                # Update progress bar (thread-safe atomic operation, refresh auto-throttled by C++)
+                # Update progress (thread-safe, auto-throttled by C++)
                 progress.update(1)
-                # compute row
+
+                # Compute row similarity
                 t = targets[i]
                 neighbours.setIndexRow(t)
                 for index1 in range(m1_indptr[t], m1_indptr[t+1]):
@@ -304,15 +311,17 @@ def s_plus(
             del neighbours
             del topk
 
-    # deallocate memory
+    # Deallocate intermediate memory
     del Xcosine, Ycosine, Xtversky, Ytversky, Xdepop, Ydepop
     del m1_data, m1_indices, m1_indptr
     del m2_data, m2_indices, m2_indptr
     del targets
 
-    progress.set_description(f'Build {format_output} matrix'.encode())
+    ### BUILD OUTPUT MATRIX ###
 
-    # build result in coo or csr format
+    progress.set_description(f'Building {format_output} matrix'.encode())
+
+    # Build result in requested format
     if format_output == 'coo':
         res = build_coo_matrix(
             rows=rows,
@@ -329,10 +338,11 @@ def s_plus(
             item_count=item_count,
             user_count=user_count
         )
-        progress.set_description(b'Remove zeros')
+        progress.set_description(b'Removing zeros')
         res.eliminate_zeros()
 
-    # finally update progress bar and return the result matrix
+    # Finalize and cleanup
     progress.close(b'Done')
     del progress
+
     return res
