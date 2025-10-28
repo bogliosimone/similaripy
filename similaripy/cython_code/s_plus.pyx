@@ -10,7 +10,6 @@
 import cython
 import numpy as np
 import scipy.sparse as sp
-import tqdm
 from typing import Optional, Union, Literal
 
 from .utils import (
@@ -35,15 +34,19 @@ from cython import float, address
 from libcpp.vector cimport vector
 from libcpp.utility cimport pair
 from libcpp cimport bool
-
-# Progress bar configuration constants
-cdef int PROGRESS_BAR_THRESHOLD = 5000  # Show progress bar only for large computations
-cdef int PROGRESS_UPDATE_FREQUENCY = 500  # Update progress bar every N rows
+from libcpp.string cimport string
 
 # Column selector mode constants
 cdef int MODE_NONE = 0  # No filtering/targeting (use all columns)
 cdef int MODE_ARRAY = 1  # Column selector is an array/list
 cdef int MODE_MATRIX = 2  # Column selector is a sparse matrix
+
+cdef extern from "progress_bar.h" namespace "progress" nogil:
+    cdef cppclass ProgressBar:
+        ProgressBar(int total, bool disabled, int max_refresh_rate, int bar_width) except +
+        void set_description(const string& desc) except +
+        void update(int n) except +
+        void close(const string& final_desc) except +
 
 cdef extern from "s_plus.h" namespace "s_plus" nogil:
     cdef cppclass TopK[Index, Value]:
@@ -171,9 +174,8 @@ def s_plus(
     cdef int n_targets = targets.shape[0]
 
     # start progress bar
-    progress = tqdm.tqdm(total=n_targets, disable=not verbose)
-    progress.desc = 'Preprocessing'
-    progress.refresh()
+    cdef ProgressBar * progress = new ProgressBar(n_targets, not verbose, 5, 60)
+    progress.set_description(b'Preprocessing')
 
     # be sure to use csr matrixes
     matrix1 = matrix1.tocsr()
@@ -247,19 +249,6 @@ def s_plus(
     filter_col_mode, filter_m_indptr, filter_m_indices = _build_column_selector(filter_cols)
     target_col_mode, target_m_indptr, target_m_indices = _build_column_selector(target_cols)
 
-    # set progress bar
-    cdef int counter = 0
-    cdef int * counter_add = address(counter)
-    cdef int verb
-    cdef int progress_update_interval
-    if n_targets <= PROGRESS_BAR_THRESHOLD or not verbose:
-        verb = 0
-        progress_update_interval = 1  # Not used but must be defined
-    else:
-        verb = 1
-        progress_update_interval = max(1, n_targets // PROGRESS_UPDATE_FREQUENCY)
-
-    
     # structures for multiplications
     cdef SparseMatrixMultiplier[int, float] * neighbours
     cdef TopK[int, float] * topk
@@ -270,8 +259,7 @@ def s_plus(
     cdef int[:] rows = np.zeros(n_targets * k, dtype=np.int32)
     cdef int[:] cols = np.zeros(n_targets * k, dtype=np.int32)
 
-    progress.desc = 'Allocate memory per threads'
-    progress.refresh()
+    progress.set_description(b'Computing')
     with nogil, parallel(num_threads=num_threads):
         # allocate memory per thread
         neighbours = new SparseMatrixMultiplier[int, float](user_count,
@@ -282,27 +270,19 @@ def s_plus(
                                                             l1, l2, l3,
                                                             t1, t2,
                                                             c1, c2,
-                                                            stabilized_shrink, 
+                                                            stabilized_shrink,
                                                             bayesian_shrink,
                                                             threshold,
-                                                            filter_col_mode, 
+                                                            filter_col_mode,
                                                             &filter_m_indptr[0], &filter_m_indices[0],
-                                                            target_col_mode, 
+                                                            target_col_mode,
                                                             &target_m_indptr[0], &target_m_indices[0],
                                                             )
         topk = new TopK[int, float](k)
         try:
             for i in prange(n_targets, schedule='dynamic'):
-                # progress bar (note: update once per PROGRESS_UPDATE_FREQUENCY rows or with big matrix taking gil at each cycle destroy the performance)
-                if verb == 1:
-                    # here, without gil, we can get WAR (Write-After-Read), WAW (Write-After-Write),
-                    # RAW (Read-After-Write) race conditions, it's not important as it's just a counter for the progress bar
-                    counter_add[0] = counter_add[0] + 1
-                    if counter_add[0] % progress_update_interval == 0:
-                        with gil:
-                            progress.desc = 'Computing'
-                            progress.n = counter_add[0]
-                            progress.refresh()
+                # Update progress bar (thread-safe atomic operation, refresh auto-throttled by C++)
+                progress.update(1)
                 # compute row
                 t = targets[i]
                 neighbours.setIndexRow(t)
@@ -324,17 +304,13 @@ def s_plus(
             del neighbours
             del topk
 
-    progress.n = n_targets
-    progress.refresh()
-
     # deallocate memory
     del Xcosine, Ycosine, Xtversky, Ytversky, Xdepop, Ydepop
     del m1_data, m1_indices, m1_indptr
     del m2_data, m2_indices, m2_indptr
     del targets
 
-    progress.desc = f'Build {format_output} matrix'
-    progress.refresh()
+    progress.set_description(f'Build {format_output} matrix'.encode())
 
     # build result in coo or csr format
     if format_output == 'coo':
@@ -353,12 +329,10 @@ def s_plus(
             item_count=item_count,
             user_count=user_count
         )
-        progress.desc = 'Remove zeros'
-        progress.refresh()
+        progress.set_description(b'Remove zeros')
         res.eliminate_zeros()
 
     # finally update progress bar and return the result matrix
-    progress.desc = 'Done'
-    progress.refresh()
-    progress.close()
+    progress.close(b'Done')
+    del progress
     return res

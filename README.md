@@ -134,7 +134,6 @@ The easiest way to achieve this is to install them via Anaconda.
 | --------------------------------|:--------------:|
 | numpy                           |   >= 1.21      |
 | scipy                           |   >= 1.10.1    |
-| tqdm                            |   >= 4.65.2    |
 
 ## 📜 History
 

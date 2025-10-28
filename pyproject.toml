@@ -33,7 +33,6 @@ classifiers = [
 dependencies = [
     "numpy>=1.21",
     "scipy>=1.10.1",
-    "tqdm>=4.65.2",
 ]
 
 [project.urls]
