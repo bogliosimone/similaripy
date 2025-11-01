@@ -31,16 +31,22 @@ enum SelectionMode {
  */
 template <typename Index, typename Value>
 struct TopK {
-    explicit TopK(size_t K) : K(K) {}
+    explicit TopK(size_t K) : K(K) {
+        results.reserve(K);  // pre-allocate to avoid reallocations
+    }
 
     void operator()(Index index, Value score) {
-        if ((results.size() < K) || (score > results[0].first)) {
-            if (results.size() >= K) {
-                std::pop_heap(results.begin(), results.end(), heap_order);
-                results.pop_back();
-            }
+        size_t size = results.size();
 
+        if (size < K) {
+            // still filling up - just add and maintain heap property
             results.push_back(std::make_pair(score, index));
+            std::push_heap(results.begin(), results.end(), heap_order);
+        } else if (score > results[0].first) {
+            // heap is full and we found a better element
+            // replace root and sift down (O(log K) vs O(K) for make_heap)
+            std::pop_heap(results.begin(), results.end(), heap_order);
+            results.back() = std::make_pair(score, index);
             std::push_heap(results.begin(), results.end(), heap_order);
         }
     }
