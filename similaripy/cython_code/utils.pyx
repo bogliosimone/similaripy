@@ -1,6 +1,5 @@
-# cython: language_level=3
 # cython: language=c++
-# cython: boundscheck=False, wraparound=False, cdivision=True
+# cython: boundscheck=False, wraparound=False, cdivision=True, initializedcheck=False
 
 """
     Utility functions for similaripy cython code

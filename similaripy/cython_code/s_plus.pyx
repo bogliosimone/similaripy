@@ -1,7 +1,5 @@
-# cython: language_level=3
 # cython: language=c++
 # cython: boundscheck=False, wraparound=False, cdivision=True, initializedcheck=False
-# distutils: sources = s_plus.cpp, coo_to_csr.cpp
 
 """
     s_plus: top-K similarity search between rows of two sparse matrices
@@ -38,7 +36,7 @@ from libcpp.string cimport string
 
 # Progress bar configuration constants
 cdef int PROGRESS_BAR_REFRESH_RATE = 3  # Refresh rate in Hz (updates per second)
-cdef int PROGRESS_BAR_WIDTH = 60        # Width of the progress bar in characters
+cdef int PROGRESS_BAR_WIDTH = 25        # Width of the progress bar in characters
 
 # Column selector mode constants
 cdef int MODE_NONE = 0  # No filtering/targeting (use all columns)
