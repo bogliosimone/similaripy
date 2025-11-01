@@ -14,7 +14,18 @@
 
 namespace s_plus {
 
-/* 
+// Sentinel values for linked list implementation
+static const int UNSET = -1;
+static const int LIST_END = -2;
+
+// Column selection mode for filtering and targeting
+enum SelectionMode {
+    SELECTION_NONE = 0,    // no selection (filter: none, target: all)
+    SELECTION_ARRAY = 1,   // use single array of indices
+    SELECTION_MATRIX = 2   // use per-row matrix indices
+};
+
+/*
     Functor that stores the Top K (Value/Index) pairs
     passed to it in its results member
  */
@@ -64,13 +75,13 @@ class SparseMatrixMultiplier {
                                     )
         :
         sums(column_count, 0),
-        nonzeros(column_count, -1),
+        nonzeros(column_count, UNSET),
         Xtversky(Xtversky), Ytversky(Ytversky),
         Xcosine(Xcosine), Ycosine(Ycosine),
         Xdepop(Xdepop), Ydepop(Ydepop),
         a1(a1),
         l1(l1), l2(l2), l3(l3),
-        t1(t1), t2(t2), 
+        t1(t1), t2(t2),
         c1(c1), c2(c2),
         stabilized_shrink(stabilized_shrink),
         bayesian_shrink(bayesian_shrink),
@@ -81,14 +92,14 @@ class SparseMatrixMultiplier {
         target_col_mode(target_col_mode),
         target_col_m_indptr(target_col_m_indptr),
         target_col_m_indices(target_col_m_indices),
-        head(-2), length(0) {
+        head(LIST_END), length(0) {
     }
 
     /* Adds value to the item at index */
     void add(Index index, Value value) {
         sums[index] += value;
 
-        if (nonzeros[index] == -1) {
+        if (nonzeros[index] == UNSET) {
             nonzeros[index] = head;
             head = index;
             length += 1;
@@ -99,84 +110,98 @@ class SparseMatrixMultiplier {
         row = index_row;
     }
 
+ private:
+    /* Compute similarity value with normalization and shrinkage */
+    Value computeSimilarity(Index col, Value xy) const {
+        Value valTversky = 0, valCosine = 0, valDepop = 0;
+        Value val = xy;
+
+        // compute normalization terms
+        if (l1 != 0)  // tversky
+            valTversky = l1 * (t1 * (Xtversky[row] - xy) + t2 * (Ytversky[col] - xy) + xy);
+        if (l2 != 0)  // cosine
+            valCosine = l2 * (Xcosine[row] * Ycosine[col]);
+        if (l3 != 0)  // depop
+            valDepop = l3 * (Xdepop[row] * Ydepop[col]);
+        if (a1 != 1)  // power product
+            xy = std::pow(xy, a1);
+
+        // compute similarity value
+        if (l1 != 0 || l2 != 0 || l3 != 0 || stabilized_shrink != 0 || bayesian_shrink != 0) {
+            Value denominator = valTversky + valCosine + valDepop + stabilized_shrink;
+            if (denominator != 0)
+                val = xy / denominator;
+            else
+                val = 0;
+
+            if (bayesian_shrink != 0)
+                val = val * (xy / (xy + bayesian_shrink));
+        }
+
+        return val;
+    }
+
+    /* Check if column should be filtered out */
+    bool isFiltered(Index col) const {
+        if (filter_mode == SELECTION_NONE) return false;
+
+        if (filter_mode == SELECTION_ARRAY) {
+            Index start = filter_m_indptr[0];
+            Index end = filter_m_indptr[1];
+            return std::binary_search(&filter_m_indices[start], &filter_m_indices[end], col);
+        }
+
+        if (filter_mode == SELECTION_MATRIX) {
+            Index start = filter_m_indptr[row];
+            Index end = filter_m_indptr[row + 1];
+            return std::binary_search(&filter_m_indices[start], &filter_m_indices[end], col);
+        }
+
+        return false;
+    }
+
+    /* Check if column is in target set */
+    bool isTargetColumn(Index col) const {
+        if (target_col_mode == SELECTION_NONE) return true;
+
+        if (target_col_mode == SELECTION_ARRAY) {
+            Index start = target_col_m_indptr[0];
+            Index end = target_col_m_indptr[1];
+            return std::binary_search(&target_col_m_indices[start], &target_col_m_indices[end], col);
+        }
+
+        if (target_col_mode == SELECTION_MATRIX) {
+            Index start = target_col_m_indptr[row];
+            Index end = target_col_m_indptr[row + 1];
+            return std::binary_search(&target_col_m_indices[start], &target_col_m_indices[end], col);
+        }
+
+        return true;
+    }
+
+ public:
     /* Calls a function once per non-zero entry in the row, also clears entries for the next row */
     template <typename Function>
     void foreach(Function & f) {  // NOLINT(*)
-
         for (int i = 0; i < length; ++i) {
             Index col = head;
             Value xy = sums[col];
-            Value valTversky=0, valCosine=0, valDepop=0, val=xy;
-            bool filter = false;
-            bool target_col = true;
 
-            // compute normalization terms
-            if(l1!=0) // tversky
-                valTversky = l1 * (t1 * (Xtversky[row] - xy) + t2 * (Ytversky[col] - xy) + xy);
-            if(l2!=0) // cosine
-                valCosine = l2 * (Xcosine[row] * Ycosine[col]);
-            if(l3!=0) // depop
-                valDepop = l3 * (Xdepop[row] * Ydepop[col]);
-            if(a1!=1) // power product
-                xy = std::pow(xy, a1); // very slow operation
+            // compute similarity value with normalization
+            Value val = computeSimilarity(col, xy);
 
-            // compute similarity value
-            if(l1!=0 || l2!=0 || l3!=0 || stabilized_shrink!=0 || bayesian_shrink!=0){
-                Value denominator = valTversky + valCosine + valDepop + stabilized_shrink;
-                if(denominator != 0) 
-                    val = xy / denominator;
-                else
-                    val = 0;
-
-                if(bayesian_shrink != 0)
-                    val = val * (xy / (xy + bayesian_shrink) );
-            }
-
-            // filter cols, filter_mode = 0:none, 1:array, 2:matrix
-            if (filter_mode !=0 ){
-                if(filter_mode == 1){
-                    Index start = filter_m_indptr[0];
-                    Index end = filter_m_indptr[1];
-                    if(std::binary_search(&filter_m_indices[start], &filter_m_indices[end], col))
-                        filter = true;
-                }
-                else{
-                    if(filter_mode == 2){
-                        Index start = filter_m_indptr[row];
-                        Index end = filter_m_indptr[row+1];
-                        if(std::binary_search(&filter_m_indices[start], &filter_m_indices[end], col))
-                            filter = true;
-                    }
-                }
-            }
-
-            // keep only the target cols, target_mode = 0:all, 1:array, 2:matrix
-            if (target_col_mode !=0 ){
-                if(target_col_mode == 1){
-                    Index start = target_col_m_indptr[0];
-                    Index end = target_col_m_indptr[1];
-                    if(!std::binary_search(&target_col_m_indices[start], &target_col_m_indices[end], col))
-                        target_col = false;
-                }
-                else{
-                    if(target_col_mode == 2){
-                        Index start = target_col_m_indptr[row];
-                        Index end = target_col_m_indptr[row+1];
-                        if(!std::binary_search(&target_col_m_indices[start], &target_col_m_indices[end], col))
-                            target_col = false;
-                    }
-                }
-            }
-
-            if (val >= threshold && !filter && target_col)
+            // apply threshold and filter/target checks
+            if (val >= threshold && !isFiltered(col) && isTargetColumn(col)) {
                 f(col, val);
+            }
+
             // clear up memory and advance linked list
             head = nonzeros[head];
             sums[col] = 0;
-            nonzeros[col] = -1;
+            nonzeros[col] = UNSET;
         }
         length = 0;
-        head = -2;
+        head = LIST_END;
     }
 
     Index nnz() const { return length; }
@@ -205,5 +230,5 @@ class SparseMatrixMultiplier {
     Index head, length;
 };
 
-}  // namespace similarity
-#endif  // SPLUS
+}  // namespace s_plus
+#endif  // SPLUS_H_
