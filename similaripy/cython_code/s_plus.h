@@ -149,14 +149,11 @@ class SparseMatrixMultiplier {
 
     /* Check if column should be filtered out */
     bool isFiltered(Index col) const {
-        if (filter_mode == SELECTION_NONE) return false;
+        // SELECTION_NONE: no filtering (also used when pre-filtered in Python)
+        // SELECTION_ARRAY: handled by Python pre-filtering, never reaches here
+        if (filter_mode == SELECTION_NONE || filter_mode == SELECTION_ARRAY) return false;
 
-        if (filter_mode == SELECTION_ARRAY) {
-            Index start = filter_m_indptr[0];
-            Index end = filter_m_indptr[1];
-            return std::binary_search(&filter_m_indices[start], &filter_m_indices[end], col);
-        }
-
+        // SELECTION_MATRIX: per-row filtering (can't pre-filter in Python)
         if (filter_mode == SELECTION_MATRIX) {
             Index start = filter_m_indptr[row];
             Index end = filter_m_indptr[row + 1];
@@ -168,14 +165,11 @@ class SparseMatrixMultiplier {
 
     /* Check if column is in target set */
     bool isTargetColumn(Index col) const {
-        if (target_col_mode == SELECTION_NONE) return true;
+        // SELECTION_NONE: include all (also used when pre-filtered in Python)
+        // SELECTION_ARRAY: handled by Python pre-filtering, never reaches here
+        if (target_col_mode == SELECTION_NONE || target_col_mode == SELECTION_ARRAY) return true;
 
-        if (target_col_mode == SELECTION_ARRAY) {
-            Index start = target_col_m_indptr[0];
-            Index end = target_col_m_indptr[1];
-            return std::binary_search(&target_col_m_indices[start], &target_col_m_indices[end], col);
-        }
-
+        // SELECTION_MATRIX: per-row targeting (can't pre-filter in Python)
         if (target_col_mode == SELECTION_MATRIX) {
             Index start = target_col_m_indptr[row];
             Index end = target_col_m_indptr[row + 1];

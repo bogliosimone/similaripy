@@ -324,3 +324,102 @@ def _build_column_selector(
         indices = np.array([], dtype=np.int32)
 
     return mode, indptr, indices
+
+
+def _compute_target_columns(
+    filter_cols: Optional[Union[List, np.ndarray, sp.spmatrix]],
+    target_cols: Optional[Union[List, np.ndarray, sp.spmatrix]],
+    int n_cols
+) -> np.ndarray:
+    """
+    Compute the target columns based on filter_cols and target_cols specifications.
+
+    This function determines which columns should be included in the computation
+    by combining filter and target specifications.
+
+    Args:
+        filter_cols: Columns to exclude (can be None, array/list, or sparse matrix).
+        target_cols: Columns to include (can be None, array/list, or sparse matrix).
+        n_cols: Total number of columns in matrix2.
+
+    Returns:
+        Array of target column indices (sorted, int32).
+
+    Rules:
+        - If both empty/None: return all columns [0, 1, ..., n_cols-1]
+        - If both are matrices: return all columns (can't pre-filter)
+        - If filter_cols is array: return all columns except filtered ones
+        - If target_cols is array: return only target columns
+        - If both are arrays: return (target_cols - filter_cols)
+    """
+    cdef bint filter_is_empty = filter_cols is None or (isinstance(filter_cols, (list, np.ndarray)) and len(filter_cols) == 0)
+    cdef bint target_is_empty = target_cols is None or (isinstance(target_cols, (list, np.ndarray)) and len(target_cols) == 0)
+    cdef bint filter_is_matrix = sp.issparse(filter_cols) and filter_cols.data.shape[0] != 0
+    cdef bint target_is_matrix = sp.issparse(target_cols) and target_cols.data.shape[0] != 0
+
+    # Case 1: Both empty/None - return all columns
+    if filter_is_empty and target_is_empty:
+        return np.arange(n_cols, dtype=np.int32)
+
+    # Case 2: Both are matrices - can't pre-filter (different columns per row)
+    if filter_is_matrix and target_is_matrix:
+        return np.arange(n_cols, dtype=np.int32)
+
+    # Case 3: Only one is matrix, other is empty - return all columns
+    if (filter_is_matrix and target_is_empty) or (target_is_matrix and filter_is_empty):
+        return np.arange(n_cols, dtype=np.int32)
+
+    # Case 4: At least one is array-based - compute valid columns
+    valid_cols_set = set(range(n_cols))
+
+    # Apply target_cols filter (keep only these columns)
+    if not target_is_empty and not target_is_matrix:
+        valid_cols_set = set(target_cols)
+
+    # Apply filter_cols exclusion (remove these columns)
+    if not filter_is_empty and not filter_is_matrix:
+        valid_cols_set = valid_cols_set.difference(set(filter_cols))
+
+    # Convert to sorted array
+    return np.array(sorted(valid_cols_set), dtype=np.int32)
+
+
+def _filter_matrix_columns(
+    matrix: sp.csr_matrix,
+    target_cols: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Filter CSR matrix to keep only target columns while preserving original column indices.
+
+    This function removes all entries from the matrix whose column index is not in
+    target_cols, but keeps the original column indices for remaining entries.
+
+    Args:
+        matrix: CSR matrix to filter.
+        target_cols: Array of column indices to keep.
+
+    Returns:
+        Tuple of (data, indices, indptr) as float32/int32 arrays ready for Cython.
+    """
+    # Create target column set for fast lookup
+    target_set = set(target_cols)
+
+    # Filter matrix row by row
+    new_data_list = []
+    new_indices_list = []
+    new_indptr = [0]
+
+    for row in range(matrix.shape[0]):
+        start, end = matrix.indptr[row], matrix.indptr[row + 1]
+        for i in range(start, end):
+            if matrix.indices[i] in target_set:
+                new_data_list.append(matrix.data[i])
+                new_indices_list.append(matrix.indices[i])
+        new_indptr.append(len(new_data_list))
+
+    # Return arrays in correct format for Cython
+    return (
+        np.array(new_data_list, dtype=np.float32),
+        np.array(new_indices_list, dtype=np.int32),
+        np.array(new_indptr, dtype=np.int32)
+    )

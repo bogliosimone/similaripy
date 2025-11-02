@@ -22,7 +22,9 @@ from .s_plus_utils import (
     _build_tversky_normalization,
     _build_cosine_normalization,
     _build_depop_normalization,
-    _build_column_selector
+    _build_column_selector,
+    _compute_target_columns,
+    _filter_matrix_columns
 )
 
 from cython.operator import dereference
@@ -250,6 +252,16 @@ def s_plus(
 
     filter_col_mode, filter_m_indptr, filter_m_indices = _build_column_selector(filter_cols)
     target_col_mode, target_m_indptr, target_m_indices = _build_column_selector(target_cols)
+
+    # Pre-filter matrix2 if we have array-based filter/target columns
+    # C++ will handle SELECTION_ARRAY same as SELECTION_NONE (no extra checks needed)
+    cdef int[:] target_columns
+    if filter_col_mode == MODE_ARRAY or target_col_mode == MODE_ARRAY:
+        # Compute which columns to keep
+        target_columns = _compute_target_columns(filter_cols, target_cols, user_count)
+
+        # Filter matrix2 and get data arrays directly in correct format
+        m2_data, m2_indices, m2_indptr = _filter_matrix_columns(matrix2, target_columns)
 
     ### START COMPUTATION ###
 
