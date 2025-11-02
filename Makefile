@@ -1,4 +1,4 @@
-.PHONY: install test build wheelcheck benchmark all clean mkdocs test-dev benchmark-local benchmark-normalization benchmark-sim install-dev install-dev-editable
+.PHONY: install test build wheelcheck benchmark all clean mkdocs test-dev benchmark-local benchmark-normalization benchmark-sim install-dev install-dev-editable benchmark-similarity-rnd-seed benchmark-similarity-medium
 
 # Install all dev dependencies using uv
 install:
@@ -6,12 +6,12 @@ install:
 
 # Install dev dependencies using uv
 install-dev:
-	uv pip install -e '.[dev]'
+	uv pip install -e '.[dev,bench]'
 
 # Install in editable mode with skbuild redirect
 # The first time, you must run install-dev before, to have dependencies installed
 install-dev-editable:
-	SKBUILD_EDITABLE_REBUILD=true uv pip install -e '.[dev]' --no-build-isolation
+	SKBUILD_EDITABLE_REBUILD=true uv pip install -e '.[dev,bench]' --no-build-isolation -v
 
 # Run unit tests using tox (py311)
 test:
@@ -34,16 +34,20 @@ benchmark:
 	uv run tox -e benchmark
 
 # Run benchmarks locally
-benchmark-local:
-	uv run pytest tests/benchmarks.py --benchmark-only
+benchmark-similarity:
+	uv run tests/benchmarks/run_benchmarks.py
+
+# Run benchmarks on yambda 50m dataset
+benchmark-similarity-medium:
+	uv run tests/benchmarks/run_benchmarks.py --dataset yambda --version 50m --rounds 3
 
 # Run only normalization benchmarks locally
 benchmark-normalization:
-	uv run pytest tests/benchmarks.py::TestNormalizationPerformance --benchmark-only
+	uv run pytest tests/benchmarks/benchmarks_rnd_seed.py::TestNormalizationPerformance --benchmark-only
 
 # Run only similarity benchmarks locally
-benchmark-similarity:
-	uv run pytest tests/benchmarks.py::TestSPlusPerformance --benchmark-only
+benchmark-similarity-rnd-seed:
+	uv run pytest tests/benchmarks/benchmarks_rnd_seed.py::TestSPlusPerformance --benchmark-only
 
 # Clean build artifacts
 clean:

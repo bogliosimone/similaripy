@@ -17,6 +17,8 @@ dist/
 # ============================
 
 .benchmarks/
+bench_results/
+datasets_bench/
 
 # =======================
 # Project-specific Files

@@ -1,20 +1,31 @@
-# cython: language_level=3
 # cython: language=c++
-# cython: boundscheck=False, wraparound=False, cdivision=True
-# distutils: sources = s_plus.cpp, coo_to_csr.cpp
+# cython: boundscheck=False, wraparound=False, cdivision=True, initializedcheck=False
 
 """
-    author: Simone Boglio
-    mail: bogliosimone@gmail.com
+    s_plus: top-K similarity search between rows of two sparse matrices
 """
 
 import cython
 import numpy as np
 import scipy.sparse as sp
-import tqdm
+from typing import Optional, Union, Literal
 
-DEF PROGRESS_BAR_THRESHOLD = 5000  # Show progress bar only for large computations
-DEF PROGRESS_UPDATE_FREQUENCY = 500  # Update progress bar every N rows
+from .utils import (
+    build_coo_matrix,
+    build_csr_matrix,
+    get_num_threads
+)
+from .s_plus_utils import (
+    validate_s_plus_inputs,
+    _build_matrix_data,
+    _build_squared_norms,
+    _build_tversky_normalization,
+    _build_cosine_normalization,
+    _build_depop_normalization,
+    _build_column_selector,
+    _compute_target_columns,
+    _filter_matrix_columns
+)
 
 from cython.operator import dereference
 from cython.parallel import parallel, prange
@@ -23,6 +34,23 @@ from cython import float, address
 from libcpp.vector cimport vector
 from libcpp.utility cimport pair
 from libcpp cimport bool
+from libcpp.string cimport string
+
+# Progress bar configuration constants
+cdef int PROGRESS_BAR_REFRESH_RATE = 3  # Refresh rate in Hz (updates per second)
+cdef int PROGRESS_BAR_WIDTH = 25        # Width of the progress bar in characters
+
+# Column selector mode constants
+cdef int MODE_NONE = 0  # No filtering/targeting (use all columns)
+cdef int MODE_ARRAY = 1  # Column selector is an array/list
+cdef int MODE_MATRIX = 2  # Column selector is a sparse matrix
+
+cdef extern from "progress_bar.h" namespace "progress" nogil:
+    cdef cppclass ProgressBar:
+        ProgressBar(int total, bool disabled, int max_refresh_rate, int bar_width) except +
+        void set_description(const string& desc) except +
+        void update(int n) except +
+        void close(const string& final_desc) except +
 
 cdef extern from "s_plus.h" namespace "s_plus" nogil:
     cdef cppclass TopK[Index, Value]:
@@ -52,71 +80,106 @@ cdef extern from "s_plus.h" namespace "s_plus" nogil:
         void setIndexRow(Index index)
         void foreach[Function](Function & f)
 
-cdef extern from "coo_to_csr.h" nogil:
-    void coo32_to_csr64(int n_row,int n_col,long nnz,int Ai[],int Aj[],float Ax[],long Bp[],long Bj[],float Bx[])
-    void coo32_to_csr32(int n_row,int n_col,int nnz,int Ai[],int Aj[],float Ax[],int Bp[],int Bj[],float Bx[])
-
-cdef extern from "omp.h":
-    int omp_get_max_threads()
-
-def get_num_threads():
-    return omp_get_max_threads()
-
-
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def s_plus(
-    matrix1, matrix2=None,
-    weight_depop_matrix1='none' , weight_depop_matrix2='none',
-    float p1=0, float p2=0, 
-    float a1=1,
-    float l1=0, float l2=0, float l3=0,
-    float t1=1, float t2=1,
-    float c1=0.5,float c2=0.5,
-    unsigned int k=100, 
-    float stabilized_shrink=0,
-    float bayesian_shrink=0,
-    float additive_shrink=0,
-    float threshold=0,
-    binary=False,
-    target_rows=None,
-    filter_cols=None,
-    target_cols=None,
-    verbose=True,
-    format_output='csr',
-    int num_threads=0):  
+    matrix1: sp.csr_matrix,
+    matrix2: Optional[sp.csr_matrix] = None,
+    weight_depop_matrix1: Union[str, np.ndarray] = 'none',
+    weight_depop_matrix2: Union[str, np.ndarray] = 'none',
+    float p1 = 0,
+    float p2 = 0,
+    float a1 = 1,
+    float l1 = 0,
+    float l2 = 0,
+    float l3 = 0,
+    float t1 = 1,
+    float t2 = 1,
+    float c1 = 0.5,
+    float c2 = 0.5,
+    unsigned int k = 100,
+    float stabilized_shrink = 0,
+    float bayesian_shrink = 0,
+    float additive_shrink = 0,
+    float threshold = 0,
+    binary: bool = False,
+    target_rows: Optional[Union[list, np.ndarray]] = None,
+    filter_cols: Optional[Union[list, np.ndarray, sp.spmatrix]] = None,
+    target_cols: Optional[Union[list, np.ndarray, sp.spmatrix]] = None,
+    verbose: bool = True,
+    format_output: Literal['csr', 'coo'] = 'csr',
+    int num_threads = 0
+) -> Union[sp.csr_matrix, sp.coo_matrix]:
+    """
+    Compute top-K similarity between rows of two sparse matrices using the S_Plus algorithm.
 
-    assert sp.issparse(matrix1), 'matrix m1 must be a sparse matrix'
+    The S_Plus algorithm combines multiple similarity metrics (Tversky, Cosine, Depopularization)
+    with configurable weights and supports various normalization strategies.
+
+    Args:
+        matrix1: First sparse matrix (typically item-user interactions).
+        matrix2: Optional second matrix. If None, uses matrix1.T (self-similarity).
+        weight_depop_matrix1: Depopularization weights for matrix1: 'none', 'sum', or custom array.
+        weight_depop_matrix2: Depopularization weights for matrix2: 'none', 'sum', or custom array.
+        p1: Power for depopularization weights on matrix1.
+        p2: Power for depopularization weights on matrix2.
+        a1: Power applied to dot product values.
+        l1: Weight for Tversky similarity term.
+        l2: Weight for Cosine similarity term.
+        l3: Weight for Depopularization term.
+        t1: Tversky parameter for matrix1.
+        t2: Tversky parameter for matrix2.
+        c1: Cosine power exponent for matrix1.
+        c2: Cosine power exponent for matrix2.
+        k: Number of top similar items to keep per row.
+        stabilized_shrink: Stabilized shrinkage parameter.
+        bayesian_shrink: Bayesian shrinkage parameter.
+        additive_shrink: Additive shrinkage for cosine normalization.
+        threshold: Minimum similarity threshold.
+        binary: If True, treat all non-zero values as 1.0 (set theory).
+        target_rows: Specific rows to compute. If None, compute all rows.
+        filter_cols: Columns to exclude from results (e.g., already seen items).
+        target_cols: Columns to include in results (only compute these).
+        verbose: Show progress bar during computation.
+        format_output: Output matrix format: 'csr' or 'coo'.
+        num_threads: Number of OpenMP threads (0 = use all available cores).
+
+    Returns:
+        A sparse matrix of shape (n_rows, n_cols) in the specified format,
+        containing the top-k similarity scores.
+    """
+
     # if receive only matrix1 in input
     if matrix2 is None:
-        matrix2=matrix1.T
-    assert sp.issparse(matrix2), 'matrix m2 must be a sparse matrix'
+        matrix2 = matrix1.T
 
-    # check that all parameters are consistent
-    assert matrix1.shape[1]==matrix2.shape[0], 'error shape matrixs'
-    assert k >= 1, 'k must be >=1'
-    assert len(weight_depop_matrix1)==matrix1.shape[0] or weight_depop_matrix1 in ('none','sum'), 'error format weighs_depop matrix1'
-    assert len(weight_depop_matrix2)==matrix2.shape[1] or weight_depop_matrix2 in ('none','sum'), 'error format weighs_depop matrix2'
-    assert target_rows is None or len(target_rows)<=matrix1.shape[0], 'error target rows'
-    assert filter_cols is None or sp.issparse(filter_cols) or isinstance(filter_cols,(list,np.ndarray)), 'error format filter_cols'
-    assert target_cols is None or sp.issparse(target_cols) or isinstance(target_cols,(list,np.ndarray)), 'error format target_cols' 
-    assert verbose in (True, False), 'verbose must be boolean'
-    assert format_output in ('coo', 'csr'), "output format must be 'coo' or 'csr'"
+    # Validate all inputs
+    validate_s_plus_inputs(
+        matrix1=matrix1,
+        matrix2=matrix2,
+        weight_depop_matrix1=weight_depop_matrix1,
+        weight_depop_matrix2=weight_depop_matrix2,
+        k=k,
+        target_rows=target_rows,
+        filter_cols=filter_cols,
+        target_cols=target_cols,
+        verbose=verbose,
+        format_output=format_output
+    )
 
-    # do not allocate unecessary space
+    # do not allocate unnecessary space
     if k > matrix2.shape[1]:
         k = matrix2.shape[1]
 
     # build target rows (only the row that must be computed)
     if target_rows is None:
-        target_rows=np.arange(matrix1.shape[0],dtype=np.int32)
-    cdef int[:] targets = np.array(target_rows,dtype=np.int32)
+        target_rows = np.arange(matrix1.shape[0], dtype=np.int32)
+    cdef int[:] targets = np.array(target_rows, dtype=np.int32)
     cdef int n_targets = targets.shape[0]
 
-    # start progress bar
-    progress = tqdm.tqdm(total=n_targets, disable=not verbose)
-    progress.desc = 'Preprocessing'
-    progress.refresh()
+    # Initialize progress bar
+    cdef ProgressBar * progress = new ProgressBar(n_targets, not verbose, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
+    progress.set_description(b'Preprocessing')
 
     # be sure to use csr matrixes
     matrix1 = matrix1.tocsr()
@@ -128,39 +191,20 @@ def s_plus(
     matrix2.eliminate_zeros()
 
     # useful variables
-    cdef int item_count = matrix1.shape[0]
-    cdef int user_count = matrix2.shape[1]
+    cdef int n_output_rows = matrix1.shape[0]
+    cdef int n_output_cols = matrix2.shape[1]
     cdef int i, u, t, index1, index2
-    cdef int norm, depop
     cdef long index3
     cdef float v1
 
     ### START PREPROCESSING ###
 
-    # save original data
-    old_m1_data, old_m2_data = matrix1.data, matrix2.data
+    # Backup original data before modifications
+    original_m1_data = matrix1.data
+    original_m2_data = matrix2.data
 
-    # if binary use set theory otherwise copy data and use float32
-    if binary:
-        matrix1.data, matrix2.data = np.ones(matrix1.data.shape[0], dtype= np.float32), np.ones(matrix2.data.shape[0], dtype=np.float32)
-    else:
-        matrix1.data, matrix2.data = np.array(matrix1.data, dtype=np.float32), np.array(matrix2.data, dtype=np.float32)
-
-    # build popularities array
-    if l3!=0:
-        if isinstance(weight_depop_matrix1,(list,np.ndarray)): 
-            weight_depop_matrix1 = np.power(weight_depop_matrix1, p1, dtype=np.float32)    
-        elif weight_depop_matrix1=='none':
-            weight_depop_matrix1 = np.ones(matrix1.shape[0], dtype=np.float32)
-        elif weight_depop_matrix1 == 'sum':
-            weight_depop_matrix1 = np.power(np.array(matrix1.sum(axis = 1).A1, dtype=np.float32), p1, dtype=np.float32)
-        
-        if isinstance(weight_depop_matrix2,(list,np.ndarray)): 
-            weight_depop_matrix2 = np.power(weight_depop_matrix2, p2, dtype=np.float32)    
-        elif weight_depop_matrix2=='none':
-            weight_depop_matrix2 = np.power(np.ones(matrix2.shape[1]), p2, dtype=np.float32)  
-        elif weight_depop_matrix2 == 'sum':
-            weight_depop_matrix2 = np.power(np.array(matrix2.sum(axis = 0).A1, dtype=np.float32), p2, dtype=np.float32)
+    # Build matrix data (handle binary mode and float32 conversion)
+    _build_matrix_data(matrix1, matrix2, binary)
 
     # build the data terms (avoid copy if already float32)
     cdef float[:] m1_data = matrix1.data.astype(np.float32, copy=False)
@@ -173,119 +217,59 @@ def s_plus(
     cdef int[:] m2_indices = matrix2.indices.astype(np.int32, copy=False)
 
     # build normalization terms for tversky, cosine and depop
-    cdef float[:] Xtversky
-    cdef float[:] Ytversky
-    cdef float[:] Xcosine
-    cdef float[:] Ycosine
-    cdef float[:] Xdepop
-    cdef float[:] Ydepop
-    cdef float[:] m1_sq_norms
-    cdef float[:] m2_sq_norms
+    # initialize all as empty arrays and fill only if needed
+    cdef float[:] empty = np.array([], dtype=np.float32)
+    cdef float[:] Xtversky = empty
+    cdef float[:] Ytversky = empty
+    cdef float[:] Xcosine = empty
+    cdef float[:] Ycosine = empty
+    cdef float[:] Xdepop = empty
+    cdef float[:] Ydepop = empty
+    cdef float[:] m1_sq_norms = empty
+    cdef float[:] m2_sq_norms = empty
 
-    # Compute squared norms once if needed by either Tversky or Cosine
-    cdef bint need_sq_norms = (l1 != 0 or l2 != 0)
+    # Compute squared norms once if needed by either Tversky or Cosine (avoid redundant computation)
+    if l1 != 0 or l2 != 0:
+        m1_sq_norms, m2_sq_norms = _build_squared_norms(matrix1, matrix2)
 
-    if need_sq_norms:
-        m1_sq_norms = np.array(matrix1.power(2).sum(axis=1).A1, dtype=np.float32)
-        m2_sq_norms = np.array(matrix2.power(2).sum(axis=0).A1, dtype=np.float32)
+    if l1 != 0:
+        Xtversky, Ytversky = _build_tversky_normalization(m1_sq_norms, m2_sq_norms)
 
-        if l1 != 0:
-            Xtversky = m1_sq_norms
-            Ytversky = m2_sq_norms
-        else:
-            Xtversky = np.array([], dtype=np.float32)
-            Ytversky = np.array([], dtype=np.float32)
-
-        if l2 != 0:
-            Xcosine = np.power(np.asarray(m1_sq_norms) + additive_shrink, c1, dtype=np.float32)
-            Ycosine = np.power(np.asarray(m2_sq_norms) + additive_shrink, c2, dtype=np.float32)
-        else:
-            Xcosine = np.array([], dtype=np.float32)
-            Ycosine = np.array([], dtype=np.float32)
-    else:
-        # Neither l1 nor l2 used
-        Xtversky = np.array([], dtype=np.float32)
-        Ytversky = np.array([], dtype=np.float32)
-        Xcosine = np.array([], dtype=np.float32)
-        Ycosine = np.array([], dtype=np.float32)
+    if l2 != 0:
+        Xcosine, Ycosine = _build_cosine_normalization(m1_sq_norms, m2_sq_norms, c1, c2, additive_shrink)
 
     if l3 != 0:
-        Xdepop = np.array(weight_depop_matrix1, dtype=np.float32)
-        Ydepop = np.array(weight_depop_matrix2, dtype=np.float32)
-    else:
-        Xdepop = np.array([], dtype=np.float32)
-        Ydepop = np.array([], dtype=np.float32)
+        Xdepop, Ydepop = _build_depop_normalization(matrix1, matrix2, weight_depop_matrix1, weight_depop_matrix2, p1, p2)
 
     # restore original data terms
-    matrix1.data, matrix2.data = old_m1_data, old_m2_data
+    matrix1.data, matrix2.data = original_m1_data, original_m2_data
 
     ### END OF PREPROCESSING ###
 
-    # filter col matrix
-    # mode: 0 no filter, 1 filter array, 2 filter matrix
+    # Prepare filter and target column selectors
     cdef int filter_col_mode
     cdef int[:] filter_m_indptr
     cdef int[:] filter_m_indices
-
-    if sp.issparse(filter_cols) and filter_cols.data.shape[0] != 0:
-        assert filter_cols.shape == (item_count, user_count), 'shape filter_cols matrix not correct'
-        filter_col_mode = 2
-        # build indices and indptrs and sort indices since we will use binary search
-        filter_cols = filter_cols.tocsr()
-        filter_cols.eliminate_zeros()
-        filter_cols.sort_indices()
-        filter_m_indptr = np.array(filter_cols.indptr, dtype=np.int32)
-        filter_m_indices = np.array(filter_cols.indices, dtype=np.int32)
-    elif isinstance(filter_cols, (list, np.ndarray)) and len(filter_cols) != 0:
-        filter_col_mode = 1
-        # sort array since we will use binary search
-        filter_m_indptr = np.array([0,len(filter_cols)], dtype=np.int32)
-        filter_m_indices = np.array(np.sort(filter_cols), dtype=np.int32)
-    else:
-        # filter cols is empty or None
-        filter_col_mode = 0
-        filter_m_indptr = np.array([],dtype=np.int32)
-        filter_m_indices = np.array([],dtype=np.int32)
-
-    # target col matrix
-    # mode: 0 target all, 1 target array, 2 target matrix
-    cdef int target_col_mode = 0
+    cdef int target_col_mode
     cdef int[:] target_m_indptr
     cdef int[:] target_m_indices
 
-    if sp.issparse(target_cols):
-        assert target_cols.shape == (item_count, user_count), 'shape target_cols matrix not correct'
-        target_col_mode = 2
-        # build indices and indptrs and sort indices since we will use binary search
-        target_cols = target_cols.tocsr()
-        target_cols.eliminate_zeros()
-        target_cols.sort_indices()
-        target_m_indptr = np.array(target_cols.indptr, dtype=np.int32)
-        target_m_indices = np.array(target_cols.indices, dtype=np.int32)
-    elif isinstance(target_cols, (list, np.ndarray)):
-        target_col_mode = 1
-        target_m_indptr = np.array([0,len(target_cols)], dtype=np.int32)
-        target_m_indices = np.array(np.sort(target_cols), dtype=np.int32)
-    else:
-        # target cols is None
-        target_col_mode = 0
-        target_m_indptr = np.array([],dtype=np.int32)
-        target_m_indices = np.array([],dtype=np.int32)
+    filter_col_mode, filter_m_indptr, filter_m_indices = _build_column_selector(filter_cols)
+    target_col_mode, target_m_indptr, target_m_indices = _build_column_selector(target_cols)
 
-    # set progress bar
-    cdef int counter = 0
-    cdef int * counter_add = address(counter)
-    cdef int verb
-    cdef int progress_update_interval
-    if n_targets <= PROGRESS_BAR_THRESHOLD or not verbose:
-        verb = 0
-        progress_update_interval = 1  # Not used but must be defined
-    else:
-        verb = 1
-        progress_update_interval = max(1, n_targets // PROGRESS_UPDATE_FREQUENCY)
+    # Pre-filter matrix2 if we have array-based filter/target columns
+    # C++ will handle SELECTION_ARRAY same as SELECTION_NONE (no extra checks needed)
+    cdef int[:] target_columns
+    if filter_col_mode == MODE_ARRAY or target_col_mode == MODE_ARRAY:
+        # Compute which columns to keep
+        target_columns = _compute_target_columns(filter_cols, target_cols, n_output_cols)
 
-    
-    # structures for multiplications
+        # Filter matrix2 and get data arrays directly in correct format
+        m2_data, m2_indices, m2_indptr = _filter_matrix_columns(matrix2, target_columns)
+
+    ### START COMPUTATION ###
+
+    # Structures for multiplications
     cdef SparseMatrixMultiplier[int, float] * neighbours
     cdef TopK[int, float] * topk
     cdef pair[float, int] result
@@ -295,11 +279,10 @@ def s_plus(
     cdef int[:] rows = np.zeros(n_targets * k, dtype=np.int32)
     cdef int[:] cols = np.zeros(n_targets * k, dtype=np.int32)
 
-    progress.desc = 'Allocate memory per threads'
-    progress.refresh()
+    progress.set_description(b'Computing')
     with nogil, parallel(num_threads=num_threads):
         # allocate memory per thread
-        neighbours = new SparseMatrixMultiplier[int, float](user_count,
+        neighbours = new SparseMatrixMultiplier[int, float](n_output_cols,
                                                             &Xtversky[0], &Ytversky[0],
                                                             &Xcosine[0], &Ycosine[0],
                                                             &Xdepop[0], &Ydepop[0],
@@ -307,27 +290,21 @@ def s_plus(
                                                             l1, l2, l3,
                                                             t1, t2,
                                                             c1, c2,
-                                                            stabilized_shrink, 
+                                                            stabilized_shrink,
                                                             bayesian_shrink,
                                                             threshold,
-                                                            filter_col_mode, 
+                                                            filter_col_mode,
                                                             &filter_m_indptr[0], &filter_m_indices[0],
-                                                            target_col_mode, 
+                                                            target_col_mode,
                                                             &target_m_indptr[0], &target_m_indices[0],
                                                             )
         topk = new TopK[int, float](k)
         try:
             for i in prange(n_targets, schedule='dynamic'):
-                # progress bar (note: update once per PROGRESS_UPDATE_FREQUENCY rows or with big matrix taking gil at each cycle destroy the performance)
-                if verb==1:
-                    # here, without gil, we can get war/waw/raw errors, it's not important as it's just a counter for the progress bar
-                    counter_add[0]=counter_add[0]+1
-                    if counter_add[0] % progress_update_interval == 0:
-                        with gil:
-                            progress.desc = 'Computing'
-                            progress.n = counter_add[0]
-                            progress.refresh()
-                # compute row
+                # Update progress (thread-safe, auto-throttled by C++)
+                progress.update(1)
+
+                # Compute row similarity
                 t = targets[i]
                 neighbours.setIndexRow(t)
                 for index1 in range(m1_indptr[t], m1_indptr[t+1]):
@@ -348,94 +325,38 @@ def s_plus(
             del neighbours
             del topk
 
-    progress.n = n_targets
-    progress.refresh()
-
-    # deallocate memory
+    # Deallocate intermediate memory
     del Xcosine, Ycosine, Xtversky, Ytversky, Xdepop, Ydepop
     del m1_data, m1_indices, m1_indptr
     del m2_data, m2_indices, m2_indptr
     del targets
 
-    # build result in coo or csr format
-    cdef int M,N
-    cdef float [:] data
-    cdef int [:] indices32, indptr32
-    cdef long [:] indices64, indptr64
+    ### BUILD OUTPUT MATRIX ###
 
-    if format_output=='coo':
-        # return the result matrix in coo format
-        progress.desc = 'Build coo matrix'
-        progress.refresh()
-        res = sp.coo_matrix((values, (rows, cols)),shape=(item_count, user_count), dtype=np.float32)
-        del values, rows, cols
+    progress.set_description(f'Building {format_output} matrix'.encode())
+
+    # Build result in requested format
+    if format_output == 'coo':
+        res = build_coo_matrix(
+            rows=rows,
+            cols=cols,
+            values=values,
+            item_count=n_output_rows,
+            user_count=n_output_cols
+        )
     else:
-        # return the result matrix in csr format taking care of conversion in 32/64bit of indices if needed
-        # note: normally require less memory than coo at the end of the conversion, but require to allocate more memory during the conversion
-        progress.desc = 'Build csr matrix'
-        progress.refresh()
-        M = item_count
-        N = user_count
-        idx_dtype = get_index_dtype(maxval=max(n_targets*k,N)) #32/64 bit dtype based on total entry and max value
-        if idx_dtype==np.int32:
-            indptr32 = np.empty(M + 1, dtype=np.int32)
-            indices32 = np.empty(n_targets * k, dtype=np.int32)
-            data = np.empty(n_targets * k, dtype=np.float32)
-            coo32_to_csr32(M, N, n_targets*k, &rows[0], &cols[0], &values[0], &indptr32[0], &indices32[0], &data[0])
-            del values, rows, cols
-            res = sp.csr_matrix((data, indices32, indptr32) ,shape=(item_count, user_count), dtype=np.float32)
-            del indptr32,indices32
-        else: # idx_dtype==np.int64:
-            indptr64 = np.empty(M + 1, dtype=np.int64)
-            indices64 = np.empty(n_targets * k, dtype=np.int64)
-            data = np.empty(n_targets * k, dtype=np.float32)
-            coo32_to_csr64(M, N, n_targets*k, &rows[0], &cols[0], &values[0], &indptr64[0], &indices64[0], &data[0])
-            del values, rows, cols
-            res = sp.csr_matrix((data, indices64, indptr64) ,shape=(item_count, user_count), dtype=np.float32)
-            del indptr64,indices64
-        del data
-        progress.desc = 'Remove zeros'
-        progress.refresh()
-        res.eliminate_zeros() # routine for csr matrix
-    
-    # finally update progress bar and return the result matrix
-    progress.desc = 'Done'
-    progress.refresh()    
-    progress.close()
+        res = build_csr_matrix(
+            rows=rows,
+            cols=cols,
+            values=values,
+            item_count=n_output_rows,
+            user_count=n_output_cols
+        )
+        progress.set_description(b'Removing zeros')
+        res.eliminate_zeros()
+
+    # Finalize and cleanup
+    progress.close(b'Done')
+    del progress
+
     return res
-
-def get_index_dtype(arrays=(), maxval=None, check_contents=False):
-    """
-    Based on input (integer) arrays `a`, determine a suitable index data
-    type that can hold the data in the arrays.
-    """
-    # not using intc directly due to misinteractions with pythran
-    if np.intc().itemsize != 4:
-        return np.int64
-
-    int32min = np.int32(np.iinfo(np.int32).min)
-    int32max = np.int32(np.iinfo(np.int32).max)
-
-    if maxval is not None:
-        maxval = np.int64(maxval)
-        if maxval > int32max:
-            return np.int64
-
-    if isinstance(arrays, np.ndarray):
-        arrays = (arrays,)
-
-    for arr in arrays:
-        arr = np.asarray(arr)
-        if not np.can_cast(arr.dtype, np.int32):
-            if check_contents:
-                if arr.size == 0:
-                    # a bigger type not needed
-                    continue
-                elif np.issubdtype(arr.dtype, np.integer):
-                    maxval = arr.max()
-                    minval = arr.min()
-                    if minval >= int32min and maxval <= int32max:
-                        # a bigger type not needed
-                        continue
-            return np.int64
-    return np.int32
