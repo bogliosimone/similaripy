@@ -218,7 +218,8 @@ def _build_depop_normalization(
     if isinstance(weight_spec1, (list, np.ndarray)):
         Xdepop = np.power(weight_spec1, p1, dtype=np.float32)
     elif weight_spec1 == 'none':
-        Xdepop = np.power(np.ones(matrix1.shape[0]), p1, dtype=np.float32)
+        # Optimization: 1^p1 = 1 for any p1, so directly create ones array
+        Xdepop = np.ones(matrix1.shape[0], dtype=np.float32)
     elif weight_spec1 == 'sum':
         Xdepop = np.power(np.array(matrix1.sum(axis=1).A1, dtype=np.float32), p1, dtype=np.float32)
     else:
@@ -228,7 +229,8 @@ def _build_depop_normalization(
     if isinstance(weight_spec2, (list, np.ndarray)):
         Ydepop = np.power(weight_spec2, p2, dtype=np.float32)
     elif weight_spec2 == 'none':
-        Ydepop = np.power(np.ones(matrix2.shape[1]), p2, dtype=np.float32)
+        # Optimization: 1^p2 = 1 for any p2, so directly create ones array
+        Ydepop = np.ones(matrix2.shape[1], dtype=np.float32)
     elif weight_spec2 == 'sum':
         Ydepop = np.power(np.array(matrix2.sum(axis=0).A1, dtype=np.float32), p2, dtype=np.float32)
     else:
@@ -398,17 +400,27 @@ def _filter_matrix_columns(
     # Create target column set for fast lookup
     target_set = set(target_cols)
 
-    # Filter matrix row by row
+    # Get matrix attributes with proper types
+    cdef int[:] indptr = matrix.indptr
+    cdef int[:] indices = matrix.indices
+    cdef float[:] data = matrix.data.astype(np.float32, copy=False)
+    cdef int n_rows = matrix.shape[0]
+    cdef int row, start, end, i, col_idx
+
+    # Pre-allocate lists for filtered data
     new_data_list = []
     new_indices_list = []
     new_indptr = [0]
 
-    for row in range(matrix.shape[0]):
-        start, end = matrix.indptr[row], matrix.indptr[row + 1]
+    # Filter matrix row by row using C-level iteration
+    for row in range(n_rows):
+        start = indptr[row]
+        end = indptr[row + 1]
         for i in range(start, end):
-            if matrix.indices[i] in target_set:
-                new_data_list.append(matrix.data[i])
-                new_indices_list.append(matrix.indices[i])
+            col_idx = indices[i]
+            if col_idx in target_set:
+                new_data_list.append(data[i])
+                new_indices_list.append(col_idx)
         new_indptr.append(len(new_data_list))
 
     # Return arrays in correct format for Cython

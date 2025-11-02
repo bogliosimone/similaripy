@@ -76,8 +76,6 @@ def get_index_dtype(
     return np.int32
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
 def build_coo_matrix(
     int[:] rows,
     int[:] cols,
@@ -103,8 +101,6 @@ def build_coo_matrix(
     return res
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
 def build_csr_matrix_32(
     int[:] rows,
     int[:] cols,
@@ -145,8 +141,6 @@ def build_csr_matrix_32(
     return res
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
 def build_csr_matrix_64(
     int[:] rows,
     int[:] cols,
@@ -187,8 +181,6 @@ def build_csr_matrix_64(
     return res
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
 def build_csr_matrix(
     int[:] rows,
     int[:] cols,
