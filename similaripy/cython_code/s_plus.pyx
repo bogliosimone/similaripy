@@ -191,16 +191,20 @@ def s_plus(
     matrix2.eliminate_zeros()
 
     # useful variables
-    cdef int item_count = matrix1.shape[0]
-    cdef int user_count = matrix2.shape[1]
+    cdef int n_output_rows = matrix1.shape[0]
+    cdef int n_output_cols = matrix2.shape[1]
     cdef int i, u, t, index1, index2
     cdef long index3
     cdef float v1
 
     ### START PREPROCESSING ###
 
+    # Backup original data before modifications
+    original_m1_data = matrix1.data
+    original_m2_data = matrix2.data
+
     # Build matrix data (handle binary mode and float32 conversion)
-    old_m1_data, old_m2_data = _build_matrix_data(matrix1, matrix2, binary)
+    _build_matrix_data(matrix1, matrix2, binary)
 
     # build the data terms (avoid copy if already float32)
     cdef float[:] m1_data = matrix1.data.astype(np.float32, copy=False)
@@ -238,7 +242,7 @@ def s_plus(
         Xdepop, Ydepop = _build_depop_normalization(matrix1, matrix2, weight_depop_matrix1, weight_depop_matrix2, p1, p2)
 
     # restore original data terms
-    matrix1.data, matrix2.data = old_m1_data, old_m2_data
+    matrix1.data, matrix2.data = original_m1_data, original_m2_data
 
     ### END OF PREPROCESSING ###
 
@@ -258,7 +262,7 @@ def s_plus(
     cdef int[:] target_columns
     if filter_col_mode == MODE_ARRAY or target_col_mode == MODE_ARRAY:
         # Compute which columns to keep
-        target_columns = _compute_target_columns(filter_cols, target_cols, user_count)
+        target_columns = _compute_target_columns(filter_cols, target_cols, n_output_cols)
 
         # Filter matrix2 and get data arrays directly in correct format
         m2_data, m2_indices, m2_indptr = _filter_matrix_columns(matrix2, target_columns)
@@ -278,7 +282,7 @@ def s_plus(
     progress.set_description(b'Computing')
     with nogil, parallel(num_threads=num_threads):
         # allocate memory per thread
-        neighbours = new SparseMatrixMultiplier[int, float](user_count,
+        neighbours = new SparseMatrixMultiplier[int, float](n_output_cols,
                                                             &Xtversky[0], &Ytversky[0],
                                                             &Xcosine[0], &Ycosine[0],
                                                             &Xdepop[0], &Ydepop[0],
@@ -337,16 +341,16 @@ def s_plus(
             rows=rows,
             cols=cols,
             values=values,
-            item_count=item_count,
-            user_count=user_count
+            item_count=n_output_rows,
+            user_count=n_output_cols
         )
     else:
         res = build_csr_matrix(
             rows=rows,
             cols=cols,
             values=values,
-            item_count=item_count,
-            user_count=user_count
+            item_count=n_output_rows,
+            user_count=n_output_cols
         )
         progress.set_description(b'Removing zeros')
         res.eliminate_zeros()

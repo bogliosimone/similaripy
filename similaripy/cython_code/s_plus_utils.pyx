@@ -241,26 +241,22 @@ def _build_matrix_data(
     matrix1: sp.csr_matrix,
     matrix2: sp.csr_matrix,
     binary: bool
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> None:
     """
-    Build matrix data arrays, handling binary mode.
+    Convert matrix data to float32 and optionally binarize.
 
     In binary mode, all non-zero values become 1.0 (set theory).
     Otherwise, convert data to float32.
 
+    Note: This function modifies matrices in-place. Caller should backup
+    original data before calling if restoration is needed.
+
     Args:
-        matrix1: First matrix.
-        matrix2: Second matrix.
+        matrix1: First matrix (modified in-place).
+        matrix2: Second matrix (modified in-place).
         binary: If True, use set theory (all values = 1.0).
-
-    Returns:
-        Tuple of (old_m1_data, old_m2_data) - original data arrays to restore later.
     """
-    # Save original data for restoration
-    old_m1_data = matrix1.data
-    old_m2_data = matrix2.data
-
-    # Build data arrays based on binary flag
+    # Modify matrices in-place
     if binary:
         # Set theory: all non-zero values become 1.0
         matrix1.data = np.ones(matrix1.data.shape[0], dtype=np.float32)
@@ -269,8 +265,6 @@ def _build_matrix_data(
         # Convert to float32 (copy if needed)
         matrix1.data = np.array(matrix1.data, dtype=np.float32)
         matrix2.data = np.array(matrix2.data, dtype=np.float32)
-
-    return old_m1_data, old_m2_data
 
 
 def _build_column_selector(
@@ -281,7 +275,7 @@ def _build_column_selector(
 
     Handles three cases:
     - None or empty: MODE_NONE (0) - use all columns
-    - List/array: MODE_ARRAY (1) - specific column indices
+    - List/array: MODE_ARRAY (1) - pre-filtered in Python, no C++ data needed
     - Sparse matrix: MODE_MATRIX (2) - row-specific column selections
 
     Note: Shape validation is done in validate_s_plus_inputs() before calling this function.
@@ -292,14 +286,14 @@ def _build_column_selector(
     Returns:
         Tuple of (mode, indptr, indices) where:
         - mode: int (0=none, 1=array, 2=matrix)
-        - indptr: int32 array (CSR indptr format)
-        - indices: int32 array (sorted column indices)
+        - indptr: int32 array (CSR indptr format, empty for NONE/ARRAY)
+        - indices: int32 array (sorted column indices, empty for NONE/ARRAY)
     """
     cdef int mode
     cdef int[:] indptr
     cdef int[:] indices
 
-    # Case 1: Sparse matrix with data
+    # Case 1: Sparse matrix with data - needs per-row C++ checks
     # Note: Shape validation is done in validate_s_plus_inputs()
     if sp.issparse(cols) and cols.data.shape[0] != 0:
         mode = MODE_MATRIX
@@ -310,12 +304,12 @@ def _build_column_selector(
         indptr = np.array(cols.indptr, dtype=np.int32)
         indices = np.array(cols.indices, dtype=np.int32)
 
-    # Case 2: List or array with elements
+    # Case 2: List or array with elements - will be pre-filtered in Python
     elif isinstance(cols, (list, np.ndarray)) and len(cols) != 0:
         mode = MODE_ARRAY
-        # Sort array for binary search
-        indptr = np.array([0, len(cols)], dtype=np.int32)
-        indices = np.array(np.sort(cols), dtype=np.int32)
+        # Return empty arrays - C++ won't use them (handles ARRAY same as NONE)
+        indptr = np.array([], dtype=np.int32)
+        indices = np.array([], dtype=np.int32)
 
     # Case 3: None, empty, or sparse matrix with no data
     else:
