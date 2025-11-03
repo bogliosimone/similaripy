@@ -27,12 +27,8 @@ from .s_plus_utils import (
     _filter_matrix_columns
 )
 
-from cython.operator import dereference
-from cython.parallel import parallel, prange
-from cython import float, address
+from cython import float
 
-from libcpp.vector cimport vector
-from libcpp.utility cimport pair
 from libcpp cimport bool
 from libcpp.string cimport string
 
@@ -53,32 +49,46 @@ cdef extern from "progress_bar.h" namespace "progress" nogil:
         void close(const string& final_desc) except +
 
 cdef extern from "s_plus.h" namespace "s_plus" nogil:
-    cdef cppclass TopK[Index, Value]:
-        TopK(size_t K)
-        vector[pair[Value, Index]] results
-
-    cdef cppclass SparseMatrixMultiplier[Index, Value]:
-        SparseMatrixMultiplier( Index column_count, 
-                                Value * Xtversky, Value * Ytversky,
-                                Value * Xcosine, Value * Ycosine,
-                                Value * Xdepop, Value * Ydepop,
-                                Value a1,
-                                Value l1, Value l2, Value l3,
-                                Value t1, Value t2,
-                                Value c1, Value c2,
-                                Value stabilized_shrink,
-                                Value bayesian_shrink,
-                                Value threshold,
-                                Index filter_mode,
-                                Index * filter_m_indptr,
-                                Index * filter_m_indices,
-                                Index target_col_mode,
-                                Index * target_col_m_indptr,
-                                Index * target_col_m_indices
-                                )
-        void add(Index index, Value value)
-        void setIndexRow(Index index)
-        void foreach[Function](Function & f)
+    cdef void compute_similarities_parallel[Index, Value](
+        Index n_targets,
+        const Index* targets,
+        const Value* m1_data,
+        const Index* m1_indices,
+        const Index* m1_indptr,
+        const Value* m2_data,
+        const Index* m2_indices,
+        const Index* m2_indptr,
+        const Value* Xtversky,
+        const Value* Ytversky,
+        const Value* Xcosine,
+        const Value* Ycosine,
+        const Value* Xdepop,
+        const Value* Ydepop,
+        Value a1,
+        Value l1,
+        Value l2,
+        Value l3,
+        Value t1,
+        Value t2,
+        Value c1,
+        Value c2,
+        Value stabilized_shrink,
+        Value bayesian_shrink,
+        Value threshold,
+        Index k,
+        Index n_output_cols,
+        Index filter_mode,
+        Index* filter_m_indptr,
+        Index* filter_m_indices,
+        Index target_col_mode,
+        Index* target_col_m_indptr,
+        Index* target_col_m_indices,
+        Index* rows,
+        Index* cols,
+        Value* values,
+        ProgressBar* progress,
+        int num_threads
+    )
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -193,9 +203,6 @@ def s_plus(
     # useful variables
     cdef int n_output_rows = matrix1.shape[0]
     cdef int n_output_cols = matrix2.shape[1]
-    cdef int i, u, t, index1, index2
-    cdef long index3
-    cdef float v1
 
     ### START PREPROCESSING ###
 
@@ -269,61 +276,40 @@ def s_plus(
 
     ### START COMPUTATION ###
 
-    # Structures for multiplications
-    cdef SparseMatrixMultiplier[int, float] * neighbours
-    cdef TopK[int, float] * topk
-    cdef pair[float, int] result
-
-    # triples of output
+    # Pre-allocate output arrays
     cdef float[:] values = np.zeros(n_targets * k, dtype=np.float32)
     cdef int[:] rows = np.zeros(n_targets * k, dtype=np.int32)
     cdef int[:] cols = np.zeros(n_targets * k, dtype=np.int32)
 
     progress.set_description(b'Computing')
-    with nogil, parallel(num_threads=num_threads):
-        # allocate memory per thread
-        neighbours = new SparseMatrixMultiplier[int, float](n_output_cols,
-                                                            &Xtversky[0], &Ytversky[0],
-                                                            &Xcosine[0], &Ycosine[0],
-                                                            &Xdepop[0], &Ydepop[0],
-                                                            a1,
-                                                            l1, l2, l3,
-                                                            t1, t2,
-                                                            c1, c2,
-                                                            stabilized_shrink,
-                                                            bayesian_shrink,
-                                                            threshold,
-                                                            filter_col_mode,
-                                                            &filter_m_indptr[0], &filter_m_indices[0],
-                                                            target_col_mode,
-                                                            &target_m_indptr[0], &target_m_indices[0],
-                                                            )
-        topk = new TopK[int, float](k)
-        try:
-            for i in prange(n_targets, schedule='dynamic'):
-                # Update progress (thread-safe, auto-throttled by C++)
-                progress.update(1)
 
-                # Compute row similarity
-                t = targets[i]
-                neighbours.setIndexRow(t)
-                for index1 in range(m1_indptr[t], m1_indptr[t+1]):
-                    u = m1_indices[index1]
-                    v1 = m1_data[index1]
-                    for index2 in range(m2_indptr[u], m2_indptr[u+1]):
-                        neighbours.add(m2_indices[index2], m2_data[index2] * v1)
-                topk.results.clear()
-                neighbours.foreach(dereference(topk))
-                index3 = k * i
-                for result in topk.results:
-                    rows[index3] = t
-                    cols[index3] = result.second
-                    values[index3] = result.first
-                    index3 = index3 + 1
-
-        finally:
-            del neighbours
-            del topk
+    # Call C++ parallel computation function
+    with nogil:
+        compute_similarities_parallel[int, float](
+            n_targets,
+            &targets[0],
+            &m1_data[0], &m1_indices[0], &m1_indptr[0],
+            &m2_data[0], &m2_indices[0], &m2_indptr[0],
+            &Xtversky[0], &Ytversky[0],
+            &Xcosine[0], &Ycosine[0],
+            &Xdepop[0], &Ydepop[0],
+            a1,
+            l1, l2, l3,
+            t1, t2,
+            c1, c2,
+            stabilized_shrink,
+            bayesian_shrink,
+            threshold,
+            k,
+            n_output_cols,
+            filter_col_mode,
+            &filter_m_indptr[0], &filter_m_indices[0],
+            target_col_mode,
+            &target_m_indptr[0], &target_m_indices[0],
+            &rows[0], &cols[0], &values[0],
+            progress,
+            num_threads
+        )
 
     # Deallocate intermediate memory
     del Xcosine, Ycosine, Xtversky, Ytversky, Xdepop, Ydepop

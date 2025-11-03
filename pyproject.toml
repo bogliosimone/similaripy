@@ -1,6 +1,6 @@
 [project]
 name = "similaripy"
-version = "0.3.0"
+version = "0.3.1"
 description = "High-performance KNN similarity functions in Python, optimized for sparse matrices"
 authors = [{ name = "Simone Boglio", email = "bogliosimone@gmail.com" }]
 license = { text = "MIT" }

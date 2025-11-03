@@ -11,6 +11,7 @@
 #include <utility>
 #include <functional>
 #include <cmath>
+#include "progress_bar.h"
 
 namespace s_plus {
 
@@ -229,6 +230,132 @@ class SparseMatrixMultiplier {
     Index * target_col_m_indptr, * target_col_m_indices;
     Index head, length;
 };
+
+/*
+    Compute top-K similarities for multiple rows in parallel using OpenMP.
+    This function encapsulates the entire parallel computation loop.
+
+    Parameters:
+    - n_targets: Number of target rows to process
+    - targets: Array of row indices to process
+    - m1_data, m1_indices, m1_indptr: CSR matrix 1 data
+    - m2_data, m2_indices, m2_indptr: CSR matrix 2 data
+    - Xtversky, Ytversky: Tversky normalization arrays (can be empty)
+    - Xcosine, Ycosine: Cosine normalization arrays (can be empty)
+    - Xdepop, Ydepop: Depopularization arrays (can be empty)
+    - a1, l1, l2, l3, t1, t2, c1, c2: Algorithm parameters
+    - stabilized_shrink, bayesian_shrink, threshold: Shrinkage and threshold parameters
+    - k: Number of top results to keep per row
+    - n_output_cols: Total number of columns in output
+    - filter_mode, filter_m_indptr, filter_m_indices: Column filtering configuration
+    - target_col_mode, target_col_m_indptr, target_col_m_indices: Column targeting configuration
+    - rows, cols, values: Pre-allocated output arrays (size: n_targets * k)
+    - progress: Progress bar for tracking computation
+    - num_threads: Number of OpenMP threads (0 = use all available)
+*/
+template <typename Index, typename Value>
+void compute_similarities_parallel(
+    Index n_targets,
+    const Index* targets,
+    const Value* m1_data,
+    const Index* m1_indices,
+    const Index* m1_indptr,
+    const Value* m2_data,
+    const Index* m2_indices,
+    const Index* m2_indptr,
+    const Value* Xtversky,
+    const Value* Ytversky,
+    const Value* Xcosine,
+    const Value* Ycosine,
+    const Value* Xdepop,
+    const Value* Ydepop,
+    Value a1,
+    Value l1,
+    Value l2,
+    Value l3,
+    Value t1,
+    Value t2,
+    Value c1,
+    Value c2,
+    Value stabilized_shrink,
+    Value bayesian_shrink,
+    Value threshold,
+    Index k,
+    Index n_output_cols,
+    Index filter_mode,
+    Index* filter_m_indptr,
+    Index* filter_m_indices,
+    Index target_col_mode,
+    Index* target_col_m_indptr,
+    Index* target_col_m_indices,
+    Index* rows,
+    Index* cols,
+    Value* values,
+    progress::ProgressBar* progress,
+    int num_threads
+) {
+    #pragma omp parallel num_threads(num_threads)
+    {
+        // Thread-local allocations
+        SparseMatrixMultiplier<Index, Value>* neighbours =
+            new SparseMatrixMultiplier<Index, Value>(
+                n_output_cols,
+                Xtversky, Ytversky,
+                Xcosine, Ycosine,
+                Xdepop, Ydepop,
+                a1,
+                l1, l2, l3,
+                t1, t2,
+                c1, c2,
+                stabilized_shrink,
+                bayesian_shrink,
+                threshold,
+                filter_mode,
+                filter_m_indptr, filter_m_indices,
+                target_col_mode,
+                target_col_m_indptr, target_col_m_indices
+            );
+
+        TopK<Index, Value>* topk = new TopK<Index, Value>(k);
+
+        // Process rows in parallel with dynamic scheduling
+        #pragma omp for schedule(dynamic)
+        for (Index i = 0; i < n_targets; ++i) {
+            // Update progress (thread-safe, auto-throttled by C++)
+            progress->update(1);
+
+            // Compute row similarity
+            Index t = targets[i];
+            neighbours->setIndexRow(t);
+
+            // Sparse matrix multiplication: accumulate products
+            for (Index index1 = m1_indptr[t]; index1 < m1_indptr[t + 1]; ++index1) {
+                Index u = m1_indices[index1];
+                Value v1 = m1_data[index1];
+                for (Index index2 = m2_indptr[u]; index2 < m2_indptr[u + 1]; ++index2) {
+                    neighbours->add(m2_indices[index2], m2_data[index2] * v1);
+                }
+            }
+
+            // Extract top-k results
+            topk->results.clear();
+            neighbours->foreach(*topk);
+
+            // Write results to output arrays
+            Index index3 = k * i;
+            for (const auto& result : topk->results) {
+                rows[index3] = t;
+                cols[index3] = result.second;
+                values[index3] = result.first;
+                ++index3;
+            }
+        }
+
+        // Cleanup thread-local allocations
+        delete neighbours;
+        delete topk;
+    }
+}
 
 }  // namespace s_plus
 #endif  // SPLUS_H_
