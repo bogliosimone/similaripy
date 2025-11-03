@@ -325,14 +325,19 @@ void compute_similarities_parallel(
             progress->update(1);
 
             // Compute row similarity
-            Index t = targets[i];
+            const Index t = targets[i];
             neighbours->setIndexRow(t);
 
             // Sparse matrix multiplication: accumulate products
-            for (Index index1 = m1_indptr[t]; index1 < m1_indptr[t + 1]; ++index1) {
-                Index u = m1_indices[index1];
-                Value v1 = m1_data[index1];
-                for (Index index2 = m2_indptr[u]; index2 < m2_indptr[u + 1]; ++index2) {
+            // Cache loop bounds to reduce memory accesses
+            const Index m1_start = m1_indptr[t];
+            const Index m1_end = m1_indptr[t + 1];
+            for (Index index1 = m1_start; index1 < m1_end; ++index1) {
+                const Index u = m1_indices[index1];
+                const Value v1 = m1_data[index1];
+                const Index m2_start = m2_indptr[u];
+                const Index m2_end = m2_indptr[u + 1];
+                for (Index index2 = m2_start; index2 < m2_end; ++index2) {
                     neighbours->add(m2_indices[index2], m2_data[index2] * v1);
                 }
             }
