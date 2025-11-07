@@ -125,12 +125,49 @@ def validate_s_plus_inputs(
         raise ValueError(f"format_output must be 'coo' or 'csr', got '{format_output}'")
 
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def csr_sum(
+    matrix: sp.csr_matrix,
+    int axis
+) -> np.ndarray:
+    """
+    Sum CSR matrix along the specified axis using optimized NumPy operations.
+
+    Uses np.add.reduceat for row sums (axis=1) and np.bincount for column sums (axis=0),
+    which are significantly faster than manual loops.
+
+    Args:
+        matrix: CSR sparse matrix
+        axis: 0 for column sums, 1 for row sums
+
+    Returns:
+        1D array of sums along the specified axis (float32)
+    """
+    # Extract CSR data as NumPy arrays
+    cdef float[:] data = matrix.data.astype(np.float32, copy=False)
+    cdef int[:] indices = matrix.indices.astype(np.int32, copy=False)
+    cdef int[:] indptr = matrix.indptr.astype(np.int32, copy=False)
+    cdef int n_cols = matrix.shape[1]
+
+    if axis == 1:
+        # Row sums via reduceat (assumes no empty rows)
+        return np.add.reduceat(np.asarray(data), np.asarray(indptr[:-1])).astype(np.float32, copy=False)
+    elif axis == 0:
+        # Column sums via bincount (fast C path)
+        # bincount returns float64; cast once to float32
+        out64 = np.bincount(np.asarray(indices), weights=np.asarray(data), minlength=n_cols)
+        return out64.astype(np.float32, copy=False)
+    else:
+        raise ValueError(f"axis must be 0 or 1, got {axis}")
+
+
 def _build_squared_norms(
     matrix1: sp.csr_matrix,
     matrix2: sp.csr_matrix
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Build squared norms for both matrices.
+    Build squared norms for both matrices using NumPy-only operations.
 
     This computation is shared between Tversky and Cosine normalizations
     and should only be computed once when needed by either.
@@ -142,9 +179,22 @@ def _build_squared_norms(
     Returns:
         Tuple of (m1_sq_norms, m2_sq_norms) as float32 arrays.
     """
-    cdef float[:] m1_sq_norms = np.array(matrix1.power(2).sum(axis=1).A1, dtype=np.float32)
-    cdef float[:] m2_sq_norms = np.array(matrix2.power(2).sum(axis=0).A1, dtype=np.float32)
-    return m1_sq_norms, m2_sq_norms
+    # Create temporary CSR matrices with squared data
+    # This avoids scipy's .power() which creates unnecessary intermediate objects
+    m1_squared = sp.csr_matrix(
+        (np.square(matrix1.data, dtype=np.float32), matrix1.indices, matrix1.indptr),
+        shape=matrix1.shape
+    )
+    m2_squared = sp.csr_matrix(
+        (np.square(matrix2.data, dtype=np.float32), matrix2.indices, matrix2.indptr),
+        shape=matrix2.shape
+    )
+
+    # Compute sums using custom csr_sum function
+    cdef float[:] m1_sq_norms = csr_sum(m1_squared, axis=1)
+    cdef float[:] m2_sq_norms = csr_sum(m2_squared, axis=0)
+
+    return np.asarray(m1_sq_norms), np.asarray(m2_sq_norms)
 
 
 def _build_tversky_normalization(
@@ -221,7 +271,7 @@ def _build_depop_normalization(
         # Optimization: 1^p1 = 1 for any p1, so directly create ones array
         Xdepop = np.ones(matrix1.shape[0], dtype=np.float32)
     elif weight_spec1 == 'sum':
-        Xdepop = np.power(np.array(matrix1.sum(axis=1).A1, dtype=np.float32), p1, dtype=np.float32)
+        Xdepop = np.power(csr_sum(matrix1, axis=1), p1, dtype=np.float32)
     else:
         raise ValueError(f"Invalid weight_spec1: {weight_spec1}")
 
@@ -232,7 +282,7 @@ def _build_depop_normalization(
         # Optimization: 1^p2 = 1 for any p2, so directly create ones array
         Ydepop = np.ones(matrix2.shape[1], dtype=np.float32)
     elif weight_spec2 == 'sum':
-        Ydepop = np.power(np.array(matrix2.sum(axis=0).A1, dtype=np.float32), p2, dtype=np.float32)
+        Ydepop = np.power(csr_sum(matrix2, axis=0), p2, dtype=np.float32)
     else:
         raise ValueError(f"Invalid weight_spec2: {weight_spec2}")
 
