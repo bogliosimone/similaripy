@@ -15,9 +15,6 @@ Review the recent code changes in the repository focusing on:
    - Appropriate use of memory views vs NumPy arrays
    - Correct type declarations (`cdef` for C variables, `def` for Python-callable)
    - Pre-allocated buffers instead of repeated allocations
-
-4. **SimilariPy Gotchas**:
-   - CSR format assumptions and conversions
    - No shared mutable state in OpenMP parallel regions
    - Float32 vs Float64 usage
 
