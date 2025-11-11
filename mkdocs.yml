@@ -32,9 +32,13 @@ plugins:
           options:
             docstring_style: google
             show_source: true
-            show_signature: true 
-            separate_signature: true
+            show_signature: true
             show_signature_annotations: true
+            signature_crossrefs: false
+            show_root_heading: true
+            show_root_full_path: false
+            separate_signature: true
+            unwrap_annotated: true
 
 markdown_extensions:
   - pymdownx.arithmatex:
