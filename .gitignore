@@ -51,9 +51,3 @@ datasets_bench/
 !.vscode/launch.json
 !.vscode/extensions.json
 *.code-workspace
-
-# ======================
-# Claude Code Assistant
-# ======================
-
-.claude/

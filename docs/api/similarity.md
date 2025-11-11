@@ -1,4 +1,3 @@
-## Basic Similarities
 
 ??? info "Raw Dot Product"
     ::: similaripy.similarity.dot_product
@@ -18,15 +17,11 @@
 ??? info "Tversky Similarity"
     ::: similaripy.similarity.tversky
 
-## Graph-Based Similarities
-
 ??? info "P3α"
     ::: similaripy.similarity.p3alpha
 
 ??? info "RP3β"
     ::: similaripy.similarity.rp3beta
-
-## Hybrid Similarity
 
 ??? info "S Plus"
     ::: similaripy.similarity.s_plus
