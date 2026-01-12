@@ -15,10 +15,6 @@
 
 namespace s_plus {
 
-// Sentinel values for linked list implementation
-static const int UNSET = -1;
-static const int LIST_END = -2;
-
 // Column selection mode for filtering and targeting
 enum SelectionMode {
     SELECTION_NONE = 0,    // no selection (filter: none, target: all)
@@ -82,7 +78,6 @@ class SparseMatrixMultiplier {
                                     )
         :
         sums(column_count, 0),
-        nonzeros(column_count, UNSET),
         Xtversky(Xtversky), Ytversky(Ytversky),
         Xcosine(Xcosine), Ycosine(Ycosine),
         Xdepop(Xdepop), Ydepop(Ydepop),
@@ -98,19 +93,16 @@ class SparseMatrixMultiplier {
         filter_m_indices(filter_m_indices),
         target_col_mode(target_col_mode),
         target_col_m_indptr(target_col_m_indptr),
-        target_col_m_indices(target_col_m_indices),
-        head(LIST_END), length(0) {
+        target_col_m_indices(target_col_m_indices) {
+        nonzero_cols.reserve(1024);  // Pre-allocate to reduce reallocation overhead
     }
 
     /* Adds value to the item at index */
     void add(Index index, Value value) {
-        sums[index] += value;
-
-        if (nonzeros[index] == UNSET) {
-            nonzeros[index] = head;
-            head = index;
-            length += 1;
+        if (sums[index] == 0) {
+            nonzero_cols.push_back(index);
         }
+        sums[index] += value;
     }
 
     void setIndexRow(Index index_row) {
@@ -184,8 +176,9 @@ class SparseMatrixMultiplier {
     /* Calls a function once per non-zero entry in the row, also clears entries for the next row */
     template <typename Function>
     void foreach(Function & f) {  // NOLINT(*)
-        for (int i = 0; i < length; ++i) {
-            Index col = head;
+        // Sequential vector iteration (cache-friendly)
+        for (size_t i = 0; i < nonzero_cols.size(); ++i) {
+            Index col = nonzero_cols[i];
             Value xy = sums[col];
 
             // compute similarity value with normalization
@@ -196,20 +189,17 @@ class SparseMatrixMultiplier {
                 f(col, val);
             }
 
-            // clear up memory and advance linked list
-            head = nonzeros[head];
+            // clear for next row
             sums[col] = 0;
-            nonzeros[col] = UNSET;
         }
-        length = 0;
-        head = LIST_END;
+        nonzero_cols.clear();
     }
 
-    Index nnz() const { return length; }
+    Index nnz() const { return nonzero_cols.size(); }
 
  protected:
     std::vector<Value> sums;
-    std::vector<Index> nonzeros;
+    std::vector<Index> nonzero_cols;  // Sequential storage for cache-friendly access
     const Value * Xtversky;
     const Value * Ytversky;
     const Value * Xcosine;
@@ -228,7 +218,6 @@ class SparseMatrixMultiplier {
     Index * filter_m_indptr, * filter_m_indices;
     Index target_col_mode;
     Index * target_col_m_indptr, * target_col_m_indices;
-    Index head, length;
 };
 
 /*
