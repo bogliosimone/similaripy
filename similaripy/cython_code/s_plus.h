@@ -326,9 +326,12 @@ void compute_similarities_parallel(
                 const Value v1 = m1_data[index1];
 
                 // Prefetch hint: next iteration's indptr (helps with random access pattern)
+                // Only available on GCC/Clang, not MSVC
+                #if defined(__GNUC__) || defined(__clang__)
                 if (index1 + 1 < m1_end) {
                     __builtin_prefetch(&m2_indptr[m1_indices[index1 + 1]], 0, 1);
                 }
+                #endif
 
                 const Index m2_start = m2_indptr[u];
                 const Index m2_end = m2_indptr[u + 1];
