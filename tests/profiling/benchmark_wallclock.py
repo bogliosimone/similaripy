@@ -32,7 +32,7 @@ similarity_matrix = sim.cosine(
     k=100,
     shrink=0,
     threshold=0,
-    verbose=True,
+    verbose=False,
     format_output='csr',
     num_threads=0
 )
