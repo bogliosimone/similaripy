@@ -324,6 +324,12 @@ void compute_similarities_parallel(
             for (Index index1 = m1_start; index1 < m1_end; ++index1) {
                 const Index u = m1_indices[index1];
                 const Value v1 = m1_data[index1];
+
+                // Prefetch hint: next iteration's indptr (helps with random access pattern)
+                if (index1 + 1 < m1_end) {
+                    __builtin_prefetch(&m2_indptr[m1_indices[index1 + 1]], 0, 1);
+                }
+
                 const Index m2_start = m2_indptr[u];
                 const Index m2_end = m2_indptr[u + 1];
                 for (Index index2 = m2_start; index2 < m2_end; ++index2) {
