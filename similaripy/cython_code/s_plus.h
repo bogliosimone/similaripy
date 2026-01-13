@@ -13,6 +13,11 @@
 #include <cmath>
 #include "progress_bar.h"
 
+// Include prefetch intrinsics for MSVC
+#ifdef _MSC_VER
+#include <xmmintrin.h>
+#endif
+
 namespace s_plus {
 
 // Column selection mode for filtering and targeting
@@ -67,7 +72,6 @@ class SparseMatrixMultiplier {
                                     Value a1, // power weight for product term
                                     Value l1, Value l2, Value l3, // weights tversky and cosine and depop
                                     Value t1, Value t2, // tversky coefficients
-                                    Value c1, Value c2, // cosine exponents
                                     Value stabilized_shrink,
                                     Value bayesian_shrink,
                                     Value threshold,
@@ -84,7 +88,6 @@ class SparseMatrixMultiplier {
         a1(a1),
         l1(l1), l2(l2), l3(l3),
         t1(t1), t2(t2),
-        c1(c1), c2(c2),
         stabilized_shrink(stabilized_shrink),
         bayesian_shrink(bayesian_shrink),
         threshold(threshold),
@@ -209,7 +212,6 @@ class SparseMatrixMultiplier {
     Value a1;
     Value l1, l2, l3;
     Value t1, t2;
-    Value c1, c2;
     Value stabilized_shrink;
     Value bayesian_shrink;
     Value threshold;
@@ -232,7 +234,7 @@ class SparseMatrixMultiplier {
     - Xtversky, Ytversky: Tversky normalization arrays (can be empty)
     - Xcosine, Ycosine: Cosine normalization arrays (can be empty)
     - Xdepop, Ydepop: Depopularization arrays (can be empty)
-    - a1, l1, l2, l3, t1, t2, c1, c2: Algorithm parameters
+    - a1, l1, l2, l3, t1, t2: Algorithm parameters
     - stabilized_shrink, bayesian_shrink, threshold: Shrinkage and threshold parameters
     - k: Number of top results to keep per row
     - n_output_cols: Total number of columns in output
@@ -264,8 +266,6 @@ void compute_similarities_parallel(
     Value l3,
     Value t1,
     Value t2,
-    Value c1,
-    Value c2,
     Value stabilized_shrink,
     Value bayesian_shrink,
     Value threshold,
@@ -295,7 +295,6 @@ void compute_similarities_parallel(
                 a1,
                 l1, l2, l3,
                 t1, t2,
-                c1, c2,
                 stabilized_shrink,
                 bayesian_shrink,
                 threshold,
@@ -326,10 +325,13 @@ void compute_similarities_parallel(
                 const Value v1 = m1_data[index1];
 
                 // Prefetch hint: next iteration's indptr (helps with random access pattern)
-                // Only available on GCC/Clang, not MSVC
                 #if defined(__GNUC__) || defined(__clang__)
                 if (index1 + 1 < m1_end) {
                     __builtin_prefetch(&m2_indptr[m1_indices[index1 + 1]], 0, 1);
+                }
+                #elif defined(_MSC_VER)
+                if (index1 + 1 < m1_end) {
+                    _mm_prefetch((const char*)&m2_indptr[m1_indices[index1 + 1]], _MM_HINT_T1);
                 }
                 #endif
 
