@@ -150,6 +150,8 @@ def inplace_normalize_csr_max(
     cdef integral i, j
 
     for i in range(n_rows):
+        if indptr[i] == indptr[i + 1]:
+            continue
         max_ = data[indptr[i]]
         for j in range(indptr[i] + 1, indptr[i + 1]):
             if data[j] > max_:
@@ -274,6 +276,8 @@ def inplace_normalize_csr_bm25plus(
         if idf_[i] != 0:
             idf_[i] = idf(inv_freq=idf_[i], n_docs=n_docs, mode=idf_mode, logbase=logbase)
 
+    if n_docs == 0:
+        return
     avg_doc_len = avg_doc_len / n_docs
 
     # compute documents length normalized
@@ -286,4 +290,3 @@ def inplace_normalize_csr_bm25plus(
         for j in range(indptr[i], indptr[i + 1]):
             tf_ = tf(freq=data[j], doc_len=doc_len[i], mode=tf_mode, logbase=logbase)
             data[j] = idf_[indices[j]] * ((tf_ * (k1 + 1.0) / (tf_ + k1 * norm_doc_len[i])) + delta)
-

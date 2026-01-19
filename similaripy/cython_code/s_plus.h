@@ -13,11 +13,12 @@
 #include <cmath>
 #include "progress_bar.h"
 
-namespace s_plus {
+// Include prefetch intrinsics for MSVC
+#ifdef _MSC_VER
+#include <xmmintrin.h>
+#endif
 
-// Sentinel values for linked list implementation
-static const int UNSET = -1;
-static const int LIST_END = -2;
+namespace s_plus {
 
 // Column selection mode for filtering and targeting
 enum SelectionMode {
@@ -71,7 +72,6 @@ class SparseMatrixMultiplier {
                                     Value a1, // power weight for product term
                                     Value l1, Value l2, Value l3, // weights tversky and cosine and depop
                                     Value t1, Value t2, // tversky coefficients
-                                    Value c1, Value c2, // cosine exponents
                                     Value stabilized_shrink,
                                     Value bayesian_shrink,
                                     Value threshold,
@@ -82,14 +82,12 @@ class SparseMatrixMultiplier {
                                     )
         :
         sums(column_count, 0),
-        nonzeros(column_count, UNSET),
         Xtversky(Xtversky), Ytversky(Ytversky),
         Xcosine(Xcosine), Ycosine(Ycosine),
         Xdepop(Xdepop), Ydepop(Ydepop),
         a1(a1),
         l1(l1), l2(l2), l3(l3),
         t1(t1), t2(t2),
-        c1(c1), c2(c2),
         stabilized_shrink(stabilized_shrink),
         bayesian_shrink(bayesian_shrink),
         threshold(threshold),
@@ -98,19 +96,16 @@ class SparseMatrixMultiplier {
         filter_m_indices(filter_m_indices),
         target_col_mode(target_col_mode),
         target_col_m_indptr(target_col_m_indptr),
-        target_col_m_indices(target_col_m_indices),
-        head(LIST_END), length(0) {
+        target_col_m_indices(target_col_m_indices) {
+        nonzero_cols.reserve(1024);  // Pre-allocate to reduce reallocation overhead
     }
 
     /* Adds value to the item at index */
     void add(Index index, Value value) {
-        sums[index] += value;
-
-        if (nonzeros[index] == UNSET) {
-            nonzeros[index] = head;
-            head = index;
-            length += 1;
+        if (sums[index] == 0) {
+            nonzero_cols.push_back(index);
         }
+        sums[index] += value;
     }
 
     void setIndexRow(Index index_row) {
@@ -184,32 +179,33 @@ class SparseMatrixMultiplier {
     /* Calls a function once per non-zero entry in the row, also clears entries for the next row */
     template <typename Function>
     void foreach(Function & f) {  // NOLINT(*)
-        for (int i = 0; i < length; ++i) {
-            Index col = head;
+        // Sequential vector iteration (cache-friendly)
+        for (size_t i = 0; i < nonzero_cols.size(); ++i) {
+            Index col = nonzero_cols[i];
             Value xy = sums[col];
 
-            // compute similarity value with normalization
-            Value val = computeSimilarity(col, xy);
+            // skip work for filtered/untargeted columns
+            if (!isFiltered(col) && isTargetColumn(col)) {
+                // compute similarity value with normalization
+                Value val = computeSimilarity(col, xy);
 
-            // apply threshold and filter/target checks
-            if (val >= threshold && !isFiltered(col) && isTargetColumn(col)) {
-                f(col, val);
+                // apply threshold
+                if (val >= threshold) {
+                    f(col, val);
+                }
             }
 
-            // clear up memory and advance linked list
-            head = nonzeros[head];
+            // clear for next row
             sums[col] = 0;
-            nonzeros[col] = UNSET;
         }
-        length = 0;
-        head = LIST_END;
+        nonzero_cols.clear();
     }
 
-    Index nnz() const { return length; }
+    Index nnz() const { return nonzero_cols.size(); }
 
  protected:
     std::vector<Value> sums;
-    std::vector<Index> nonzeros;
+    std::vector<Index> nonzero_cols;  // Sequential storage for cache-friendly access
     const Value * Xtversky;
     const Value * Ytversky;
     const Value * Xcosine;
@@ -219,7 +215,6 @@ class SparseMatrixMultiplier {
     Value a1;
     Value l1, l2, l3;
     Value t1, t2;
-    Value c1, c2;
     Value stabilized_shrink;
     Value bayesian_shrink;
     Value threshold;
@@ -228,7 +223,6 @@ class SparseMatrixMultiplier {
     Index * filter_m_indptr, * filter_m_indices;
     Index target_col_mode;
     Index * target_col_m_indptr, * target_col_m_indices;
-    Index head, length;
 };
 
 /*
@@ -243,7 +237,7 @@ class SparseMatrixMultiplier {
     - Xtversky, Ytversky: Tversky normalization arrays (can be empty)
     - Xcosine, Ycosine: Cosine normalization arrays (can be empty)
     - Xdepop, Ydepop: Depopularization arrays (can be empty)
-    - a1, l1, l2, l3, t1, t2, c1, c2: Algorithm parameters
+    - a1, l1, l2, l3, t1, t2: Algorithm parameters
     - stabilized_shrink, bayesian_shrink, threshold: Shrinkage and threshold parameters
     - k: Number of top results to keep per row
     - n_output_cols: Total number of columns in output
@@ -275,8 +269,6 @@ void compute_similarities_parallel(
     Value l3,
     Value t1,
     Value t2,
-    Value c1,
-    Value c2,
     Value stabilized_shrink,
     Value bayesian_shrink,
     Value threshold,
@@ -306,7 +298,6 @@ void compute_similarities_parallel(
                 a1,
                 l1, l2, l3,
                 t1, t2,
-                c1, c2,
                 stabilized_shrink,
                 bayesian_shrink,
                 threshold,
@@ -322,7 +313,9 @@ void compute_similarities_parallel(
         #pragma omp for schedule(dynamic)
         for (Index i = 0; i < n_targets; ++i) {
             // Update progress (thread-safe, auto-throttled by C++)
-            progress->update(1);
+            if (progress != nullptr) {
+                progress->update(1);
+            }
 
             // Compute row similarity
             const Index t = targets[i];
@@ -335,6 +328,18 @@ void compute_similarities_parallel(
             for (Index index1 = m1_start; index1 < m1_end; ++index1) {
                 const Index u = m1_indices[index1];
                 const Value v1 = m1_data[index1];
+
+                // Prefetch hint: next iteration's indptr (helps with random access pattern)
+                #if defined(__GNUC__) || defined(__clang__)
+                if (index1 + 1 < m1_end) {
+                    __builtin_prefetch(&m2_indptr[m1_indices[index1 + 1]], 0, 1);
+                }
+                #elif defined(_MSC_VER)
+                if (index1 + 1 < m1_end) {
+                    _mm_prefetch((const char*)&m2_indptr[m1_indices[index1 + 1]], _MM_HINT_T1);
+                }
+                #endif
+
                 const Index m2_start = m2_indptr[u];
                 const Index m2_end = m2_indptr[u + 1];
                 for (Index index2 = m2_start; index2 < m2_end; ++index2) {
