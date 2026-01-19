@@ -310,7 +310,9 @@ void compute_similarities_parallel(
         #pragma omp for schedule(dynamic)
         for (Index i = 0; i < n_targets; ++i) {
             // Update progress (thread-safe, auto-throttled by C++)
-            progress->update(1);
+            if (progress != nullptr) {
+                progress->update(1);
+            }
 
             // Compute row similarity
             const Index t = targets[i];

@@ -186,8 +186,10 @@ def s_plus(
     cdef int n_targets = targets.shape[0]
 
     # Initialize progress bar
-    cdef ProgressBar * progress = new ProgressBar(n_targets, not verbose, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
-    progress.set_description(b'Preprocessing')
+    cdef ProgressBar * progress = NULL
+    if verbose:
+        progress = new ProgressBar(n_targets, False, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
+        progress.set_description(b'Preprocessing')
 
     # be sure to use csr matrixes
     matrix1 = matrix1.tocsr()
@@ -279,7 +281,8 @@ def s_plus(
     cdef int[:] rows = np.zeros(n_targets * k, dtype=np.int32)
     cdef int[:] cols = np.zeros(n_targets * k, dtype=np.int32)
 
-    progress.set_description(b'Computing')
+    if progress != NULL:
+        progress.set_description(b'Computing')
 
     # Call C++ parallel computation function
     with nogil:
@@ -316,7 +319,8 @@ def s_plus(
 
     ### BUILD OUTPUT MATRIX ###
 
-    progress.set_description(f'Building {format_output} matrix'.encode())
+    if progress != NULL:
+        progress.set_description(f'Building {format_output} matrix'.encode())
 
     # Build result in requested format
     if format_output == 'coo':
@@ -335,11 +339,13 @@ def s_plus(
             item_count=n_output_rows,
             user_count=n_output_cols
         )
-        progress.set_description(b'Removing zeros')
+        if progress != NULL:
+            progress.set_description(b'Removing zeros')
         res.eliminate_zeros()
 
     # Finalize and cleanup
-    progress.close(b'Done')
-    del progress
+    if progress != NULL:
+        progress.close(b'Done')
+        del progress
 
     return res
