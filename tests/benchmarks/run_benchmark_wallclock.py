@@ -5,9 +5,6 @@ import sys
 import time
 from pathlib import Path
 
-# Add tests/benchmarks to path for dataset_loaders
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'benchmarks'))
-
 from dataset_loaders import load_URM
 import similaripy as sim
 
