@@ -181,8 +181,10 @@ def s_plus(
 
     # build target rows (only the row that must be computed)
     if target_rows is None:
-        target_rows = np.arange(matrix1.shape[0], dtype=np.int32)
-    cdef int[:] targets = np.array(target_rows, dtype=np.int32)
+        targets_arr = np.arange(matrix1.shape[0], dtype=np.int32)
+    else:
+        targets_arr = np.ascontiguousarray(np.asarray(target_rows, dtype=np.int32))
+    cdef int[:] targets = targets_arr
     cdef int n_targets = targets.shape[0]
 
     # Initialize progress bar

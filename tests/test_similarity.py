@@ -145,7 +145,7 @@ def py_p3alpha(m, alpha, k):
 
 def py_rp3beta(m, alpha, beta, k):
     pop = np.power(m.sum(axis=1).A1, beta)
-    pop_inv = np.divide(1, pop, where=pop!=0)
+    pop_inv = np.divide(1, pop, out=np.zeros_like(pop), where=pop!=0)
     m2 = m.copy().T
     m1 = normalize(m, axis=1, norm='l1')
     m2 = normalize(m2, axis=1, norm='l1')

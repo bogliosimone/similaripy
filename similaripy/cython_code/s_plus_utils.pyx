@@ -234,8 +234,10 @@ def _build_cosine_normalization(
     Returns:
         Tuple of (Xcosine, Ycosine) as float32 arrays.
     """
-    cdef float[:] Xcosine = np.power(np.asarray(m1_sq_norms) + additive_shrink, c1, dtype=np.float32)
-    cdef float[:] Ycosine = np.power(np.asarray(m2_sq_norms) + additive_shrink, c2, dtype=np.float32)
+    m1_sq = np.asarray(m1_sq_norms)
+    m2_sq = np.asarray(m2_sq_norms)
+    cdef float[:] Xcosine = np.power(m1_sq + additive_shrink, c1, dtype=np.float32)
+    cdef float[:] Ycosine = np.power(m2_sq + additive_shrink, c2, dtype=np.float32)
     return Xcosine, Ycosine
 
 
@@ -315,8 +317,8 @@ def _build_matrix_data(
         matrix2.data = np.ones(matrix2.data.shape[0], dtype=np.float32)
     else:
         # Convert to float32 (copy if needed)
-        matrix1.data = np.array(matrix1.data, dtype=np.float32)
-        matrix2.data = np.array(matrix2.data, dtype=np.float32)
+        matrix1.data = matrix1.data.astype(np.float32, copy=False)
+        matrix2.data = matrix2.data.astype(np.float32, copy=False)
 
 
 def _build_column_selector(
@@ -416,18 +418,20 @@ def _compute_target_columns(
         return np.arange(n_cols, dtype=np.int32)
 
     # Case 4: At least one is array-based - compute valid columns
-    valid_cols_set = set(range(n_cols))
-
-    # Apply target_cols filter (keep only these columns)
     if not target_is_empty and not target_is_matrix:
-        valid_cols_set = set(target_cols)
+        mask = np.zeros(n_cols, dtype=bool)
+        target_idx = np.asarray(target_cols, dtype=np.int32)
+        target_idx = target_idx[(target_idx >= 0) & (target_idx < n_cols)]
+        mask[target_idx] = True
+    else:
+        mask = np.ones(n_cols, dtype=bool)
 
-    # Apply filter_cols exclusion (remove these columns)
     if not filter_is_empty and not filter_is_matrix:
-        valid_cols_set = valid_cols_set.difference(set(filter_cols))
+        filter_idx = np.asarray(filter_cols, dtype=np.int32)
+        filter_idx = filter_idx[(filter_idx >= 0) & (filter_idx < n_cols)]
+        mask[filter_idx] = False
 
-    # Convert to sorted array
-    return np.array(sorted(valid_cols_set), dtype=np.int32)
+    return np.flatnonzero(mask).astype(np.int32, copy=False)
 
 
 def _filter_matrix_columns(
@@ -447,35 +451,53 @@ def _filter_matrix_columns(
     Returns:
         Tuple of (data, indices, indptr) as float32/int32 arrays ready for Cython.
     """
-    # Create target column set for fast lookup
-    target_set = set(target_cols)
+    # Build target mask (drop out-of-range indices)
+    cdef int n_rows = matrix.shape[0]
+    cdef int n_cols = matrix.shape[1]
+    target_idx = np.asarray(target_cols, dtype=np.int32)
+    target_idx = target_idx[(target_idx >= 0) & (target_idx < n_cols)]
+    mask = np.zeros(n_cols, dtype=np.uint8)
+    mask[target_idx] = 1
 
     # Get matrix attributes with proper types
     cdef int[:] indptr = matrix.indptr
     cdef int[:] indices = matrix.indices
     cdef float[:] data = matrix.data.astype(np.float32, copy=False)
-    cdef int n_rows = matrix.shape[0]
+    cdef unsigned char[:] mask_view = mask
     cdef int row, start, end, i, col_idx
+    cdef int nnz = 0
 
-    # Pre-allocate lists for filtered data
-    new_data_list = []
-    new_indices_list = []
-    new_indptr = [0]
-
-    # Filter matrix row by row using C-level iteration
+    # First pass: count kept entries and build indptr
+    cdef int[:] new_indptr = np.empty(n_rows + 1, dtype=np.int32)
+    new_indptr[0] = 0
     for row in range(n_rows):
         start = indptr[row]
         end = indptr[row + 1]
         for i in range(start, end):
             col_idx = indices[i]
-            if col_idx in target_set:
-                new_data_list.append(data[i])
-                new_indices_list.append(col_idx)
-        new_indptr.append(len(new_data_list))
+            if mask_view[col_idx]:
+                nnz += 1
+        new_indptr[row + 1] = nnz
+
+    # Allocate output arrays
+    cdef float[:] new_data = np.empty(nnz, dtype=np.float32)
+    cdef int[:] new_indices = np.empty(nnz, dtype=np.int32)
+
+    # Second pass: fill data and indices
+    cdef int pos = 0
+    for row in range(n_rows):
+        start = indptr[row]
+        end = indptr[row + 1]
+        for i in range(start, end):
+            col_idx = indices[i]
+            if mask_view[col_idx]:
+                new_data[pos] = data[i]
+                new_indices[pos] = col_idx
+                pos += 1
 
     # Return arrays in correct format for Cython
     return (
-        np.array(new_data_list, dtype=np.float32),
-        np.array(new_indices_list, dtype=np.int32),
-        np.array(new_indptr, dtype=np.int32)
+        np.asarray(new_data),
+        np.asarray(new_indices),
+        np.asarray(new_indptr)
     )

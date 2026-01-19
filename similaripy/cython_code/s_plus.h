@@ -184,12 +184,15 @@ class SparseMatrixMultiplier {
             Index col = nonzero_cols[i];
             Value xy = sums[col];
 
-            // compute similarity value with normalization
-            Value val = computeSimilarity(col, xy);
+            // skip work for filtered/untargeted columns
+            if (!isFiltered(col) && isTargetColumn(col)) {
+                // compute similarity value with normalization
+                Value val = computeSimilarity(col, xy);
 
-            // apply threshold and filter/target checks
-            if (val >= threshold && !isFiltered(col) && isTargetColumn(col)) {
-                f(col, val);
+                // apply threshold
+                if (val >= threshold) {
+                    f(col, val);
+                }
             }
 
             // clear for next row
