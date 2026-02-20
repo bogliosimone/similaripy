@@ -6,9 +6,10 @@
 #include <iostream>
 #include <sstream>
 #include <iomanip>
-#include <cmath>
 #include <atomic>
 #include <mutex>
+#include <algorithm>
+#include <cstdint>
 
 namespace progress {
 
@@ -19,29 +20,48 @@ private:
     std::string description_;               // Progress bar description
     bool disabled_;                         // If true, all operations are no-ops
     int max_refresh_rate_;                  // Max refreshes per second (Hz)
-    std::chrono::steady_clock::time_point start_time_;  // Start time for elapsed/rate calculation
-    std::chrono::steady_clock::time_point last_refresh_time_;  // Last refresh time
-    std::mutex mutex_;                      // Mutex for thread-safe operations
-    bool started_;                          // Whether the timer has started
+    mutable std::mutex mutex_;              // Mutex for thread-safe operations
+    std::atomic<bool> started_;             // Whether the timer has started
+    std::atomic<int64_t> start_time_ms_;    // Start time in milliseconds
+    std::atomic<int64_t> last_refresh_ms_;  // Last refresh time in milliseconds
     int bar_width_;                         // Width of the progress bar (default 60)
     int last_output_length_;                // Length of last output for proper clearing
 
+    static int64_t now_ms() {
+        auto now = std::chrono::steady_clock::now();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    }
+
+    void start_if_needed() {
+        if (started_.load(std::memory_order_acquire)) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!started_.load(std::memory_order_relaxed)) {
+            int64_t now = now_ms();
+            start_time_ms_.store(now, std::memory_order_relaxed);
+            last_refresh_ms_.store(now, std::memory_order_relaxed);
+            started_.store(true, std::memory_order_release);
+        }
+    }
+
     // Calculate elapsed time in seconds
     double elapsed_time() const {
-        if (!started_) return 0.0;
-        auto now = std::chrono::steady_clock::now();
-        return std::chrono::duration<double>(now - start_time_).count();
+        if (!started_.load(std::memory_order_acquire)) return 0.0;
+        int64_t now = now_ms();
+        int64_t start_ms = start_time_ms_.load(std::memory_order_relaxed);
+        return (now - start_ms) / 1000.0;
     }
 
     // Check if enough time has passed to refresh (inline for performance)
     inline bool should_refresh() {
         if (disabled_ || max_refresh_rate_ <= 0) [[unlikely]] return false;
+        if (!started_.load(std::memory_order_acquire)) return false;
 
-        auto now = std::chrono::steady_clock::now();
-        // Use milliseconds instead of double for faster comparison
-        auto time_since_refresh = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_refresh_time_).count();
+        int64_t now = now_ms();
+        int64_t last_refresh = last_refresh_ms_.load(std::memory_order_relaxed);
+        int64_t time_since_refresh = now - last_refresh;
         // Convert Hz to milliseconds: 1000ms / refresh_rate (e.g., 5 Hz = 200ms)
-        return time_since_refresh >= (1000 / max_refresh_rate_);
+        int64_t min_interval = std::max<int64_t>(1, 1000 / max_refresh_rate_);
+        return time_since_refresh >= min_interval;
     }
 
     // Format time duration as MM:SS
@@ -74,10 +94,7 @@ private:
         bar += "|";
         for (int i = 0; i < bar_width_; ++i) {
             if (i < filled) {
-                bar += "█";
-            } else if (i == filled && current < total_) {
-                // Partial block for smoother animation
-                bar += "▎";
+                bar += "#";
             } else {
                 bar += " ";
             }
@@ -130,6 +147,8 @@ public:
           disabled_(disabled),
           max_refresh_rate_(max_refresh_rate),
           started_(false),
+          start_time_ms_(0),
+          last_refresh_ms_(0),
           bar_width_(bar_width),
           last_output_length_(0) {
     }
@@ -145,24 +164,22 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         description_ = desc;
         render();
-        last_refresh_time_ = std::chrono::steady_clock::now();
+        last_refresh_ms_.store(now_ms(), std::memory_order_relaxed);
     }
 
     // Set the counter to a specific value and refresh if enough time has passed
     void set_counter(int value) {
         if (disabled_) return;
         counter_.store(value, std::memory_order_relaxed);
-        if (!started_) {
-            started_ = true;
-            start_time_ = std::chrono::steady_clock::now();
-            last_refresh_time_ = start_time_;
-        }
+        start_if_needed();
 
         // Refresh only if enough time has passed
         if (should_refresh()) {
             std::lock_guard<std::mutex> lock(mutex_);
-            render();
-            last_refresh_time_ = std::chrono::steady_clock::now();
+            if (should_refresh()) {
+                render();
+                last_refresh_ms_.store(now_ms(), std::memory_order_relaxed);
+            }
         }
     }
 
@@ -172,11 +189,7 @@ public:
         counter_.fetch_add(n, std::memory_order_relaxed);
         // Lazy initialization: only set start time once
         // Use relaxed memory order since exact timing doesn't matter for display
-        if (!started_) [[unlikely]] {
-            started_ = true;
-            start_time_ = std::chrono::steady_clock::now();
-            last_refresh_time_ = start_time_;
-        }
+        start_if_needed();
     }
 
     // Update counter and refresh if needed (efficient for loops)
@@ -184,8 +197,10 @@ public:
         increment(n);
         if (should_refresh()) {
             std::lock_guard<std::mutex> lock(mutex_);
-            render();
-            last_refresh_time_ = std::chrono::steady_clock::now();
+            if (should_refresh()) {
+                render();
+                last_refresh_ms_.store(now_ms(), std::memory_order_relaxed);
+            }
         }
     }
 
@@ -200,9 +215,6 @@ public:
         // Set counter to total
         counter_.store(total_, std::memory_order_relaxed);
 
-        // Clear the entire line to avoid artifacts (use wider clear)
-        std::cerr << "\r" << std::string(150, ' ') << "\r" << std::flush;
-
         // Render final state
         int current = total_;
         double elapsed = elapsed_time();
@@ -211,7 +223,7 @@ public:
         // Build final bar (100%)
         std::string bar = "|";
         for (int i = 0; i < bar_width_; ++i) {
-            bar += "█";
+            bar += "#";
         }
         bar += "|";
 
@@ -222,7 +234,14 @@ public:
             << "[" << format_time(elapsed) << ", "
             << std::fixed << std::setprecision(2) << rate << "it/s]";
 
-        std::cerr << oss.str() << std::endl;
+        std::string output = oss.str();
+        int output_length = static_cast<int>(output.length());
+
+        std::cerr << "\r";
+        if (output_length < last_output_length_) {
+            std::cerr << std::string(last_output_length_, ' ') << "\r";
+        }
+        std::cerr << output << std::endl;
     }
 
     // Get current counter value
@@ -233,11 +252,13 @@ public:
     // Set total
     void set_total(int total) {
         if (disabled_) return;
+        std::lock_guard<std::mutex> lock(mutex_);
         total_ = total;
     }
 
     // Get total
     int get_total() const {
+        std::lock_guard<std::mutex> lock(mutex_);
         return total_;
     }
 };

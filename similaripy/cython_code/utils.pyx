@@ -132,11 +132,10 @@ def build_csr_matrix_32(
     indptr32 = np.empty(M + 1, dtype=np.int32)
     indices32 = np.empty(nnz, dtype=np.int32)
     data = np.empty(nnz, dtype=np.float32)
-    coo32_to_csr32(M, N, nnz, &rows[0], &cols[0], &values[0], &indptr32[0], &indices32[0], &data[0])
+    if nnz != 0:
+        coo32_to_csr32(M, N, nnz, &rows[0], &cols[0], &values[0], &indptr32[0], &indices32[0], &data[0])
     del values, rows, cols
     res = sp.csr_matrix((data, indices32, indptr32), shape=(item_count, user_count), dtype=np.float32)
-    del indptr32, indices32
-    del data
 
     return res
 
@@ -172,11 +171,10 @@ def build_csr_matrix_64(
     indptr64 = np.empty(M + 1, dtype=np.int64)
     indices64 = np.empty(nnz, dtype=np.int64)
     data = np.empty(nnz, dtype=np.float32)
-    coo32_to_csr64(M, N, nnz, &rows[0], &cols[0], &values[0], &indptr64[0], &indices64[0], &data[0])
+    if nnz != 0:
+        coo32_to_csr64(M, N, nnz, &rows[0], &cols[0], &values[0], &indptr64[0], &indices64[0], &data[0])
     del values, rows, cols
     res = sp.csr_matrix((data, indices64, indptr64), shape=(item_count, user_count), dtype=np.float32)
-    del indptr64, indices64
-    del data
 
     return res
 

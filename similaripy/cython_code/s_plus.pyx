@@ -70,8 +70,6 @@ cdef extern from "s_plus.h" namespace "s_plus" nogil:
         Value l3,
         Value t1,
         Value t2,
-        Value c1,
-        Value c2,
         Value stabilized_shrink,
         Value bayesian_shrink,
         Value threshold,
@@ -183,13 +181,17 @@ def s_plus(
 
     # build target rows (only the row that must be computed)
     if target_rows is None:
-        target_rows = np.arange(matrix1.shape[0], dtype=np.int32)
-    cdef int[:] targets = np.array(target_rows, dtype=np.int32)
+        targets_arr = np.arange(matrix1.shape[0], dtype=np.int32)
+    else:
+        targets_arr = np.ascontiguousarray(np.asarray(target_rows, dtype=np.int32))
+    cdef int[:] targets = targets_arr
     cdef int n_targets = targets.shape[0]
 
     # Initialize progress bar
-    cdef ProgressBar * progress = new ProgressBar(n_targets, not verbose, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
-    progress.set_description(b'Preprocessing')
+    cdef ProgressBar * progress = NULL
+    if verbose:
+        progress = new ProgressBar(n_targets, False, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
+        progress.set_description(b'Preprocessing')
 
     # be sure to use csr matrixes
     matrix1 = matrix1.tocsr()
@@ -281,7 +283,8 @@ def s_plus(
     cdef int[:] rows = np.zeros(n_targets * k, dtype=np.int32)
     cdef int[:] cols = np.zeros(n_targets * k, dtype=np.int32)
 
-    progress.set_description(b'Computing')
+    if progress != NULL:
+        progress.set_description(b'Computing')
 
     # Call C++ parallel computation function
     with nogil:
@@ -296,7 +299,6 @@ def s_plus(
             a1,
             l1, l2, l3,
             t1, t2,
-            c1, c2,
             stabilized_shrink,
             bayesian_shrink,
             threshold,
@@ -319,7 +321,8 @@ def s_plus(
 
     ### BUILD OUTPUT MATRIX ###
 
-    progress.set_description(f'Building {format_output} matrix'.encode())
+    if progress != NULL:
+        progress.set_description(f'Building {format_output} matrix'.encode())
 
     # Build result in requested format
     if format_output == 'coo':
@@ -338,11 +341,13 @@ def s_plus(
             item_count=n_output_rows,
             user_count=n_output_cols
         )
-        progress.set_description(b'Removing zeros')
+        if progress != NULL:
+            progress.set_description(b'Removing zeros')
         res.eliminate_zeros()
 
     # Finalize and cleanup
-    progress.close(b'Done')
-    del progress
+    if progress != NULL:
+        progress.close(b'Done')
+        del progress
 
     return res

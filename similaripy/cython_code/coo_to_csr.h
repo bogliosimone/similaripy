@@ -2,7 +2,6 @@
 #define __COO_TO_CSR_H__
 
 #include <algorithm>
-#include <set>
 
 /*
  * Compute B = A for COO matrix A, CSR matrix B
