@@ -28,6 +28,7 @@
 
 - [Installation instructions](installation.md)
 - [Quickstart guide](guide.md)
+- [MovieLens 32M notebook example (GitHub)](https://github.com/bogliosimone/similaripy/blob/master/notebooks/movielens32m_item_item_recommender.ipynb)
 - [Quick reference to similarity functions](similarity.md)
 - [Quick reference to normalization functions](normalization.md)
 - [Full API documentation](api/similarity.md)
@@ -44,9 +45,8 @@ SimilariPy achieves high performance through several key optimizations:
 - **CSR-optimized**: Direct memory access patterns optimized for Compressed Sparse Row format
 - **Cache-friendly data structures**: Sequential vector storage for hot-path accumulators ensures optimal CPU cache utilization and memory bandwidth
 - **Pre-allocated buffers**: Reuses row buffers across iterations, eliminating millions of allocations per computation
-- **Float32 precision**: Uses 32-bit floats for matrix values instead of 64-bit for 2× memory bandwidth and better SIMD vectorization
+- **Float32 precision**: Uses 32-bit floats for matrix values instead of 64-bit for 2× memory bandwidth
 - **Fused types**: Single codebase supports both int32/int64 matrix indices without overhead or code duplication
 - **Top-K filtering**: Early termination and efficient heap structures minimize unnecessary computation
 
 ---
-

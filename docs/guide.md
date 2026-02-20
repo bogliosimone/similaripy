@@ -74,7 +74,7 @@ Tips:
 
 ## In-depth Introduction
 
-Looking for a more in depth introduction?
+Looking for a full end-to-end example?
 
-Check the article [Item and User KNN Recommender models with similaripy in Python](https://www.stepbystepdatascience.com/knn-recommenders-python), an amazing resource from the [StepByStepDataScience](https://www.stepbystepdatascience.com) blog.
-
+Check the MovieLens notebook:
+- [MovieLens 32M Item-Item Recommender (GitHub)](https://github.com/bogliosimone/similaripy/blob/master/notebooks/movielens32m_item_item_recommender.ipynb)
