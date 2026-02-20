@@ -43,7 +43,7 @@ SimilariPy achieves high performance through several key optimizations:
 - **GIL-free computation**: Releases Python's Global Interpreter Lock during heavy computation
 - **CSR-optimized**: Direct memory access patterns optimized for Compressed Sparse Row format
 - **Pre-allocated buffers**: Reuses row buffers across iterations, eliminating millions of allocations per computation
-- **Float32 precision**: Uses 32-bit floats for matrix values instead of 64-bit for 2× memory bandwidth and better SIMD vectorization
+- **Float32 precision**: Uses 32-bit floats for matrix values instead of 64-bit for 2× memory bandwidth
 - **Fused types**: Single codebase supports both int32/int64 matrix indices without overhead or code duplication
 - **Top-K filtering**: Early termination and efficient heap structures minimize unnecessary computation
 
