@@ -24,7 +24,8 @@ from .s_plus_utils import (
     _build_depop_normalization,
     _build_column_selector,
     _compute_target_columns,
-    _filter_matrix_columns
+    _filter_matrix_columns,
+    _reorder_columns_by_popularity
 )
 
 from cython import float
@@ -276,6 +277,55 @@ def s_plus(
         # Filter matrix2 and get data arrays directly in correct format
         m2_data, m2_indices, m2_indptr = _filter_matrix_columns(matrix2, target_columns)
 
+    # Reorder matrix2 columns by popularity for better cache locality with blocking.
+    # Popular columns (high nnz) get low indices, concentrating most accumulator
+    # writes into the first block(s) which stay hot in cache.
+    # This is transparent: output column indices are un-permuted after computation.
+    cdef int[:] col_back_perm  # permuted_col → original_col (for un-permuting output)
+    col_back_perm_np = None
+    m2_data_np = np.asarray(m2_data)
+    m2_indices_np = np.asarray(m2_indices)
+    m2_indptr_np = np.asarray(m2_indptr)
+
+    (
+        m2_data_np, m2_indices_np, m2_indptr_np,
+        Ytversky_np, Ycosine_np, Ydepop_np,
+        filter_m_indptr_np, filter_m_indices_np,
+        target_m_indptr_np, target_m_indices_np,
+        col_back_perm_np
+    ) = _reorder_columns_by_popularity(
+        m2_data_np, m2_indices_np, m2_indptr_np,
+        n_output_cols,
+        np.asarray(Ytversky) if l1 != 0 else None,
+        np.asarray(Ycosine) if l2 != 0 else None,
+        np.asarray(Ydepop) if l3 != 0 else None,
+        filter_col_mode,
+        np.asarray(filter_m_indptr),
+        np.asarray(filter_m_indices),
+        target_col_mode,
+        np.asarray(target_m_indptr),
+        np.asarray(target_m_indices),
+    )
+
+    # Update memory views with reordered data
+    m2_data = m2_data_np.astype(np.float32, copy=False)
+    m2_indices = m2_indices_np.astype(np.int32, copy=False)
+    m2_indptr = m2_indptr_np.astype(np.int32, copy=False)
+    if l1 != 0:
+        Ytversky = Ytversky_np.astype(np.float32, copy=False)
+    if l2 != 0:
+        Ycosine = Ycosine_np.astype(np.float32, copy=False)
+    if l3 != 0:
+        Ydepop = Ydepop_np.astype(np.float32, copy=False)
+    if filter_col_mode == MODE_MATRIX:
+        filter_m_indptr = filter_m_indptr_np.astype(np.int32, copy=False)
+        filter_m_indices = filter_m_indices_np.astype(np.int32, copy=False)
+    if target_col_mode == MODE_MATRIX:
+        target_m_indptr = target_m_indptr_np.astype(np.int32, copy=False)
+        target_m_indices = target_m_indices_np.astype(np.int32, copy=False)
+    if col_back_perm_np is not None:
+        col_back_perm = col_back_perm_np.astype(np.int32, copy=False)
+
     ### START COMPUTATION ###
 
     # Pre-allocate output arrays
@@ -312,6 +362,14 @@ def s_plus(
             progress,
             num_threads
         )
+
+    # Un-permute output column indices back to original ordering
+    if col_back_perm_np is not None:
+        cols_np = np.asarray(cols)
+        # Only un-permute non-zero entries (zero entries are padding from TopK)
+        nonzero_mask = (cols_np != 0) | (np.asarray(values) != 0)
+        cols_np[nonzero_mask] = col_back_perm_np[cols_np[nonzero_mask]]
+        cols = cols_np.astype(np.int32, copy=False)
 
     # Deallocate intermediate memory
     del Xcosine, Ycosine, Xtversky, Ytversky, Xdepop, Ydepop

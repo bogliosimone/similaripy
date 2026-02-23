@@ -501,3 +501,131 @@ def _filter_matrix_columns(
         np.asarray(new_indices),
         np.asarray(new_indptr)
     )
+
+
+def _reorder_columns_by_popularity(
+    m2_data: np.ndarray,
+    m2_indices: np.ndarray,
+    m2_indptr: np.ndarray,
+    int n_output_cols,
+    Ytversky: Optional[np.ndarray],
+    Ycosine: Optional[np.ndarray],
+    Ydepop: Optional[np.ndarray],
+    int filter_col_mode,
+    filter_m_indptr: np.ndarray,
+    filter_m_indices: np.ndarray,
+    int target_col_mode,
+    target_m_indptr: np.ndarray,
+    target_m_indices: np.ndarray,
+) -> Tuple:
+    """
+    Reorder matrix2 columns by descending popularity (nnz count) for better
+    cache locality when using column-blocked accumulation.
+
+    Popular columns get low indices, so most accumulator writes concentrate
+    in the first block(s) which stay hot in cache. This is transparent to the
+    caller: a back-permutation array is returned to un-map output columns.
+
+    The m2 CSR indices are re-sorted within each row after permutation to
+    maintain the sorted-indices invariant required by binary search.
+
+    Args:
+        m2_data: Matrix2 data array (float32).
+        m2_indices: Matrix2 column indices array (int32).
+        m2_indptr: Matrix2 indptr array (int32).
+        n_output_cols: Total number of output columns.
+        Ytversky: Column normalization array for Tversky (or None if unused).
+        Ycosine: Column normalization array for Cosine (or None if unused).
+        Ydepop: Column normalization array for Depop (or None if unused).
+        filter_col_mode: Filter column mode (0=none, 1=array, 2=matrix).
+        filter_m_indptr: Filter column CSR indptr.
+        filter_m_indices: Filter column CSR indices.
+        target_col_mode: Target column mode (0=none, 1=array, 2=matrix).
+        target_m_indptr: Target column CSR indptr.
+        target_m_indices: Target column CSR indices.
+
+    Returns:
+        Tuple of (m2_data, m2_indices, m2_indptr,
+                  Ytversky, Ycosine, Ydepop,
+                  filter_m_indptr, filter_m_indices,
+                  target_m_indptr, target_m_indices,
+                  back_perm) where back_perm maps new_col -> original_col.
+                  Returns back_perm=None if no reordering was done.
+    """
+    # Compute column popularity: number of nonzeros per column in m2
+    col_nnz = np.bincount(m2_indices.ravel(), minlength=n_output_cols)
+
+    # Sort columns by descending popularity (most popular -> index 0)
+    # Use stable sort to keep deterministic ordering for columns with equal nnz
+    back_perm = np.argsort(-col_nnz, kind='stable').astype(np.int32)
+
+    # Check if the permutation is identity (already sorted) -> skip
+    if np.array_equal(back_perm, np.arange(n_output_cols, dtype=np.int32)):
+        return (
+            m2_data, m2_indices, m2_indptr,
+            Ytversky, Ycosine, Ydepop,
+            filter_m_indptr, filter_m_indices,
+            target_m_indptr, target_m_indices,
+            None
+        )
+
+    # Forward permutation: original_col -> new_col
+    forward_perm = np.empty(n_output_cols, dtype=np.int32)
+    forward_perm[back_perm] = np.arange(n_output_cols, dtype=np.int32)
+
+    # Permute m2 column indices and re-sort within each row
+    new_m2_indices = forward_perm[m2_indices.ravel()].astype(np.int32)
+
+    # Build a temporary CSR matrix to sort indices within each row
+    # scipy's sort_indices() is implemented in C and handles data reordering
+    n_rows = len(m2_indptr) - 1
+    temp_csr = sp.csr_matrix(
+        (m2_data.copy(), new_m2_indices, m2_indptr.copy()),
+        shape=(n_rows, n_output_cols)
+    )
+    temp_csr.sort_indices()
+    new_m2_data = np.asarray(temp_csr.data, dtype=np.float32)
+    new_m2_indices = np.asarray(temp_csr.indices, dtype=np.int32)
+    new_m2_indptr = np.asarray(temp_csr.indptr, dtype=np.int32)
+
+    # Permute Y normalization arrays (indexed by column)
+    new_Ytversky = Ytversky[back_perm] if Ytversky is not None else None
+    new_Ycosine = Ycosine[back_perm] if Ycosine is not None else None
+    new_Ydepop = Ydepop[back_perm] if Ydepop is not None else None
+
+    # Permute filter/target column indices if they use SELECTION_MATRIX mode
+    new_filter_m_indptr = filter_m_indptr
+    new_filter_m_indices = filter_m_indices
+    if filter_col_mode == MODE_MATRIX and len(filter_m_indices) > 0:
+        new_filter_m_indices = forward_perm[filter_m_indices.ravel()].astype(np.int32)
+        # Re-sort within each row for binary search
+        n_filter_rows = len(filter_m_indptr) - 1
+        temp_filter = sp.csr_matrix(
+            (np.ones(len(new_filter_m_indices), dtype=np.float32), new_filter_m_indices, filter_m_indptr.copy()),
+            shape=(n_filter_rows, n_output_cols)
+        )
+        temp_filter.sort_indices()
+        new_filter_m_indices = np.asarray(temp_filter.indices, dtype=np.int32)
+        new_filter_m_indptr = np.asarray(temp_filter.indptr, dtype=np.int32)
+
+    new_target_m_indptr = target_m_indptr
+    new_target_m_indices = target_m_indices
+    if target_col_mode == MODE_MATRIX and len(target_m_indices) > 0:
+        new_target_m_indices = forward_perm[target_m_indices.ravel()].astype(np.int32)
+        # Re-sort within each row for binary search
+        n_target_rows = len(target_m_indptr) - 1
+        temp_target = sp.csr_matrix(
+            (np.ones(len(new_target_m_indices), dtype=np.float32), new_target_m_indices, target_m_indptr.copy()),
+            shape=(n_target_rows, n_output_cols)
+        )
+        temp_target.sort_indices()
+        new_target_m_indices = np.asarray(temp_target.indices, dtype=np.int32)
+        new_target_m_indptr = np.asarray(temp_target.indptr, dtype=np.int32)
+
+    return (
+        new_m2_data, new_m2_indices, new_m2_indptr,
+        new_Ytversky, new_Ycosine, new_Ydepop,
+        new_filter_m_indptr, new_filter_m_indices,
+        new_target_m_indptr, new_target_m_indices,
+        back_perm
+    )
