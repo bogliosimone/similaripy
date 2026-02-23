@@ -27,6 +27,11 @@ enum SelectionMode {
     SELECTION_MATRIX = 2   // use per-row matrix indices
 };
 
+// Block size for column-blocked accumulation.
+// 131072 floats = 512 KB — fits in L2 cache, reduces number of passes
+// over matrix1 rows while still being much smaller than typical column counts.
+static constexpr int BLOCK_SIZE = 262144;
+
 /*
     Functor that stores the Top K (Value/Index) pairs
     passed to it in its results member
@@ -81,7 +86,7 @@ class SparseMatrixMultiplier {
                                     Index * target_col_m_indptr, Index * target_col_m_indices
                                     )
         :
-        sums(column_count, 0),
+        sums(std::min(static_cast<Index>(BLOCK_SIZE), column_count), 0),
         Xtversky(Xtversky), Ytversky(Ytversky),
         Xcosine(Xcosine), Ycosine(Ycosine),
         Xdepop(Xdepop), Ydepop(Ydepop),
@@ -96,7 +101,8 @@ class SparseMatrixMultiplier {
         filter_m_indices(filter_m_indices),
         target_col_mode(target_col_mode),
         target_col_m_indptr(target_col_m_indptr),
-        target_col_m_indices(target_col_m_indices) {
+        target_col_m_indices(target_col_m_indices),
+        block_offset(0) {
         nonzero_cols.reserve(1024);  // Pre-allocate to reduce reallocation overhead
     }
 
@@ -110,6 +116,10 @@ class SparseMatrixMultiplier {
 
     void setIndexRow(Index index_row) {
         row = index_row;
+    }
+
+    void setBlockOffset(Index offset) {
+        block_offset = offset;
     }
 
  private:
@@ -176,27 +186,28 @@ class SparseMatrixMultiplier {
     }
 
  public:
-    /* Calls a function once per non-zero entry in the row, also clears entries for the next row */
+    /* Calls a function once per non-zero entry in the block, also clears entries for the next block */
     template <typename Function>
     void foreach(Function & f) {  // NOLINT(*)
         // Sequential vector iteration (cache-friendly)
         for (size_t i = 0; i < nonzero_cols.size(); ++i) {
-            Index col = nonzero_cols[i];
-            Value xy = sums[col];
+            Index local_col = nonzero_cols[i];
+            Value xy = sums[local_col];
+            Index real_col = block_offset + local_col;
 
             // skip work for filtered/untargeted columns
-            if (!isFiltered(col) && isTargetColumn(col)) {
+            if (!isFiltered(real_col) && isTargetColumn(real_col)) {
                 // compute similarity value with normalization
-                Value val = computeSimilarity(col, xy);
+                Value val = computeSimilarity(real_col, xy);
 
                 // apply threshold
                 if (val >= threshold) {
-                    f(col, val);
+                    f(real_col, val);
                 }
             }
 
-            // clear for next row
-            sums[col] = 0;
+            // clear for next row/block
+            sums[local_col] = 0;
         }
         nonzero_cols.clear();
     }
@@ -223,6 +234,7 @@ class SparseMatrixMultiplier {
     Index * filter_m_indptr, * filter_m_indices;
     Index target_col_mode;
     Index * target_col_m_indptr, * target_col_m_indices;
+    Index block_offset;
 };
 
 /*
@@ -286,9 +298,18 @@ void compute_similarities_parallel(
     progress::ProgressBar* progress,
     int num_threads
 ) {
+    // Column blocking: process columns in blocks that fit in L1 cache.
+    // This reduces the accumulator working set from n_output_cols * 4 bytes
+    // (potentially megabytes) to BLOCK_SIZE * 4 bytes (64 KB), eliminating
+    // L1 cache misses on random writes in the inner accumulation loop.
+    const Index block_size = static_cast<Index>(BLOCK_SIZE);
+    const Index n_blocks = (n_output_cols + block_size - 1) / block_size;
+    const bool use_blocking = (n_output_cols > block_size);
+
     #pragma omp parallel num_threads(num_threads)
     {
         // Thread-local allocations
+        // sums vector is now min(n_output_cols, BLOCK_SIZE) — fits in L1 cache
         SparseMatrixMultiplier<Index, Value>* neighbours =
             new SparseMatrixMultiplier<Index, Value>(
                 n_output_cols,
@@ -317,39 +338,83 @@ void compute_similarities_parallel(
                 progress->update(1);
             }
 
-            // Compute row similarity
             const Index t = targets[i];
-            neighbours->setIndexRow(t);
-
-            // Sparse matrix multiplication: accumulate products
-            // Cache loop bounds to reduce memory accesses
             const Index m1_start = m1_indptr[t];
             const Index m1_end = m1_indptr[t + 1];
-            for (Index index1 = m1_start; index1 < m1_end; ++index1) {
-                const Index u = m1_indices[index1];
-                const Value v1 = m1_data[index1];
 
-                // Prefetch hint: next iteration's indptr (helps with random access pattern)
-                #if defined(__GNUC__) || defined(__clang__)
-                if (index1 + 1 < m1_end) {
-                    __builtin_prefetch(&m2_indptr[m1_indices[index1 + 1]], 0, 1);
-                }
-                #elif defined(_MSC_VER)
-                if (index1 + 1 < m1_end) {
-                    _mm_prefetch((const char*)&m2_indptr[m1_indices[index1 + 1]], _MM_HINT_T1);
-                }
-                #endif
-
-                const Index m2_start = m2_indptr[u];
-                const Index m2_end = m2_indptr[u + 1];
-                for (Index index2 = m2_start; index2 < m2_end; ++index2) {
-                    neighbours->add(m2_indices[index2], m2_data[index2] * v1);
-                }
-            }
-
-            // Extract top-k results
             topk->results.clear();
-            neighbours->foreach(*topk);
+
+            if (use_blocking) {
+                // ---- BLOCKED PATH ----
+                // Process columns in blocks of BLOCK_SIZE. The accumulator (sums)
+                // is only BLOCK_SIZE entries (~64 KB) and fits entirely in L1 cache.
+                // We re-read matrix1 rows once per block, but those are sequential
+                // reads handled well by the hardware prefetcher.
+                for (Index block = 0; block < n_blocks; ++block) {
+                    const Index cb_start = block * block_size;
+                    const Index cb_end = std::min(cb_start + block_size, n_output_cols);
+
+                    neighbours->setIndexRow(t);
+                    neighbours->setBlockOffset(cb_start);
+
+                    // Accumulate only matrix2 entries in column range [cb_start, cb_end)
+                    for (Index index1 = m1_start; index1 < m1_end; ++index1) {
+                        const Index u = m1_indices[index1];
+                        const Value v1 = m1_data[index1];
+
+                        const Index m2_start = m2_indptr[u];
+                        const Index m2_end = m2_indptr[u + 1];
+
+                        // Binary search to find entries within this column block.
+                        // CSR indices are sorted, so lower_bound is O(log nnz).
+                        // This also skips matrix2 rows with no entries in this block.
+                        const Index* block_lo = std::lower_bound(
+                            &m2_indices[m2_start], &m2_indices[m2_end], cb_start);
+                        const Index* block_hi = std::lower_bound(
+                            block_lo, &m2_indices[m2_end], cb_end);
+
+                        // Accumulate products for entries in [cb_start, cb_end)
+                        for (const Index* ptr = block_lo; ptr < block_hi; ++ptr) {
+                            const Index offset = static_cast<Index>(ptr - m2_indices);
+                            neighbours->add(m2_indices[offset] - cb_start,
+                                            v1 * m2_data[offset]);
+                        }
+                    }
+
+                    // Drain block results into TopK (foreach also clears the accumulator)
+                    neighbours->foreach(*topk);
+                }
+            } else {
+                // ---- SINGLE-BLOCK PATH ----
+                // n_output_cols <= BLOCK_SIZE: everything fits in one block.
+                // This is identical to the original algorithm with zero overhead.
+                neighbours->setIndexRow(t);
+                neighbours->setBlockOffset(0);
+
+                for (Index index1 = m1_start; index1 < m1_end; ++index1) {
+                    const Index u = m1_indices[index1];
+                    const Value v1 = m1_data[index1];
+
+                    // Prefetch hint: next iteration's indptr
+                    #if defined(__GNUC__) || defined(__clang__)
+                    if (index1 + 1 < m1_end) {
+                        __builtin_prefetch(&m2_indptr[m1_indices[index1 + 1]], 0, 1);
+                    }
+                    #elif defined(_MSC_VER)
+                    if (index1 + 1 < m1_end) {
+                        _mm_prefetch((const char*)&m2_indptr[m1_indices[index1 + 1]], _MM_HINT_T1);
+                    }
+                    #endif
+
+                    const Index m2_start = m2_indptr[u];
+                    const Index m2_end = m2_indptr[u + 1];
+                    for (Index index2 = m2_start; index2 < m2_end; ++index2) {
+                        neighbours->add(m2_indices[index2], m2_data[index2] * v1);
+                    }
+                }
+
+                neighbours->foreach(*topk);
+            }
 
             // Write results to output arrays
             Index index3 = k * i;
