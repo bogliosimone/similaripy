@@ -365,13 +365,29 @@ void compute_similarities_parallel(
                         const Index m2_start = m2_indptr[u];
                         const Index m2_end = m2_indptr[u + 1];
 
-                        // Binary search to find entries within this column block.
-                        // CSR indices are sorted, so lower_bound is O(log nnz).
-                        // This also skips matrix2 rows with no entries in this block.
-                        const Index* block_lo = std::lower_bound(
-                            &m2_indices[m2_start], &m2_indices[m2_end], cb_start);
-                        const Index* block_hi = std::lower_bound(
-                            block_lo, &m2_indices[m2_end], cb_end);
+                        // Skip empty m2 rows
+                        if (m2_start == m2_end) continue;
+
+                        const Index* m2_begin = &m2_indices[m2_start];
+                        const Index* m2_last = &m2_indices[m2_end - 1];
+
+                        // Early termination: if this m2 row has no entries in [cb_start, cb_end), skip
+                        if (*m2_last < cb_start || *m2_begin >= cb_end) continue;
+
+                        const Index* block_lo;
+                        const Index* block_hi;
+
+                        // Fast path: entire m2 row falls within this block — skip binary searches
+                        if (*m2_begin >= cb_start && *m2_last < cb_end) {
+                            block_lo = m2_begin;
+                            block_hi = m2_last + 1;
+                        } else {
+                            // Binary search to find entries within this column block
+                            block_lo = (*m2_begin >= cb_start) ? m2_begin :
+                                std::lower_bound(m2_begin, m2_last + 1, cb_start);
+                            block_hi = (*m2_last < cb_end) ? m2_last + 1 :
+                                std::lower_bound(block_lo, m2_last + 1, cb_end);
+                        }
 
                         // Accumulate products for entries in [cb_start, cb_end)
                         for (const Index* ptr = block_lo; ptr < block_hi; ++ptr) {
@@ -382,7 +398,10 @@ void compute_similarities_parallel(
                     }
 
                     // Drain block results into TopK (foreach also clears the accumulator)
-                    neighbours->foreach(*topk);
+                    // Skip if block produced no nonzeros (common for later blocks with popularity reordering)
+                    if (neighbours->nnz() > 0) {
+                        neighbours->foreach(*topk);
+                    }
                 }
             } else {
                 // ---- SINGLE-BLOCK PATH ----
