@@ -502,6 +502,44 @@ def test_target_cols():
     print('✅ Test target_cols passed')
 
 
+def test_block_size():
+    """Test that both blocked and unblocked paths produce correct results against Python reference."""
+    rows = 1000
+    cols = 800
+    density = 0.025
+    rtol = 0.0001
+    k = 50
+
+    m = generate_random_matrix(rows, cols, density=density).tocsr()
+
+    # Python reference implementations
+    dot_py = py_dot(m, k)
+    cosine_py = py_cosine(m, k)
+    rp3beta_py = py_rp3beta(m, alpha=0.8, beta=0.4, k=k)
+    splus_py = py_s_plus(m, l1=0.5, l2=0.5, l3=1, t1=1, t2=1, c1=0.5, c2=0.5,
+                         alpha=1, beta1=0, beta2=0, pop1='none', pop2='sum', k=k)
+
+    # Test each block_size mode: None (disabled), 0 (auto), and small explicit values
+    for bs, label in [(None, 'disabled'), (0, 'auto'), (64, '64'), (256, '256')]:
+        dot_c = sim.dot_product(m, k=k, block_size=bs, verbose=VERBOSE)
+        cosine_c = sim.cosine(m, k=k, block_size=bs, verbose=VERBOSE)
+        rp3beta_c = sim.rp3beta(m, alpha=0.8, beta=0.4, k=k, block_size=bs, verbose=VERBOSE)
+        splus_c = sim.s_plus(m, l1=0.5, l2=0.5, l3=1, t1=1, t2=1, c1=0.5, c2=0.5,
+                             alpha=1, beta1=0, beta2=0, pop1='none', pop2='sum',
+                             k=k, block_size=bs, verbose=VERBOSE)
+
+        np.testing.assert_allclose(check_sum(dot_c), check_sum(dot_py), rtol=rtol,
+                                   err_msg=f'dot block_size={label} vs python ref')
+        np.testing.assert_allclose(check_sum(cosine_c), check_sum(cosine_py), rtol=rtol,
+                                   err_msg=f'cosine block_size={label} vs python ref')
+        np.testing.assert_allclose(check_sum(rp3beta_c), check_sum(rp3beta_py), rtol=rtol,
+                                   err_msg=f'rp3beta block_size={label} vs python ref')
+        np.testing.assert_allclose(check_sum(splus_c), check_sum(splus_py), rtol=rtol,
+                                   err_msg=f'splus block_size={label} vs python ref')
+
+    print('✅ Test block_size correctness passed')
+
+
 def test_filter_cols_matrix():
     """Test filter_cols with a sparse matrix (real-world use case: filtering seen items)"""
     num_users = 100
@@ -589,4 +627,5 @@ if __name__ == "__main__":
     test_target_rows()
     test_filter_cols()
     test_target_cols()
+    test_block_size()
     test_filter_cols_matrix()

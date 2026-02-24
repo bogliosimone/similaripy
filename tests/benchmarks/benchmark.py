@@ -8,8 +8,67 @@ computation across different datasets and versions.
 import time
 import platform
 import os
-import numpy as np
+import subprocess
+from datetime import datetime
 import similaripy as sim
+
+
+def get_system_info():
+    """Collect system and environment information for benchmark reports.
+
+    Returns
+    -------
+    dict
+        Dictionary with keys: similaripy_version, python_version, system,
+        arch, cpu_model, cpu_count, git_hash, timestamp.
+    """
+    try:
+        similaripy_version = sim.__version__
+    except AttributeError:
+        similaripy_version = "unknown"
+
+    # CPU model name
+    cpu_model = "unknown"
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            r = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True, text=True, timeout=5
+            )
+            if r.returncode == 0:
+                cpu_model = r.stdout.strip()
+        elif system == "Linux":
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if "model name" in line:
+                        cpu_model = line.split(":", 1)[1].strip()
+                        break
+    except Exception:
+        pass
+
+    # Git commit hash
+    git_hash = "unknown"
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5
+        )
+        if r.returncode == 0:
+            git_hash = r.stdout.strip()
+    except Exception:
+        pass
+
+    return {
+        "similaripy_version": similaripy_version,
+        "python_version": platform.python_version(),
+        "system": platform.system(),
+        "arch": platform.machine(),
+        "cpu_model": cpu_model,
+        "cpu_count": os.cpu_count() or "unknown",
+        "git_hash": git_hash,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 def benchmark_similarity(
@@ -90,6 +149,8 @@ def benchmark_similarity(
     # Select similarity function
     similarity_func = _get_similarity_function(similarity_type)
 
+    block_size = similarity_kwargs.pop('block_size', 0)
+
     start_time = time.perf_counter()
 
     similarity_matrix = similarity_func(
@@ -99,6 +160,7 @@ def benchmark_similarity(
         threshold=threshold,
         verbose=verbose,
         num_threads=num_threads,
+        block_size=block_size,
         **similarity_kwargs
     )
 
@@ -132,6 +194,7 @@ def benchmark_similarity(
         'k': k,
         'shrink': shrink,
         'threshold': threshold,
+        'block_size': block_size,
     }
 
     return results
@@ -158,89 +221,3 @@ def _get_similarity_function(similarity_type):
         )
 
     return similarity_map[similarity_type]
-
-
-def profile_similarities(
-    URM,
-    similarity_types=("dot_product", "cosine", "rp3beta"),
-    k=100,
-    shrink=0,
-    verbose=True,
-    **kwargs
-):
-    """
-    Profile multiple similarity algorithms on the same dataset.
-
-    Parameters
-    ----------
-    URM : scipy.sparse.csr_matrix
-        User-item rating matrix
-    similarity_types : tuple or list, optional
-        List of similarity types to profile (default: ("dot_product", "cosine", "rp3beta"))
-    k : int, optional
-        Number of top similar items to keep (default: 100)
-    shrink : float, optional
-        Shrinkage parameter (default: 0)
-    verbose : bool, optional
-        Print progress and results (default: True)
-    **kwargs : dict
-        Additional parameters passed to benchmark_similarity
-
-    Returns
-    -------
-    dict
-        Dictionary mapping similarity type to benchmark results
-
-    Examples
-    --------
-    >>> from dataset_loaders import load_URM
-    >>> from benchmark import profile_similarities
-    >>>
-    >>> URM, meta = load_URM("movielens", version="25m")
-    >>> results = profile_similarities(
-    ...     URM,
-    ...     similarity_types=("dot_product", "cosine", "rp3beta"),
-    ...     k=100
-    ... )
-    >>>
-    >>> for sim_type, result in results.items():
-    ...     print(f"{sim_type}: {result['computation_time']:.2f}s")
-    """
-    results = {}
-
-    for sim_type in similarity_types:
-        result = benchmark_similarity(
-            URM,
-            similarity_type=sim_type,
-            k=k,
-            shrink=shrink,
-            verbose=verbose,
-            **kwargs
-        )
-        results[sim_type] = result
-
-    if verbose and len(similarity_types) > 1:
-        # Get system information
-        try:
-            similaripy_version = sim.__version__
-        except AttributeError:
-            similaripy_version = "unknown"
-
-        arch = platform.machine()
-        system = platform.system()
-        cpu_count = os.cpu_count() or "unknown"
-
-        print(f"\n{'='*60}")
-        print(f"Profiling Summary")
-        print(f"{'='*60}")
-        print(f"Similaripy version: {similaripy_version}")
-        print(f"Architecture: {system} {arch}")
-        print(f"CPU cores available: {cpu_count}")
-        print(f"{'-'*60}")
-        print(f"{'Similarity':<20} {'Time (s)':<12} {'Throughput (items/s)':<20}")
-        print(f"{'-'*60}")
-        for sim_type, result in results.items():
-            print(f"{sim_type:<20} {result['computation_time']:<12.2f} {result['throughput']:<20.1f}")
-        print(f"{'='*60}\n")
-
-    return results

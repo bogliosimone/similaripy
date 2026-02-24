@@ -22,17 +22,16 @@ Requirements:
 
 import argparse
 import time
-import platform
 import os
 from datetime import datetime
 from pathlib import Path
 from dataset_loaders import load_URM
-from benchmark import benchmark_similarity
+from benchmark import benchmark_similarity, get_system_info
 import similaripy as sim
 
 
 def run_benchmarks(datasets, similarity_types, k=100, shrink=0, threshold=0,
-                   num_threads=0, rounds=1, verbose=True, **dataset_kwargs):
+                   num_threads=0, block_size=0, rounds=1, verbose=True, **dataset_kwargs):
     """
     Run benchmarks on multiple datasets and similarity types.
 
@@ -123,7 +122,8 @@ def run_benchmarks(datasets, similarity_types, k=100, shrink=0, threshold=0,
                     shrink=shrink,
                     threshold=threshold,
                     num_threads=num_threads,
-                    verbose=verbose if rounds == 1 else False
+                    verbose=verbose if rounds == 1 else False,
+                    block_size=block_size,
                 )
                 round_results.append(results)
 
@@ -159,7 +159,7 @@ def run_benchmarks(datasets, similarity_types, k=100, shrink=0, threshold=0,
     return all_results, dataset_info
 
 
-def print_summary_table(all_results):
+def print_summary_table(all_results, sys_info):
     """
     Print a comprehensive summary table of all benchmark results.
 
@@ -167,16 +167,9 @@ def print_summary_table(all_results):
     ----------
     all_results : dict
         Results from run_benchmarks()
+    sys_info : dict
+        System info from get_system_info()
     """
-    # Get system information
-    try:
-        similaripy_version = sim.__version__
-    except AttributeError:
-        similaripy_version = "unknown"
-
-    arch = platform.machine()
-    system = platform.system()
-    cpu_count = os.cpu_count() or "unknown"
 
     # Check if any results have multiple rounds
     has_rounds = any(
@@ -188,16 +181,31 @@ def print_summary_table(all_results):
     print(f"\n{'='*120}")
     print("BENCHMARK SUMMARY")
     print(f"{'='*120}")
-    print(f"Similaripy version: {similaripy_version}")
-    print(f"Architecture: {system} {arch}")
-    print(f"CPU cores available: {cpu_count}")
+    # Resolve block_size display
+    block_size_display = 'auto'
+    for dataset_results in all_results.values():
+        for result in dataset_results.values():
+            bs = result.get('block_size')
+            if bs is not None:
+                block_size_display = str(bs) if bs != 0 else 'auto'
+            break
+        break
+
+    print(f"Date: {sys_info['timestamp']}")
+    print(f"Similaripy version: {sys_info['similaripy_version']}")
+    print(f"Git commit: {sys_info['git_hash']}")
+    print(f"Python: {sys_info['python_version']}")
+    print(f"CPU: {sys_info['cpu_model']}")
+    print(f"Architecture: {sys_info['system']} {sys_info['arch']}")
+    print(f"CPU cores available: {sys_info['cpu_count']}")
+    print(f"Block size: {block_size_display}")
     print(f"{'='*120}")
 
     # Table header
     if has_rounds:
-        header = f"{'Dataset':<20} {'Version':<10} {'Similarity':<20} {'Time (s)':<18} {'Throughput':<15} {'Avg Neighbors':<15} {'Rounds':<10}"
+        header = f"{'Dataset':<20} {'Version':<10} {'Similarity':<20} {'Time (s)':<18} {'Throughput':<15} {'Output nnz':<15} {'Avg Neighbors':<15} {'Rounds':<10}"
     else:
-        header = f"{'Dataset':<20} {'Version':<10} {'Similarity':<20} {'Time (s)':<12} {'Throughput':<15} {'Avg Neighbors':<15}"
+        header = f"{'Dataset':<20} {'Version':<10} {'Similarity':<20} {'Time (s)':<12} {'Throughput':<15} {'Output nnz':<15} {'Avg Neighbors':<15}"
     print(header)
     print('-' * 120)
 
@@ -226,6 +234,7 @@ def print_summary_table(all_results):
                     f"{sim_type:<20} "
                     f"{time_str:<18} "
                     f"{result['throughput']:<15.1f} "
+                    f"{result['nnz']:<15,} "
                     f"{result['avg_neighbors']:<15.1f} "
                     f"{rounds_str:<10}"
                 )
@@ -236,6 +245,7 @@ def print_summary_table(all_results):
                     f"{sim_type:<20} "
                     f"{time_str:<12} "
                     f"{result['throughput']:<15.1f} "
+                    f"{result['nnz']:<15,} "
                     f"{result['avg_neighbors']:<15.1f}"
                 )
             print(row)
@@ -248,8 +258,8 @@ def print_summary_table(all_results):
     print('=' * 120)
 
 
-def write_report_file(output_path, datasets, similarities, k, shrink, threshold, num_threads, rounds,
-                      dataset_info, all_results):
+def write_report_file(output_path, datasets, similarities, k, shrink, threshold, num_threads, block_size, rounds,
+                      dataset_info, all_results, sys_info):
     """
     Write a clean report file with benchmark configuration and results.
 
@@ -267,26 +277,22 @@ def write_report_file(output_path, datasets, similarities, k, shrink, threshold,
         Dataset statistics
     all_results : dict
         Benchmark results
+    sys_info : dict
+        System info from get_system_info()
     """
-    # Get system information
-    try:
-        similaripy_version = sim.__version__
-    except AttributeError:
-        similaripy_version = "unknown"
-
-    arch = platform.machine()
-    system = platform.system()
-    cpu_count = os.cpu_count() or "unknown"
+    block_size_display = 'disabled' if block_size is None else ('auto' if block_size == 0 else str(block_size))
 
     with open(output_path, 'w') as f:
         # Section 1: Configuration
         f.write("=" * 70 + "\n")
         f.write("SIMILARIPY BENCHMARK SUITE\n")
         f.write("=" * 70 + "\n")
+        f.write(f"Date: {sys_info['timestamp']}\n")
         f.write(f"Datasets: {', '.join([f'{d}:{v}' for d, v in datasets])}\n")
         f.write(f"Similarities: {', '.join(similarities)}\n")
         f.write(f"Parameters: k={k}, shrink={shrink}, threshold={threshold}\n")
         f.write(f"Threads: {num_threads if num_threads > 0 else 'auto'}\n")
+        f.write(f"Block size: {block_size_display}\n")
         f.write(f"Rounds: {rounds}\n")
         f.write("=" * 70 + "\n")
 
@@ -303,9 +309,14 @@ def write_report_file(output_path, datasets, similarities, k, shrink, threshold,
         f.write(f"\n{'=' * 120}\n")
         f.write("BENCHMARK SUMMARY\n")
         f.write(f"{'=' * 120}\n")
-        f.write(f"Similaripy version: {similaripy_version}\n")
-        f.write(f"Architecture: {system} {arch}\n")
-        f.write(f"CPU cores available: {cpu_count}\n")
+        f.write(f"Date: {sys_info['timestamp']}\n")
+        f.write(f"Similaripy version: {sys_info['similaripy_version']}\n")
+        f.write(f"Git commit: {sys_info['git_hash']}\n")
+        f.write(f"Python: {sys_info['python_version']}\n")
+        f.write(f"CPU: {sys_info['cpu_model']}\n")
+        f.write(f"Architecture: {sys_info['system']} {sys_info['arch']}\n")
+        f.write(f"CPU cores available: {sys_info['cpu_count']}\n")
+        f.write(f"Block size: {block_size_display}\n")
         f.write(f"{'=' * 120}\n")
 
         # Check if any results have multiple rounds
@@ -317,9 +328,9 @@ def write_report_file(output_path, datasets, similarities, k, shrink, threshold,
 
         # Table header
         if has_rounds:
-            f.write(f"{'Dataset':<20} {'Version':<10} {'Similarity':<20} {'Time (s)':<18} {'Throughput':<15} {'Avg Neighbors':<15} {'Rounds':<10}\n")
+            f.write(f"{'Dataset':<20} {'Version':<10} {'Similarity':<20} {'Time (s)':<18} {'Throughput':<15} {'Output nnz':<15} {'Avg Neighbors':<15} {'Rounds':<10}\n")
         else:
-            f.write(f"{'Dataset':<20} {'Version':<10} {'Similarity':<20} {'Time (s)':<12} {'Throughput':<15} {'Avg Neighbors':<15}\n")
+            f.write(f"{'Dataset':<20} {'Version':<10} {'Similarity':<20} {'Time (s)':<12} {'Throughput':<15} {'Output nnz':<15} {'Avg Neighbors':<15}\n")
         f.write('-' * 120 + "\n")
 
         # Sort results by dataset and similarity
@@ -347,6 +358,7 @@ def write_report_file(output_path, datasets, similarities, k, shrink, threshold,
                         f"{sim_type:<20} "
                         f"{time_str:<18} "
                         f"{result['throughput']:<15.1f} "
+                        f"{result['nnz']:<15,} "
                         f"{result['avg_neighbors']:<15.1f} "
                         f"{rounds_str:<10}"
                     )
@@ -357,6 +369,7 @@ def write_report_file(output_path, datasets, similarities, k, shrink, threshold,
                         f"{sim_type:<20} "
                         f"{time_str:<12} "
                         f"{result['throughput']:<15.1f} "
+                        f"{result['nnz']:<15,} "
                         f"{result['avg_neighbors']:<15.1f}"
                     )
                 f.write(row + "\n")
@@ -444,6 +457,13 @@ Examples:
     )
 
     parser.add_argument(
+        '--block-size',
+        type=str,
+        default='0',
+        help='Block size for column-blocked accumulation. 0=auto, none=disabled, or int>0 (default: 0)'
+    )
+
+    parser.add_argument(
         '--event-type',
         type=str,
         default='multi_event',
@@ -491,8 +511,16 @@ Examples:
     print("="*70)
     print(f"Datasets: {', '.join([f'{d}:{v}' for d, v in datasets])}")
     print(f"Similarities: {', '.join(args.similarities)}")
+    # Parse block_size
+    if args.block_size.lower() == 'none':
+        block_size = None
+    else:
+        block_size = int(args.block_size)
+
+    block_size_display = 'disabled' if block_size is None else ('auto' if block_size == 0 else str(block_size))
     print(f"Parameters: k={args.k}, shrink={args.shrink}, threshold={args.threshold}")
     print(f"Threads: {args.threads if args.threads > 0 else 'auto'}")
+    print(f"Block size: {block_size_display}")
     print(f"Rounds: {args.rounds}")
     print("="*70)
 
@@ -504,25 +532,24 @@ Examples:
         shrink=args.shrink,
         threshold=args.threshold,
         num_threads=args.threads,
+        block_size=block_size,
         rounds=args.rounds,
         verbose=not args.quiet,
         dataset_kwargs=dataset_kwargs
     )
 
+    # Collect system info once
+    sys_info = get_system_info()
+
     # Print summary table to terminal
-    print_summary_table(all_results)
+    print_summary_table(all_results, sys_info)
 
     # Write report file
-    try:
-        similaripy_version = sim.__version__
-    except AttributeError:
-        similaripy_version = "unknown"
-
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_filename = f"result_{similaripy_version}_{timestamp}.txt"
+    output_filename = f"result_{sys_info['similaripy_version']}_{timestamp}.txt"
     output_path = output_dir / output_filename
 
     write_report_file(
@@ -533,9 +560,11 @@ Examples:
         shrink=args.shrink,
         threshold=args.threshold,
         num_threads=args.threads,
+        block_size=block_size,
         rounds=args.rounds,
         dataset_info=dataset_info,
-        all_results=all_results
+        all_results=all_results,
+        sys_info=sys_info,
     )
 
     print(f"\nResults saved to: {output_path}")
