@@ -19,7 +19,8 @@ def dot_product(
     filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
-    num_threads: int = 0
+    num_threads: int = 0,
+    block_size: Optional[int] = 0
 ) -> spmatrix:
     """
     Compute dot product similarity between rows of matrix1 and columns of matrix2.
@@ -38,6 +39,7 @@ def dot_product(
         verbose: Whether to show a progress bar.
         format_output: Output format: 'csr' or 'coo'. Use 'coo' on Windows.
         num_threads: Number of threads to use (0 means all available cores).
+        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
         A sparse matrix of shape (n_rows, n_cols) in the specified format,
@@ -57,7 +59,8 @@ def dot_product(
         filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output,
-        num_threads=num_threads
+        num_threads=num_threads,
+        block_size=block_size
     )
 
 
@@ -74,7 +77,8 @@ def cosine(
     filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
-    num_threads: int = 0
+    num_threads: int = 0,
+    block_size: Optional[int] = 0
 ) -> spmatrix:
     """
     Compute cosine similarity between sparse vectors.
@@ -93,6 +97,7 @@ def cosine(
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
         num_threads: Number of threads to use (0 = all available cores).
+        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
         A sparse matrix of top-k cosine similarities in the specified format.
@@ -113,7 +118,8 @@ def cosine(
         filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output,
-        num_threads=num_threads
+        num_threads=num_threads,
+        block_size=block_size
     )
 
 
@@ -131,7 +137,8 @@ def asymmetric_cosine(
     filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
-    num_threads: int = 0
+    num_threads: int = 0,
+    block_size: Optional[int] = 0
 ) -> spmatrix:
     """
     Compute asymmetric cosine similarity.
@@ -152,6 +159,7 @@ def asymmetric_cosine(
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
         num_threads: Number of threads to use (0 = all available cores).
+        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
         A sparse matrix of shape (n_rows, n_cols) containing the top-k
@@ -173,7 +181,8 @@ def asymmetric_cosine(
         filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output,
-        num_threads=num_threads
+        num_threads=num_threads,
+        block_size=block_size
     )
 
 
@@ -192,7 +201,8 @@ def tversky(
     filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
-    num_threads: int = 0
+    num_threads: int = 0,
+    block_size: Optional[int] = 0
 ) -> spmatrix:
     """
     Compute Tversky similarity between sparse vectors.
@@ -213,6 +223,7 @@ def tversky(
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
         num_threads: Number of threads to use (0 = all available cores).
+        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
         A sparse matrix of top-k Tversky similarities in the specified format.
@@ -233,7 +244,8 @@ def tversky(
         filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output,
-        num_threads=num_threads
+        num_threads=num_threads,
+        block_size=block_size
     )
 
 
@@ -250,7 +262,8 @@ def jaccard(
     filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
-    num_threads: int = 0
+    num_threads: int = 0,
+    block_size: Optional[int] = 0
 ) -> spmatrix:
     """
     Compute Jaccard similarity (intersection over union).
@@ -269,6 +282,7 @@ def jaccard(
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
         num_threads: Number of threads to use (0 = all available cores).
+        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
         A sparse matrix of top-k Jaccard similarities in the specified format.
@@ -289,7 +303,8 @@ def jaccard(
         filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output,
-        num_threads=num_threads
+        num_threads=num_threads,
+        block_size=block_size
     )
 
 
@@ -306,7 +321,8 @@ def dice(
     filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
-    num_threads: int = 0
+    num_threads: int = 0,
+    block_size: Optional[int] = 0
 ) -> spmatrix:
     """
     Compute Dice similarity (harmonic mean of overlap and size).
@@ -325,6 +341,7 @@ def dice(
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
         num_threads: Number of threads to use (0 = all available cores).
+        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
         A sparse matrix of top-k Dice similarities in the specified format.
@@ -345,7 +362,8 @@ def dice(
         filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output,
-        num_threads=num_threads
+        num_threads=num_threads,
+        block_size=block_size
     )
 
 
@@ -363,7 +381,8 @@ def p3alpha(
     filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
-    num_threads: int = 0
+    num_threads: int = 0,
+    block_size: Optional[int] = 0
 ) -> spmatrix:
     """
     Compute P3alpha similarity using a normalized 3-step random walk.
@@ -383,6 +402,7 @@ def p3alpha(
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
         num_threads: Number of threads to use (0 = all available cores).
+        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
         A sparse matrix of top-k P3alpha similarities in the specified format.
@@ -407,7 +427,8 @@ def p3alpha(
         filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output,
-        num_threads=num_threads
+        num_threads=num_threads,
+        block_size=block_size
     )
 
 
@@ -426,7 +447,8 @@ def rp3beta(
     filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
-    num_threads: int = 0
+    num_threads: int = 0,
+    block_size: Optional[int] = 0
 ) -> spmatrix:
     """
     Compute RP3beta similarity: P3alpha with popularity penalization.
@@ -447,6 +469,7 @@ def rp3beta(
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
         num_threads: Number of threads to use (0 = all available cores).
+        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
         A sparse matrix of top-k RP3beta similarities in the specified format.
@@ -475,7 +498,8 @@ def rp3beta(
         filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output,
-        num_threads=num_threads
+        num_threads=num_threads,
+        block_size=block_size
     )
 
 
@@ -504,7 +528,8 @@ def s_plus(
     filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
-    num_threads: int = 0
+    num_threads: int = 0,
+    block_size: Optional[int] = 0
 ) -> spmatrix:
     """
     Combines Tversky and Cosine normalizations with RP3Beta-style depopularization, fully controlled by tunable weights
@@ -535,6 +560,7 @@ def s_plus(
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
         num_threads: Number of threads to use (0 = all available cores).
+        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
         A sparse matrix of top-k s_plus similarities in the specified format.
@@ -561,7 +587,8 @@ def s_plus(
         filter_cols=filter_cols,
         verbose=verbose,
         format_output=format_output,
-        num_threads=num_threads
+        num_threads=num_threads,
+        block_size=block_size
     )
 
 

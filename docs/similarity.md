@@ -35,6 +35,7 @@ All similarity functions in Similaripy share the following parameters:
 | `verbose`        | If `True`, shows a progress bar. *(default: `True`)* |
 | `format_output`  | Output format: `'coo'` or `'csr'`. *(default: `'coo'`)*<br/>*Note: `'csr'` not currently supported on Windows.* |
 | `num_threads`    | Number of threads to use. `0` means use all available cores. *(default: `0`)* |
+| `block_size`     | Block size for column-blocked accumulation. `0` = auto (recommended), `None` = disabled. *(default: `0`)* |
 
 ## Shrinkage Types
 

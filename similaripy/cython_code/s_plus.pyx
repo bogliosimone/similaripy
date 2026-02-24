@@ -24,7 +24,8 @@ from .s_plus_utils import (
     _build_depop_normalization,
     _build_column_selector,
     _compute_target_columns,
-    _filter_matrix_columns
+    _filter_matrix_columns,
+    _reorder_columns_by_popularity
 )
 
 from cython import float
@@ -49,6 +50,7 @@ cdef extern from "progress_bar.h" namespace "progress" nogil:
         void close(const string& final_desc) except +
 
 cdef extern from "s_plus.h" namespace "s_plus" nogil:
+    cdef int DEFAULT_BLOCK_SIZE
     cdef void compute_similarities_parallel[Index, Value](
         Index n_targets,
         const Index* targets,
@@ -85,7 +87,8 @@ cdef extern from "s_plus.h" namespace "s_plus" nogil:
         Index* cols,
         Value* values,
         ProgressBar* progress,
-        int num_threads
+        int num_threads,
+        Index block_size
     )
 
 @cython.boundscheck(False)
@@ -116,7 +119,8 @@ def s_plus(
     target_cols: Optional[Union[list, np.ndarray, sp.spmatrix]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'csr',
-    int num_threads = 0
+    int num_threads = 0,
+    block_size: Optional[int] = 0
 ) -> Union[sp.csr_matrix, sp.coo_matrix]:
     """
     Compute top-K similarity between rows of two sparse matrices using the S_Plus algorithm.
@@ -151,6 +155,11 @@ def s_plus(
         verbose: Show progress bar during computation.
         format_output: Output matrix format: 'csr' or 'coo'.
         num_threads: Number of OpenMP threads (0 = use all available cores).
+        block_size: Block size for column-blocked accumulation. Controls the trade-off
+            between cache efficiency and multi-pass overhead.
+            0 = auto (uses default ~1 MB, good for most cases).
+            None = disabled (no blocking, original algorithm).
+            int > 0 = explicit size in number of float32 entries.
 
     Returns:
         A sparse matrix of shape (n_rows, n_cols) in the specified format,
@@ -205,6 +214,16 @@ def s_plus(
     # useful variables
     cdef int n_output_rows = matrix1.shape[0]
     cdef int n_output_cols = matrix2.shape[1]
+
+    # Resolve block_size: 0 = auto, None = disabled, int > 0 = explicit
+    cdef int resolved_block_size
+    if block_size is None:
+        resolved_block_size = 0  # 0 tells C++ to disable blocking
+    elif block_size == 0:
+        resolved_block_size = DEFAULT_BLOCK_SIZE  # auto: use compiled default
+    else:
+        resolved_block_size = int(block_size)
+    cdef bint use_blocking = resolved_block_size > 0 and n_output_cols > resolved_block_size
 
     ### START PREPROCESSING ###
 
@@ -276,6 +295,57 @@ def s_plus(
         # Filter matrix2 and get data arrays directly in correct format
         m2_data, m2_indices, m2_indptr = _filter_matrix_columns(matrix2, target_columns)
 
+    # Reorder matrix2 columns by popularity for better cache locality with blocking.
+    # Popular columns (high nnz) get low indices, concentrating most accumulator
+    # writes into the first block(s) which stay hot in cache.
+    # This is transparent: output column indices are un-permuted after computation.
+    # Only applies when blocking is enabled — without blocking, reordering adds overhead with no benefit.
+    cdef int[:] col_back_perm  # permuted_col → original_col (for un-permuting output)
+    col_back_perm_np = None
+    m2_data_np = np.asarray(m2_data)
+    m2_indices_np = np.asarray(m2_indices)
+    m2_indptr_np = np.asarray(m2_indptr)
+
+    if use_blocking:
+        (
+            m2_data_np, m2_indices_np, m2_indptr_np,
+            Ytversky_np, Ycosine_np, Ydepop_np,
+            filter_m_indptr_np, filter_m_indices_np,
+            target_m_indptr_np, target_m_indices_np,
+            col_back_perm_np
+        ) = _reorder_columns_by_popularity(
+            m2_data_np, m2_indices_np, m2_indptr_np,
+            n_output_cols,
+            np.asarray(Ytversky) if l1 != 0 else None,
+            np.asarray(Ycosine) if l2 != 0 else None,
+            np.asarray(Ydepop) if l3 != 0 else None,
+            filter_col_mode,
+            np.asarray(filter_m_indptr),
+            np.asarray(filter_m_indices),
+            target_col_mode,
+            np.asarray(target_m_indptr),
+            np.asarray(target_m_indices),
+        )
+
+        # Update memory views with reordered data
+        m2_data = m2_data_np.astype(np.float32, copy=False)
+        m2_indices = m2_indices_np.astype(np.int32, copy=False)
+        m2_indptr = m2_indptr_np.astype(np.int32, copy=False)
+        if l1 != 0:
+            Ytversky = Ytversky_np.astype(np.float32, copy=False)
+        if l2 != 0:
+            Ycosine = Ycosine_np.astype(np.float32, copy=False)
+        if l3 != 0:
+            Ydepop = Ydepop_np.astype(np.float32, copy=False)
+        if filter_col_mode == MODE_MATRIX:
+            filter_m_indptr = filter_m_indptr_np.astype(np.int32, copy=False)
+            filter_m_indices = filter_m_indices_np.astype(np.int32, copy=False)
+        if target_col_mode == MODE_MATRIX:
+            target_m_indptr = target_m_indptr_np.astype(np.int32, copy=False)
+            target_m_indices = target_m_indices_np.astype(np.int32, copy=False)
+        if col_back_perm_np is not None:
+            col_back_perm = col_back_perm_np.astype(np.int32, copy=False)
+
     ### START COMPUTATION ###
 
     # Pre-allocate output arrays
@@ -310,8 +380,17 @@ def s_plus(
             &target_m_indptr[0], &target_m_indices[0],
             &rows[0], &cols[0], &values[0],
             progress,
-            num_threads
+            num_threads,
+            resolved_block_size
         )
+
+    # Un-permute output column indices back to original ordering
+    if col_back_perm_np is not None:
+        cols_np = np.asarray(cols)
+        # Only un-permute non-zero entries (zero entries are padding from TopK)
+        nonzero_mask = (cols_np != 0) | (np.asarray(values) != 0)
+        cols_np[nonzero_mask] = col_back_perm_np[cols_np[nonzero_mask]]
+        cols = cols_np.astype(np.int32, copy=False)
 
     # Deallocate intermediate memory
     del Xcosine, Ycosine, Xtversky, Ytversky, Xdepop, Ydepop

@@ -43,6 +43,7 @@ SimilariPy achieves high performance through several key optimizations:
 - **OpenMP parallelization**: Multi-threaded execution scales with available CPU cores
 - **GIL-free computation**: Releases Python's Global Interpreter Lock during heavy computation
 - **CSR-optimized**: Direct memory access patterns optimized for Compressed Sparse Row format
+- **Column-blocked accumulation**: Tiles the output columns into cache-sized blocks with popularity-based reordering, dramatically reducing L2 cache misses on large matrices
 - **Cache-friendly data structures**: Sequential vector storage for hot-path accumulators ensures optimal CPU cache utilization and memory bandwidth
 - **Pre-allocated buffers**: Reuses row buffers across iterations, eliminating millions of allocations per computation
 - **Float32 precision**: Uses 32-bit floats for matrix values instead of 64-bit for 2× memory bandwidth
