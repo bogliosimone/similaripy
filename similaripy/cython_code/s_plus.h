@@ -27,10 +27,10 @@ enum SelectionMode {
     SELECTION_MATRIX = 2   // use per-row matrix indices
 };
 
-// Block size for column-blocked accumulation.
-// 131072 floats = 512 KB — fits in L2 cache, reduces number of passes
-// over matrix1 rows while still being much smaller than typical column counts.
-static constexpr int BLOCK_SIZE = 262144;
+// Default block size for column-blocked accumulation.
+// 262144 floats = 1 MB — fits comfortably in per-thread L2 cache share on most CPUs.
+// Can be overridden at runtime via the block_size parameter.
+static constexpr int DEFAULT_BLOCK_SIZE = 262144;
 
 /*
     Functor that stores the Top K (Value/Index) pairs
@@ -64,13 +64,15 @@ struct TopK {
 };
 
 /*
-    Sparse matrix multiplication algorithm described
-    in the paper 'Sparse Matrix Multiplication Package (SMMP)'
+    Sparse accumulator for blocked column-wise similarity computation.
+    Tracks non-zero entries in a dense sums buffer and drains them
+    through normalization / filtering / TopK on each block boundary.
 */
 template <typename Index, typename Value>
 class SparseMatrixMultiplier {
  public:
     explicit SparseMatrixMultiplier(Index column_count,
+                                    Index block_size,
                                     const Value * Xtversky, const Value * Ytversky, //normalization terms tversky
                                     const Value * Xcosine, const Value * Ycosine, //normalization terms cosine
                                     const Value * Xdepop, const Value * Ydepop, //depop terms tversky
@@ -86,7 +88,7 @@ class SparseMatrixMultiplier {
                                     Index * target_col_m_indptr, Index * target_col_m_indices
                                     )
         :
-        sums(std::min(static_cast<Index>(BLOCK_SIZE), column_count), 0),
+        sums(std::min(block_size, column_count), 0),
         Xtversky(Xtversky), Ytversky(Ytversky),
         Xcosine(Xcosine), Ycosine(Ycosine),
         Xdepop(Xdepop), Ydepop(Ydepop),
@@ -214,7 +216,7 @@ class SparseMatrixMultiplier {
 
     Index nnz() const { return nonzero_cols.size(); }
 
- protected:
+ private:
     std::vector<Value> sums;
     std::vector<Index> nonzero_cols;  // Sequential storage for cache-friendly access
     const Value * Xtversky;
@@ -257,6 +259,7 @@ class SparseMatrixMultiplier {
     - target_col_mode, target_col_m_indptr, target_col_m_indices: Column targeting configuration
     - rows, cols, values: Pre-allocated output arrays (size: n_targets * k)
     - progress: Progress bar for tracking computation
+    - block_size: Block size for column-blocked accumulation (0 = disabled)
     - num_threads: Number of OpenMP threads (0 = use all available)
 */
 template <typename Index, typename Value>
@@ -296,23 +299,23 @@ void compute_similarities_parallel(
     Index* cols,
     Value* values,
     progress::ProgressBar* progress,
-    int num_threads
+    int num_threads,
+    Index block_size
 ) {
-    // Column blocking: process columns in blocks that fit in L1 cache.
+    // Column blocking: process columns in blocks that fit in cache.
     // This reduces the accumulator working set from n_output_cols * 4 bytes
-    // (potentially megabytes) to BLOCK_SIZE * 4 bytes (64 KB), eliminating
-    // L1 cache misses on random writes in the inner accumulation loop.
-    const Index block_size = static_cast<Index>(BLOCK_SIZE);
-    const Index n_blocks = (n_output_cols + block_size - 1) / block_size;
-    const bool use_blocking = (n_output_cols > block_size);
+    // (potentially megabytes) to block_size * 4 bytes, reducing
+    // cache misses on random writes in the inner accumulation loop.
+    // block_size == 0 means blocking is disabled.
+    const Index n_blocks = (block_size > 0) ? (n_output_cols + block_size - 1) / block_size : 1;
+    const bool use_blocking = (block_size > 0) && (n_output_cols > block_size);
 
     #pragma omp parallel num_threads(num_threads)
     {
-        // Thread-local allocations
-        // sums vector is now min(n_output_cols, BLOCK_SIZE) — fits in L1 cache
-        SparseMatrixMultiplier<Index, Value>* neighbours =
-            new SparseMatrixMultiplier<Index, Value>(
+        // Thread-local state (stack-allocated; internal vectors live on the heap)
+        SparseMatrixMultiplier<Index, Value> neighbours(
                 n_output_cols,
+                block_size > 0 ? block_size : n_output_cols,
                 Xtversky, Ytversky,
                 Xcosine, Ycosine,
                 Xdepop, Ydepop,
@@ -328,7 +331,7 @@ void compute_similarities_parallel(
                 target_col_m_indptr, target_col_m_indices
             );
 
-        TopK<Index, Value>* topk = new TopK<Index, Value>(k);
+        TopK<Index, Value> topk(k);
 
         // Process rows in parallel with dynamic scheduling
         #pragma omp for schedule(dynamic)
@@ -342,20 +345,21 @@ void compute_similarities_parallel(
             const Index m1_start = m1_indptr[t];
             const Index m1_end = m1_indptr[t + 1];
 
-            topk->results.clear();
+            topk.results.clear();
 
             if (use_blocking) {
                 // ---- BLOCKED PATH ----
-                // Process columns in blocks of BLOCK_SIZE. The accumulator (sums)
-                // is only BLOCK_SIZE entries (~64 KB) and fits entirely in L1 cache.
+                // Process columns in blocks of block_size. The accumulator (sums)
+                // is only block_size entries and fits in cache.
                 // We re-read matrix1 rows once per block, but those are sequential
                 // reads handled well by the hardware prefetcher.
+                neighbours.setIndexRow(t);
+
                 for (Index block = 0; block < n_blocks; ++block) {
                     const Index cb_start = block * block_size;
                     const Index cb_end = std::min(cb_start + block_size, n_output_cols);
 
-                    neighbours->setIndexRow(t);
-                    neighbours->setBlockOffset(cb_start);
+                    neighbours.setBlockOffset(cb_start);
 
                     // Accumulate only matrix2 entries in column range [cb_start, cb_end)
                     for (Index index1 = m1_start; index1 < m1_end; ++index1) {
@@ -390,25 +394,26 @@ void compute_similarities_parallel(
                         }
 
                         // Accumulate products for entries in [cb_start, cb_end)
-                        for (const Index* ptr = block_lo; ptr < block_hi; ++ptr) {
-                            const Index offset = static_cast<Index>(ptr - m2_indices);
-                            neighbours->add(m2_indices[offset] - cb_start,
-                                            v1 * m2_data[offset]);
+                        const Index lo = static_cast<Index>(block_lo - m2_indices);
+                        const Index hi = static_cast<Index>(block_hi - m2_indices);
+                        for (Index idx = lo; idx < hi; ++idx) {
+                            neighbours.add(m2_indices[idx] - cb_start,
+                                           v1 * m2_data[idx]);
                         }
                     }
 
                     // Drain block results into TopK (foreach also clears the accumulator)
                     // Skip if block produced no nonzeros (common for later blocks with popularity reordering)
-                    if (neighbours->nnz() > 0) {
-                        neighbours->foreach(*topk);
+                    if (neighbours.nnz() > 0) {
+                        neighbours.foreach(topk);
                     }
                 }
             } else {
                 // ---- SINGLE-BLOCK PATH ----
-                // n_output_cols <= BLOCK_SIZE: everything fits in one block.
-                // This is identical to the original algorithm with zero overhead.
-                neighbours->setIndexRow(t);
-                neighbours->setBlockOffset(0);
+                // Blocking disabled or n_output_cols fits in one block.
+                // Identical to the original algorithm with zero overhead.
+                neighbours.setIndexRow(t);
+                neighbours.setBlockOffset(0);
 
                 for (Index index1 = m1_start; index1 < m1_end; ++index1) {
                     const Index u = m1_indices[index1];
@@ -428,26 +433,22 @@ void compute_similarities_parallel(
                     const Index m2_start = m2_indptr[u];
                     const Index m2_end = m2_indptr[u + 1];
                     for (Index index2 = m2_start; index2 < m2_end; ++index2) {
-                        neighbours->add(m2_indices[index2], m2_data[index2] * v1);
+                        neighbours.add(m2_indices[index2], m2_data[index2] * v1);
                     }
                 }
 
-                neighbours->foreach(*topk);
+                neighbours.foreach(topk);
             }
 
             // Write results to output arrays
             Index index3 = k * i;
-            for (const auto& result : topk->results) {
+            for (const auto& result : topk.results) {
                 rows[index3] = t;
                 cols[index3] = result.second;
                 values[index3] = result.first;
                 ++index3;
             }
         }
-
-        // Cleanup thread-local allocations
-        delete neighbours;
-        delete topk;
     }
 }
 
