@@ -46,7 +46,7 @@ Unified dataset loaders for:
 ### `benchmark.py`
 Core benchmarking functions:
 - `benchmark_similarity()` - Benchmark single similarity
-- `profile_similarities()` - Profile multiple similarities
+- `get_system_info()` - Collect system/environment info for reports
 
 ## Supported Datasets
 
@@ -71,6 +71,7 @@ Core benchmarking functions:
 --shrink SHRINK        Shrinkage parameter (default: 0)
 --threshold THRESHOLD  Minimum threshold (default: 0)
 --threads THREADS      Number of threads, 0=auto (default: 0)
+--block-size SIZE      Block size: 0=auto, none=disabled, or int>0 (default: 0)
 --rounds ROUNDS        Number of times to run each config, results averaged (default: 1)
 --output-dir DIR       Output directory for results (default: bench_results)
 --event-type TYPE      Yambda event type: likes/listens/multi_event (default: multi_event)
@@ -85,15 +86,20 @@ The benchmark produces a comprehensive summary table:
 ========================================================================================================================
 BENCHMARK SUMMARY
 ========================================================================================================================
-Similaripy version: 0.1.0
+Date: 2026-02-24 18:30:00
+Similaripy version: 0.5.0
+Git commit: 53cfcc4
+Python: 3.14.0
+CPU: Apple M2 Pro
 Architecture: Darwin arm64
 CPU cores available: 10
+Block size: auto
 ========================================================================================================================
-Dataset              Version    Similarity           Time (s)           Throughput      Avg Neighbors   Rounds
+Dataset              Version    Similarity           Time (s)           Throughput      Output nnz      Avg Neighbors   Rounds
 ------------------------------------------------------------------------------------------------------------------------
-movielens            32m        cosine               12.45 ± 0.23       2534.5          100.0           3
-                                dot_product          8.23 ± 0.15        3825.4          100.0           3
-                                rp3beta              15.67 ± 0.31       2010.3          100.0           3
+movielens            32m        cosine               12.45 ± 0.23       2534.5          3153400         100.0           3
+                                dot_product          8.23 ± 0.15        3825.4          3153400         100.0           3
+                                rp3beta              15.67 ± 0.31       2010.3          3153400         100.0           3
 ========================================================================================================================
 ```
 
@@ -103,16 +109,13 @@ When `--rounds` > 1, the time column shows mean ± standard deviation across all
 
 ```python
 from dataset_loaders import load_URM
-from benchmark import benchmark_similarity, profile_similarities
+from benchmark import benchmark_similarity
 
 # Load dataset (not timed)
 URM, meta = load_URM("movielens", version="32m")
 
 # Single similarity
 results = benchmark_similarity(URM, similarity_type="cosine", k=100)
-
-# Multiple similarities
-results = profile_similarities(URM, similarity_types=("dot_product", "cosine", "rp3beta"), k=100)
 ```
 
 ## Directory Structure
@@ -151,5 +154,5 @@ python tests/benchmarks/run_benchmarks.py --dataset movielens --output-dir my_re
 - Dataset loading time is **excluded** from benchmark results
 - Only similarity computation time is measured
 - First run downloads datasets automatically
-- Results include system info (version, architecture, CPU cores)
+- Results include system info (version, architecture, CPU model, Python version, git commit)
 - All benchmark runs are saved to timestamped files automatically
