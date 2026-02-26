@@ -28,7 +28,6 @@
 
 - [Installation instructions](installation.md)
 - [Quickstart guide](guide.md)
-- [MovieLens 32M notebook example (GitHub)](https://github.com/bogliosimone/similaripy/blob/master/notebooks/movielens32m_item_item_recommender.ipynb)
 - [Quick reference to similarity functions](similarity.md)
 - [Quick reference to normalization functions](normalization.md)
 - [Full API documentation](api/similarity.md)

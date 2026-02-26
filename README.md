@@ -57,6 +57,14 @@ All functions are implemented in Cython and can operate in-place on CSR matrixes
 
 For more details, check the **[📘 SimilariPy Guide](https://bogliosimone.github.io/similaripy/)**.
 
+## ⚡ Performance
+
+SimilariPy is built for speed on large sparse matrices:
+
+- **Cython + C++ + OpenMP** — multi-threaded, GIL-free computation compiled to native code
+- **Cache-optimized** — column-blocked accumulation with popularity reordering minimizes L2 cache misses
+- **Memory-efficient** — float32 precision, pre-allocated buffers, top-K heap filtering
+
 
 ## 🚀 Getting Started
 
