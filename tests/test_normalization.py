@@ -14,7 +14,7 @@ def test_normalize_l1():
     X_norm = norm.normalize(X, norm='l1')
 
     expected = X.copy()
-    row_sums = expected.sum(axis=1).A1
+    row_sums = np.asarray(expected.sum(axis=1)).ravel()
     row_sums[row_sums == 0] = 1
     expected.data /= np.repeat(row_sums, np.diff(expected.indptr))
 
@@ -27,7 +27,7 @@ def test_normalize_l2():
     X_norm = norm.normalize(X, norm='l2')
 
     expected = X.copy()
-    row_norms = np.sqrt(expected.multiply(expected).sum(axis=1)).A1
+    row_norms = np.asarray(np.sqrt(expected.multiply(expected).sum(axis=1))).ravel()
     row_norms[row_norms == 0] = 1
     expected.data /= np.repeat(row_norms, np.diff(expected.indptr))
 
@@ -90,7 +90,7 @@ def test_bm25():
         score = tf_ij * (1.2 + 1) / denom * idf[j]
         new_data.append(score)
 
-    bm25_ref = sp.csr_matrix((new_data, (row, col)), shape=tf.shape)
+    bm25_ref = sp.csr_array((new_data, (row, col)), shape=tf.shape)
 
     np.testing.assert_allclose(X_bm25.toarray(), bm25_ref.toarray(), rtol=1e-3)
     print("✅ bm25 correctness passed")

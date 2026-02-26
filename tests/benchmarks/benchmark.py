@@ -88,7 +88,7 @@ def benchmark_similarity(
 
     Parameters
     ----------
-    URM : scipy.sparse.csr_matrix
+    URM : scipy.sparse.csr_array
         User-item rating matrix (users x items)
     similarity_type : str, optional
         Type of similarity to compute: "cosine", "asymmetric_cosine",

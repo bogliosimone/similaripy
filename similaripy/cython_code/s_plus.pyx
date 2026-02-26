@@ -93,8 +93,8 @@ cdef extern from "s_plus.h" namespace "s_plus" nogil:
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def s_plus(
-    matrix1: sp.csr_matrix,
-    matrix2: Optional[sp.csr_matrix] = None,
+    matrix1: sp.csr_array,
+    matrix2: Optional[sp.csr_array] = None,
     weight_depop_matrix1: Union[str, np.ndarray] = 'none',
     weight_depop_matrix2: Union[str, np.ndarray] = 'none',
     float p1 = 0,
@@ -114,13 +114,13 @@ def s_plus(
     float threshold = 0,
     binary: bool = False,
     target_rows: Optional[Union[list, np.ndarray]] = None,
-    filter_cols: Optional[Union[list, np.ndarray, sp.spmatrix]] = None,
-    target_cols: Optional[Union[list, np.ndarray, sp.spmatrix]] = None,
+    filter_cols: Optional[Union[list, np.ndarray, sp.sparray]] = None,
+    target_cols: Optional[Union[list, np.ndarray, sp.sparray]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'csr',
     int num_threads = 0,
     block_size: Optional[int] = 0
-) -> Union[sp.csr_matrix, sp.coo_matrix]:
+) -> Union[sp.csr_array, sp.coo_array]:
     """
     Compute top-K similarity between rows of two sparse matrices using the S_Plus algorithm.
 

@@ -3,25 +3,25 @@ from .normalization import normalize as _normalize
 import numpy as np
 
 from typing import Optional, Union, Literal
-from scipy.sparse import spmatrix
+from scipy.sparse import sparray
 
 
 def dot_product(
-    matrix1: spmatrix,
-    matrix2: Optional[spmatrix] = None,
+    matrix1: sparray,
+    matrix2: Optional[sparray] = None,
     k: int = 100,
     shrink: float = 0.0,
     shrink_type: Literal['stabilized', 'bayesian', 'additive'] = 'stabilized',
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
-    target_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
-    filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
+    target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
+    filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0
-) -> spmatrix:
+) -> sparray:
     """
     Compute dot product similarity between rows of matrix1 and columns of matrix2.
 
@@ -65,21 +65,21 @@ def dot_product(
 
 
 def cosine(
-    matrix1: spmatrix,
-    matrix2: Optional[spmatrix] = None,
+    matrix1: sparray,
+    matrix2: Optional[sparray] = None,
     k: int = 100,
     shrink: float = 0.0,
     shrink_type: Literal['stabilized', 'bayesian', 'additive'] = 'stabilized',
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
-    target_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
-    filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
+    target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
+    filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0
-) -> spmatrix:
+) -> sparray:
     """
     Compute cosine similarity between sparse vectors.
 
@@ -124,8 +124,8 @@ def cosine(
 
 
 def asymmetric_cosine(
-    matrix1: spmatrix,
-    matrix2: Optional[spmatrix] = None,
+    matrix1: sparray,
+    matrix2: Optional[sparray] = None,
     alpha: float = 0.5,
     k: int = 100,
     shrink: float = 0.0,
@@ -133,13 +133,13 @@ def asymmetric_cosine(
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
-    target_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
-    filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
+    target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
+    filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0
-) -> spmatrix:
+) -> sparray:
     """
     Compute asymmetric cosine similarity.
 
@@ -187,8 +187,8 @@ def asymmetric_cosine(
 
 
 def tversky(
-    matrix1: spmatrix,
-    matrix2: Optional[spmatrix] = None,
+    matrix1: sparray,
+    matrix2: Optional[sparray] = None,
     alpha: float = 1.0,
     beta: float = 1.0,
     k: int = 100,
@@ -197,13 +197,13 @@ def tversky(
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
-    target_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
-    filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
+    target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
+    filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0
-) -> spmatrix:
+) -> sparray:
     """
     Compute Tversky similarity between sparse vectors.
 
@@ -250,21 +250,21 @@ def tversky(
 
 
 def jaccard(
-    matrix1: spmatrix,
-    matrix2: Optional[spmatrix] = None,
+    matrix1: sparray,
+    matrix2: Optional[sparray] = None,
     k: int = 100,
     shrink: float = 0.0,
     shrink_type: Literal['stabilized', 'bayesian', 'additive'] = 'stabilized',
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
-    target_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
-    filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
+    target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
+    filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0
-) -> spmatrix:
+) -> sparray:
     """
     Compute Jaccard similarity (intersection over union).
 
@@ -309,21 +309,21 @@ def jaccard(
 
 
 def dice(
-    matrix1: spmatrix,
-    matrix2: Optional[spmatrix] = None,
+    matrix1: sparray,
+    matrix2: Optional[sparray] = None,
     k: int = 100,
     shrink: float = 0.0,
     shrink_type: Literal['stabilized', 'bayesian', 'additive'] = 'stabilized',
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
-    target_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
-    filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
+    target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
+    filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0
-) -> spmatrix:
+) -> sparray:
     """
     Compute Dice similarity (harmonic mean of overlap and size).
 
@@ -368,8 +368,8 @@ def dice(
 
 
 def p3alpha(
-    matrix1: spmatrix,
-    matrix2: Optional[spmatrix] = None,
+    matrix1: sparray,
+    matrix2: Optional[sparray] = None,
     alpha: float = 1.0,
     k: int = 100,
     shrink: float = 0.0,
@@ -377,13 +377,13 @@ def p3alpha(
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
-    target_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
-    filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
+    target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
+    filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0
-) -> spmatrix:
+) -> sparray:
     """
     Compute P3alpha similarity using a normalized 3-step random walk.
 
@@ -433,8 +433,8 @@ def p3alpha(
 
 
 def rp3beta(
-    matrix1: spmatrix,
-    matrix2: Optional[spmatrix] = None,
+    matrix1: sparray,
+    matrix2: Optional[sparray] = None,
     alpha: float = 1.0,
     beta: float = 1.0,
     k: int = 100,
@@ -443,13 +443,13 @@ def rp3beta(
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
-    target_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
-    filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
+    target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
+    filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0
-) -> spmatrix:
+) -> sparray:
     """
     Compute RP3beta similarity: P3alpha with popularity penalization.
 
@@ -476,7 +476,7 @@ def rp3beta(
     """
     if matrix2 is None:
         matrix2 = matrix1.T
-    pop_m2 = matrix2.sum(axis=0).A1
+    pop_m2 = np.asarray(matrix2.sum(axis=0)).ravel()
     matrix1 = _normalize(matrix1, norm='l1', axis=1, inplace=False)
     matrix1.data = np.power(matrix1.data, alpha)
     matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
@@ -504,8 +504,8 @@ def rp3beta(
 
 
 def s_plus(
-    matrix1: spmatrix,
-    matrix2: Optional[spmatrix] = None,
+    matrix1: sparray,
+    matrix2: Optional[sparray] = None,
     l1: float = 0.5,
     l2: float = 0.5,
     l3: float = 0.0,
@@ -524,13 +524,13 @@ def s_plus(
     threshold: float = 0.0,
     binary: bool = False,
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
-    target_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
-    filter_cols: Optional[Union[list[int], np.ndarray, spmatrix]] = None,
+    target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
+    filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0
-) -> spmatrix:
+) -> sparray:
     """
     Combines Tversky and Cosine normalizations with RP3Beta-style depopularization, fully controlled by tunable weights
 

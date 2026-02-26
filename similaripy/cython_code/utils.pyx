@@ -46,7 +46,7 @@ def build_coo_matrix(
     float[:] values,
     int item_count,
     int user_count
-) -> sp.coo_matrix:
+) -> sp.coo_array:
     """
     Build a sparse matrix in COO (Coordinate) format.
 
@@ -60,7 +60,7 @@ def build_coo_matrix(
     Returns:
         The result matrix in COO format.
     """
-    res = sp.coo_matrix((values, (rows, cols)), shape=(item_count, user_count), dtype=np.float32)
+    res = sp.coo_array((values, (rows, cols)), shape=(item_count, user_count), dtype=np.float32)
     return res
 
 
@@ -70,7 +70,7 @@ def build_csr_matrix_32(
     float[:] values,
     int item_count,
     int user_count
-) -> sp.csr_matrix:
+) -> sp.csr_array:
     """
     Build a sparse matrix in CSR (Compressed Sparse Row) format using 32-bit indices.
 
@@ -96,7 +96,7 @@ def build_csr_matrix_32(
     data = np.empty(nnz, dtype=np.float32)
     if nnz != 0:
         coo_to_csr[int](M, nnz, &rows[0], &cols[0], &values[0], &indptr32[0], &indices32[0], &data[0])
-    res = sp.csr_matrix((data, indices32, indptr32), shape=(item_count, user_count), dtype=np.float32)
+    res = sp.csr_array((data, indices32, indptr32), shape=(item_count, user_count), dtype=np.float32)
 
     return res
 
@@ -107,7 +107,7 @@ def build_csr_matrix_64(
     float[:] values,
     int item_count,
     int user_count
-) -> sp.csr_matrix:
+) -> sp.csr_array:
     """
     Build a sparse matrix in CSR (Compressed Sparse Row) format using 64-bit indices.
 
@@ -133,7 +133,7 @@ def build_csr_matrix_64(
     data = np.empty(nnz, dtype=np.float32)
     if nnz != 0:
         coo_to_csr[long](M, nnz, &rows[0], &cols[0], &values[0], &indptr64[0], &indices64[0], &data[0])
-    res = sp.csr_matrix((data, indices64, indptr64), shape=(item_count, user_count), dtype=np.float32)
+    res = sp.csr_array((data, indices64, indptr64), shape=(item_count, user_count), dtype=np.float32)
 
     return res
 
@@ -144,7 +144,7 @@ def build_csr_matrix(
     float[:] values,
     int item_count,
     int user_count
-) -> sp.csr_matrix:
+) -> sp.csr_array:
     """
     Build a sparse matrix in CSR (Compressed Sparse Row) format.
 

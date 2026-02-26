@@ -9,7 +9,7 @@ def check_sum(x):
     # function used for testing the library
     # sum of each row, next square of each value, next sum the values
     # since we use topk, we can't check on the other axis
-    aux = x.sum(axis=1).A1
+    aux = np.asarray(x.sum(axis=1)).ravel()
     aux = np.power(aux, 2)
     return np.sum(aux)
 
@@ -45,7 +45,7 @@ def py_cosine(m, k, h=0, shrink_mode='stabilized'):
     m2.data = np.power(m2.data,2)
 
     # normalization terms
-    X = np.power((m2.sum(axis=1).A1) + additive_h, 0.5)
+    X = np.power((np.asarray(m2.sum(axis=1)).ravel()) + additive_h, 0.5)
 
     m_aux = (m * m.T).tocsr()
     r, c, v = [], [], []
@@ -62,15 +62,15 @@ def py_cosine(m, k, h=0, shrink_mode='stabilized'):
                 v.append(val / (X[row] * X[col]) * (val / (val + h)))
             elif shrink_mode == 'additive':
                 v.append(val / (X[row] * X[col]))
-    s = sp.csr_matrix((v,(r,c)),shape=(m.shape[0],m.shape[0]))
+    s = sp.csr_array((v,(r,c)),shape=(m.shape[0],m.shape[0]))
     return top_k(s, k)
 
 
 def py_asy_cosine(m, alpha, k):
     m2 = m.copy()
     m2.data = np.power(m2.data,2)
-    X = np.power(m2.sum(axis=1).A1,alpha)
-    Y = np.power(m2.sum(axis=1).A1,1-alpha)
+    X = np.power(np.asarray(m2.sum(axis=1)).ravel(),alpha)
+    Y = np.power(np.asarray(m2.sum(axis=1)).ravel(),1-alpha)
     m_aux = (m * m.T).tocsr()
     r, c, v = [], [], []
     for idx1 in range(0,m.shape[0]):
@@ -81,12 +81,12 @@ def py_asy_cosine(m, alpha, k):
             r.append(row)
             c.append(col)
             v.append(val/ (X[row] * Y[col]))
-    s = sp.csr_matrix((v,(r,c)),shape=(m.shape[0],m.shape[0]))
+    s = sp.csr_array((v,(r,c)),shape=(m.shape[0],m.shape[0]))
     return top_k(s, k)
 
 
 def py_jaccard(m, k):
-    X = m.power(2).sum(axis=1).A1
+    X = np.asarray(m.power(2).sum(axis=1)).ravel()
     m_aux = (m * m.T).tocsr()
     r, c, v = [], [], []
     for idx1 in range(0,m.shape[0]):
@@ -97,12 +97,12 @@ def py_jaccard(m, k):
             r.append(row)
             c.append(col)
             v.append(val/ (X[row] + X[col] - val))
-    s = sp.csr_matrix((v,(r,c)),shape=(m.shape[0],m.shape[0]))
+    s = sp.csr_array((v,(r,c)),shape=(m.shape[0],m.shape[0]))
     return top_k(s, k)
 
 
 def py_dice(m, k):
-    X = m.power(2).sum(axis=1).A1
+    X = np.asarray(m.power(2).sum(axis=1)).ravel()
     m_aux = (m * m.T).tocsr()
     r, c, v = [], [], []
     for idx1 in range(0,m.shape[0]):
@@ -113,12 +113,12 @@ def py_dice(m, k):
             r.append(row)
             c.append(col)
             v.append(2*val/ (X[row] + X[col]))
-    s = sp.csr_matrix((v,(r,c)),shape=(m.shape[0],m.shape[0]))
+    s = sp.csr_array((v,(r,c)),shape=(m.shape[0],m.shape[0]))
     return top_k(s, k)
 
 
 def py_tversky(m, alpha, beta, k):
-    X = m.power(2).sum(axis=1).A1
+    X = np.asarray(m.power(2).sum(axis=1)).ravel()
     m_aux = (m * m.T).tocsr()
     r, c, v = [], [], []
     for idx1 in range(0,m.shape[0]):
@@ -129,7 +129,7 @@ def py_tversky(m, alpha, beta, k):
             r.append(row)
             c.append(col)
             v.append(val/ (alpha*(X[row]-val) + beta*(X[col]-val) + val))
-    s = sp.csr_matrix((v,(r,c)),shape=(m.shape[0],m.shape[0]))
+    s = sp.csr_array((v,(r,c)),shape=(m.shape[0],m.shape[0]))
     return top_k(s, k)
 
 
@@ -144,7 +144,7 @@ def py_p3alpha(m, alpha, k):
 
 
 def py_rp3beta(m, alpha, beta, k):
-    pop = np.power(m.sum(axis=1).A1, beta)
+    pop = np.power(np.asarray(m.sum(axis=1)).ravel(), beta)
     pop_inv = np.divide(1, pop, out=np.zeros_like(pop), where=pop!=0)
     m2 = m.copy().T
     m1 = normalize(m, axis=1, norm='l1')
@@ -169,7 +169,7 @@ def py_s_plus(m, k,
     # squared norms
     sq = m.copy()
     sq.data **= 2
-    Xtversky = sq.sum(axis=1).A1
+    Xtversky = np.asarray(sq.sum(axis=1)).ravel()
     Ytversky = Xtversky.copy()
 
     # cosine exponents
@@ -178,11 +178,11 @@ def py_s_plus(m, k,
 
     # popularity (sum)
     if pop1 == 'sum':
-        Xdepop = np.power(m.sum(axis=1).A1, beta1)
+        Xdepop = np.power(np.asarray(m.sum(axis=1)).ravel(), beta1)
     else:
         Xdepop = np.ones(m.shape[0])
     if pop2 == 'sum':
-        Ydepop = np.power(m.sum(axis=1).A1, beta2)
+        Ydepop = np.power(np.asarray(m.sum(axis=1)).ravel(), beta2)
     else:
         Ydepop = np.ones(m.shape[0])
     
@@ -205,7 +205,7 @@ def py_s_plus(m, k,
             c.append(col)
             v.append(val)
 
-    s = sp.csr_matrix((v, (r, c)), shape=(m.shape[0], m.shape[0]))
+    s = sp.csr_array((v, (r, c)), shape=(m.shape[0], m.shape[0]))
     return top_k(s, k)
 
 
@@ -222,7 +222,7 @@ def top_k(X, k):
         r += np.full(topk, i).tolist()
         c += indices.tolist()
         d += data.tolist()
-    return sp.csr_matrix((d, (r, c)), shape=X.shape)
+    return sp.csr_array((d, (r, c)), shape=X.shape)
 
 
 def col_scale(X, array_scale):
@@ -344,12 +344,12 @@ def test_output_format():
     # CSR output
     sim_csr = sim.cosine(m, format_output='csr', k=k, verbose=VERBOSE)
     assert sp.issparse(sim_csr), "Output is not a sparse matrix"
-    assert isinstance(sim_csr, sp.csr_matrix), "CSR format not returned"
+    assert isinstance(sim_csr, sp.csr_array), "CSR format not returned"
 
     # COO output
     sim_coo = sim.cosine(m, format_output='coo', k=k, verbose=VERBOSE)
     assert sp.issparse(sim_coo), "Output is not a sparse matrix"
-    assert isinstance(sim_coo, sp.coo_matrix), "COO format not returned"
+    assert isinstance(sim_coo, sp.coo_array), "COO format not returned"
 
     assert sim_csr.nnz > 0, "CSR output is empty"
     assert sim_coo.nnz > 0, "COO output is empty"

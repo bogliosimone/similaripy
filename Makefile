@@ -4,12 +4,12 @@ install:
 
 .PHONY: install-dev
 install-dev:
-	uv pip install -e '.[dev,bench]'
+	uv pip install -e '.[dev,bench,notebook]'
 
 .PHONY: install-dev-editable
 # The first time, you must run install-dev before, to have dependencies installed
 install-dev-editable:
-	SKBUILD_EDITABLE_REBUILD=true uv pip install -e '.[dev,bench]' --no-build-isolation -v
+	SKBUILD_EDITABLE_REBUILD=true uv pip install -e '.[dev,bench,notebook]' --no-build-isolation -v
 
 .PHONY: test
 test:

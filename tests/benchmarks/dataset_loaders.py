@@ -55,7 +55,7 @@ def load_movielens(version="32m", verbose=True):
 
     Returns
     -------
-    scipy.sparse.csr_matrix
+    scipy.sparse.csr_array
         User-item rating matrix in CSR format (users x items)
     dict
         Dataset metadata with keys:
@@ -109,7 +109,7 @@ def load_movielens(version="32m", verbose=True):
     if verbose:
         print(f"Creating sparse URM: {n_users} users x {n_items} items")
 
-    URM = sp.csr_matrix(
+    URM = sp.csr_array(
         (df['rating'].values, (df['user_idx'].values, df['item_idx'].values)),
         shape=(n_users, n_items),
         dtype=np.float32
@@ -151,7 +151,7 @@ def load_yambda(version="50m", event_type="multi_event", verbose=True):
 
     Returns
     -------
-    scipy.sparse.csr_matrix
+    scipy.sparse.csr_array
         User-item interaction matrix in CSR format (users x items)
     dict
         Dataset metadata with keys:
@@ -207,7 +207,7 @@ def load_yambda(version="50m", event_type="multi_event", verbose=True):
 
     # Build COO -> CSR with implicit 1s
     data = np.ones(len(df), dtype=np.float32)
-    URM = sp.coo_matrix((data, (u_codes, i_codes)), shape=(n_users, n_items)).tocsr()
+    URM = sp.coo_array((data, (u_codes, i_codes)), shape=(n_users, n_items)).tocsr()
 
     density = URM.nnz / (n_users * n_items)
 
@@ -281,7 +281,7 @@ def load_URM(dataset, version=None, verbose=True, **kwargs):
 
     Returns
     -------
-    scipy.sparse.csr_matrix
+    scipy.sparse.csr_array
         User-item matrix in CSR format (users x items)
     dict
         Dataset metadata

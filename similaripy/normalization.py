@@ -20,7 +20,7 @@ _NORM_DISPATCH = {
 
 # ---- Private helpers ----
 
-def _check_matrix(X: sps.spmatrix) -> sps.spmatrix:
+def _check_matrix(X: sps.sparray) -> sps.sparray:
     """
     Ensure the input is a valid sparse matrix with float32 or float64 dtype.
 
@@ -36,11 +36,11 @@ def _check_matrix(X: sps.spmatrix) -> sps.spmatrix:
     if not sps.issparse(X):
         raise TypeError("X must be a sparse matrix")
     if X.data.dtype not in (np.float32, np.float64):
-        X = sps.csr_matrix(X, dtype=np.float32)
+        X = sps.csr_array(X, dtype=np.float32)
     return X
 
 
-def _prepare_csr(X: sps.spmatrix, axis: int, inplace: bool) -> sps.csr_matrix:
+def _prepare_csr(X: sps.sparray, axis: int, inplace: bool) -> sps.csr_array:
     """
     Validate, optionally copy, handle axis transposition, and convert to CSR.
 
@@ -66,7 +66,7 @@ def _prepare_csr(X: sps.spmatrix, axis: int, inplace: bool) -> sps.csr_matrix:
     return X.tocsr()
 
 
-def _finalize_csr(X: sps.spmatrix, axis: int) -> sps.csr_matrix:
+def _finalize_csr(X: sps.sparray, axis: int) -> sps.csr_array:
     """Undo axis transposition and return final CSR matrix."""
     if axis == 0:
         X = X.T
@@ -89,11 +89,11 @@ def _validate_modes(tf_mode: str, idf_mode: str) -> None:
 # ---- Public API ----
 
 def normalize(
-    X: sps.spmatrix,
+    X: sps.sparray,
     norm: str = 'l2',
     axis: int = 1,
     inplace: bool = False,
-) -> sps.csr_matrix:
+) -> sps.csr_array:
     """
     Normalize a sparse matrix along rows or columns using L1, L2, or max-norm.
 
@@ -114,7 +114,7 @@ def normalize(
 
 
 def bm25(
-    X: sps.spmatrix,
+    X: sps.sparray,
     axis: int = 1,
     k1: float = 1.2,
     b: float = 0.75,
@@ -122,7 +122,7 @@ def bm25(
     tf_mode: str = 'raw',
     idf_mode: str = 'bm25',
     inplace: bool = False,
-) -> sps.csr_matrix:
+) -> sps.csr_array:
     """
     Apply BM25 normalization to a sparse matrix.
 
@@ -150,7 +150,7 @@ def bm25(
 
 
 def bm25plus(
-    X: sps.spmatrix,
+    X: sps.sparray,
     axis: int = 1,
     k1: float = 1.2,
     b: float = 0.75,
@@ -159,7 +159,7 @@ def bm25plus(
     tf_mode: str = 'raw',
     idf_mode: str = 'bm25',
     inplace: bool = False,
-) -> sps.csr_matrix:
+) -> sps.csr_array:
     """
     Apply BM25+ normalization to a sparse matrix.
 
@@ -188,13 +188,13 @@ def bm25plus(
 
 
 def tfidf(
-    X: sps.spmatrix,
+    X: sps.sparray,
     axis: int = 1,
     logbase: float = e,
     tf_mode: str = 'sqrt',
     idf_mode: str = 'smooth',
     inplace: bool = False,
-) -> sps.csr_matrix:
+) -> sps.csr_array:
     """
     Apply TF-IDF normalization to a sparse matrix.
 
