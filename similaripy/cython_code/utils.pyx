@@ -5,14 +5,11 @@
     Utility functions for similaripy cython code
 """
 
-import cython
 import numpy as np
 import scipy.sparse as sp
-from typing import Optional, Union, Tuple
 
 cdef extern from "coo_to_csr.h" nogil:
-    void coo32_to_csr64(int n_row, int n_col, long nnz, int Ai[], int Aj[], float Ax[], long Bp[], long Bj[], float Bx[])
-    void coo32_to_csr32(int n_row, int n_col, int nnz, int Ai[], int Aj[], float Ax[], int Bp[], int Bj[], float Bx[])
+    void coo_to_csr[Index](int n_row, Index nnz, int Ai[], int Aj[], float Ax[], Index Bp[], Index Bj[], float Bx[])
 
 cdef extern from "omp.h":
     int omp_get_max_threads()
@@ -28,52 +25,19 @@ def get_num_threads() -> int:
     return omp_get_max_threads()
 
 
-def get_index_dtype(
-    arrays: Union[Tuple, np.ndarray] = (),
-    maxval: Optional[Union[int, np.integer]] = None,
-    check_contents: bool = False
-) -> type:
+def get_index_dtype(int maxval) -> type:
     """
-    Determine a suitable index data type that can hold the data in the arrays.
+    Determine whether int32 is sufficient or int64 is needed.
 
     Args:
-        arrays: Input integer arrays to analyze.
-        maxval: Optional maximum value to check against int32 limits.
-        check_contents: Whether to check array contents for min/max values.
+        maxval: Maximum value that must be representable.
 
     Returns:
-        Either np.int32 or np.int64 based on the data requirements.
+        np.int32 if maxval fits, otherwise np.int64.
     """
-    # not using intc directly due to misinteractions with pythran
-    if np.intc().itemsize != 4:
-        return np.int64
-
-    int32min = np.int32(np.iinfo(np.int32).min)
-    int32max = np.int32(np.iinfo(np.int32).max)
-
-    if maxval is not None:
-        maxval = np.int64(maxval)
-        if maxval > int32max:
-            return np.int64
-
-    if isinstance(arrays, np.ndarray):
-        arrays = (arrays,)
-
-    for arr in arrays:
-        arr = np.asarray(arr)
-        if not np.can_cast(arr.dtype, np.int32):
-            if check_contents:
-                if arr.size == 0:
-                    # a bigger type not needed
-                    continue
-                elif np.issubdtype(arr.dtype, np.integer):
-                    maxval = arr.max()
-                    minval = arr.min()
-                    if minval >= int32min and maxval <= int32max:
-                        # a bigger type not needed  
-                        continue
-            return np.int64
-    return np.int32
+    if maxval <= np.iinfo(np.int32).max:
+        return np.int32
+    return np.int64
 
 
 def build_coo_matrix(
@@ -97,7 +61,6 @@ def build_coo_matrix(
         The result matrix in COO format.
     """
     res = sp.coo_matrix((values, (rows, cols)), shape=(item_count, user_count), dtype=np.float32)
-    del values, rows, cols
     return res
 
 
@@ -124,7 +87,6 @@ def build_csr_matrix_32(
         The result matrix in CSR format with 32-bit indices and zeros eliminated.
     """
     cdef int M = item_count
-    cdef int N = user_count
     cdef int nnz = len(values)
     cdef float[:] data
     cdef int[:] indices32, indptr32
@@ -133,8 +95,7 @@ def build_csr_matrix_32(
     indices32 = np.empty(nnz, dtype=np.int32)
     data = np.empty(nnz, dtype=np.float32)
     if nnz != 0:
-        coo32_to_csr32(M, N, nnz, &rows[0], &cols[0], &values[0], &indptr32[0], &indices32[0], &data[0])
-    del values, rows, cols
+        coo_to_csr[int](M, nnz, &rows[0], &cols[0], &values[0], &indptr32[0], &indices32[0], &data[0])
     res = sp.csr_matrix((data, indices32, indptr32), shape=(item_count, user_count), dtype=np.float32)
 
     return res
@@ -163,7 +124,6 @@ def build_csr_matrix_64(
         The result matrix in CSR format with 64-bit indices and zeros eliminated.
     """
     cdef int M = item_count
-    cdef int N = user_count
     cdef long nnz = len(values)
     cdef float[:] data
     cdef long[:] indices64, indptr64
@@ -172,8 +132,7 @@ def build_csr_matrix_64(
     indices64 = np.empty(nnz, dtype=np.int64)
     data = np.empty(nnz, dtype=np.float32)
     if nnz != 0:
-        coo32_to_csr64(M, N, nnz, &rows[0], &cols[0], &values[0], &indptr64[0], &indices64[0], &data[0])
-    del values, rows, cols
+        coo_to_csr[long](M, nnz, &rows[0], &cols[0], &values[0], &indptr64[0], &indices64[0], &data[0])
     res = sp.csr_matrix((data, indices64, indptr64), shape=(item_count, user_count), dtype=np.float32)
 
     return res

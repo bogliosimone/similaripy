@@ -10,10 +10,10 @@ import numpy as np
 import scipy.sparse as sp
 from typing import Union, Optional, Tuple, List
 
-# Column selector mode constants
-cdef int MODE_NONE = 0  # No filtering/targeting (use all columns)
-cdef int MODE_ARRAY = 1  # Column selector is an array/list
-cdef int MODE_MATRIX = 2  # Column selector is a sparse matrix
+# Column selector mode constants (plain Python int so they can be imported by s_plus.pyx)
+MODE_NONE = 0    # No filtering/targeting (use all columns)
+MODE_ARRAY = 1   # Column selector is an array/list
+MODE_MATRIX = 2  # Column selector is a sparse matrix
 
 
 def validate_s_plus_inputs(
@@ -125,8 +125,6 @@ def validate_s_plus_inputs(
         raise ValueError(f"format_output must be 'coo' or 'csr', got '{format_output}'")
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
 def csr_sum(
     matrix: sp.csr_matrix,
     int axis
@@ -151,8 +149,14 @@ def csr_sum(
     cdef int n_cols = matrix.shape[1]
 
     if axis == 1:
-        # Row sums via reduceat (assumes no empty rows)
-        return np.add.reduceat(np.asarray(data), np.asarray(indptr[:-1])).astype(np.float32, copy=False)
+        # Row sums via reduceat
+        indptr_np = np.asarray(indptr)
+        result = np.add.reduceat(np.asarray(data), indptr_np[:-1]).astype(np.float32, copy=False)
+        # Fix empty rows: reduceat returns data[indptr[i]] instead of 0 for consecutive equal indices
+        empty_mask = np.diff(indptr_np) == 0
+        if empty_mask.any():
+            result[empty_mask] = 0.0
+        return result
     elif axis == 0:
         # Column sums via bincount (fast C path)
         # bincount returns float64; cast once to float32
@@ -195,23 +199,6 @@ def _build_squared_norms(
     cdef float[:] m2_sq_norms = csr_sum(m2_squared, axis=0)
 
     return np.asarray(m1_sq_norms), np.asarray(m2_sq_norms)
-
-
-def _build_tversky_normalization(
-    m1_sq_norms: np.ndarray,
-    m2_sq_norms: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Build Tversky normalization arrays based on pre-computed squared norms.
-
-    Args:
-        m1_sq_norms: Squared norms for matrix1.
-        m2_sq_norms: Squared norms for matrix2.
-
-    Returns:
-        Tuple of (Xtversky, Ytversky) as float32 arrays.
-    """
-    return m1_sq_norms, m2_sq_norms
 
 
 def _build_cosine_normalization(

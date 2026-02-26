@@ -19,13 +19,15 @@ from .s_plus_utils import (
     validate_s_plus_inputs,
     _build_matrix_data,
     _build_squared_norms,
-    _build_tversky_normalization,
     _build_cosine_normalization,
     _build_depop_normalization,
     _build_column_selector,
     _compute_target_columns,
     _filter_matrix_columns,
-    _reorder_columns_by_popularity
+    _reorder_columns_by_popularity,
+    MODE_NONE,
+    MODE_ARRAY,
+    MODE_MATRIX,
 )
 
 from cython import float
@@ -37,10 +39,7 @@ from libcpp.string cimport string
 cdef int PROGRESS_BAR_REFRESH_RATE = 3  # Refresh rate in Hz (updates per second)
 cdef int PROGRESS_BAR_WIDTH = 25        # Width of the progress bar in characters
 
-# Column selector mode constants
-cdef int MODE_NONE = 0  # No filtering/targeting (use all columns)
-cdef int MODE_ARRAY = 1  # Column selector is an array/list
-cdef int MODE_MATRIX = 2  # Column selector is a sparse matrix
+# Column selector mode constants imported from s_plus_utils
 
 cdef extern from "progress_bar.h" namespace "progress" nogil:
     cdef cppclass ProgressBar:
@@ -261,7 +260,7 @@ def s_plus(
         m1_sq_norms, m2_sq_norms = _build_squared_norms(matrix1, matrix2)
 
     if l1 != 0:
-        Xtversky, Ytversky = _build_tversky_normalization(m1_sq_norms, m2_sq_norms)
+        Xtversky, Ytversky = m1_sq_norms, m2_sq_norms
 
     if l2 != 0:
         Xcosine, Ycosine = _build_cosine_normalization(m1_sq_norms, m2_sq_norms, c1, c2, additive_shrink)
@@ -425,6 +424,8 @@ def s_plus(
         res.eliminate_zeros()
 
     # Finalize and cleanup
+    del values, rows, cols
+
     if progress != NULL:
         progress.close(b'Done')
         del progress

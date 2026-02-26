@@ -4,61 +4,56 @@
 #include <algorithm>
 
 /*
- * Compute B = A for COO matrix A, CSR matrix B
- *
+ * Convert COO matrix A to CSR matrix B.
  *
  * Input Arguments:
- *   I  n_row      - number of rows in A
- *   I  n_col      - number of columns in A
- *   I  nnz        - number of nonzeros in A
- *   I  Ai[nnz(A)] - row indices
- *   I  Aj[nnz(A)] - column indices
- *   T  Ax[nnz(A)] - nonzeros
+ *   n_row        - number of rows in A
+ *   nnz          - number of nonzeros in A
+ *   Ai[nnz]      - row indices (int)
+ *   Aj[nnz]      - column indices (int)
+ *   Ax[nnz]      - nonzeros (float)
+ *
  * Output Arguments:
- *   I Bp  - row pointer
- *   I Bj  - column indices
- *   T Bx  - nonzeros
+ *   Bp[n_row+1]  - row pointer
+ *   Bj[nnz]      - column indices
+ *   Bx[nnz]      - nonzeros
  *
  * Note:
- *   Output arrays Bp, Bj, and Bx must be preallocated
+ *   Output arrays Bp, Bj, and Bx must be preallocated.
+ *   Input row and column indices are *not* assumed to be ordered.
+ *   Duplicate entries are carried over to the CSR representation.
  *
- * Note: 
- *   Input:  row and column indices *are not* assumed to be ordered
- *           
- *   Note: duplicate entries are carried over to the CSR represention
- *
- *   Complexity: Linear.  Specifically O(nnz(A) + max(n_row,n_col))
- * 
+ *   Complexity: O(nnz + n_row)
  */
-void coo32_to_csr64(const int n_row,
-               const int n_col,
-               const long nnz,
-               const int Ai[],
-               const int Aj[],
-               const float Ax[],
-                     long Bp[],
-                     long Bj[],
-                     float Bx[])
+template <typename Index>
+void coo_to_csr(const int n_row,
+                const Index nnz,
+                const int Ai[],
+                const int Aj[],
+                const float Ax[],
+                      Index Bp[],
+                      Index Bj[],
+                      float Bx[])
 {
-    //compute number of non-zero entries per row of A 
-    std::fill(Bp, Bp + n_row, 0);
+    // Compute number of non-zero entries per row of A
+    std::fill(Bp, Bp + n_row, static_cast<Index>(0));
 
-    for (long n = 0; n < nnz; n++){            
+    for (Index n = 0; n < nnz; n++) {
         Bp[Ai[n]]++;
     }
 
-    //cumsum the nnz per row to get Bp[]
-    for(long i = 0, cumsum = 0; i < n_row; i++){     
-        long temp = Bp[i];
+    // Cumsum the nnz per row to get Bp[]
+    for (Index i = 0, cumsum = 0; i < static_cast<Index>(n_row); i++) {
+        Index temp = Bp[i];
         Bp[i] = cumsum;
         cumsum += temp;
     }
-    Bp[n_row] = nnz; 
+    Bp[n_row] = nnz;
 
-    //write Aj,Ax into Bj,Bx
-    for(long n = 0; n < nnz; n++){
-        long row  = Ai[n];
-        long dest = Bp[row];
+    // Write Aj, Ax into Bj, Bx
+    for (Index n = 0; n < nnz; n++) {
+        Index row  = Ai[n];
+        Index dest = Bp[row];
 
         Bj[dest] = Aj[n];
         Bx[dest] = Ax[n];
@@ -66,57 +61,13 @@ void coo32_to_csr64(const int n_row,
         Bp[row]++;
     }
 
-    for(long i = 0, last = 0; i <= n_row; i++){
-        long temp = Bp[i];
+    for (Index i = 0, last = 0; i <= static_cast<Index>(n_row); i++) {
+        Index temp = Bp[i];
         Bp[i]  = last;
         last   = temp;
     }
 
-    //now Bp,Bj,Bx form a CSR representation (with possible duplicates)
+    // Now Bp, Bj, Bx form a CSR representation (with possible duplicates)
 }
 
-void coo32_to_csr32(const int n_row,
-               const int n_col,
-               const int nnz,
-               const int Ai[],
-               const int Aj[],
-               const float Ax[],
-                     int Bp[],
-                     int Bj[],
-                     float Bx[])
-{
-    //compute number of non-zero entries per row of A 
-    std::fill(Bp, Bp + n_row, 0);
-
-    for (int n = 0; n < nnz; n++){            
-        Bp[Ai[n]]++;
-    }
-
-    //cumsum the nnz per row to get Bp[]
-    for(int i = 0, cumsum = 0; i < n_row; i++){     
-        int temp = Bp[i];
-        Bp[i] = cumsum;
-        cumsum += temp;
-    }
-    Bp[n_row] = nnz; 
-
-    //write Aj,Ax into Bj,Bx
-    for(int n = 0; n < nnz; n++){
-        int row  = Ai[n];
-        int dest = Bp[row];
-
-        Bj[dest] = Aj[n];
-        Bx[dest] = Ax[n];
-
-        Bp[row]++;
-    }
-
-    for(int i = 0, last = 0; i <= n_row; i++){
-        int temp = Bp[i];
-        Bp[i]  = last;
-        last   = temp;
-    }
-
-    //now Bp,Bj,Bx form a CSR representation (with possible duplicates)
-}
 #endif
