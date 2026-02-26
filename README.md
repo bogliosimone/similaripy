@@ -75,7 +75,7 @@ import similaripy as sim
 import scipy.sparse as sps
 
 # Create a random User-Rating Matrix (URM)
-urm = sps.random(1000, 2000, density=0.025)
+urm = sps.random_array((1000, 2000), density=0.025)
 
 # Normalize the URM using BM25
 urm = sim.normalization.bm25(urm)

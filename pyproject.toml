@@ -74,7 +74,7 @@ bench = [
   "pandas",
   "datasets",
   "pyarrow",
-  "pytest-benchmark",
+  "pytest-benchmark"
 ]
 
 notebook = [
@@ -84,7 +84,8 @@ notebook = [
   "pandas",
   "optuna",
   "umap-learn",
-  "scikit-learn"
+  "scikit-learn",
+  "IProgress"
 ]
 
 [tool.tox]

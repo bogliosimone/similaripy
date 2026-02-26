@@ -6,7 +6,7 @@ import similaripy.normalization as norm
 
 def generate_random_matrix(n_rows=100, n_cols=50, density=0.05, seed=42):
     rng = np.random.default_rng(seed)
-    return sp.random(n_rows, n_cols, density=density, format='csr', dtype=np.float32, random_state=rng)
+    return sp.random_array((n_rows, n_cols), density=density, format='csr', dtype=np.float32, random_state=rng)
 
 
 def test_normalize_l1():
