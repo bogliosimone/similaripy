@@ -42,7 +42,7 @@ repository = "https://github.com/bogliosimone/similaripy.git"
 changelog = "https://github.com/bogliosimone/similaripy/releases"
 
 [build-system]
-requires = ["scikit-build-core>=0.10", "pybind11", "cython"]
+requires = ["scikit-build-core>=0.10", "cython"]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]

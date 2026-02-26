@@ -1,6 +1,6 @@
-option(USE_OPENMP "Enable OpenMP parallelism" ON)
-
 cmake_minimum_required(VERSION 3.28)
+
+option(USE_OPENMP "Enable OpenMP parallelism" ON)
 
 # === Auto-select Homebrew GCC on macOS ===
 if(APPLE AND USE_OPENMP)
@@ -80,12 +80,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     -O3
     -ffast-math
     -Wno-unused-function
-    -Wno-maybe-uninitialized
-    -std=c++17
     #-march=native # <-- Uncomment to enable native optimizations
     #-funroll-loops # <-- Uncomment to enable loop unrolling
     #-ftree-vectorize # <-- Uncomment to enable vectorization
   )
+  # GCC-only warning suppression
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options(-Wno-maybe-uninitialized)
+  endif()
 elseif(MSVC)
   add_compile_options(/O2)
   if(USE_OPENMP)
@@ -95,6 +97,9 @@ endif()
 
 # Find packages
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
+
+# Glob all .h headers in cython_code/ so that editing any header triggers recompilation
+file(GLOB CYTHON_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/similaripy/cython_code/*.h)
 
 macro(add_cython_module name)
   string(TOLOWER "${name}" module_name)
@@ -107,7 +112,7 @@ macro(add_cython_module name)
             ${PYX_PATH}
             --cplus
             --output-file ${CPP_PATH}
-    DEPENDS ${PYX_PATH}
+    DEPENDS ${PYX_PATH} ${CYTHON_HEADERS}
     VERBATIM
   )
 
