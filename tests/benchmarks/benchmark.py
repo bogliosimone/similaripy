@@ -11,6 +11,8 @@ import os
 import subprocess
 from datetime import datetime
 import similaripy as sim
+import numpy as np
+import scipy as sp
 
 
 def get_system_info():
@@ -19,13 +21,23 @@ def get_system_info():
     Returns
     -------
     dict
-        Dictionary with keys: similaripy_version, python_version, system,
+        Dictionary with keys: similaripy_version, numpy_version, scipy_version, python_version, system,
         arch, cpu_model, cpu_count, git_hash, timestamp.
     """
     try:
         similaripy_version = sim.__version__
     except AttributeError:
         similaripy_version = "unknown"
+
+    try:
+        numpy_version = np.__version__
+    except AttributeError:
+        numpy_version = "unknown"
+    
+    try:        
+        scipy_version = sp.__version__
+    except AttributeError:        
+        scipy_version = "unknown"
 
     # CPU model name
     cpu_model = "unknown"
@@ -61,6 +73,8 @@ def get_system_info():
 
     return {
         "similaripy_version": similaripy_version,
+        "numpy_version": numpy_version,
+        "scipy_version": scipy_version,
         "python_version": platform.python_version(),
         "system": platform.system(),
         "arch": platform.machine(),
