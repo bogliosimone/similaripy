@@ -72,9 +72,7 @@ dev = [
 
 bench = [
   "pandas",
-  "datasets",
-  "pyarrow",
-  "pytest-benchmark"
+  "datasets"
 ]
 
 notebook = [
