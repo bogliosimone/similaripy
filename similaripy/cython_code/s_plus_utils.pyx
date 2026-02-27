@@ -10,21 +10,21 @@ import numpy as np
 import scipy.sparse as sp
 from typing import Union, Optional, Tuple, List
 
-# Column selector mode constants
-cdef int MODE_NONE = 0  # No filtering/targeting (use all columns)
-cdef int MODE_ARRAY = 1  # Column selector is an array/list
-cdef int MODE_MATRIX = 2  # Column selector is a sparse matrix
+# Column selector mode constants (plain Python int so they can be imported by s_plus.pyx)
+MODE_NONE = 0    # No filtering/targeting (use all columns)
+MODE_ARRAY = 1   # Column selector is an array/list
+MODE_MATRIX = 2  # Column selector is a sparse matrix
 
 
 def validate_s_plus_inputs(
-    matrix1: sp.spmatrix,
-    matrix2: sp.spmatrix,
+    matrix1: sp.sparray,
+    matrix2: sp.sparray,
     weight_depop_matrix1: Union[str, np.ndarray],
     weight_depop_matrix2: Union[str, np.ndarray],
     k: int,
     target_rows: Optional[Union[List, np.ndarray]],
-    filter_cols: Optional[Union[List, np.ndarray, sp.spmatrix]],
-    target_cols: Optional[Union[List, np.ndarray, sp.spmatrix]],
+    filter_cols: Optional[Union[List, np.ndarray, sp.sparray]],
+    target_cols: Optional[Union[List, np.ndarray, sp.sparray]],
     verbose: bool,
     format_output: str
 ) -> None:
@@ -125,10 +125,8 @@ def validate_s_plus_inputs(
         raise ValueError(f"format_output must be 'coo' or 'csr', got '{format_output}'")
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
 def csr_sum(
-    matrix: sp.csr_matrix,
+    matrix: sp.csr_array,
     int axis
 ) -> np.ndarray:
     """
@@ -151,8 +149,14 @@ def csr_sum(
     cdef int n_cols = matrix.shape[1]
 
     if axis == 1:
-        # Row sums via reduceat (assumes no empty rows)
-        return np.add.reduceat(np.asarray(data), np.asarray(indptr[:-1])).astype(np.float32, copy=False)
+        # Row sums via reduceat
+        indptr_np = np.asarray(indptr)
+        result = np.add.reduceat(np.asarray(data), indptr_np[:-1]).astype(np.float32, copy=False)
+        # Fix empty rows: reduceat returns data[indptr[i]] instead of 0 for consecutive equal indices
+        empty_mask = np.diff(indptr_np) == 0
+        if empty_mask.any():
+            result[empty_mask] = 0.0
+        return result
     elif axis == 0:
         # Column sums via bincount (fast C path)
         # bincount returns float64; cast once to float32
@@ -163,8 +167,8 @@ def csr_sum(
 
 
 def _build_squared_norms(
-    matrix1: sp.csr_matrix,
-    matrix2: sp.csr_matrix
+    matrix1: sp.csr_array,
+    matrix2: sp.csr_array
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Build squared norms for both matrices using NumPy-only operations.
@@ -181,11 +185,11 @@ def _build_squared_norms(
     """
     # Create temporary CSR matrices with squared data
     # This avoids scipy's .power() which creates unnecessary intermediate objects
-    m1_squared = sp.csr_matrix(
+    m1_squared = sp.csr_array(
         (np.square(matrix1.data, dtype=np.float32), matrix1.indices, matrix1.indptr),
         shape=matrix1.shape
     )
-    m2_squared = sp.csr_matrix(
+    m2_squared = sp.csr_array(
         (np.square(matrix2.data, dtype=np.float32), matrix2.indices, matrix2.indptr),
         shape=matrix2.shape
     )
@@ -195,23 +199,6 @@ def _build_squared_norms(
     cdef float[:] m2_sq_norms = csr_sum(m2_squared, axis=0)
 
     return np.asarray(m1_sq_norms), np.asarray(m2_sq_norms)
-
-
-def _build_tversky_normalization(
-    m1_sq_norms: np.ndarray,
-    m2_sq_norms: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Build Tversky normalization arrays based on pre-computed squared norms.
-
-    Args:
-        m1_sq_norms: Squared norms for matrix1.
-        m2_sq_norms: Squared norms for matrix2.
-
-    Returns:
-        Tuple of (Xtversky, Ytversky) as float32 arrays.
-    """
-    return m1_sq_norms, m2_sq_norms
 
 
 def _build_cosine_normalization(
@@ -242,8 +229,8 @@ def _build_cosine_normalization(
 
 
 def _build_depop_normalization(
-    matrix1: sp.csr_matrix,
-    matrix2: sp.csr_matrix,
+    matrix1: sp.csr_array,
+    matrix2: sp.csr_array,
     weight_spec1: Union[str, np.ndarray],
     weight_spec2: Union[str, np.ndarray],
     float p1,
@@ -292,8 +279,8 @@ def _build_depop_normalization(
 
 
 def _build_matrix_data(
-    matrix1: sp.csr_matrix,
-    matrix2: sp.csr_matrix,
+    matrix1: sp.csr_array,
+    matrix2: sp.csr_array,
     binary: bool
 ) -> None:
     """
@@ -322,7 +309,7 @@ def _build_matrix_data(
 
 
 def _build_column_selector(
-    cols: Optional[Union[List, np.ndarray, sp.spmatrix]]
+    cols: Optional[Union[List, np.ndarray, sp.sparray]]
 ) -> Tuple[int, np.ndarray, np.ndarray]:
     """
     Build column selector (filter or target) for similarity computation.
@@ -375,8 +362,8 @@ def _build_column_selector(
 
 
 def _compute_target_columns(
-    filter_cols: Optional[Union[List, np.ndarray, sp.spmatrix]],
-    target_cols: Optional[Union[List, np.ndarray, sp.spmatrix]],
+    filter_cols: Optional[Union[List, np.ndarray, sp.sparray]],
+    target_cols: Optional[Union[List, np.ndarray, sp.sparray]],
     int n_cols
 ) -> np.ndarray:
     """
@@ -435,7 +422,7 @@ def _compute_target_columns(
 
 
 def _filter_matrix_columns(
-    matrix: sp.csr_matrix,
+    matrix: sp.csr_array,
     target_cols: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
@@ -579,7 +566,7 @@ def _reorder_columns_by_popularity(
     # Build a temporary CSR matrix to sort indices within each row
     # scipy's sort_indices() is implemented in C and handles data reordering
     n_rows = len(m2_indptr) - 1
-    temp_csr = sp.csr_matrix(
+    temp_csr = sp.csr_array(
         (m2_data.copy(), new_m2_indices, m2_indptr.copy()),
         shape=(n_rows, n_output_cols)
     )
@@ -600,7 +587,7 @@ def _reorder_columns_by_popularity(
         new_filter_m_indices = forward_perm[filter_m_indices.ravel()].astype(np.int32)
         # Re-sort within each row for binary search
         n_filter_rows = len(filter_m_indptr) - 1
-        temp_filter = sp.csr_matrix(
+        temp_filter = sp.csr_array(
             (np.ones(len(new_filter_m_indices), dtype=np.float32), new_filter_m_indices, filter_m_indptr.copy()),
             shape=(n_filter_rows, n_output_cols)
         )
@@ -614,7 +601,7 @@ def _reorder_columns_by_popularity(
         new_target_m_indices = forward_perm[target_m_indices.ravel()].astype(np.int32)
         # Re-sort within each row for binary search
         n_target_rows = len(target_m_indptr) - 1
-        temp_target = sp.csr_matrix(
+        temp_target = sp.csr_array(
             (np.ones(len(new_target_m_indices), dtype=np.float32), new_target_m_indices, target_m_indptr.copy()),
             shape=(n_target_rows, n_output_cols)
         )

@@ -9,55 +9,89 @@ from cython cimport floating, integral, char
 from cython.view cimport array
 from typing import Tuple
 
+cdef enum TFMode:
+    TF_BINARY = 0
+    TF_RAW    = 1
+    TF_SQRT   = 2
+    TF_FREQ   = 3
+    TF_LOG    = 4
 
-cdef floating tf(floating freq, floating doc_len=1, str mode='raw', floating logbase=M_E):
+cdef enum IDFMode:
+    IDF_UNARY  = 0
+    IDF_BASE   = 1
+    IDF_SMOOTH = 2
+    IDF_PROB   = 3
+    IDF_BM25   = 4
+
+
+cdef int _resolve_tf_mode(str mode) except -1:
+    """Resolve TF mode string to integer constant (called once before loops)."""
+    if mode == 'binary': return TF_BINARY
+    if mode == 'raw':    return TF_RAW
+    if mode == 'sqrt':   return TF_SQRT
+    if mode == 'freq':   return TF_FREQ
+    if mode == 'log':    return TF_LOG
+    raise ValueError(f"Unknown tf_mode '{mode}'. Expected: binary, raw, sqrt, freq, log")
+
+
+cdef int _resolve_idf_mode(str mode) except -1:
+    """Resolve IDF mode string to integer constant (called once before loops)."""
+    if mode == 'unary':  return IDF_UNARY
+    if mode == 'base':   return IDF_BASE
+    if mode == 'smooth': return IDF_SMOOTH
+    if mode == 'prob':   return IDF_PROB
+    if mode == 'bm25':   return IDF_BM25
+    raise ValueError(f"Unknown idf_mode '{mode}'. Expected: unary, base, smooth, prob, bm25")
+
+
+cdef inline floating tf(floating freq, floating doc_len, int mode, floating log_logbase) noexcept nogil:
     """
-    Compute term frequency (TF) using various modes.
+    Compute term frequency (TF) using integer-dispatched mode.
 
     Args:
         freq: Raw frequency of the term.
-        doc_len: Document length (default 1).
-        mode: TF computation mode ('binary', 'raw', 'sqrt', 'freq', 'log').
-        logbase: Logarithm base for 'log' mode (default M_E).
+        doc_len: Document length.
+        mode: TF mode constant (TF_BINARY, TF_RAW, TF_SQRT, TF_FREQ, TF_LOG).
+        log_logbase: Pre-computed log(logbase) for log mode.
 
     Returns:
         Computed term frequency value.
     """
-    if mode == 'binary':
+    if mode == TF_BINARY:
         return 1 if freq != 0 else 0
-    elif mode == 'raw':
+    elif mode == TF_RAW:
         return freq
-    elif mode == 'sqrt':
+    elif mode == TF_SQRT:
         return sqrt(freq)
-    elif mode == 'freq':
+    elif mode == TF_FREQ:
         return freq / doc_len
-    elif mode == 'log':
-        return log(1 + freq) / log(logbase)
+    else:  # TF_LOG
+        return log(1 + freq) / log_logbase
 
 
-cdef floating idf(floating inv_freq, floating n_docs=1, str mode='smooth', floating logbase=M_E):
+cdef inline floating idf(floating inv_freq, floating n_docs, int mode, floating log_logbase) noexcept nogil:
     """
-    Compute inverse document frequency (IDF) using various modes.
+    Compute inverse document frequency (IDF) using integer-dispatched mode.
 
     Args:
         inv_freq: Document frequency (number of documents containing the term).
-        n_docs: Total number of documents (default 1).
-        mode: IDF computation mode ('unary', 'base', 'smooth', 'prob', 'bm25').
-        logbase: Logarithm base (default M_E).
+        n_docs: Total number of documents.
+        mode: IDF mode constant (IDF_UNARY, IDF_BASE, IDF_SMOOTH, IDF_PROB, IDF_BM25).
+        log_logbase: Pre-computed log(logbase) for log modes.
 
     Returns:
         Computed inverse document frequency value.
     """
-    if mode == 'unary':
+    if mode == IDF_UNARY:
         return 1
-    elif mode == 'base':
-        return log(n_docs / inv_freq) / log(logbase)
-    elif mode == 'smooth':
-        return log(n_docs / (1 + inv_freq)) / log(logbase)
-    elif mode == 'prob':
-        return log((n_docs - inv_freq) / inv_freq) / log(logbase)
-    elif mode == 'bm25':
-        return log((n_docs - inv_freq + 0.5) / (inv_freq + 0.5)) / log(logbase)
+    elif mode == IDF_BASE:
+        return log(n_docs / inv_freq) / log_logbase
+    elif mode == IDF_SMOOTH:
+        return log(n_docs / (1 + inv_freq)) / log_logbase
+    elif mode == IDF_PROB:
+        return log((n_docs - inv_freq) / inv_freq) / log_logbase
+    else:  # IDF_BM25
+        return log((n_docs - inv_freq + 0.5) / (inv_freq + 0.5)) / log_logbase
 
 
 def inplace_normalize_csr_l2(
@@ -187,9 +221,13 @@ def inplace_normalize_csr_tfidf(
         idf_mode: IDF mode ('unary', 'base', 'smooth', 'prob', 'bm25').
         logbase: Logarithm base for TF/IDF computation.
     """
+    # Resolve string modes to int constants once (avoids Python string ops in loops)
+    cdef int tf_mode_id = _resolve_tf_mode(tf_mode)
+    cdef int idf_mode_id = _resolve_idf_mode(idf_mode)
+    cdef floating log_logbase = log(logbase)
+
     cdef integral n_docs = shape[0]
     cdef integral n_words = shape[1]
-    cdef floating aux
     cdef integral i, j
     cdef char* format_ = 'f' if floating is float else 'd'  # fused type
     cdef floating[:] idf_ = array(shape=(n_words,), itemsize=sizeof(floating), format=format_)
@@ -209,13 +247,13 @@ def inplace_normalize_csr_tfidf(
 
     for i in range(n_words):
         if idf_[i] != 0:
-            idf_[i] = idf(inv_freq=idf_[i], n_docs=n_docs, mode=idf_mode, logbase=logbase)
+            idf_[i] = idf(idf_[i], n_docs, idf_mode_id, log_logbase)
 
-    # compute tf idf
+    # compute tf-idf
     cdef floating tf_
     for i in range(n_docs):
         for j in range(indptr[i], indptr[i + 1]):
-            tf_ = tf(freq=data[j], doc_len=doc_len[i], mode=tf_mode, logbase=logbase)
+            tf_ = tf(data[j], doc_len[i], tf_mode_id, log_logbase)
             data[j] = tf_ * idf_[indices[j]]
 
 
@@ -249,10 +287,14 @@ def inplace_normalize_csr_bm25plus(
         idf_mode: IDF mode ('unary', 'base', 'smooth', 'prob', 'bm25').
         logbase: Logarithm base for TF/IDF computation.
     """
+    # Resolve string modes to int constants once (avoids Python string ops in loops)
+    cdef int tf_mode_id = _resolve_tf_mode(tf_mode)
+    cdef int idf_mode_id = _resolve_idf_mode(idf_mode)
+    cdef floating log_logbase = log(logbase)
+
     cdef integral n_docs = shape[0]
     cdef integral n_words = shape[1]
     cdef floating avg_doc_len = 0.0
-    cdef floating aux
     cdef integral i, j
     cdef char* format_ = 'f' if floating is float else 'd'  # fused type
     cdef floating[:] idf_ = array(shape=(n_words,), itemsize=sizeof(floating), format=format_)
@@ -274,7 +316,7 @@ def inplace_normalize_csr_bm25plus(
 
     for i in range(n_words):
         if idf_[i] != 0:
-            idf_[i] = idf(inv_freq=idf_[i], n_docs=n_docs, mode=idf_mode, logbase=logbase)
+            idf_[i] = idf(idf_[i], n_docs, idf_mode_id, log_logbase)
 
     if n_docs == 0:
         return
@@ -284,9 +326,9 @@ def inplace_normalize_csr_bm25plus(
     for i in range(n_docs):
         norm_doc_len[i] = (1.0 - b) + b * doc_len[i] / avg_doc_len
 
-    # weight each term with bm25
+    # weight each term with bm25+
     cdef floating tf_
     for i in range(n_docs):
         for j in range(indptr[i], indptr[i + 1]):
-            tf_ = tf(freq=data[j], doc_len=doc_len[i], mode=tf_mode, logbase=logbase)
+            tf_ = tf(data[j], doc_len[i], tf_mode_id, log_logbase)
             data[j] = idf_[indices[j]] * ((tf_ * (k1 + 1.0) / (tf_ + k1 * norm_doc_len[i])) + delta)

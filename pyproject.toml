@@ -1,6 +1,6 @@
 [project]
 name = "similaripy"
-version = "0.5.0"
+version = "0.6.0"
 description = "High-performance KNN similarity functions in Python, optimized for sparse matrices"
 authors = [{ name = "Simone Boglio", email = "bogliosimone@gmail.com" }]
 license = { text = "MIT" }
@@ -31,8 +31,8 @@ classifiers = [
   "Programming Language :: C++",
 ]
 dependencies = [
-    "numpy>=1.21",
-    "scipy>=1.10.1",
+    "numpy>=1.22.4",
+    "scipy>=1.12.0",
 ]
 
 [project.urls]
@@ -42,7 +42,7 @@ repository = "https://github.com/bogliosimone/similaripy.git"
 changelog = "https://github.com/bogliosimone/similaripy/releases"
 
 [build-system]
-requires = ["scikit-build-core>=0.10", "pybind11", "cython"]
+requires = ["scikit-build-core>=0.10", "cython"]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
@@ -72,9 +72,18 @@ dev = [
 
 bench = [
   "pandas",
-  "datasets",
-  "pyarrow",
-  "pytest-benchmark",
+  "datasets"
+]
+
+notebook = [
+  "jupyterlab",
+  "matplotlib",
+  "seaborn",
+  "pandas",
+  "optuna",
+  "umap-learn",
+  "scikit-learn",
+  "IProgress"
 ]
 
 [tool.tox]

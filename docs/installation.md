@@ -44,5 +44,5 @@ The easiest way to achieve this is to install them via Anaconda.
 
 | Package                         | Version        |
 | --------------------------------|:--------------:|
-| numpy                           |   >= 1.21      |
-| scipy                           |   >= 1.10.1    |
+| numpy                           |   >= 1.22.4    |
+| scipy                           |   >= 1.12.0    |

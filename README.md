@@ -57,6 +57,14 @@ All functions are implemented in Cython and can operate in-place on CSR matrixes
 
 For more details, check the **[📘 SimilariPy Guide](https://bogliosimone.github.io/similaripy/)**.
 
+## ⚡ Performance
+
+SimilariPy is built for speed on large sparse matrices:
+
+- **Cython + C++ + OpenMP** — multi-threaded, GIL-free computation compiled to native code
+- **Cache-optimized** — column-blocked accumulation with popularity reordering minimizes L2 cache misses
+- **Memory-efficient** — float32 precision, pre-allocated buffers, top-K heap filtering
+
 
 ## 🚀 Getting Started
 
@@ -67,7 +75,7 @@ import similaripy as sim
 import scipy.sparse as sps
 
 # Create a random User-Rating Matrix (URM)
-urm = sps.random(1000, 2000, density=0.025)
+urm = sps.random_array((1000, 2000), density=0.025)
 
 # Normalize the URM using BM25
 urm = sim.normalization.bm25(urm)
@@ -133,8 +141,8 @@ The easiest way to achieve this is to install them via Anaconda.
 
 | Package                         | Version        |
 | --------------------------------|:--------------:|
-| numpy                           |   >= 1.21      |
-| scipy                           |   >= 1.10.1    |
+| numpy                           |   >= 1.22.4    |
+| scipy                           |   >= 1.12.0    |
 
 ## 📜 History
 

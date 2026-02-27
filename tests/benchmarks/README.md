@@ -27,6 +27,28 @@ python tests/benchmarks/run_benchmarks.py --dataset movielens --version 32m --ro
 
 # Custom parameters
 python tests/benchmarks/run_benchmarks.py --dataset movielens --k 200 --shrink 10 --threads 4
+
+# Add a note to the benchmark report
+python tests/benchmarks/run_benchmarks.py --dataset movielens --note "baseline before optimization"
+```
+
+### Compare Benchmarks
+
+```bash
+# List all available benchmark reports (JSON)
+python tests/benchmarks/compare_benchmarks.py --list
+
+# Compare the latest 2 runs
+python tests/benchmarks/compare_benchmarks.py --latest 2
+
+# Compare two specific report files
+python tests/benchmarks/compare_benchmarks.py result_0.5.0_20260224.json result_0.6.0_20260226.json
+
+# Compare all runs for a specific version
+python tests/benchmarks/compare_benchmarks.py --filter 0.6.0
+
+# Filter comparison to a specific similarity
+python tests/benchmarks/compare_benchmarks.py --latest 3 --similarity cosine
 ```
 
 ## Components
@@ -37,6 +59,16 @@ Main benchmark runner with CLI interface. Supports:
 - Multiple similarity algorithms
 - Comprehensive summary table with system info
 - Dataset loading time excluded from results
+- Outputs both text and JSON reports
+- Optional `--note` for annotating runs
+
+### `compare_benchmarks.py`
+Benchmark comparison tool. Supports:
+- Listing all available JSON reports
+- Comparing 2+ runs side-by-side
+- Auto-scanning the bench directory
+- Filtering by version pattern or similarity type
+- Shows timing differences and percentage changes
 
 ### `dataset_loaders.py`
 Unified dataset loaders for:
@@ -74,6 +106,7 @@ Core benchmarking functions:
 --block-size SIZE      Block size: 0=auto, none=disabled, or int>0 (default: 0)
 --rounds ROUNDS        Number of times to run each config, results averaged (default: 1)
 --output-dir DIR       Output directory for results (default: bench_results)
+--note NOTE            Optional note/comment to attach to the report
 --event-type TYPE      Yambda event type: likes/listens/multi_event (default: multi_event)
 --quiet                Suppress verbose output
 ```
@@ -123,9 +156,9 @@ results = benchmark_similarity(URM, similarity_type="cosine", k=100)
 ```
 tests/benchmarks/
 ├── run_benchmarks.py      # Main benchmark runner (CLI)
+├── compare_benchmarks.py  # Benchmark comparison tool (CLI)
 ├── dataset_loaders.py     # Dataset loaders
 ├── benchmark.py           # Core benchmark functions
-├── benchmarks_rnd_seed.py # Random seed benchmarks
 └── README.md              # This file
 
 tests/datasets/            # Downloaded datasets (gitignored)
@@ -135,14 +168,46 @@ tests/datasets/            # Downloaded datasets (gitignored)
 
 ## Output Files
 
-Benchmark results are automatically saved to text files:
-- **Default location**: `bench_results/` directory
-- **Filename format**: `result_{version}_{timestamp}.txt`
-  - Example: `result_0.1.0_20250126_143025.txt`
-- **Contents**: Complete benchmark output including:
-  - SIMILARIPY BENCHMARK SUITE section
-  - Dataset loading information
-  - BENCHMARK SUMMARY table
+Benchmark results are automatically saved in two formats:
+- **Text report**: Human-readable summary table (`result_{version}_{timestamp}.txt`)
+- **JSON report**: Machine-readable data for comparisons (`result_{version}_{timestamp}.json`)
+
+**Default location**: `bench_results/` directory
+
+### JSON Report Structure
+
+```json
+{
+  "metadata": {
+    "similaripy_version": "0.6.0",
+    "timestamp": "2026-02-26 21:27:28",
+    "note": "baseline before optimization",
+    ...
+  },
+  "config": {
+    "datasets": [["movielens", "32m"]],
+    "similarities": ["cosine", "rp3beta"],
+    "k": 100, "shrink": 0, "rounds": 2,
+    ...
+  },
+  "datasets": {
+    "movielens:32m": { "shape": [200948, 84432], "nnz": 32000204, "density": 0.00188609 }
+  },
+  "results": {
+    "movielens:32m": {
+      "cosine": {
+        "computation_time": 4.92,
+        "std_time": 0.04,
+        "throughput": 17147.5,
+        "nnz": 8443200,
+        "avg_neighbors": 100.0,
+        "rounds": 2,
+        "all_times": [4.96, 4.88]
+      }
+    }
+  }
+}
+```
 
 Custom output directory:
 ```bash

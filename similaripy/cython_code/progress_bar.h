@@ -153,9 +153,12 @@ public:
           last_output_length_(0) {
     }
 
-    // Destructor
+    // Destructor — auto-close if not already done (RAII safety net)
     ~ProgressBar() {
-        // Nothing to do - close() should be called explicitly
+        if (!disabled_ && started_.load(std::memory_order_acquire) &&
+            counter_.load(std::memory_order_relaxed) < total_) {
+            close();
+        }
     }
 
     // Set the description and refresh display

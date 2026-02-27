@@ -1,58 +1,50 @@
-.PHONY: install test build wheelcheck benchmark all clean mkdocs test-dev benchmark-local benchmark-normalization benchmark-sim install-dev install-dev-editable benchmark-similarity-rnd-seed benchmark-similarity-medium
-
-# Install all dev dependencies using uv
+.PHONY: install
 install:
 	uv pip install '.'
 
-# Install dev dependencies using uv
+.PHONY: install-dev
 install-dev:
-	uv pip install -e '.[dev,bench]'
+	uv pip install -e '.[dev,bench,notebook]'
 
-# Install in editable mode with skbuild redirect
+.PHONY: install-dev-editable
 # The first time, you must run install-dev before, to have dependencies installed
 install-dev-editable:
-	SKBUILD_EDITABLE_REBUILD=true uv pip install -e '.[dev,bench]' --no-build-isolation -v
+	SKBUILD_EDITABLE_REBUILD=true uv pip install -e '.[dev,bench,notebook]' --no-build-isolation -v
 
-# Run unit tests using tox (py311)
+.PHONY: test
 test:
 	uv run tox -e py311
 
-# Run unit test locally (excluding performance tests)
+.PHONY: test-dev
 test-dev:
 	uv run pytest
 
-# Build wheel + sdist
+.PHONY: build
 build:
 	uv run tox -e build
 
-# Build, install from wheel, and run tests (package integrity)
+.PHONY: wheelcheck
 wheelcheck:
 	uv run tox -e package-test
 
-# Run benchmarks (tests marked with @pytest.mark.perf)
-benchmark:
-	uv run tox -e benchmark
+.PHONY: benchmark-similarity-small
+benchmark-similarity-small:
+	uv run tests/benchmarks/run_benchmarks.py --dataset movielens --version 32m --rounds 1
 
-# Run benchmarks locally
-benchmark-similarity:
-	uv run tests/benchmarks/run_benchmarks.py
-
-# Run benchmarks on yambda 50m dataset
+.PHONY: benchmark-similarity-medium
 benchmark-similarity-medium:
-	uv run tests/benchmarks/run_benchmarks.py --dataset yambda --version 50m --rounds 3
+	uv run tests/benchmarks/run_benchmarks.py --dataset yambda --version 50m --rounds 1
 
-# Run only normalization benchmarks locally
-benchmark-normalization:
-	uv run pytest tests/benchmarks/benchmarks_rnd_seed.py::TestNormalizationPerformance --benchmark-only
+.PHONY: benchmark-similarity-large
+benchmark-similarity-large:
+	uv run tests/benchmarks/run_benchmarks.py --dataset yambda --version 500m --rounds 1
 
-# Run only similarity benchmarks locally
-benchmark-similarity-rnd-seed:
-	uv run pytest tests/benchmarks/benchmarks_rnd_seed.py::TestSPlusPerformance --benchmark-only
-
-# Clean build artifacts
+.PHONY: clean
 clean:
 	rm -rf build/ dist/ *.egg-info
+	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	find . -name '*.so' -path '*/cython_code/*' -delete 2>/dev/null || true
 
-# Run
+.PHONY: mkdocs
 mkdocs:
 	uv run mkdocs serve
