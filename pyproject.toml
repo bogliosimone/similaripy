@@ -42,7 +42,7 @@ repository = "https://github.com/bogliosimone/similaripy.git"
 changelog = "https://github.com/bogliosimone/similaripy/releases"
 
 [build-system]
-requires = ["scikit-build-core>=0.11", "cython"]
+requires = ["scikit-build-core>=0.11", "cython>=3.1"]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
@@ -57,8 +57,8 @@ sdist.exclude = [".claude", ".vscode", ".github", "notebooks", "tests/benchmarks
 USE_OPENMP = "ON"
 
 [tool.cibuildwheel]
-# Python range comes from requires-python; free-threaded (t) builds are not supported yet
-skip = "cp31?t-* *-musllinux_* *-win32 *_i686"
+# Python range comes from requires-python, free-threaded (t) builds included
+skip = "*-musllinux_* *-win32 *_i686"
 test-requires = ["pytest"]
 test-command = "pytest {project}/tests"
 
