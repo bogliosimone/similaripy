@@ -4,18 +4,25 @@ option(USE_OPENMP "Enable OpenMP parallelism" ON)
 
 # === Auto-select Homebrew GCC on macOS ===
 if(APPLE AND USE_OPENMP)
-  file(GLOB HOMEBREW_GPP /opt/homebrew/bin/g++-*)
-  if(HOMEBREW_GPP STREQUAL "")
+  # Homebrew prefix: /opt/homebrew on Apple Silicon, /usr/local on Intel
+  execute_process(
+    COMMAND brew --prefix
+    OUTPUT_VARIABLE HOMEBREW_PREFIX
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  file(GLOB HOMEBREW_GPP "${HOMEBREW_PREFIX}/bin/g++-*")
+  if(HOMEBREW_PREFIX STREQUAL "" OR HOMEBREW_GPP STREQUAL "")
     message(FATAL_ERROR "❌ Homebrew GCC not found! Please run: brew install gcc")
   endif()
-  list(SORT HOMEBREW_GPP)
-  list(REVERSE HOMEBREW_GPP)
+  # Natural sort so that g++-15 wins over g++-9
+  list(SORT HOMEBREW_GPP COMPARE NATURAL ORDER DESCENDING)
   list(GET HOMEBREW_GPP 0 HOMEBREW_GPP_BIN)
   get_filename_component(HOMEBREW_GPP_VER ${HOMEBREW_GPP_BIN} NAME)
   string(REPLACE "g++-" "" HOMEBREW_GPP_VER_NUM ${HOMEBREW_GPP_VER})
 
-  set(CMAKE_C_COMPILER "/opt/homebrew/bin/gcc-${HOMEBREW_GPP_VER_NUM}" CACHE STRING "" FORCE)
-  set(CMAKE_CXX_COMPILER "/opt/homebrew/bin/g++-${HOMEBREW_GPP_VER_NUM}" CACHE STRING "" FORCE)
+  set(CMAKE_C_COMPILER "${HOMEBREW_PREFIX}/bin/gcc-${HOMEBREW_GPP_VER_NUM}" CACHE STRING "" FORCE)
+  set(CMAKE_CXX_COMPILER "${HOMEBREW_PREFIX}/bin/g++-${HOMEBREW_GPP_VER_NUM}" CACHE STRING "" FORCE)
 
   message(STATUS "✅ Using Homebrew GCC ${HOMEBREW_GPP_VER_NUM} (path: ${HOMEBREW_GPP_BIN})")
 endif()

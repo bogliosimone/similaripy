@@ -1,6 +1,6 @@
 [project]
 name = "similaripy"
-version = "0.6.1"
+version = "0.7.0"
 description = "High-performance KNN similarity functions in Python, optimized for sparse matrices"
 authors = [{ name = "Simone Boglio", email = "bogliosimone@gmail.com" }]
 license = "MIT"
@@ -55,6 +55,16 @@ sdist.exclude = [".claude", ".vscode", ".github", "notebooks", "tests/benchmarks
 
 [tool.scikit-build.cmake.define]
 USE_OPENMP = "ON"
+
+[tool.cibuildwheel]
+# Python range comes from requires-python; free-threaded (t) builds are not supported yet
+skip = "cp31?t-* *-musllinux_* *-win32 *_i686"
+test-requires = ["pytest"]
+test-command = "pytest {project}/tests"
+
+[tool.cibuildwheel.macos]
+# Homebrew GCC runtime libs (bundled by delocate) require the runner's macOS version
+environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 
 [project.optional-dependencies]
 dev = [

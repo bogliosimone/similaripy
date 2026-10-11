@@ -1,14 +1,47 @@
-# This workflow will upload a Python Package using Twine when a release is created
-# For more information see: https://help.github.com/en/actions/language-and-framework-guides/using-python-with-github-actions#publishing-to-package-registries
+# Build wheels (cibuildwheel) and sdist on every change to the build inputs.
+# On a published release, also upload them to PyPI via Trusted Publishing.
 
 name: PyPI Publish Package
 
 on:
   release:
-    types: [created]
+    types: [published]
+  push:
+    branches: [ "*" ]
+    paths: &build-paths
+      - "pyproject.toml"
+      - "CMakeLists.txt"
+      - "similaripy/**"
+      - "tests/**"
+      - ".github/workflows/pypi-publish.yml"
+  pull_request:
+    branches: [ "*" ]
+    paths: *build-paths
+  workflow_dispatch:
 
 jobs:
-  publish:
+  build_wheels:
+    name: Wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS runners are pinned: the wheel's minimum macOS follows the runner's version
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-15, macos-15-intel]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and test wheels
+        uses: pypa/cibuildwheel@v4.3.1
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cibw-wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
+  build_sdist:
+    name: Source distribution
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -23,7 +56,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install build twine
 
-      - name: Build source distribution only
+      - name: Build source distribution
         run: |
           rm -rf dist
           python -m build --sdist
@@ -31,7 +64,7 @@ jobs:
       - name: Validate metadata
         run: |
           twine check dist/*.tar.gz
-      
+
       - name: Install and test from sdist
         run: |
           python -m venv testenv
@@ -40,9 +73,34 @@ jobs:
           pip install pytest
           pytest
 
-      - name: Upload source to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cibw-sdist
+          path: dist/*.tar.gz
+
+  publish:
+    name: Upload to PyPI
+    if: github.event_name == 'release'
+    needs: [build_wheels, build_sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check tag matches package version
         run: |
-          twine upload dist/*.tar.gz
+          VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          test "$GITHUB_REF_NAME" = "v$VERSION" || { echo "Tag $GITHUB_REF_NAME does not match version v$VERSION"; exit 1; }
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cibw-*
+          path: dist
+          merge-multiple: true
+
+      - name: Upload to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          skip-existing: true
