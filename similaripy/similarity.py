@@ -20,7 +20,8 @@ def dot_product(
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
-    block_size: Optional[int] = 0
+    block_size: Optional[int] = 0,
+    **_spike,  # spike-only (D7): forwards _kernel, never merged
 ) -> sparray:
     """
     Compute dot product similarity between rows of matrix1 and columns of matrix2.
@@ -60,7 +61,8 @@ def dot_product(
         verbose=verbose,
         format_output=format_output,
         num_threads=num_threads,
-        block_size=block_size
+        block_size=block_size,
+        **_spike,
     )
 
 
@@ -78,7 +80,8 @@ def cosine(
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
-    block_size: Optional[int] = 0
+    block_size: Optional[int] = 0,
+    **_spike,  # spike-only (D7): forwards _kernel, never merged
 ) -> sparray:
     """
     Compute cosine similarity between sparse vectors.
@@ -119,7 +122,8 @@ def cosine(
         verbose=verbose,
         format_output=format_output,
         num_threads=num_threads,
-        block_size=block_size
+        block_size=block_size,
+        **_spike,
     )
 
 
@@ -138,7 +142,8 @@ def asymmetric_cosine(
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
-    block_size: Optional[int] = 0
+    block_size: Optional[int] = 0,
+    **_spike,  # spike-only (D7): forwards _kernel, never merged
 ) -> sparray:
     """
     Compute asymmetric cosine similarity.
@@ -182,7 +187,8 @@ def asymmetric_cosine(
         verbose=verbose,
         format_output=format_output,
         num_threads=num_threads,
-        block_size=block_size
+        block_size=block_size,
+        **_spike,
     )
 
 
@@ -202,7 +208,8 @@ def tversky(
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
-    block_size: Optional[int] = 0
+    block_size: Optional[int] = 0,
+    **_spike,  # spike-only (D7): forwards _kernel, never merged
 ) -> sparray:
     """
     Compute Tversky similarity between sparse vectors.
@@ -245,7 +252,8 @@ def tversky(
         verbose=verbose,
         format_output=format_output,
         num_threads=num_threads,
-        block_size=block_size
+        block_size=block_size,
+        **_spike,
     )
 
 
@@ -263,7 +271,8 @@ def jaccard(
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
-    block_size: Optional[int] = 0
+    block_size: Optional[int] = 0,
+    **_spike,  # spike-only (D7): forwards _kernel, never merged
 ) -> sparray:
     """
     Compute Jaccard similarity (intersection over union).
@@ -304,7 +313,8 @@ def jaccard(
         verbose=verbose,
         format_output=format_output,
         num_threads=num_threads,
-        block_size=block_size
+        block_size=block_size,
+        **_spike,
     )
 
 
@@ -322,7 +332,8 @@ def dice(
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
-    block_size: Optional[int] = 0
+    block_size: Optional[int] = 0,
+    **_spike,  # spike-only (D7): forwards _kernel, never merged
 ) -> sparray:
     """
     Compute Dice similarity (harmonic mean of overlap and size).
@@ -363,7 +374,8 @@ def dice(
         verbose=verbose,
         format_output=format_output,
         num_threads=num_threads,
-        block_size=block_size
+        block_size=block_size,
+        **_spike,
     )
 
 
@@ -382,7 +394,8 @@ def p3alpha(
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
-    block_size: Optional[int] = 0
+    block_size: Optional[int] = 0,
+    **_spike,  # spike-only (D7): forwards _kernel, never merged
 ) -> sparray:
     """
     Compute P3alpha similarity using a normalized 3-step random walk.
@@ -428,7 +441,8 @@ def p3alpha(
         verbose=verbose,
         format_output=format_output,
         num_threads=num_threads,
-        block_size=block_size
+        block_size=block_size,
+        **_spike,
     )
 
 
@@ -448,7 +462,8 @@ def rp3beta(
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
-    block_size: Optional[int] = 0
+    block_size: Optional[int] = 0,
+    **_spike,  # spike-only (D7): forwards _kernel, never merged
 ) -> sparray:
     """
     Compute RP3beta similarity: P3alpha with popularity penalization.
@@ -499,7 +514,8 @@ def rp3beta(
         verbose=verbose,
         format_output=format_output,
         num_threads=num_threads,
-        block_size=block_size
+        block_size=block_size,
+        **_spike,
     )
 
 
@@ -529,7 +545,8 @@ def s_plus(
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
-    block_size: Optional[int] = 0
+    block_size: Optional[int] = 0,
+    **_spike,  # spike-only (D7): forwards _kernel, never merged
 ) -> sparray:
     """
     Combines Tversky and Cosine normalizations with RP3Beta-style depopularization, fully controlled by tunable weights
@@ -588,7 +605,8 @@ def s_plus(
         verbose=verbose,
         format_output=format_output,
         num_threads=num_threads,
-        block_size=block_size
+        block_size=block_size,
+        **_spike,
     )
 
 

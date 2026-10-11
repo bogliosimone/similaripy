@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0b77d2745b72ab232fca52d38dc371e8602c624ae8d1191a3c28c3d88e5ce026 # shrinks to c = Case { m1: [[3.0]], m2: [[1.0]], norms: [[0.1], [0.1], [0.1], [0.1], [0.1], [0.1]], params: [1.0, 0.1, 0.0, 0.0, 0.9640149, 0.45433146, 0.0, 0.0], filter: None, target: None, k: 1 }
+cc 112ec4b2a8c618db315a32a5eeb95f6f9354213003f87cb1c0384ec82fd5ed2a # shrinks to c = Case { m1: [[0.0, 1.0, 0.0, 1.0, 0.0]], m2: [[0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 3.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0]], norms: [[1.3408616], [0.1, 0.14273958, 0.1, 0.1, 0.1], [0.1], [0.1, 0.1, 0.1, 0.1, 0.1], [0.1], [0.1, 0.1, 0.1, 0.1, 0.1]], params: [1.0, 0.40000167, 0.0, 0.0, 0.97932297, 0.48183388, 0.18548797, 0.0], filter: None, target: None, k: 1 }
