@@ -141,6 +141,11 @@ def find_compatible_reports(bench_dir, reference_report, exclude_paths=None, pat
 # ── Display helpers ──────────────────────────────────────────────────────────
 
 
+def primary_time(result):
+    """Median when the report has it (newer harness), else the mean."""
+    return result.get("median_time", result["computation_time"])
+
+
 def format_time(computation_time, std_time):
     """Format time with optional ± std."""
     if std_time and std_time > 0:
@@ -292,7 +297,7 @@ def compare_reports(reports, similarity_filter=None):
 
         for sim_type in similarities:
             ref_result = ref_ds_results[sim_type]
-            ref_time = ref_result["computation_time"]
+            ref_time = primary_time(ref_result)
 
             # ── Similarity sub-header + column header ────────────────────
             print(f"\n{sim_type.upper()}")
@@ -330,7 +335,7 @@ def compare_reports(reports, similarity_filter=None):
                 result = report.get("results", {}).get(ds_key, {}).get(sim_type)
 
                 if result:
-                    t = result["computation_time"]
+                    t = primary_time(result)
                     time_str = format_time(t, result.get("std_time", 0))
                     speedup = ref_time / t if t > 0 else float("inf")
                     speedup_str = f"{speedup:.2f}x"

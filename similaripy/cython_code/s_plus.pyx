@@ -7,6 +7,7 @@
 """
 
 import cython
+import time
 import numpy as np
 import scipy.sparse as sp
 from typing import Optional, Union, Literal
@@ -35,6 +36,10 @@ from cython import float
 
 from libcpp cimport bool
 from libcpp.string cimport string
+
+# Wall time (s) of the last kernel call, read by the benchmark harness.
+# Racy under concurrent calls: read it only after serial calls.
+_last_kernel_time = 0.0
 
 # Progress bar configuration constants
 cdef int PROGRESS_BAR_REFRESH_RATE = 3  # Refresh rate in Hz (updates per second)
@@ -357,6 +362,8 @@ def s_plus(
         progress.set_description(b'Computing')
 
     # Call C++ parallel computation function
+    global _last_kernel_time
+    kernel_start = time.perf_counter()
     with nogil:
         compute_similarities_parallel[int, float](
             n_targets,
@@ -383,6 +390,7 @@ def s_plus(
             num_threads,
             resolved_block_size
         )
+    _last_kernel_time = time.perf_counter() - kernel_start
 
     # Un-permute output column indices back to original ordering
     if col_back_perm_np is not None:

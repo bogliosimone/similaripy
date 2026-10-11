@@ -22,6 +22,7 @@ Requirements:
 
 import argparse
 import json
+import statistics
 import time
 from datetime import datetime
 from pathlib import Path
@@ -57,6 +58,40 @@ def format_block_size(block_size):
     return 'auto' if block_size == 0 else str(block_size)
 
 
+def result_key(sim_type, kernel):
+    """Result key: plain similarity name for cpp (comparable with older reports)."""
+    return sim_type if kernel == 'cpp' else f"{sim_type}@{kernel}"
+
+
+def aggregate_rounds(round_results):
+    """Aggregate per-round results: median (primary), mean ± std, kernel times."""
+    all_times = [r['computation_time'] for r in round_results]
+    kernel_times = [r['kernel_time'] for r in round_results]
+    rounds = len(round_results)
+    avg_time = sum(all_times) / rounds
+    std_time = (
+        (sum((t - avg_time) ** 2 for t in all_times) / rounds) ** 0.5
+        if rounds > 1 else 0.0
+    )
+    median_time = statistics.median(all_times)
+    first = round_results[0]
+    return {
+        'computation_time': avg_time,
+        'std_time': std_time,
+        'median_time': median_time,
+        'kernel_median_time': statistics.median(kernel_times),
+        'spread': (max(all_times) - min(all_times)) / median_time,
+        'n_items': first['n_items'],
+        'nnz': first['nnz'],
+        'density': first['density'],
+        'avg_neighbors': first['avg_neighbors'],
+        'throughput': first['n_items'] / median_time,
+        'rounds': rounds,
+        'all_times': all_times,
+        'kernel_times': kernel_times,
+    }
+
+
 def format_time(computation_time, std_time):
     """Format time with optional ± std."""
     if std_time > 0:
@@ -67,13 +102,14 @@ def format_time(computation_time, std_time):
 def build_report_stem(sys_info, config):
     """Build descriptive base filename (without extension) for reports.
 
-    Format: result_{version}_{datasets}_{timestamp}[_{note}]
+    Format: result_{tag}_{datasets}_{timestamp}[_{note}], tag defaults to the version
     Example: result_0.6.0_movielens_32m_20260224_144649
     Example: result_0.6.0_movielens_32m_20260224_144649_my_note
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     datasets_str = "_".join(f"{d}_{v}" for d, v in config['datasets'])
-    parts = ["result", sys_info['similaripy_version'], datasets_str, timestamp]
+    tag = config.get('tag') or sys_info['similaripy_version']
+    parts = ["result", tag, datasets_str, timestamp]
     if config.get('note'):
         safe = '_'.join(config['note'].lower().split())
         safe = ''.join(c for c in safe if c.isalnum() or c == '_')
@@ -91,8 +127,8 @@ def run_benchmarks(config, verbose=True):
     Parameters
     ----------
     config : dict
-        Benchmark configuration with keys: datasets, similarities, k, shrink,
-        threshold, num_threads, block_size, rounds, dataset_kwargs.
+        Benchmark configuration with keys: datasets, similarities, kernels, k,
+        shrink, threshold, num_threads, block_size, warmup, rounds, dataset_kwargs.
     verbose : bool
         Print progress.
 
@@ -139,52 +175,40 @@ def run_benchmarks(config, verbose=True):
             print(f"URM nnz: {URM.nnz:,}")
             print(f"URM density: {density:.6%}")
 
-        dataset_results = {}
-
-        # Benchmark each similarity type
-        for sim_type in config['similarities']:
-            # Print similarity header to terminal
-            if verbose:
-                print(f"\n{'-'*70}")
-                print(f"Benchmarking {sim_type.upper()}")
-                print(f"{'-'*70}")
-
-            # Run multiple rounds and collect results
-            round_results = []
-            for round_num in range(rounds):
-                results = benchmark_similarity(
-                    URM,
-                    similarity_type=sim_type,
-                    k=config['k'],
-                    shrink=config['shrink'],
-                    threshold=config['threshold'],
-                    num_threads=config['num_threads'],
-                    verbose=verbose,
-                    block_size=config['block_size'],
-                )
-                round_results.append(results)
-
-            # Aggregate results across rounds
-            all_times = [r['computation_time'] for r in round_results]
-            avg_time = sum(all_times) / rounds
-            std_time = (
-                (sum((t - avg_time) ** 2 for t in all_times) / rounds) ** 0.5
-                if rounds > 1 else 0.0
+        def run_once(sim_type, kernel):
+            # Drop the output matrix right away: keeping one per round adds GBs on Yambda
+            r = benchmark_similarity(
+                URM,
+                similarity_type=sim_type,
+                k=config['k'],
+                shrink=config['shrink'],
+                threshold=config['threshold'],
+                num_threads=config['num_threads'],
+                kernel=kernel,
+                block_size=config['block_size'],
             )
-            avg_throughput = sum(r['throughput'] for r in round_results) / rounds
+            del r['similarity_matrix']
+            return r
 
-            dataset_results[sim_type] = {
-                'similarity_matrix': round_results[-1]['similarity_matrix'],
-                'computation_time': avg_time,
-                'std_time': std_time,
-                'n_items': round_results[0]['n_items'],
-                'nnz': round_results[0]['nnz'],
-                'density': round_results[0]['density'],
-                'avg_neighbors': round_results[0]['avg_neighbors'],
-                'throughput': avg_throughput,
-                'rounds': rounds,
-                'all_times': all_times,
-            }
+        # Interleave configs within each round (ABAB) so drift hits all equally
+        configs = [(s, kern) for s in config['similarities'] for kern in config['kernels']]
+        round_results = {c: [] for c in configs}
+        warmup = config['warmup']
+        for round_num in range(warmup + rounds):
+            is_warmup = round_num < warmup
+            for sim_type, kernel in configs:
+                r = run_once(sim_type, kernel)
+                if verbose:
+                    label = 'warmup' if is_warmup else f"round {round_num - warmup + 1}/{rounds}"
+                    print(f"[{label}] {result_key(sim_type, kernel):<24} "
+                          f"total {r['computation_time']:.3f}s  kernel {r['kernel_time']:.3f}s")
+                if not is_warmup:
+                    round_results[(sim_type, kernel)].append(r)
+
+        dataset_results = {
+            result_key(sim_type, kernel): aggregate_rounds(results)
+            for (sim_type, kernel), results in round_results.items()
+        }
 
         all_results[(dataset_name, version)] = dataset_results
 
@@ -228,6 +252,9 @@ def format_summary_table(all_results, sys_info, block_size):
     lines.append(f"CPU: {sys_info['cpu_model']}")
     lines.append(f"Architecture: {sys_info['system']} {sys_info['arch']}")
     lines.append(f"CPU cores available: {sys_info['cpu_count']}")
+    lines.append(f"OS: {sys_info['os_version']}, RAM: {sys_info['memory_gb']} GB")
+    lines.append(f"Compiler: {sys_info['compiler']}, rustc: {sys_info['rustc']}")
+    lines.append(f"GIL enabled: {sys_info['gil_enabled']}")
     lines.append(f"Block size: {format_block_size(block_size)}")
     lines.append('=' * w)
 
@@ -240,7 +267,10 @@ def format_summary_table(all_results, sys_info, block_size):
 
         header = (
             f"{'Similarity':<20} "
-            f"{'Time (s)':<18} "
+            f"{'Median (s)':<12} "
+            f"{'Kernel (s)':<12} "
+            f"{'Spread':<8} "
+            f"{'Mean ± std (s)':<18} "
             f"{'Throughput':<15} "
             f"{'Output nnz':<15} "
             f"{'Avg Neighbors':<15} "
@@ -255,6 +285,9 @@ def format_summary_table(all_results, sys_info, block_size):
 
             row = (
                 f"{sim_type:<20} "
+                f"{result['median_time']:<12.4g} "
+                f"{result['kernel_median_time']:<12.4g} "
+                f"{result['spread']:<8.1%} "
                 f"{time_str:<18} "
                 f"{result['throughput']:<15.1f} "
                 f"{result['nnz']:<15,} "
@@ -296,7 +329,8 @@ def write_text_report(output_path, config, dataset_info, all_results, sys_info):
         f.write(f"Parameters: k={config['k']}, shrink={config['shrink']}, threshold={config['threshold']}\n")
         f.write(f"Threads: {config['num_threads'] if config['num_threads'] > 0 else 'auto'}\n")
         f.write(f"Block size: {format_block_size(config['block_size'])}\n")
-        f.write(f"Rounds: {config['rounds']}\n")
+        f.write(f"Kernels: {', '.join(config['kernels'])}\n")
+        f.write(f"Rounds: {config['rounds']} (+{config['warmup']} warmup)\n")
         if config.get('note'):
             f.write(f"Note: {config['note']}\n")
         f.write("=" * 70 + "\n")
@@ -341,12 +375,15 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
         "config": {
             "datasets": [[d, v] for d, v in config['datasets']],
             "similarities": config['similarities'],
+            "kernels": config['kernels'],
             "k": config['k'],
             "shrink": config['shrink'],
             "threshold": config['threshold'],
             "num_threads": config['num_threads'],
             "block_size": format_block_size(config['block_size']),
             "rounds": config['rounds'],
+            "warmup": config['warmup'],
+            "tag": config.get('tag') or "",
         },
         "datasets": {},
         "results": {},
@@ -367,11 +404,15 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
             report["results"][key][sim_type] = {
                 "computation_time": round(result["computation_time"], 4),
                 "std_time": round(result["std_time"], 4),
+                "median_time": round(result["median_time"], 4),
+                "kernel_median_time": round(result["kernel_median_time"], 4),
+                "spread": round(result["spread"], 4),
                 "throughput": round(result["throughput"], 1),
                 "nnz": result["nnz"],
                 "avg_neighbors": round(result["avg_neighbors"], 1),
                 "rounds": result["rounds"],
                 "all_times": [round(t, 4) for t in result["all_times"]],
+                "kernel_times": [round(t, 4) for t in result["kernel_times"]],
             }
 
     with open(output_path, "w") as f:
@@ -401,13 +442,16 @@ def build_config(args):
     return {
         'datasets': datasets,
         'similarities': args.similarities,
+        'kernels': args.kernel,
         'k': args.k,
         'shrink': args.shrink,
         'threshold': args.threshold,
         'num_threads': args.threads,
         'block_size': parse_block_size(args.block_size),
         'rounds': args.rounds,
+        'warmup': args.warmup,
         'note': args.note,
+        'tag': args.tag,
         'dataset_kwargs': {
             'yambda': {'event_type': args.event_type},
         },
@@ -425,7 +469,8 @@ def print_config_header(config):
     print(f"Parameters: k={config['k']}, shrink={config['shrink']}, threshold={config['threshold']}")
     print(f"Threads: {config['num_threads'] if config['num_threads'] > 0 else 'auto'}")
     print(f"Block size: {format_block_size(config['block_size'])}")
-    print(f"Rounds: {config['rounds']}")
+    print(f"Kernels: {', '.join(config['kernels'])}")
+    print(f"Rounds: {config['rounds']} (+{config['warmup']} warmup)")
     if config.get('note'):
         print(f"Note: {config['note']}")
     print("=" * 70)
@@ -465,14 +510,20 @@ Examples:
     parser.add_argument('--threads', type=int, default=0,
                         help='Number of threads (0 = auto) (default: 0)')
     parser.add_argument('--rounds', type=int, default=1,
-                        help='Number of rounds to run each config (results averaged) (default: 1)')
+                        help='Number of timed rounds per config (default: 1)')
+    parser.add_argument('--warmup', type=int, default=1,
+                        help='Untimed warm-up rounds before the timed ones (default: 1)')
+    parser.add_argument('--kernel', nargs='+', default=['cpp'], choices=['cpp', 'rust'],
+                        help='Kernel backend(s), interleaved per round (default: cpp)')
+    parser.add_argument('--tag', type=str, default=None,
+                        help='Report filename tag (default: similaripy version)')
     parser.add_argument('--block-size', type=str, default='0',
                         help='Block size: 0=auto, none=disabled, or int>0 (default: 0)')
     parser.add_argument('--event-type', type=str, default='multi_event',
                         choices=['likes', 'listens', 'multi_event'],
                         help='Yambda event type (default: multi_event)')
     parser.add_argument('--quiet', action='store_true',
-                        help='Suppress verbose output during benchmarking')
+                        help='Suppress harness progress output (the timed call is always verbose=False)')
     parser.add_argument('--output-dir', type=str, default='bench_results',
                         help='Output directory for benchmark results (default: bench_results)')
     parser.add_argument('--note', type=str, default=None,

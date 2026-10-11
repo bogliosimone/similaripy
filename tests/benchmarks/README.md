@@ -22,8 +22,15 @@ python tests/benchmarks/run_benchmarks.py --dataset movielens --version 32m --si
 # Multiple datasets
 python tests/benchmarks/run_benchmarks.py --dataset movielens yambda --similarities cosine rp3beta
 
-# Run multiple rounds and average results (useful for stable benchmarks)
-python tests/benchmarks/run_benchmarks.py --dataset movielens --version 32m --rounds 3
+# Stable timing: 1 untimed warm-up round (default) + 5 timed rounds, median reported
+python tests/benchmarks/run_benchmarks.py --dataset movielens --version 32m --rounds 5
+
+# Compare kernels in one process, interleaved per round (ABAB); rust needs the spike build
+python tests/benchmarks/run_benchmarks.py --dataset movielens --kernel cpp rust --rounds 5 --tag spike
+
+# Small-workload preset (synthetic 10k x 10k, millisecond calls): smoke set, or every case
+python tests/benchmarks/run_small_benchmarks.py
+python tests/benchmarks/run_small_benchmarks.py --cases all
 
 # Custom parameters
 python tests/benchmarks/run_benchmarks.py --dataset movielens --k 200 --shrink 10 --threads 4
@@ -62,6 +69,17 @@ Main benchmark runner with CLI interface. Supports:
 - Outputs both text and JSON reports
 - Optional `--note` for annotating runs
 
+### `run_small_benchmarks.py`
+Small-workload preset on a seeded synthetic 10k x 10k matrix (about 1M nnz,
+Zipf-like item popularity). Exercises what the large datasets don't: k=10/1000,
+`binary=True`, `block_size=None`, a small explicit block size (blocked path),
+array- and matrix-mode `filter_cols`/`target_cols`, and two concurrent calls
+(`num_threads=2` each) vs the same calls run serially. By default only a 5-case
+smoke set runs (its noise is 10-20%, so it catches big regressions only);
+`--cases all` runs everything. Each timing is the median
+of `--reps` calls (default 21). Run it with a free-threaded Python (3.14t/3.15t)
+for a meaningful concurrency number; the report records `gil_enabled`.
+
 ### `compare_benchmarks.py`
 Benchmark comparison tool. Supports:
 - Listing all available JSON reports
@@ -69,6 +87,7 @@ Benchmark comparison tool. Supports:
 - Auto-scanning the bench directory
 - Filtering by version pattern or similarity type
 - Shows timing differences and percentage changes
+- Uses the median when the report has one, else the mean (older reports)
 
 ### `dataset_loaders.py`
 Unified dataset loaders for:
@@ -104,11 +123,14 @@ Core benchmarking functions:
 --threshold THRESHOLD  Minimum threshold (default: 0)
 --threads THREADS      Number of threads, 0=auto (default: 0)
 --block-size SIZE      Block size: 0=auto, none=disabled, or int>0 (default: 0)
---rounds ROUNDS        Number of times to run each config, results averaged (default: 1)
+--rounds ROUNDS        Number of timed rounds per config (default: 1)
+--warmup N             Untimed warm-up rounds before the timed ones (default: 1)
+--kernel K [K ...]     Kernel backend(s): cpp, rust; interleaved per round (default: cpp)
+--tag TAG              Report filename tag (default: similaripy version)
 --output-dir DIR       Output directory for results (default: bench_results)
 --note NOTE            Optional note/comment to attach to the report
 --event-type TYPE      Yambda event type: likes/listens/multi_event (default: multi_event)
---quiet                Suppress verbose output
+--quiet                Suppress harness progress output
 ```
 
 ## Output Format
@@ -136,7 +158,14 @@ movielens            32m        cosine               12.45 ± 0.23       2534.5 
 ========================================================================================================================
 ```
 
-When `--rounds` > 1, the time column shows mean ± standard deviation across all rounds.
+- **Median (s)**: median wall time of the public call across timed rounds (the primary number).
+- **Kernel (s)**: median time inside the compute kernel only (excludes Python prep and output build).
+- **Spread**: (max − min) / median across rounds, a quick noise indicator.
+- **Mean ± std (s)**: kept for comparison with older reports.
+
+The similarity call always runs with `verbose=False`, so the progress bar never
+falls inside the timed region. Configs are interleaved within each round, so slow
+drift (thermals, background load) affects all of them equally.
 
 ## Python API
 
@@ -158,6 +187,7 @@ tests/benchmarks/
 ├── run_benchmarks.py      # Main benchmark runner (CLI)
 ├── compare_benchmarks.py  # Benchmark comparison tool (CLI)
 ├── dataset_loaders.py     # Dataset loaders
+├── run_small_benchmarks.py # Small-workload preset (CLI)
 ├── benchmark.py           # Core benchmark functions
 └── README.md              # This file
 
@@ -202,7 +232,11 @@ Benchmark results are automatically saved in two formats:
         "nnz": 8443200,
         "avg_neighbors": 100.0,
         "rounds": 2,
-        "all_times": [4.96, 4.88]
+        "median_time": 4.92,
+        "kernel_median_time": 4.55,
+        "spread": 0.0163,
+        "all_times": [4.96, 4.88],
+        "kernel_times": [4.58, 4.52]
       }
     }
   }
