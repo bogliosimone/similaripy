@@ -1,13 +1,13 @@
 # Build wheels (cibuildwheel) and sdist on every change to the build inputs.
 # On a published release, also upload them to PyPI via Trusted Publishing.
 
-name: PyPI Publish Package
+name: Build Wheels and Publish
 
 on:
   release:
     types: [published]
   push:
-    branches: [ "*" ]
+    branches: [ "master" ]
     paths: &build-paths
       - "pyproject.toml"
       - "CMakeLists.txt"
@@ -15,9 +15,13 @@ on:
       - "tests/**"
       - ".github/workflows/pypi-publish.yml"
   pull_request:
-    branches: [ "*" ]
     paths: *build-paths
   workflow_dispatch:
+
+# A new push cancels the outdated run of the same branch / PR; release runs are never cancelled
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
 
 jobs:
   build_wheels:

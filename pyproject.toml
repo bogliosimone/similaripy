@@ -63,6 +63,8 @@ test-requires = ["pytest"]
 test-command = "pytest {project}/tests"
 
 [tool.cibuildwheel.macos]
+# Runner images ship Homebrew GCC; install it only if an image stops doing so
+before-all = 'ls "$(brew --prefix)"/bin/g++-* >/dev/null 2>&1 || brew install gcc'
 # Homebrew GCC runtime libs (bundled by delocate) require the runner's macOS version
 environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 
