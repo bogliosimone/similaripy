@@ -9,6 +9,7 @@ Row by row, as (col, score) sets:
 
 Usage:
     python check_kernel_parity.py                       # synthetic 10k, all cases
+    python check_kernel_parity.py --block-size 1024     # synthetic, blocked path (10 blocks)
     python check_kernel_parity.py --dataset movielens --version 32m
 """
 
@@ -56,13 +57,9 @@ def compare(a, b, k, threshold=0.0):
     return one_sided, failures
 
 
-def run_case(name, func, X, kwargs):
-    kw = dict(k=100, verbose=False, format_output='csr') | kwargs
-    try:
-        rust = func(X, **kw, _kernel='rust')
-    except NotImplementedError as e:
-        print(f"{name:<28} skipped ({e})")
-        return True
+def run_case(name, func, X, kwargs, block_size=0):
+    kw = dict(k=100, verbose=False, format_output='csr', block_size=block_size) | kwargs
+    rust = func(X, **kw, _kernel='rust')
     cpp = func(X, **kw)
     one_sided, failures = compare(cpp, rust, min(kw['k'], X.shape[0]), kw.get('threshold', 0.0))
     status = 'OK' if not failures else 'FAIL'
@@ -94,6 +91,7 @@ def main():
     p.add_argument('--version', default=None)
     p.add_argument('--similarities', nargs='+', default=['dot_product', 'cosine', 'rp3beta'])
     p.add_argument('--k', type=int, default=100)
+    p.add_argument('--block-size', type=int, default=0, help='0 = auto (262144)')
     args = p.parse_args()
 
     if args.dataset == 'synthetic':
@@ -104,7 +102,7 @@ def main():
         X = URM.T
         cases = [(s, getattr(sim, s), {'k': args.k}) for s in args.similarities]
 
-    ok = all([run_case(name, func, X, kw) for name, func, kw in cases])
+    ok = all([run_case(name, func, X, kw, args.block_size) for name, func, kw in cases])
     print('PASS' if ok else 'FAIL')
     sys.exit(0 if ok else 1)
 

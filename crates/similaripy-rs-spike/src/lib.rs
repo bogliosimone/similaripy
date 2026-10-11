@@ -3,8 +3,10 @@
 //! after the identical prep.
 
 use numpy::{PyReadonlyArray1, PyReadwriteArray1};
-use pyo3::exceptions::{PyNotImplementedError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use std::time::Instant;
+
 use similaripy_core::{
     CsrPattern, CsrView, Error, Inputs, Norms, Output, Params, Schedule, compute,
 };
@@ -12,10 +14,7 @@ use similaripy_core::{
 const SELECTION_MATRIX: i32 = 2;
 
 fn to_py(e: Error) -> PyErr {
-    match e {
-        Error::InvalidInput(_) => PyValueError::new_err(e.to_string()),
-        Error::Unsupported(_) => PyNotImplementedError::new_err(e.to_string()),
-    }
+    PyValueError::new_err(e.to_string())
 }
 
 fn selection<'a>(
@@ -77,6 +76,9 @@ fn compute_similarities(
     num_threads: usize,
     block_size: usize,
 ) -> PyResult<()> {
+    // Spike-only: SIMILARIPY_RS_TIMING=1 prints the serial validation cost.
+    let timing = std::env::var_os("SIMILARIPY_RS_TIMING").is_some();
+    let t0 = Instant::now();
     let m1 = CsrView::new(
         "m1",
         m1_indptr.as_slice()?,
@@ -91,9 +93,11 @@ fn compute_similarities(
         m2_data.as_slice()?,
         n_output_cols,
     );
+    let (m1, m2) = (m1.map_err(to_py)?, m2.map_err(to_py)?);
+    let t_views = t0.elapsed();
     let inp = Inputs {
-        m1: m1.map_err(to_py)?,
-        m2: m2.map_err(to_py)?,
+        m1,
+        m2,
         targets: targets.as_slice()?,
         norms: Norms {
             x_tversky: x_tversky.as_slice()?,
@@ -140,6 +144,17 @@ fn compute_similarities(
         Ok("adaptive") => Schedule::Adaptive,
         _ => Schedule::Dynamic,
     };
+
+    if timing {
+        // Re-runs the sorted check `compute` does on the blocked path.
+        let t1 = Instant::now();
+        let sorted = m2.indices_sorted();
+        eprintln!(
+            "[rs-timing] views {:.1} ms, m2 sorted check {:.1} ms (sorted={sorted})",
+            t_views.as_secs_f64() * 1e3,
+            t1.elapsed().as_secs_f64() * 1e3,
+        );
+    }
 
     py.detach(|| {
         let run = || compute(&inp, k, block_size, schedule, out);

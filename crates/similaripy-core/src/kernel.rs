@@ -103,13 +103,26 @@ pub fn compute(
         return Ok(());
     }
     let n_cols = inp.m2.n_cols();
-    if block_size > 0 && n_cols > block_size {
-        return Err(Error::Unsupported("column blocking (slice 2)".into()));
+    let blocked = block_size > 0 && n_cols > block_size;
+    // The blocked path binary-searches m2 rows. 0.7.0 silently gives wrong
+    // results here; the Step 2 prep will always sort instead.
+    if blocked && !inp.m2.indices_sorted() {
+        return Err(Error::InvalidInput(
+            "m2: indices not sorted within rows (needed for column blocking)".into(),
+        ));
     }
+    let acc_len = if blocked { block_size } else { n_cols };
 
-    // SAFETY (both arms): `validate` checked every target against all row-indexed inputs.
+    // SAFETY (both arms): `validate` checked every target against all row-indexed inputs,
+    // the scratch accumulator is `acc_len` long, and m2 rows are sorted when blocked.
     let row = |sc: &mut Scratch, t: i32, rows: &mut [i32], cols: &mut [i32], values: &mut [f32]| {
-        let n = unsafe { sc.single_block_row(inp, t as usize, cols, values) };
+        let n = unsafe {
+            if blocked {
+                sc.blocked_row(inp, t as usize, block_size, cols, values)
+            } else {
+                sc.single_block_row(inp, t as usize, cols, values)
+            }
+        };
         rows[..n].fill(t);
     };
     match schedule {
@@ -121,14 +134,14 @@ pub fn compute(
             .zip(out.values.par_chunks_mut(k))
             .with_min_len(MIN_ROWS_PER_JOB)
             .for_each_init(
-                || Scratch::new(n_cols, k),
+                || Scratch::new(acc_len, k),
                 |sc, (((&t, rows), cols), values)| row(sc, t, rows, cols, values),
             ),
         Schedule::Dynamic => {
             let next = AtomicUsize::new(0);
             let shared = SharedOutput::new(out, k);
             rayon::broadcast(|_| {
-                let mut sc = Scratch::new(n_cols, k);
+                let mut sc = Scratch::new(acc_len, k);
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(&t) = inp.targets.get(i) else { break };
@@ -279,6 +292,24 @@ impl Scratch {
         }
     }
 
+    /// Adds `v1 * v2` for each `(c, v2)` into `sums[c - offset]`, recording
+    /// first touches.
+    ///
+    /// # Safety
+    /// Every `c - offset` is `< self.sums.len()`.
+    #[inline(always)]
+    unsafe fn accumulate(&mut self, c_cols: &[i32], c_vals: &[f32], v1: f32, offset: usize) {
+        for (&c, &v2) in c_cols.iter().zip(c_vals) {
+            let local = c as usize - offset;
+            // SAFETY: caller contract.
+            let s = unsafe { self.sums.get_unchecked_mut(local) };
+            if *s == 0.0 {
+                self.touched.push(local as u32);
+            }
+            *s += v2 * v1;
+        }
+    }
+
     /// Accumulates row `t` of `m1 · m2` over all columns, then drains it
     /// through scoring, selection and top-K. Returns the result count.
     ///
@@ -297,17 +328,62 @@ impl Scratch {
             let (u_cols, u_vals) = inp.m1.row_unchecked(t);
             for (&u, &v1) in u_cols.iter().zip(u_vals) {
                 let (c_cols, c_vals) = inp.m2.row_unchecked(u as usize);
-                for (&c, &v2) in c_cols.iter().zip(c_vals) {
-                    let s = self.sums.get_unchecked_mut(c as usize);
-                    if *s == 0.0 {
-                        self.touched.push(c as u32);
-                    }
-                    *s += v2 * v1;
+                self.accumulate(c_cols, c_vals, v1, 0);
+            }
+            // block offset 0, so local col == real col.
+            self.drain(inp, t, 0);
+        }
+        self.topk.drain_into(cols, values)
+    }
+
+    /// Same as `single_block_row`, but over column blocks of `block` columns:
+    /// m1 row `t` is re-read once per block, and only the m2 entries inside
+    /// the block are accumulated, so the accumulator stays cache-sized.
+    ///
+    /// # Safety
+    /// `t` passed `validate`, `self.sums.len() == block`, and m2 rows are sorted.
+    unsafe fn blocked_row(
+        &mut self,
+        inp: &Inputs,
+        t: usize,
+        block: usize,
+        cols: &mut [i32],
+        values: &mut [f32],
+    ) -> usize {
+        let n_cols = inp.m2.n_cols();
+        // SAFETY: as in `single_block_row`; m1 row t is in range.
+        let (u_cols, u_vals) = unsafe { inp.m1.row_unchecked(t) };
+        for start in (0..n_cols).step_by(block) {
+            let end = (start + block).min(n_cols);
+            let (lo_col, hi_col) = (start as i32, end as i32);
+            for (&u, &v1) in u_cols.iter().zip(u_vals) {
+                // SAFETY: m1 indices < m2.n_rows.
+                let (c_cols, c_vals) = unsafe { inp.m2.row_unchecked(u as usize) };
+                let (Some(&first), Some(&last)) = (c_cols.first(), c_cols.last()) else {
+                    continue;
+                };
+                if last < lo_col || first >= hi_col {
+                    continue; // row misses this block
                 }
+                // Sorted row: binary-search the block's span, skipped when the row fits.
+                let lo = if first >= lo_col {
+                    0
+                } else {
+                    c_cols.partition_point(|&c| c < lo_col)
+                };
+                let hi = if last < hi_col {
+                    c_cols.len()
+                } else {
+                    lo + c_cols[lo..].partition_point(|&c| c < hi_col)
+                };
+                // SAFETY: start <= c < end, so c - start < block == sums.len().
+                unsafe { self.accumulate(&c_cols[lo..hi], &c_vals[lo..hi], v1, start) };
+            }
+            if !self.touched.is_empty() {
+                // SAFETY: touched + start < end <= n_cols.
+                unsafe { self.drain(inp, t, start) };
             }
         }
-        // SAFETY: as above; block offset 0, so local col == real col.
-        unsafe { self.drain(inp, t, 0) };
         self.topk.drain_into(cols, values)
     }
 

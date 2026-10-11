@@ -59,6 +59,8 @@ struct Case {
     targets: Vec<usize>,
     /// Reverse each m2 row's indices (allowed on the single-block path).
     unsorted_m2: bool,
+    /// 0 = no blocking; otherwise blocks of this many columns.
+    block_size: usize,
 }
 
 fn case() -> impl Strategy<Value = Case> {
@@ -85,9 +87,22 @@ fn case() -> impl Strategy<Value = Case> {
             prop_oneof![Just(Schedule::Adaptive), Just(Schedule::Dynamic)],
             prop::collection::vec(0..r, 1..=2 * r),
             any::<bool>(),
+            prop_oneof![Just(0usize), 1..=n],
         )
             .prop_map(
-                |(m1, m2, norms, p, filter, target, k, schedule, targets, unsorted_m2)| Case {
+                |(
+                    m1,
+                    m2,
+                    norms,
+                    p,
+                    filter,
+                    target,
+                    k,
+                    schedule,
+                    targets,
+                    unsorted_m2,
+                    block_size,
+                )| Case {
                     m1,
                     m2,
                     norms,
@@ -98,6 +113,7 @@ fn case() -> impl Strategy<Value = Case> {
                     schedule,
                     targets,
                     unsorted_m2,
+                    block_size,
                 },
             )
     })
@@ -189,7 +205,14 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
         cols: &mut cols,
         values: &mut vals,
     };
-    compute(&inp, k, 0, c.schedule, out).unwrap();
+    let res = compute(&inp, k, c.block_size, c.schedule, out);
+    let blocked = c.block_size > 0 && n > c.block_size;
+    // Unsorted m2 rows only reject when the blocked path would binary-search them.
+    if blocked && c.unsorted_m2 && m2.indptr.windows(2).any(|w| w[1] - w[0] > 1) {
+        prop_assert!(res.is_err(), "unsorted m2 accepted on the blocked path");
+        return Ok(());
+    }
+    res.unwrap();
 
     for (i, &t) in c.targets.iter().enumerate() {
         // Reference scores of every eligible (touched, selected) column.
