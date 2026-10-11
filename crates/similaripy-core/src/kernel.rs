@@ -4,8 +4,6 @@
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rayon::prelude::*;
-
 use crate::Error;
 use crate::csr::{CsrPattern, CsrView};
 use crate::topk::TopK;
@@ -77,27 +75,9 @@ pub struct Output<'a> {
     pub values: &'a mut [f32],
 }
 
-/// How rows are spread over the rayon pool (D9: both are measured, the loser is deleted).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Schedule {
-    /// `par_chunks_mut` + `for_each_init`: rayon's adaptive splitting.
-    Adaptive,
-    /// `broadcast` + an atomic row counter: OpenMP's `schedule(dynamic, 1)`.
-    Dynamic,
-}
-
-// ponytail: fixed guess for Schedule::Adaptive, only tuned if it wins D9.
-const MIN_ROWS_PER_JOB: usize = 16;
-
 /// Computes the top-`k` scores for every target row on the current rayon pool.
 /// `block_size == 0` disables column blocking.
-pub fn compute(
-    inp: &Inputs,
-    k: usize,
-    block_size: usize,
-    schedule: Schedule,
-    out: Output,
-) -> Result<(), Error> {
+pub fn compute(inp: &Inputs, k: usize, block_size: usize, out: Output) -> Result<(), Error> {
     validate(inp, k, &out)?;
     if k == 0 || inp.targets.is_empty() {
         return Ok(());
@@ -113,7 +93,7 @@ pub fn compute(
     }
     let acc_len = if blocked { block_size } else { n_cols };
 
-    // SAFETY (both arms): `validate` checked every target against all row-indexed inputs,
+    // SAFETY: `validate` checked every target against all row-indexed inputs,
     // the scratch accumulator is `acc_len` long, and m2 rows are sorted when blocked.
     let row = |sc: &mut Scratch, t: i32, rows: &mut [i32], cols: &mut [i32], values: &mut [f32]| {
         let n = unsafe {
@@ -125,37 +105,25 @@ pub fn compute(
         };
         rows[..n].fill(t);
     };
-    match schedule {
-        Schedule::Adaptive => inp
-            .targets
-            .par_iter()
-            .zip(out.rows.par_chunks_mut(k))
-            .zip(out.cols.par_chunks_mut(k))
-            .zip(out.values.par_chunks_mut(k))
-            .with_min_len(MIN_ROWS_PER_JOB)
-            .for_each_init(
-                || Scratch::new(acc_len, k),
-                |sc, (((&t, rows), cols), values)| row(sc, t, rows, cols, values),
-            ),
-        Schedule::Dynamic => {
-            let next = AtomicUsize::new(0);
-            let shared = SharedOutput::new(out, k);
-            rayon::broadcast(|_| {
-                let mut sc = Scratch::new(acc_len, k);
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(&t) = inp.targets.get(i) else { break };
-                    // SAFETY: the counter hands out each i exactly once, and i < len(targets).
-                    let (rows, cols, values) = unsafe { shared.chunk(i) };
-                    row(&mut sc, t, rows, cols, values);
-                }
-            });
+    // `broadcast` + an atomic row counter = OpenMP's `schedule(dynamic, 1)`, one
+    // scratch per worker. Rayon's adaptive splitting was +65..86% on ML-32M:
+    // popularity-ordered rows put most of the work in the first few chunks (D9).
+    let next = AtomicUsize::new(0);
+    let shared = SharedOutput::new(out, k);
+    rayon::broadcast(|_| {
+        let mut sc = Scratch::new(acc_len, k);
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            let Some(&t) = inp.targets.get(i) else { break };
+            // SAFETY: the counter hands out each i exactly once, and i < len(targets).
+            let (rows, cols, values) = unsafe { shared.chunk(i) };
+            row(&mut sc, t, rows, cols, values);
         }
-    }
+    });
     Ok(())
 }
 
-/// Output buffers shared by the `Dynamic` workers. Each row index is claimed
+/// Output buffers shared by the workers. Each row index is claimed
 /// by one worker only, so the `k`-slot chunks they write never overlap.
 struct SharedOutput<'a> {
     rows: *mut i32,

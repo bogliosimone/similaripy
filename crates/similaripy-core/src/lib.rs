@@ -5,7 +5,7 @@ mod kernel;
 mod topk;
 
 pub use csr::{CsrPattern, CsrView};
-pub use kernel::{Inputs, Norms, Output, Params, Schedule, compute};
+pub use kernel::{Inputs, Norms, Output, Params, compute};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {

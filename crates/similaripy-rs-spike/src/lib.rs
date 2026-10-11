@@ -7,9 +7,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::time::Instant;
 
-use similaripy_core::{
-    CsrPattern, CsrView, Error, Inputs, Norms, Output, Params, Schedule, compute,
-};
+use similaripy_core::{CsrPattern, CsrView, Error, Inputs, Norms, Output, Params, compute};
 
 const SELECTION_MATRIX: i32 = 2;
 
@@ -139,12 +137,6 @@ fn compute_similarities(
         values: values.as_slice_mut()?,
     };
 
-    // D9 comparison switch (spike-only): SIMILARIPY_RS_SCHEDULE=adaptive|dynamic.
-    let schedule = match std::env::var("SIMILARIPY_RS_SCHEDULE").as_deref() {
-        Ok("adaptive") => Schedule::Adaptive,
-        _ => Schedule::Dynamic,
-    };
-
     if timing {
         // Re-runs the sorted check `compute` does on the blocked path.
         let t1 = Instant::now();
@@ -157,7 +149,7 @@ fn compute_similarities(
     }
 
     py.detach(|| {
-        let run = || compute(&inp, k, block_size, schedule, out);
+        let run = || compute(&inp, k, block_size, out);
         if num_threads == 0 {
             run()
         } else {

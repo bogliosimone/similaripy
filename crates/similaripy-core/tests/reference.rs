@@ -3,7 +3,7 @@
 //! (any column whose reference score ties the k-th within tolerance may swap).
 
 use proptest::prelude::*;
-use similaripy_core::{CsrPattern, CsrView, Inputs, Norms, Output, Params, Schedule, compute};
+use similaripy_core::{CsrPattern, CsrView, Inputs, Norms, Output, Params, compute};
 
 const RTOL: f64 = 1e-5;
 const ATOL: f64 = 1e-6;
@@ -54,7 +54,6 @@ struct Case {
     filter: Option<Vec<Vec<f32>>>,
     target: Option<Vec<Vec<f32>>>,
     k: usize,
-    schedule: Schedule,
     /// Target rows: any subset/order, duplicates allowed.
     targets: Vec<usize>,
     /// Reverse each m2 row's indices (allowed on the single-block path).
@@ -84,25 +83,12 @@ fn case() -> impl Strategy<Value = Case> {
             mask(r, n),
             mask(r, n),
             1..=n,
-            prop_oneof![Just(Schedule::Adaptive), Just(Schedule::Dynamic)],
             prop::collection::vec(0..r, 1..=2 * r),
             any::<bool>(),
             prop_oneof![Just(0usize), 1..=n],
         )
             .prop_map(
-                |(
-                    m1,
-                    m2,
-                    norms,
-                    p,
-                    filter,
-                    target,
-                    k,
-                    schedule,
-                    targets,
-                    unsorted_m2,
-                    block_size,
-                )| Case {
+                |(m1, m2, norms, p, filter, target, k, targets, unsorted_m2, block_size)| Case {
                     m1,
                     m2,
                     norms,
@@ -110,7 +96,6 @@ fn case() -> impl Strategy<Value = Case> {
                     filter,
                     target,
                     k,
-                    schedule,
                     targets,
                     unsorted_m2,
                     block_size,
@@ -205,7 +190,7 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
         cols: &mut cols,
         values: &mut vals,
     };
-    let res = compute(&inp, k, c.block_size, c.schedule, out);
+    let res = compute(&inp, k, c.block_size, out);
     let blocked = c.block_size > 0 && n > c.block_size;
     // Unsorted m2 rows only reject when the blocked path would binary-search them.
     if blocked && c.unsorted_m2 && m2.indptr.windows(2).any(|w| w[1] - w[0] > 1) {
