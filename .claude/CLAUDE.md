@@ -115,4 +115,4 @@ make benchmark-similarity
 
 ## Version & License
 - **License:** MIT
-- **Python Support:** 3.10+
+- **Python Support:** 3.11+
