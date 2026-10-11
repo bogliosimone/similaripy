@@ -1,0 +1,10 @@
+# Open a PR when a GitHub Action used in the workflows has a new release
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns: ["*"]

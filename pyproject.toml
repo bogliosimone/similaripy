@@ -1,11 +1,12 @@
 [project]
 name = "similaripy"
-version = "0.6.0"
+version = "0.7.0"
 description = "High-performance KNN similarity functions in Python, optimized for sparse matrices"
 authors = [{ name = "Simone Boglio", email = "bogliosimone@gmail.com" }]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = [
   "Similarity", "KNN", "Nearest Neighbors",
   "Collaborative Filtering", "Normalization", "Recommender Systems"
@@ -14,7 +15,6 @@ classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: MacOS",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX",
@@ -22,11 +22,11 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Programming Language :: Cython",
   "Programming Language :: C++",
 ]
@@ -42,7 +42,7 @@ repository = "https://github.com/bogliosimone/similaripy.git"
 changelog = "https://github.com/bogliosimone/similaripy/releases"
 
 [build-system]
-requires = ["scikit-build-core>=0.10", "cython"]
+requires = ["scikit-build-core>=0.11", "cython>=3.1"]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
@@ -51,9 +51,22 @@ wheel.packages = ["similaripy"]
 build-dir = "build/{wheel_tag}"
 build.verbose = true
 logging.level = "INFO"
+sdist.exclude = [".claude", ".vscode", ".github", "notebooks", "tests/benchmarks", "docs", "mkdocs.yml"]
 
 [tool.scikit-build.cmake.define]
 USE_OPENMP = "ON"
+
+[tool.cibuildwheel]
+# Python range comes from requires-python, free-threaded (t) builds included
+skip = "*-musllinux_* *-win32 *_i686"
+test-requires = ["pytest"]
+test-command = "pytest {project}/tests"
+
+[tool.cibuildwheel.macos]
+# Runner images ship Homebrew GCC; install it only if an image stops doing so
+before-all = 'ls "$(brew --prefix)"/bin/g++-* >/dev/null 2>&1 || brew install gcc'
+# Homebrew GCC runtime libs (bundled by delocate) require the runner's macOS version
+environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 
 [project.optional-dependencies]
 dev = [
