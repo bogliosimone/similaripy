@@ -245,7 +245,8 @@ impl Params {
     /// # Safety
     /// `row` and `col` are in range of every norm pair whose weight is non-zero.
     #[inline(always)]
-    unsafe fn score(&self, n: &Norms, row: usize, col: usize, xy: f32) -> f32 {
+    /// `POW` must equal `a1 != 1.0` (see `Scratch::drain`).
+    unsafe fn score<const POW: bool>(&self, n: &Norms, row: usize, col: usize, xy: f32) -> f32 {
         if !self.normalizes() {
             return xy; // a1 is ignored without normalization, as in 0.7.0
         }
@@ -266,7 +267,7 @@ impl Params {
                 dp = self.l3 * (n.x_depop.get_unchecked(row) * n.y_depop.get_unchecked(col));
             }
         }
-        let xy_pow = if self.a1 != 1.0 { xy.powf(self.a1) } else { xy };
+        let xy_pow = if POW { xy.powf(self.a1) } else { xy };
         let den = tv + cs + dp + self.stabilized_shrink;
         let mut val = if den != 0.0 { xy_pow / den } else { 0.0 };
         if self.bayesian_shrink != 0.0 {
@@ -394,6 +395,22 @@ impl Scratch {
     /// `t` passed `validate`; every touched column + `offset` is a valid output column.
     #[inline]
     unsafe fn drain(&mut self, inp: &Inputs, t: usize, offset: usize) {
+        // Branch once per drain: inside the loop LLVM speculates `powf` (a pure
+        // intrinsic) and calls it for every column even when a1 == 1.
+        // SAFETY: caller contract, forwarded.
+        unsafe {
+            if inp.params.a1 != 1.0 {
+                self.drain_impl::<true>(inp, t, offset)
+            } else {
+                self.drain_impl::<false>(inp, t, offset)
+            }
+        }
+    }
+
+    /// # Safety
+    /// As `drain`.
+    #[inline(always)]
+    unsafe fn drain_impl<const POW: bool>(&mut self, inp: &Inputs, t: usize, offset: usize) {
         let p = &inp.params;
         for &local in &self.touched {
             // SAFETY: touched columns are < sums.len().
@@ -410,7 +427,7 @@ impl Scratch {
             };
             if keep {
                 // SAFETY: t and col in range of the active norms (validate).
-                let val = unsafe { p.score(&inp.norms, t, col, xy) };
+                let val = unsafe { p.score::<POW>(&inp.norms, t, col, xy) };
                 if val >= p.threshold {
                     self.topk.push(col_i, val);
                 }
