@@ -6,7 +6,7 @@ resolver = "3"
 edition = "2024"
 license = "MIT"
 
-# Matches the C++ build: optimized, no target-cpu=native.
+# Fat LTO, one codegen unit, no target-cpu=native (portable wheels).
 [profile.release]
 lto = "fat"
 codegen-units = 1
