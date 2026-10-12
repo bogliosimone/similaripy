@@ -453,12 +453,16 @@ fn lower_bound(s: &[i32], x: i32) -> usize {
         } else {
             // Empty asm = optimization barrier, so LLVM can't if-convert this into
             // `csel`/`cmov` again; std has no stable "keep this branch" hint. Only on
-            // targets with stable `asm!` (the wheel matrix); a plain loop elsewhere.
-            #[cfg(any(
-                target_arch = "x86",
-                target_arch = "x86_64",
-                target_arch = "arm",
-                target_arch = "aarch64"
+            // targets with stable `asm!` (the wheel matrix), and not under Miri (no
+            // inline asm support); a plain loop elsewhere.
+            #[cfg(all(
+                not(miri),
+                any(
+                    target_arch = "x86",
+                    target_arch = "x86_64",
+                    target_arch = "arm",
+                    target_arch = "aarch64"
+                )
             ))]
             // SAFETY: emits no instructions.
             unsafe {

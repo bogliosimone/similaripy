@@ -260,7 +260,8 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(2000))]
+    // Miri runs ~1000x slower: a few cases still exercise every unsafe path.
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 2000 }))]
     #[test]
     fn matches_dense_reference(c in case()) {
         check(&c)?;

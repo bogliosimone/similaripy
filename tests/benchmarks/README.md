@@ -255,3 +255,19 @@ python tests/benchmarks/run_benchmarks.py --dataset movielens --output-dir my_re
 - First run downloads datasets automatically
 - Results include system info (version, architecture, CPU model, Python version, git commit)
 - All benchmark runs are saved to timestamped files automatically
+
+## Codegen-sensitive hot loops (Rust core)
+
+Two speedups in `crates/similaripy-core/src/kernel.rs` depend on what LLVM emits, and no unit test can see them:
+
+- `lower_bound` must stay **branchy**. LLVM likes to turn it into a branchless `csel`/`cmov` loop, which serializes cache misses once the data no longer fits in cache. An empty `asm!` barrier prevents that today.
+- `accumulate` must keep `sums` and the `touched` cursor in registers. As a `&mut self` method, LLVM reloaded them from the stack on every element.
+
+Only Yambda 500M exposes a regression here; ML-32M and Yambda 50M mostly fit in cache. When you upgrade rustc or edit either function, rerun the 500M comparison on an idle machine, and check the cpp time against earlier runs to catch background load:
+
+```bash
+python run_benchmarks.py --dataset yambda --version 500m --similarities dot_product cosine \
+    --rounds 1 --warmup 0 --kernel cpp rust
+```
+
+When the Rust kernel became slower than cpp at 500M, the cause was these two loops (+13..16% before the fix, −7..−11% after).
