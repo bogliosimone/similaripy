@@ -10,7 +10,6 @@ on:
     branches: [ "master", "v1/main" ]
     paths: &build-paths
       - "pyproject.toml"
-      - "CMakeLists.txt"
       - "similaripy/**"
       - "tests/**"
       - "crates/**"

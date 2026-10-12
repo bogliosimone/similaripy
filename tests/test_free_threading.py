@@ -20,7 +20,7 @@ def _calls(m):
     return {
         'dot_product': lambda: sim.dot_product(m, k=50, verbose=False, num_threads=2),
         'cosine': lambda: sim.cosine(m, k=50, verbose=False, num_threads=2),
-        # default threads: OpenMP team per call / Rust global pool shared by all callers
+        # default threads: the rayon global pool, shared by all callers
         'cosine_all_threads': lambda: sim.cosine(m, k=50, verbose=False),
         'rp3beta': lambda: sim.rp3beta(m, k=50, verbose=False, num_threads=2),
         's_plus': lambda: sim.s_plus(m, k=50, verbose=False, num_threads=2),

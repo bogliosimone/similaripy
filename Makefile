@@ -6,17 +6,6 @@ install:
 install-dev:
 	uv pip install -e '.[dev,bench,notebook]'
 
-.PHONY: install-dev-editable
-# The first time, you must run install-dev before, to have dependencies installed
-install-dev-editable:
-	SKBUILD_EDITABLE_REBUILD=true uv pip install -e '.[dev,bench,notebook]' --no-build-isolation -v
-
-.PHONY: install-dev-rust
-# Rust kernel module (`_similaripy_rs`) next to the Cython package, Step 2a only.
-# Rerun after Rust edits; use with _backend='rust' or SIMILARIPY_BACKEND=rust.
-install-dev-rust:
-	uv run maturin develop --release -m crates/similaripy-py/Cargo.toml
-
 .PHONY: test
 test:
 	uv run tox -e py311
@@ -57,7 +46,7 @@ benchmark-similarity-large:
 clean:
 	rm -rf build/ dist/ *.egg-info
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	find . -name '*.so' -path '*/cython_code/*' -delete 2>/dev/null || true
+	rm -f similaripy/_core*.so similaripy/_core*.pyd
 
 .PHONY: mkdocs
 mkdocs:

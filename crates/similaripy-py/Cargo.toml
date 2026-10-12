@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [lib]
-name = "_similaripy_rs"
+name = "_core"
 crate-type = ["cdylib"]
 # Tested through pytest; without these, `cargo test` would link libpython.
 test = false

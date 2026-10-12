@@ -1,18 +1,10 @@
-from ._backend import resolve as _resolve_backend
+from ._s_plus import s_plus as _s_plus
 from .normalization import normalize as _normalize
 import numpy as np
 
 from typing import Optional, Union, Literal
 from scipy.sparse import sparray
 
-
-def _dispatch_s_plus(*args, _backend=None, **kwargs):
-    """Rust path (`_s_plus.py`) or 0.7.0's Cython `s_plus` (the reference until Step 2a slice 5)."""
-    if _resolve_backend(_backend) == 'rust':
-        from . import _s_plus as rust_s_plus
-        return rust_s_plus.s_plus(*args, **kwargs)
-    from .cython_code import s_plus as cython_s_plus
-    return cython_s_plus.s_plus(*args, **kwargs)
 
 
 def dot_product(
@@ -30,7 +22,6 @@ def dot_product(
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
-    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sparray:
     """
     Compute dot product similarity between rows of matrix1 and columns of matrix2.
@@ -56,7 +47,7 @@ def dot_product(
         containing the top-k dot product similarities.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _dispatch_s_plus(
+    return _s_plus(
         matrix1, matrix2=matrix2,
         k=k,
         stabilized_shrink=stabilized_shrink,
@@ -71,7 +62,6 @@ def dot_product(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
-        _backend=_backend,
     )
 
 
@@ -90,7 +80,6 @@ def cosine(
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
-    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sparray:
     """
     Compute cosine similarity between sparse vectors.
@@ -115,7 +104,7 @@ def cosine(
         A sparse matrix of top-k cosine similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _dispatch_s_plus(
+    return _s_plus(
         matrix1, matrix2=matrix2,
         l2=1,
         c1=0.5, c2=0.5,
@@ -132,7 +121,6 @@ def cosine(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
-        _backend=_backend,
     )
 
 
@@ -152,7 +140,6 @@ def asymmetric_cosine(
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
-    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sparray:
     """
     Compute asymmetric cosine similarity.
@@ -180,7 +167,7 @@ def asymmetric_cosine(
         asymmetric cosine similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _dispatch_s_plus(
+    return _s_plus(
         matrix1, matrix2=matrix2,
         l2=1,
         c1=alpha, c2=1-alpha,
@@ -197,7 +184,6 @@ def asymmetric_cosine(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
-        _backend=_backend,
     )
 
 
@@ -218,7 +204,6 @@ def tversky(
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
-    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sparray:
     """
     Compute Tversky similarity between sparse vectors.
@@ -245,7 +230,7 @@ def tversky(
         A sparse matrix of top-k Tversky similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _dispatch_s_plus(
+    return _s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=alpha, t2=beta,
@@ -262,7 +247,6 @@ def tversky(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
-        _backend=_backend,
     )
 
 
@@ -281,7 +265,6 @@ def jaccard(
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
-    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sparray:
     """
     Compute Jaccard similarity (intersection over union).
@@ -306,7 +289,7 @@ def jaccard(
         A sparse matrix of top-k Jaccard similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _dispatch_s_plus(
+    return _s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=1, t2=1,
@@ -323,7 +306,6 @@ def jaccard(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
-        _backend=_backend,
     )
 
 
@@ -342,7 +324,6 @@ def dice(
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
-    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sparray:
     """
     Compute Dice similarity (harmonic mean of overlap and size).
@@ -367,7 +348,7 @@ def dice(
         A sparse matrix of top-k Dice similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _dispatch_s_plus(
+    return _s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=0.5, t2=0.5,
@@ -384,7 +365,6 @@ def dice(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
-        _backend=_backend,
     )
 
 
@@ -404,7 +384,6 @@ def p3alpha(
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
-    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sparray:
     """
     Compute P3alpha similarity using a normalized 3-step random walk.
@@ -436,7 +415,7 @@ def p3alpha(
     matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
     matrix2.data = np.power(matrix2.data, alpha)
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _dispatch_s_plus(
+    return _s_plus(
         matrix1=matrix1, matrix2=matrix2,
         k=k,
         stabilized_shrink=stabilized_shrink,
@@ -451,7 +430,6 @@ def p3alpha(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
-        _backend=_backend,
     )
 
 
@@ -472,7 +450,6 @@ def rp3beta(
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
-    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sparray:
     """
     Compute RP3beta similarity: P3alpha with popularity penalization.
@@ -506,7 +483,7 @@ def rp3beta(
     matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
     matrix2.data = np.power(matrix2.data, alpha)
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _dispatch_s_plus(
+    return _s_plus(
         matrix1=matrix1, matrix2=matrix2,
         weight_depop_matrix2=pop_m2,
         p2=beta,
@@ -524,7 +501,6 @@ def rp3beta(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
-        _backend=_backend,
     )
 
 
@@ -555,7 +531,6 @@ def s_plus(
     format_output: Literal['csr', 'coo'] = 'coo',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
-    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sparray:
     """
     Combines Tversky and Cosine normalizations with RP3Beta-style depopularization, fully controlled by tunable weights
@@ -592,7 +567,7 @@ def s_plus(
         A sparse matrix of top-k s_plus similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _dispatch_s_plus(
+    return _s_plus(
         matrix1, matrix2=matrix2,
         l1=l1, l2=l2, l3=l3,
         t1=t1, t2=t2,
@@ -615,7 +590,6 @@ def s_plus(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
-        _backend=_backend,
     )
 
 

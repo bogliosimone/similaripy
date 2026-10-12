@@ -1,6 +1,5 @@
-//! Python bindings of the Rust core. During Step 2a this mirrors the C++
-//! `compute_similarities_parallel` call; `similaripy/_s_plus.py` does the
-//! prep and calls it (`_backend='rust'`).
+//! Python bindings of the Rust core (`similaripy._core`). `similaripy/_s_plus.py`
+//! does the prep and calls `compute`.
 
 mod normalize;
 mod progress;
@@ -186,7 +185,7 @@ fn get_num_threads() -> usize {
 }
 
 #[pymodule]
-fn _similaripy_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
     m.add_function(wrap_pyfunction!(get_num_threads, m)?)?;
     m.add_class::<ProgressBar>()?;

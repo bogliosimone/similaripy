@@ -1,7 +1,7 @@
 """
-    s_plus on the Rust kernel: numpy prep, kernel call, output build (v1 Step 2a, D19).
+    s_plus on the Rust kernel: numpy prep, kernel call, output build (D19).
 
-    Same results as 0.7.0's `cython_code/s_plus.pyx`, minus its bugs:
+    Same results as 0.7.0's Cython `s_plus`, minus its bugs:
     never mutates the caller's matrices, always sorts m2 when blocking,
     accepts int64-indexed inputs, closes the progress bar on errors.
 """
@@ -11,6 +11,8 @@ from typing import Union, Optional, List
 
 import numpy as np
 import scipy.sparse as sp
+
+from . import _core
 
 # Accumulator block in float32 entries (~1 MB), as 0.7.0 (`s_plus.h`).
 DEFAULT_BLOCK_SIZE = 262144
@@ -33,8 +35,7 @@ _EMPTY_I32 = np.empty(0, dtype=np.int32)
 
 def get_num_threads() -> int:
     """Threads used with `num_threads=0` (rayon global pool, `RAYON_NUM_THREADS`)."""
-    import _similaripy_rs
-    return _similaripy_rs.get_num_threads()
+    return _core.get_num_threads()
 
 
 def validate_s_plus_inputs(
@@ -229,7 +230,7 @@ def _array_keep_mask(filter_cols, target_cols, n_cols: int) -> np.ndarray:
 def _keep_columns(data, indices, indptr, keep_mask):
     """Drops the entries whose column is not in `keep_mask`; column ids and order unchanged."""
     # ponytail: slower than 0.7.0's Cython loop (two boolean gathers); a Rust
-    # pass is the upgrade, tracked for the post-Cython polish
+    # pass is the upgrade, tracked for the non-hot-path polish
     sel = keep_mask[indices]
     new_indptr = np.zeros(len(indptr), dtype=np.int32)
     np.cumsum(_row_sums(sel, indptr, dtype=np.int32), out=new_indptr[1:])
@@ -341,8 +342,6 @@ def s_plus(
         ValueError: invalid shapes or parameters (see `validate_s_plus_inputs`),
             a negative block_size, or int32 overflow of inputs or output.
     """
-    import _similaripy_rs
-
     if matrix2 is None:
         matrix2 = matrix1.T
 
@@ -382,11 +381,11 @@ def s_plus(
 
     bar = None
     if verbose:
-        bar = _similaripy_rs.ProgressBar(n_targets, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
+        bar = _core.ProgressBar(n_targets, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
         bar.set_description('Preprocessing')
     try:
         res = _s_plus(
-            _similaripy_rs, bar, matrix1, matrix2, targets, k,
+            bar, matrix1, matrix2, targets, k,
             weight_depop_matrix1, weight_depop_matrix2, p1, p2, a1, l1, l2, l3, t1, t2, c1, c2,
             stabilized_shrink, bayesian_shrink, additive_shrink, threshold, binary,
             filter_cols, target_cols, format_output, num_threads, block_size,
@@ -401,7 +400,7 @@ def s_plus(
 
 
 def _s_plus(
-    rs, bar, matrix1, matrix2, targets, k,
+    bar, matrix1, matrix2, targets, k,
     weight_depop_matrix1, weight_depop_matrix2, p1, p2, a1, l1, l2, l3, t1, t2, c1, c2,
     stabilized_shrink, bayesian_shrink, additive_shrink, threshold, binary,
     filter_cols, target_cols, format_output, num_threads, block_size,
@@ -487,7 +486,7 @@ def _s_plus(
     if bar is not None:
         bar.set_description('Computing')
     kernel_start = time.perf_counter()
-    rs.compute_similarities(
+    _core.compute_similarities(
         targets,
         m1_data, m1_indices, m1_indptr, m1.shape[1],
         m2_data, m2_indices, m2_indptr,

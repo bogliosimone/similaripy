@@ -27,8 +27,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: 3.15",
-  "Programming Language :: Cython",
-  "Programming Language :: C++",
+  "Programming Language :: Rust",
 ]
 dependencies = [
     "numpy>=1.22.4",
@@ -42,25 +41,42 @@ repository = "https://github.com/bogliosimone/similaripy.git"
 changelog = "https://github.com/bogliosimone/similaripy/releases"
 
 [build-system]
-requires = ["scikit-build-core>=0.11", "cython>=3.1"]
-build-backend = "scikit_build_core.build"
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
 
-[tool.scikit-build]
-minimum-version = "build-system.requires"
-wheel.packages = ["similaripy"]
-build-dir = "build/{wheel_tag}"
-build.verbose = true
-logging.level = "INFO"
-sdist.exclude = [".claude", ".vscode", ".github", "notebooks", "tests/benchmarks", "docs", "mkdocs.yml"]
+[tool.maturin]
+manifest-path = "crates/similaripy-py/Cargo.toml"
+module-name = "similaripy._core"
+include = [
+  { path = "tests/**/*", format = "sdist" },
+  { path = "rust-toolchain.toml", format = "sdist" },
+]
+exclude = [
+  { path = "tests/benchmarks/**/*", format = "sdist" },
+  { path = "**/__pycache__/**/*", format = "sdist" },
+  { path = "**/.DS_Store", format = "sdist" },
+]
 
-[tool.scikit-build.cmake.define]
-USE_OPENMP = "ON"
+[tool.uv]
+# Rebuild the editable install when the Rust sources change
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "Cargo.toml" },
+  { file = "Cargo.lock" },
+  { file = "crates/**/*.rs" },
+  { file = "crates/**/Cargo.toml" },
+]
 
 [tool.cibuildwheel]
 # Python range comes from requires-python, free-threaded (t) builds included
 skip = "*-musllinux_* *-win32 *_i686"
 test-requires = ["pytest"]
 test-command = "pytest {project}/tests"
+
+[tool.cibuildwheel.linux]
+# manylinux images have no Rust: install rustup, then the rust-toolchain.toml pin
+before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none && cd {project} && $HOME/.cargo/bin/rustup toolchain install"
+environment = { PATH = "$HOME/.cargo/bin:$PATH" }
 
 [tool.cibuildwheel.macos]
 # Runner images ship Homebrew GCC; install it only if an image stops doing so
@@ -70,10 +86,6 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
 
 [project.optional-dependencies]
 dev = [
-  "scikit-build-core",
-  "cmake",
-  "pybind11",
-  "cython",
   "maturin",
   "pytest",
   "build",

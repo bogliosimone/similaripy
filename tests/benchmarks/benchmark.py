@@ -9,13 +9,10 @@ import time
 import platform
 import os
 import subprocess
-import glob
 import sys
 import threading
 from datetime import datetime
 import similaripy as sim
-from similaripy import _s_plus as _rust_s_plus_module
-from similaripy.cython_code import s_plus as _s_plus_module
 import numpy as np
 import scipy as sp
 
@@ -28,7 +25,7 @@ def get_system_info():
     dict
         Dictionary with keys: similaripy_version, numpy_version, scipy_version, python_version, system,
         arch, cpu_model, cpu_count, git_hash, timestamp, os_version, memory_gb,
-        compiler, rustc, gil_enabled.
+        rustc, gil_enabled.
     """
     try:
         similaripy_version = sim.__version__
@@ -87,8 +84,6 @@ def get_system_info():
     except (ValueError, OSError, AttributeError):
         pass
 
-    # Compiler that built the extension: on macOS CMakeLists.txt picks the
-    # newest Homebrew g++-N, elsewhere the default c++ on PATH
     def tool_version(cmd):
         try:
             r = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=5)
@@ -98,15 +93,6 @@ def get_system_info():
             pass
         return "unknown"
 
-    cxx = "c++"
-    if platform.system() == "Darwin":
-        brew_gpp = sorted(
-            glob.glob("/opt/homebrew/bin/g++-[0-9]*") + glob.glob("/usr/local/bin/g++-[0-9]*"),
-            key=lambda p: int(p.rsplit("-", 1)[1]),
-        )
-        if brew_gpp:
-            cxx = brew_gpp[-1]
-    compiler = tool_version(cxx)
     rustc = tool_version("rustc")
 
     return {
@@ -122,7 +108,6 @@ def get_system_info():
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "os_version": os_version,
         "memory_gb": memory_gb,
-        "compiler": compiler,
         "rustc": rustc,
         "gil_enabled": getattr(sys, "_is_gil_enabled", lambda: True)(),
     }
@@ -136,7 +121,6 @@ def benchmark_similarity(
     threshold=0,
     num_threads=0,
     verbose=True,
-    kernel="cpp",
     **similarity_kwargs
 ):
     """
@@ -163,8 +147,6 @@ def benchmark_similarity(
     verbose : bool, optional
         Unused for timing: the similarity call always runs with verbose=False
         so the progress bar stays out of the timed region (default: True)
-    kernel : str, optional
-        Kernel backend: "cpp" (default, Cython) or "rust" (passes _backend)
     **similarity_kwargs : dict
         Additional similarity-specific parameters
 
@@ -212,8 +194,6 @@ def benchmark_similarity(
     similarity_func = _get_similarity_function(similarity_type)
 
     block_size = similarity_kwargs.pop('block_size', 0)
-    # Always explicit, so SIMILARIPY_BACKEND can't flip the cpp side
-    similarity_kwargs['_backend'] = 'cython' if kernel == 'cpp' else kernel
 
     start_time = time.perf_counter()
 
@@ -230,7 +210,7 @@ def benchmark_similarity(
 
     end_time = time.perf_counter()
     computation_time = end_time - start_time
-    kernel_time = (_s_plus_module if kernel == 'cpp' else _rust_s_plus_module)._last_kernel_time
+    kernel_time = sim._s_plus._last_kernel_time
 
     # Calculate metrics
     n_items = similarity_matrix.shape[0]
@@ -251,7 +231,6 @@ def benchmark_similarity(
         'similarity_matrix': similarity_matrix,
         'computation_time': computation_time,
         'kernel_time': kernel_time,
-        'kernel': kernel,
         'n_items': n_items,
         'nnz': nnz,
         'density': density,

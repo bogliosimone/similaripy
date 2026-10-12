@@ -1,12 +1,17 @@
 """
-Normalization parity: Rust (`_backend='rust'`) vs Cython (`'cython'`), v1 Step 2a.
+Normalization parity: this install vs a reference install's `--dump`
+(two steps, as check_kernel_parity.py).
 
 Every output value must match with rtol=1e-5, atol=1e-7 (NaN/inf must match too);
 output dtypes and the sparsity structure must be identical.
 
-Usage:
-    python check_normalization_parity.py                        # synthetic: every mode x dtype x axis
-    python check_normalization_parity.py --dataset movielens --version 32m   # reduced set
+Usage (from the repo root; the same options on both steps):
+    uv run --isolated --no-project --python 3.14 --with similaripy==0.7.0 --with pandas --with datasets \
+        python tests/benchmarks/check_normalization_parity.py --dump ref_norm.npz
+    python tests/benchmarks/check_normalization_parity.py --compare ref_norm.npz
+
+    Synthetic: every mode x dtype x axis. --dataset movielens --version 32m:
+    reduced set, outputs checked on a fixed 1% row sample (dump ~1 GB).
 """
 
 import argparse
@@ -18,6 +23,7 @@ import scipy.sparse as sp
 
 import similaripy as sim
 from dataset_loaders import load_URM
+from check_kernel_parity import load_outputs, save_outputs
 from run_small_benchmarks import make_urm
 
 RTOL, ATOL = 1e-5, 1e-7
@@ -47,9 +53,7 @@ def with_dtypes(X, data_dtype, index_dtype):
     return X
 
 
-def run_case(name, func, X, kw):
-    cy = func(X, **kw, _backend='cython')
-    rs = func(X, **kw, _backend='rust')
+def check_case(name, cy, rs):
     fail = None
     if cy.data.dtype != rs.data.dtype or cy.indices.dtype != rs.indices.dtype:
         fail = f'dtype {cy.data.dtype}/{cy.indices.dtype} vs {rs.data.dtype}/{rs.indices.dtype}'
@@ -59,7 +63,7 @@ def run_case(name, func, X, kw):
         bad = ~np.isclose(rs.data, cy.data, rtol=RTOL, atol=ATOL, equal_nan=True)
         if bad.any():
             j = np.flatnonzero(bad)[0]
-            fail = f'{bad.sum()} values differ, first at {j}: cython {cy.data[j]!r} vs rust {rs.data[j]!r}'
+            fail = f'{bad.sum()} values differ, first at {j}: ref {cy.data[j]!r} vs new {rs.data[j]!r}'
     if fail:
         print(f'{name:<40} FAIL  {fail}')
     return fail is None
@@ -67,6 +71,9 @@ def run_case(name, func, X, kw):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--dump', metavar='NPZ', help="save this install's outputs (run under the reference)")
+    mode.add_argument('--compare', metavar='NPZ', help="check this install's outputs against a --dump file")
     p.add_argument('--dataset', default='synthetic', choices=['synthetic', 'movielens', 'yambda'])
     p.add_argument('--version', default=None)
     args = p.parse_args()
@@ -76,17 +83,32 @@ def main():
     else:
         X0, _ = load_URM(args.dataset, version=args.version)
     full = args.dataset == 'synthetic'
+    # Datasets: keep a fixed 1% of output rows, or 240 full outputs take ~90 GB
+    rows = None if full else np.sort(np.random.default_rng(0).choice(X0.shape[0], X0.shape[0] // 100, replace=False))
+    meta = {k: v for k, v in vars(args).items() if k not in ('dump', 'compare')}
+    ref = None if args.dump else load_outputs(args.compare, meta)
 
-    ok, n = True, 0
+    ok, outputs = True, {}
     for data_dtype, index_dtype, axis in itertools.product((np.float32, np.float64), (np.int32, np.int64), (1, 0)):
         X = with_dtypes(X0, data_dtype, index_dtype)
         tag = f'{np.dtype(data_dtype).name}/{np.dtype(index_dtype).name}/axis={axis}'
-        group_ok = all([run_case(f'{name} [{tag}]', func, X, kw | {'axis': axis})
-                        for name, func, kw in cases(full)])
-        n += len(cases(full))
-        print(f'{tag:<28} {"OK" if group_ok else "FAIL"}')
+        group_ok = True
+        for name, func, kw in cases(full):
+            key = f'{name} [{tag}]'
+            out = func(X, **kw | {'axis': axis})
+            if rows is not None:
+                out = out.tocsr()[rows]
+            if ref is None:
+                outputs[key] = out
+            else:
+                group_ok &= check_case(key, ref(key), out)
+        if ref is not None:
+            print(f'{tag:<28} {"OK" if group_ok else "FAIL"}')
         ok &= group_ok
-    print(f'{"PASS" if ok else "FAIL"} ({n} cases)')
+    if ref is None:
+        save_outputs(args.dump, outputs, meta)
+        return
+    print(f'{"PASS" if ok else "FAIL"} ({len(cases(full)) * 8} cases)')
     sys.exit(0 if ok else 1)
 
 
