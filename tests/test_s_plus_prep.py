@@ -115,3 +115,16 @@ def test_no_blocking_matches_blocked():
     m = _m(60, 300)
     kw = {'k': 20, 'verbose': False}
     _same(sim.cosine(m.T, block_size=None, **kw), sim.cosine(m.T, block_size=16, **kw))
+
+
+def test_coo_blocked_keeps_zero_score_column():
+    # Column 5 is the most popular (permuted to 0) and scores exactly 0.0 for row 0.
+    # The un-permute treated (col 0, val 0.0) as padding and left it at column 0.
+    m2 = np.zeros((3, 8), dtype=np.float32)
+    m2[0, 5], m2[1, 5], m2[2, 5], m2[0, 3] = 1, -1, 1, 1
+    m1 = sp.csr_array(np.array([[1, 1, 0]], dtype=np.float32))
+    kw = {'k': 4, 'format_output': 'coo', 'verbose': False}
+    ref = sim.dot_product(m1, sp.csr_array(m2), block_size=None, **kw)
+    out = sim.dot_product(m1, sp.csr_array(m2), block_size=2, **kw)
+    assert (0, 5, 0.0) in zip(out.row.tolist(), out.col.tolist(), out.data.tolist())
+    assert sorted(zip(out.row, out.col, out.data)) == sorted(zip(ref.row, ref.col, ref.data))

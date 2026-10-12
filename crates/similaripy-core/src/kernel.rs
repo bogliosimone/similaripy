@@ -67,7 +67,7 @@ pub struct Inputs<'a> {
     pub target_cols: Option<CsrPattern<'a>>,
 }
 
-/// Output buffers, `len(targets) * k` each, zeroed by the caller. Row `i`
+/// Output buffers, `len(targets) * k` each, initialised by the caller. Row `i`
 /// owns slots `[i*k, (i+1)*k)`; slots past its result count stay untouched.
 pub struct Output<'a> {
     pub rows: &'a mut [i32],

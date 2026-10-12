@@ -184,7 +184,9 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
         target_cols: pattern(&target, n),
     };
     let k = c.k;
-    let (mut rows, mut cols, mut vals) = (vec![0; r * k], vec![0; r * k], vec![0.0; r * k]);
+    // cols starts at -1 (a value the kernel never writes): padding must stay untouched,
+    // the Python un-permute relies on it.
+    let (mut rows, mut cols, mut vals) = (vec![0; r * k], vec![-1; r * k], vec![0.0; r * k]);
     let out = Output {
         rows: &mut rows,
         cols: &mut cols,
@@ -227,7 +229,7 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
             if j >= expected {
                 prop_assert_eq!(
                     (rows[i * k + j], col, score),
-                    (0, 0, 0.0),
+                    (0, -1, 0.0),
                     "padding touched"
                 );
                 continue;
