@@ -18,9 +18,11 @@ test-dev:
 #   rustup toolchain install nightly --component miri rust-src && cargo +nightly miri setup
 # Tree Borrows: rayon's crossbeam-epoch fails the default Stacked Borrows model
 # (int-to-ptr casts, not our code). ignore-leaks: rayon's global pool outlives main.
+# CI pins the nightly: make test-miri MIRI_TOOLCHAIN=nightly-YYYY-MM-DD
+MIRI_TOOLCHAIN ?= nightly
 .PHONY: test-miri
 test-miri:
-	MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-tree-borrows -Zmiri-ignore-leaks" cargo +nightly miri test -p similaripy-core
+	MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-tree-borrows -Zmiri-ignore-leaks" cargo +$(MIRI_TOOLCHAIN) miri test -p similaripy-core
 
 .PHONY: build
 build:
