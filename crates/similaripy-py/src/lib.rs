@@ -58,8 +58,8 @@ fn selection<'a>(
         .map_err(to_py)
 }
 
-/// Same arguments as the C++ kernel. Writes into the caller's zeroed
-/// `rows`/`cols`/`values`. Releases the GIL. `num_threads = 0` runs on the
+/// Same arguments as the C++ kernel. Writes into the caller's initialised
+/// `rows`/`cols`/`values`; slots past a row's results stay untouched. Releases the GIL. `num_threads = 0` runs on the
 /// global rayon pool (concurrent callers queue on it).
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]

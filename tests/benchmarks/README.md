@@ -92,7 +92,7 @@ seen items"). The item-item benchmarks have no realistic matrix-mode filter
 per-request work of a server. Prints median total / prep / kernel / output;
 `--json` writes them.
 
-Every runner reports the time per phase: **kernel** and **output** (un-permute +
+Every runner reports the time per phase (summary table and JSON): **kernel** and **output** (un-permute +
 matrix build) come from `similaripy._s_plus._last_timings`, **prep** is the rest
 (wrapper normalization + numpy prep).
 
