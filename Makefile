@@ -19,6 +19,14 @@ test:
 test-dev:
 	uv run pytest
 
+# Undefined-behaviour check of the Rust core unsafe code. One-time setup:
+#   rustup toolchain install nightly --component miri rust-src && cargo +nightly miri setup
+# Tree Borrows: rayon's crossbeam-epoch fails the default Stacked Borrows model
+# (int-to-ptr casts, not our code). ignore-leaks: rayon's global pool outlives main.
+.PHONY: test-miri
+test-miri:
+	MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-tree-borrows -Zmiri-ignore-leaks" cargo +nightly miri test -p similaripy-core
+
 .PHONY: build
 build:
 	uv run tox -e build

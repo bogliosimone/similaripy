@@ -1,0 +1,12 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+# Fat LTO, one codegen unit, no target-cpu=native (portable wheels).
+[profile.release]
+lto = "fat"
+codegen-units = 1
