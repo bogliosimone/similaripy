@@ -11,6 +11,12 @@ install-dev:
 install-dev-editable:
 	SKBUILD_EDITABLE_REBUILD=true uv pip install -e '.[dev,bench,notebook]' --no-build-isolation -v
 
+.PHONY: install-dev-rust
+# Rust kernel module (`_similaripy_rs`) next to the Cython package, Step 2a only.
+# Rerun after Rust edits; use with _backend='rust' or SIMILARIPY_BACKEND=rust.
+install-dev-rust:
+	uv run maturin develop --release -m crates/similaripy-py/Cargo.toml
+
 .PHONY: test
 test:
 	uv run tox -e py311

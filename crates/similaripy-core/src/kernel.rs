@@ -182,6 +182,10 @@ fn validate(inp: &Inputs, k: usize, out: &Output) -> Result<(), Error> {
         return bad("target row out of range");
     }
     let n_cols = m2.n_cols();
+    // Output column ids are i32 (D11).
+    if n_cols > i32::MAX as usize {
+        return bad("more than i32::MAX output columns");
+    }
     for (w, x, y, name) in [
         (p.l1, n.x_tversky, n.y_tversky, "tversky"),
         (p.l2, n.x_cosine, n.y_cosine, "cosine"),

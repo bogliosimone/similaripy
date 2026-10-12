@@ -100,8 +100,7 @@ def build_cases(X):
 def time_call(func, X, kwargs, kernel, num_threads):
     """One serial call: (total seconds, kernel seconds, output)."""
     kw = {'k': 100, 'verbose': False, 'num_threads': num_threads, **kwargs}
-    if kernel != 'cpp':
-        kw['_kernel'] = kernel
+    kw['_backend'] = 'cython' if kernel == 'cpp' else kernel
     start = time.perf_counter()
     out = func(X, **kw)
     total = time.perf_counter() - start
@@ -129,8 +128,7 @@ def measure(func, X, kwargs, kernel, num_threads, reps):
 def measure_concurrent(X, kernel, reps, concurrent):
     """Median wall time of two cosine calls (num_threads=2 each), concurrent or serial."""
     kw = {'k': 100, 'verbose': False, 'num_threads': 2}
-    if kernel != 'cpp':
-        kw['_kernel'] = kernel
+    kw['_backend'] = 'cython' if kernel == 'cpp' else kernel
     times = []
     with ThreadPoolExecutor(max_workers=2) as pool:
         for _ in range(reps):

@@ -1,0 +1,10 @@
+# Step 2a only: builds the top-level `_similaripy_rs` module next to the Cython
+# package (`make install-dev-rust`). Deleted when maturin builds the root package.
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "similaripy-py"
+version = "0.1.0"
+requires-python = ">=3.11"

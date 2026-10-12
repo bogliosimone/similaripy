@@ -617,6 +617,15 @@ def test_filter_cols_matrix():
     print('✅ Test filter_cols with matrix (seen items) passed')
 
 
+
+def test_unknown_backend():
+    m = sp.random(10, 10, density=0.5, format='csr', dtype=np.float32)
+    try:
+        sim.cosine(m, k=5, verbose=VERBOSE, _backend='bogus')
+    except ValueError:
+        return
+    raise AssertionError('unknown _backend must raise ValueError')
+
 if __name__ == "__main__":
     test_openmp_enabled()
     test_similarity_topk()
@@ -629,3 +638,4 @@ if __name__ == "__main__":
     test_target_cols()
     test_block_size()
     test_filter_cols_matrix()
+    test_unknown_backend()

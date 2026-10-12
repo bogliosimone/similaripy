@@ -162,7 +162,7 @@ def benchmark_similarity(
         Unused for timing: the similarity call always runs with verbose=False
         so the progress bar stays out of the timed region (default: True)
     kernel : str, optional
-        Kernel backend: "cpp" (default) or "rust" (spike only, passes _kernel)
+        Kernel backend: "cpp" (default, Cython) or "rust" (passes _backend)
     **similarity_kwargs : dict
         Additional similarity-specific parameters
 
@@ -210,8 +210,8 @@ def benchmark_similarity(
     similarity_func = _get_similarity_function(similarity_type)
 
     block_size = similarity_kwargs.pop('block_size', 0)
-    if kernel != "cpp":
-        similarity_kwargs['_kernel'] = kernel
+    # Always explicit, so SIMILARIPY_BACKEND can't flip the cpp side
+    similarity_kwargs['_backend'] = 'cython' if kernel == 'cpp' else kernel
 
     start_time = time.perf_counter()
 

@@ -7,6 +7,7 @@
 """
 
 import cython
+import os
 import time
 import numpy as np
 import scipy.sparse as sp
@@ -125,7 +126,8 @@ def s_plus(
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'csr',
     int num_threads = 0,
-    block_size: Optional[int] = 0
+    block_size: Optional[int] = 0,
+    _backend: Optional[str] = None
 ) -> Union[sp.csr_array, sp.coo_array]:
     """
     Compute top-K similarity between rows of two sparse matrices using the S_Plus algorithm.
@@ -171,6 +173,12 @@ def s_plus(
         containing the top-k similarity scores.
     """
 
+    # Private kernel switch during the Rust port (Step 2a), removed with Cython.
+    # None = SIMILARIPY_BACKEND env var, default 'cython'.
+    backend = _backend or os.environ.get('SIMILARIPY_BACKEND', 'cython')
+    if backend not in ('cython', 'rust'):
+        raise ValueError(f"unknown backend: {backend!r}")
+
     # if receive only matrix1 in input
     if matrix2 is None:
         matrix2 = matrix1.T
@@ -200,6 +208,16 @@ def s_plus(
         targets_arr = np.ascontiguousarray(np.asarray(target_rows, dtype=np.int32))
     cdef int[:] targets = targets_arr
     cdef int n_targets = targets.shape[0]
+
+    # Indices, indptrs and the output are int32: fail loudly instead of wrapping
+    int32_max = np.iinfo(np.int32).max
+    if matrix1.nnz > int32_max or matrix2.nnz > int32_max:
+        raise ValueError(f"input matrices must have at most {int32_max} non-zeros")
+    if int(n_targets) * int(k) > int32_max:
+        raise ValueError(
+            f"output too large: {n_targets} target rows * k={k} exceeds {int32_max} entries; "
+            "lower k or split target_rows"
+        )
 
     # Initialize progress bar
     cdef ProgressBar * progress = NULL
@@ -361,35 +379,59 @@ def s_plus(
     if progress != NULL:
         progress.set_description(b'Computing')
 
-    # Call C++ parallel computation function
+    # Call the parallel kernel (C++ or Rust, same arguments)
     global _last_kernel_time
     kernel_start = time.perf_counter()
-    with nogil:
-        compute_similarities_parallel[int, float](
-            n_targets,
-            &targets[0],
-            &m1_data[0], &m1_indices[0], &m1_indptr[0],
-            &m2_data[0], &m2_indices[0], &m2_indptr[0],
-            &Xtversky[0], &Ytversky[0],
-            &Xcosine[0], &Ycosine[0],
-            &Xdepop[0], &Ydepop[0],
-            a1,
-            l1, l2, l3,
-            t1, t2,
-            stabilized_shrink,
-            bayesian_shrink,
-            threshold,
-            k,
-            n_output_cols,
-            filter_col_mode,
-            &filter_m_indptr[0], &filter_m_indices[0],
-            target_col_mode,
-            &target_m_indptr[0], &target_m_indices[0],
-            &rows[0], &cols[0], &values[0],
-            progress,
-            num_threads,
-            resolved_block_size
-        )
+    if backend == 'rust':
+        import _similaripy_rs
+        try:
+            _similaripy_rs.compute_similarities(
+                np.asarray(targets),
+                np.asarray(m1_data), np.asarray(m1_indices), np.asarray(m1_indptr), matrix1.shape[1],
+                np.asarray(m2_data), np.asarray(m2_indices), np.asarray(m2_indptr),
+                np.asarray(Xtversky), np.asarray(Ytversky),
+                np.asarray(Xcosine), np.asarray(Ycosine),
+                np.asarray(Xdepop), np.asarray(Ydepop),
+                a1, l1, l2, l3, t1, t2,
+                stabilized_shrink, bayesian_shrink, threshold,
+                k, n_output_cols,
+                filter_col_mode, np.asarray(filter_m_indptr), np.asarray(filter_m_indices),
+                target_col_mode, np.asarray(target_m_indptr), np.asarray(target_m_indices),
+                np.asarray(rows), np.asarray(cols), np.asarray(values),
+                num_threads, resolved_block_size,
+            )
+        except BaseException:
+            if progress != NULL:
+                progress.close(b'Failed')
+                del progress
+            raise
+    else:
+        with nogil:
+            compute_similarities_parallel[int, float](
+                n_targets,
+                &targets[0],
+                &m1_data[0], &m1_indices[0], &m1_indptr[0],
+                &m2_data[0], &m2_indices[0], &m2_indptr[0],
+                &Xtversky[0], &Ytversky[0],
+                &Xcosine[0], &Ycosine[0],
+                &Xdepop[0], &Ydepop[0],
+                a1,
+                l1, l2, l3,
+                t1, t2,
+                stabilized_shrink,
+                bayesian_shrink,
+                threshold,
+                k,
+                n_output_cols,
+                filter_col_mode,
+                &filter_m_indptr[0], &filter_m_indices[0],
+                target_col_mode,
+                &target_m_indptr[0], &target_m_indices[0],
+                &rows[0], &cols[0], &values[0],
+                progress,
+                num_threads,
+                resolved_block_size
+            )
     _last_kernel_time = time.perf_counter() - kernel_start
 
     # Un-permute output column indices back to original ordering

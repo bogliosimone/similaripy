@@ -74,6 +74,7 @@ dev = [
   "cmake",
   "pybind11",
   "cython",
+  "maturin",
   "pytest",
   "build",
   "tox",

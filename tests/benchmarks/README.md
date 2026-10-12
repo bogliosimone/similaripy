@@ -25,7 +25,7 @@ python tests/benchmarks/run_benchmarks.py --dataset movielens yambda --similarit
 # Stable timing: 1 untimed warm-up round (default) + 5 timed rounds, median reported
 python tests/benchmarks/run_benchmarks.py --dataset movielens --version 32m --rounds 5
 
-# Compare kernels in one process, interleaved per round (ABAB); rust needs the spike build
+# Compare kernels in one process, interleaved per round (ABAB); rust needs `make install-dev-rust`
 python tests/benchmarks/run_benchmarks.py --dataset movielens --kernel cpp rust --rounds 5 --tag spike
 
 # Small-workload preset (synthetic 10k x 10k, millisecond calls): smoke set, or every case
@@ -270,6 +270,6 @@ python run_benchmarks.py --dataset yambda --version 500m --similarities dot_prod
     --rounds 1 --warmup 0 --kernel cpp rust
 ```
 
-Until the Python bindings land (v1 Step 2), `--kernel rust` needs the spike hook, which lives only in the commits of the `v1/rust-spike` PR, #28 (`git fetch origin pull/28/head`).
+`--kernel rust` needs the Rust module: `make install-dev-rust` (rerun after Rust edits). Kernel parity: `python check_kernel_parity.py` (see its docstring).
 
 When the Rust kernel became slower than cpp at 500M, the cause was these two loops (+13..16% before the fix, −7..−11% after).
