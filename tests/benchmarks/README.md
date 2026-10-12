@@ -270,6 +270,6 @@ python run_benchmarks.py --dataset yambda --version 500m --similarities dot_prod
     --rounds 1 --warmup 0 --kernel cpp rust
 ```
 
-Until the Python bindings land (v1 Step 2), `--kernel rust` needs the spike hook, which lives only in the commits of the `v1/rust-spike` PR (`git fetch origin pull/<N>/head`).
+Until the Python bindings land (v1 Step 2), `--kernel rust` needs the spike hook, which lives only in the commits of the `v1/rust-spike` PR, #28 (`git fetch origin pull/28/head`).
 
 When the Rust kernel became slower than cpp at 500M, the cause was these two loops (+13..16% before the fix, −7..−11% after).
