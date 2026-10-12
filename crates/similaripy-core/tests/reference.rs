@@ -190,7 +190,7 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
         cols: &mut cols,
         values: &mut vals,
     };
-    let res = compute(&inp, k, c.block_size, out);
+    let res = compute(&inp, k, c.block_size, out, &|| {});
     let blocked = c.block_size > 0 && n > c.block_size;
     // Unsorted m2 rows only reject when the blocked path would binary-search them.
     if blocked && c.unsorted_m2 && m2.indptr.windows(2).any(|w| w[1] - w[0] > 1) {
@@ -305,5 +305,5 @@ fn rejects_more_than_i32_max_columns() {
         cols: &mut cols,
         values: &mut vals,
     };
-    assert!(compute(&inp, 1, 0, out).is_err());
+    assert!(compute(&inp, 1, 0, out, &|| {}).is_err());
 }

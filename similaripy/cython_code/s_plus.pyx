@@ -219,9 +219,15 @@ def s_plus(
             "lower k or split target_rows"
         )
 
-    # Initialize progress bar
+    # Initialize progress bar: C++ for the Cython kernel, Rust (`rbar`) for the Rust one
     cdef ProgressBar * progress = NULL
-    if verbose:
+    rbar = None
+    if backend == 'rust':
+        import _similaripy_rs
+        if verbose:
+            rbar = _similaripy_rs.ProgressBar(n_targets, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
+            rbar.set_description('Preprocessing')
+    elif verbose:
         progress = new ProgressBar(n_targets, False, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
         progress.set_description(b'Preprocessing')
 
@@ -378,12 +384,13 @@ def s_plus(
 
     if progress != NULL:
         progress.set_description(b'Computing')
+    if rbar is not None:
+        rbar.set_description('Computing')
 
     # Call the parallel kernel (C++ or Rust, same arguments)
     global _last_kernel_time
     kernel_start = time.perf_counter()
     if backend == 'rust':
-        import _similaripy_rs
         try:
             _similaripy_rs.compute_similarities(
                 np.asarray(targets),
@@ -398,12 +405,11 @@ def s_plus(
                 filter_col_mode, np.asarray(filter_m_indptr), np.asarray(filter_m_indices),
                 target_col_mode, np.asarray(target_m_indptr), np.asarray(target_m_indices),
                 np.asarray(rows), np.asarray(cols), np.asarray(values),
-                num_threads, resolved_block_size,
+                num_threads, resolved_block_size, rbar,
             )
         except BaseException:
-            if progress != NULL:
-                progress.close(b'Failed')
-                del progress
+            if rbar is not None:
+                rbar.close('Failed')
             raise
     else:
         with nogil:
@@ -452,6 +458,8 @@ def s_plus(
 
     if progress != NULL:
         progress.set_description(f'Building {format_output} matrix'.encode())
+    if rbar is not None:
+        rbar.set_description(f'Building {format_output} matrix')
 
     # Build result in requested format
     if format_output == 'coo':
@@ -472,6 +480,8 @@ def s_plus(
         )
         if progress != NULL:
             progress.set_description(b'Removing zeros')
+        if rbar is not None:
+            rbar.set_description('Removing zeros')
         res.eliminate_zeros()
 
     # Finalize and cleanup
@@ -480,5 +490,7 @@ def s_plus(
     if progress != NULL:
         progress.close(b'Done')
         del progress
+    if rbar is not None:
+        rbar.close('Done')
 
     return res

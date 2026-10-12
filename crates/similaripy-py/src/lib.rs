@@ -2,16 +2,44 @@
 //! `compute_similarities_parallel` call, so `s_plus.pyx` can swap kernels
 //! after the identical prep (`_backend='rust'`).
 
+mod progress;
+
+use std::cell::RefCell;
+use std::sync::Arc;
+
 use numpy::{PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 
+use progress::ProgressBar;
 use similaripy_core::{CsrPattern, CsrView, Error, Inputs, Norms, Output, Params, compute};
 
 const SELECTION_MATRIX: i32 = 2;
 
 fn to_py(e: Error) -> PyErr {
     PyValueError::new_err(e.to_string())
+}
+
+thread_local! {
+    /// `num_threads = n > 0`: one pool per calling thread, rebuilt when n changes (D20).
+    /// Concurrent callers each get their own team, as with OpenMP.
+    static POOL: RefCell<Option<(usize, Arc<ThreadPool>)>> = const { RefCell::new(None) };
+}
+
+fn cached_pool(n: usize) -> Result<Arc<ThreadPool>, Error> {
+    POOL.with_borrow_mut(|cached| {
+        if let Some((m, pool)) = cached.as_ref()
+            && *m == n
+        {
+            return Ok(pool.clone());
+        }
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build()
+            .map_err(|e| Error::InvalidInput(e.to_string()))?;
+        Ok(cached.insert((n, Arc::new(pool))).1.clone())
+    })
 }
 
 fn selection<'a>(
@@ -30,8 +58,9 @@ fn selection<'a>(
         .map_err(to_py)
 }
 
-/// Same arguments as the C++ kernel, minus the progress bar. Writes into
-/// the caller's zeroed `rows`/`cols`/`values`. Releases the GIL.
+/// Same arguments as the C++ kernel. Writes into the caller's zeroed
+/// `rows`/`cols`/`values`. Releases the GIL. `num_threads = 0` runs on the
+/// global rayon pool (concurrent callers queue on it).
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn compute_similarities(
@@ -72,6 +101,7 @@ fn compute_similarities(
     mut values: PyReadwriteArray1<f32>,
     num_threads: usize,
     block_size: usize,
+    progress: Option<Bound<'_, ProgressBar>>,
 ) -> PyResult<()> {
     let m1 = CsrView::new(
         "m1",
@@ -132,17 +162,17 @@ fn compute_similarities(
         values: values.as_slice_mut()?,
     };
 
+    let bar = progress.as_ref().map(|b| b.get());
     py.detach(|| {
-        let run = || compute(&inp, k, block_size, out);
+        // Separate instantiations: without a bar the kernel has no per-row branch.
+        let run = || match bar {
+            Some(b) => compute(&inp, k, block_size, out, &|| b.tick()),
+            None => compute(&inp, k, block_size, out, &|| {}),
+        };
         if num_threads == 0 {
             run()
         } else {
-            // Per-call pool for now; cached per calling thread in slice 1b (D20).
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(num_threads)
-                .build()
-                .map_err(|e| Error::InvalidInput(e.to_string()))?
-                .install(run)
+            cached_pool(num_threads)?.install(run)
         }
     })
     .map_err(to_py)
@@ -150,5 +180,6 @@ fn compute_similarities(
 
 #[pymodule]
 fn _similaripy_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(compute_similarities, m)?)
+    m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
+    m.add_class::<ProgressBar>()
 }

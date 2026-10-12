@@ -76,8 +76,15 @@ pub struct Output<'a> {
 }
 
 /// Computes the top-`k` scores for every target row on the current rayon pool.
-/// `block_size == 0` disables column blocking.
-pub fn compute(inp: &Inputs, k: usize, block_size: usize, out: Output) -> Result<(), Error> {
+/// `block_size == 0` disables column blocking. `on_row` runs on the worker
+/// after each finished row (progress reporting; pass `&|| {}` for none).
+pub fn compute<F: Fn() + Sync>(
+    inp: &Inputs,
+    k: usize,
+    block_size: usize,
+    out: Output,
+    on_row: &F,
+) -> Result<(), Error> {
     validate(inp, k, &out)?;
     if k == 0 || inp.targets.is_empty() {
         return Ok(());
@@ -118,6 +125,7 @@ pub fn compute(inp: &Inputs, k: usize, block_size: usize, out: Output) -> Result
             // SAFETY: the counter hands out each i exactly once, and i < len(targets).
             let (rows, cols, values) = unsafe { shared.chunk(i) };
             row(&mut sc, t, rows, cols, values);
+            on_row();
         }
     });
     Ok(())
