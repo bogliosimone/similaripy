@@ -5,8 +5,9 @@ description: Run quick checks before committing code
 Before committing, run the following checks:
 
 1. **Compile & Test**: Run `make test-dev` to verify compilation and unit tests
-   - Editable mode auto-recompiles `.pyx` files
-   - Watch for Cython compilation errors
+   - `uv run` rebuilds the Rust extension after `.rs` edits
+   - Watch for cargo/maturin build errors
+   - Rust changes: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`
    - Run correctness tests (exclude performance benchmarks)
    - Report any test failures with details
 
