@@ -151,18 +151,45 @@ def validate_s_plus_inputs(
 
 # ---- Prep helpers (numpy, D19) ----
 
-def _csr_without_zeros(matrix: sp.sparray) -> sp.csr_array:
+def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
     """
-    CSR with no explicit zeros, without touching the caller's matrix.
+    CSR with summed duplicates and no explicit zeros, without touching the
+    caller's matrix.
 
-    Explicit zeros are wrong in binary mode (they would become 1.0, so counts,
-    norms and dot products change). Copies only when there are zeros.
+    Explicit zeros are wrong in binary mode (they would become 1.0), and
+    unsummed duplicates give wrong norms and binary counts (a bug in 0.7.0
+    for CSR input). Canonical CSR passes through (copied only when it has
+    zeros); COO and non-canonical CSR go through the Rust canonicalization,
+    which replaces scipy's single-threaded COO -> CSR (2.2 s on a 93M-entry
+    COO item model).
     """
-    matrix = matrix.tocsr()
-    if (matrix.data == 0).any():
-        matrix = matrix.copy()
-        matrix.eliminate_zeros()
-    return matrix
+    if matrix.format == 'coo':
+        rows, cols, data = matrix.row, matrix.col, matrix.data
+        if np.any(rows[1:] < rows[:-1]):
+            # Our own COO output: rows ascend except the zero padding at row 0;
+            # zeros are dropped anyway, so drop them first and skip the sort.
+            keep = data != 0
+            rows, cols, data = rows[keep], cols[keep], data[keep]
+        if np.any(rows[1:] < rows[:-1]):
+            order = np.argsort(rows, kind='stable')
+            rows, cols, data = rows[order], cols[order], data[order]
+        indptr = np.zeros(matrix.shape[0] + 1, dtype=np.int32)
+        np.cumsum(np.bincount(rows, minlength=matrix.shape[0]), out=indptr[1:])
+    else:
+        matrix = matrix.tocsr()
+        if matrix.has_canonical_format:
+            if (matrix.data == 0).any():
+                matrix = matrix.copy()
+                matrix.eliminate_zeros()
+            return matrix
+        indptr, cols, data = matrix.indptr.astype(np.int32), matrix.indices, matrix.data
+    # private copies: canonicalized in place
+    indices, data = cols.astype(np.int32), data.astype(np.float32)
+    indptr = _core.canonicalize_rows(indptr, indices, data, num_threads)
+    nnz = indptr[-1]
+    out = sp.csr_array((data[:nnz], indices[:nnz], indptr), shape=matrix.shape)
+    out.has_canonical_format = True  # sorted, summed: skips scipy's re-checks
+    return out
 
 
 def _row_sums(values: np.ndarray, indptr: np.ndarray, dtype=None) -> np.ndarray:
@@ -411,8 +438,8 @@ def _s_plus(
     stabilized_shrink, bayesian_shrink, additive_shrink, threshold, binary,
     filter_cols, target_cols, format_output, num_threads, block_size,
 ):
-    m1 = _csr_without_zeros(matrix1)
-    m2 = _csr_without_zeros(matrix2)
+    m1 = _canonical_csr(matrix1, num_threads)
+    m2 = _canonical_csr(matrix2, num_threads)
     n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]
 
     # Block size: 0 = auto, None = disabled (0 for the kernel), int > 0 = explicit
