@@ -2,6 +2,7 @@
 //! `compute_similarities_parallel` call, so `s_plus.pyx` can swap kernels
 //! after the identical prep (`_backend='rust'`).
 
+mod normalize;
 mod progress;
 
 use std::cell::RefCell;
@@ -17,7 +18,7 @@ use similaripy_core::{CsrPattern, CsrView, Error, Inputs, Norms, Output, Params,
 
 const SELECTION_MATRIX: i32 = 2;
 
-fn to_py(e: Error) -> PyErr {
+pub(crate) fn to_py(e: Error) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
@@ -181,5 +182,8 @@ fn compute_similarities(
 #[pymodule]
 fn _similaripy_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
-    m.add_class::<ProgressBar>()
+    m.add_class::<ProgressBar>()?;
+    m.add_function(wrap_pyfunction!(normalize::normalize, m)?)?;
+    m.add_function(wrap_pyfunction!(normalize::tfidf, m)?)?;
+    m.add_function(wrap_pyfunction!(normalize::bm25plus, m)?)
 }

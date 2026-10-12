@@ -1,5 +1,7 @@
 from .cython_code import normalization as _norm
+from ._backend import resolve as _resolve_backend
 from math import e
+from typing import Optional
 
 import scipy.sparse as sps
 import numpy as np
@@ -93,6 +95,7 @@ def normalize(
     norm: str = 'l2',
     axis: int = 1,
     inplace: bool = False,
+    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sps.csr_array:
     """
     Normalize a sparse matrix along rows or columns using L1, L2, or max-norm.
@@ -109,7 +112,11 @@ def normalize(
     if norm not in _NORMALIZATIONS:
         raise ValueError(f"norm must be one of {_NORMALIZATIONS}, got '{norm}'")
     X = _prepare_csr(X, axis, inplace)
-    _NORM_DISPATCH[norm](shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr)
+    if _resolve_backend(_backend) == 'rust':
+        import _similaripy_rs
+        _similaripy_rs.normalize(X.data, X.indices, X.indptr, X.shape, norm)
+    else:
+        _NORM_DISPATCH[norm](shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr)
     return _finalize_csr(X, axis)
 
 
@@ -122,6 +129,7 @@ def bm25(
     tf_mode: str = 'raw',
     idf_mode: str = 'bm25',
     inplace: bool = False,
+    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sps.csr_array:
     """
     Apply BM25 normalization to a sparse matrix.
@@ -141,11 +149,15 @@ def bm25(
     """
     _validate_modes(tf_mode, idf_mode)
     X = _prepare_csr(X, axis, inplace)
-    _norm.inplace_normalize_csr_bm25plus(
-        shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
-        k1=k1, b=b, delta=0.0,
-        tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase,
-    )
+    if _resolve_backend(_backend) == 'rust':
+        import _similaripy_rs
+        _similaripy_rs.bm25plus(X.data, X.indices, X.indptr, X.shape, k1, b, 0.0, tf_mode, idf_mode, logbase)
+    else:
+        _norm.inplace_normalize_csr_bm25plus(
+            shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
+            k1=k1, b=b, delta=0.0,
+            tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase,
+        )
     return _finalize_csr(X, axis)
 
 
@@ -159,6 +171,7 @@ def bm25plus(
     tf_mode: str = 'raw',
     idf_mode: str = 'bm25',
     inplace: bool = False,
+    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sps.csr_array:
     """
     Apply BM25+ normalization to a sparse matrix.
@@ -179,11 +192,15 @@ def bm25plus(
     """
     _validate_modes(tf_mode, idf_mode)
     X = _prepare_csr(X, axis, inplace)
-    _norm.inplace_normalize_csr_bm25plus(
-        shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
-        k1=k1, b=b, delta=delta,
-        tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase,
-    )
+    if _resolve_backend(_backend) == 'rust':
+        import _similaripy_rs
+        _similaripy_rs.bm25plus(X.data, X.indices, X.indptr, X.shape, k1, b, delta, tf_mode, idf_mode, logbase)
+    else:
+        _norm.inplace_normalize_csr_bm25plus(
+            shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
+            k1=k1, b=b, delta=delta,
+            tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase,
+        )
     return _finalize_csr(X, axis)
 
 
@@ -194,6 +211,7 @@ def tfidf(
     tf_mode: str = 'sqrt',
     idf_mode: str = 'smooth',
     inplace: bool = False,
+    _backend: Optional[str] = None,  # private, Step 2a kernel switch (removed with Cython)
 ) -> sps.csr_array:
     """
     Apply TF-IDF normalization to a sparse matrix.
@@ -211,10 +229,14 @@ def tfidf(
     """
     _validate_modes(tf_mode, idf_mode)
     X = _prepare_csr(X, axis, inplace)
-    _norm.inplace_normalize_csr_tfidf(
-        shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
-        tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase,
-    )
+    if _resolve_backend(_backend) == 'rust':
+        import _similaripy_rs
+        _similaripy_rs.tfidf(X.data, X.indices, X.indptr, X.shape, tf_mode, idf_mode, logbase)
+    else:
+        _norm.inplace_normalize_csr_tfidf(
+            shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
+            tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase,
+        )
     return _finalize_csr(X, axis)
 
     

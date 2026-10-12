@@ -2,6 +2,7 @@
 
 pub mod csr;
 mod kernel;
+pub mod normalize;
 mod topk;
 
 pub use csr::{CsrPattern, CsrView};

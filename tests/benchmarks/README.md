@@ -270,6 +270,6 @@ python run_benchmarks.py --dataset yambda --version 500m --similarities dot_prod
     --rounds 1 --warmup 0 --kernel cpp rust
 ```
 
-`--kernel rust` needs the Rust module: `make install-dev-rust` (rerun after Rust edits). Kernel parity: `python check_kernel_parity.py` (see its docstring).
+`--kernel rust` needs the Rust module: `make install-dev-rust` (rerun after Rust edits). Kernel parity: `python check_kernel_parity.py` (see its docstring). Normalization parity: `python check_normalization_parity.py`.
 
 When the Rust kernel became slower than cpp at 500M, the cause was these two loops (+13..16% before the fix, −7..−11% after).

@@ -7,12 +7,12 @@
 """
 
 import cython
-import os
 import time
 import numpy as np
 import scipy.sparse as sp
 from typing import Optional, Union, Literal
 
+from .._backend import resolve as _resolve_backend
 from .utils import (
     build_coo_matrix,
     build_csr_matrix,
@@ -173,11 +173,7 @@ def s_plus(
         containing the top-k similarity scores.
     """
 
-    # Private kernel switch during the Rust port (Step 2a), removed with Cython.
-    # None = SIMILARIPY_BACKEND env var, default 'cython'.
-    backend = _backend or os.environ.get('SIMILARIPY_BACKEND', 'cython')
-    if backend not in ('cython', 'rust'):
-        raise ValueError(f"unknown backend: {backend!r}")
+    backend = _resolve_backend(_backend)
 
     # if receive only matrix1 in input
     if matrix2 is None:
