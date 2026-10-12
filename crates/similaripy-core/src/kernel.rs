@@ -261,24 +261,6 @@ impl Scratch {
         }
     }
 
-    /// Adds `v1 * v2` for each `(c, v2)` into `sums[c - offset]`, recording
-    /// first touches.
-    ///
-    /// # Safety
-    /// Every `c - offset` is `< self.sums.len()`.
-    #[inline(always)]
-    unsafe fn accumulate(&mut self, c_cols: &[i32], c_vals: &[f32], v1: f32, offset: usize) {
-        for (&c, &v2) in c_cols.iter().zip(c_vals) {
-            let local = c as usize - offset;
-            // SAFETY: caller contract.
-            let s = unsafe { self.sums.get_unchecked_mut(local) };
-            if *s == 0.0 {
-                self.touched.push(local as u32);
-            }
-            *s += v2 * v1;
-        }
-    }
-
     /// Accumulates row `t` of `m1 · m2` over all columns, then drains it
     /// through scoring, selection and top-K. Returns the result count.
     ///
@@ -297,7 +279,7 @@ impl Scratch {
             let (u_cols, u_vals) = inp.m1.row_unchecked(t);
             for (&u, &v1) in u_cols.iter().zip(u_vals) {
                 let (c_cols, c_vals) = inp.m2.row_unchecked(u as usize);
-                self.accumulate(c_cols, c_vals, v1, 0);
+                accumulate(&mut self.sums, &mut self.touched, c_cols, c_vals, v1, 0);
             }
             // block offset 0, so local col == real col.
             self.drain(inp, t, 0);
@@ -338,15 +320,24 @@ impl Scratch {
                 let lo = if first >= lo_col {
                     0
                 } else {
-                    c_cols.partition_point(|&c| c < lo_col)
+                    lower_bound(c_cols, lo_col)
                 };
                 let hi = if last < hi_col {
                     c_cols.len()
                 } else {
-                    lo + c_cols[lo..].partition_point(|&c| c < hi_col)
+                    lo + lower_bound(&c_cols[lo..], hi_col)
                 };
                 // SAFETY: start <= c < end, so c - start < block == sums.len().
-                unsafe { self.accumulate(&c_cols[lo..hi], &c_vals[lo..hi], v1, start) };
+                unsafe {
+                    accumulate(
+                        &mut self.sums,
+                        &mut self.touched,
+                        &c_cols[lo..hi],
+                        &c_vals[lo..hi],
+                        v1,
+                        start,
+                    )
+                };
             }
             if !self.touched.is_empty() {
                 // SAFETY: touched + start < end <= n_cols.
@@ -402,5 +393,96 @@ impl Scratch {
             }
         }
         self.touched.clear();
+    }
+}
+
+/// Adds `v1 * v2` for each `(c, v2)` into `sums[c - offset]`, recording first
+/// touches. A free function over a slice and a local write cursor so LLVM keeps
+/// the pointers in registers: as a `&mut self` method it reloaded `sums` and the
+/// `touched` header from the stack every element (decisions D14).
+///
+/// A column whose sum is exactly 0.0 (an underflowed product) is pushed again on
+/// its next hit, as in 0.7.0; drain then scores the duplicate with xy = 0. Kept
+/// for parity; the one-push-per-element bound still holds, so `reserve` covers it.
+///
+/// # Safety
+/// Every `c - offset` is `< sums.len()`.
+#[inline(always)]
+unsafe fn accumulate(
+    sums: &mut [f32],
+    touched: &mut Vec<u32>,
+    c_cols: &[i32],
+    c_vals: &[f32],
+    v1: f32,
+    offset: usize,
+) {
+    // At most one push per element, so one reserve covers the whole segment.
+    touched.reserve(c_cols.len());
+    let buf = touched.as_mut_ptr();
+    let mut n = touched.len();
+    for (&c, &v2) in c_cols.iter().zip(c_vals) {
+        let local = c as usize - offset;
+        // SAFETY: caller contract; n < capacity (reserve above).
+        unsafe {
+            let s = sums.get_unchecked_mut(local);
+            let old = *s; // reuse: the touched store may alias, re-reading costs a load
+            if old == 0.0 {
+                buf.add(n).write(local as u32);
+                n += 1;
+            }
+            *s = old + v2 * v1;
+        }
+    }
+    // SAFETY: entries [len, n) were written above, n <= capacity.
+    unsafe { touched.set_len(n) };
+}
+
+/// First index `i` with `s[i] >= x` (`s` sorted). Branchy on purpose, like
+/// libstdc++ `lower_bound`: `partition_point` compiles branchless (`csel`), which
+/// serializes the probes' cache misses; with a branch the CPU speculates the next
+/// probe's load. Matters once m2 rows miss to DRAM (Yambda 500M, decisions D14).
+#[inline]
+fn lower_bound(s: &[i32], x: i32) -> usize {
+    let (mut lo, mut len) = (0, s.len());
+    while len > 0 {
+        let half = len / 2;
+        // SAFETY: lo + half < lo + len <= s.len().
+        if unsafe { *s.get_unchecked(lo + half) } < x {
+            lo += half + 1;
+            len -= half + 1;
+        } else {
+            // Empty asm = optimization barrier, so LLVM can't if-convert this into
+            // `csel`/`cmov` again; std has no stable "keep this branch" hint. Only on
+            // targets with stable `asm!` (the wheel matrix); a plain loop elsewhere.
+            #[cfg(any(
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "arm",
+                target_arch = "aarch64"
+            ))]
+            // SAFETY: emits no instructions.
+            unsafe {
+                std::arch::asm!("", options(nomem, nostack, preserves_flags))
+            };
+            len = half;
+        }
+    }
+    lo
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn lower_bound_matches_partition_point(
+            mut s in proptest::collection::vec(-50i32..50, 0..64),
+            x in -60i32..60,
+        ) {
+            s.sort_unstable();
+            prop_assert_eq!(lower_bound(&s, x), s.partition_point(|&c| c < x));
+        }
     }
 }
