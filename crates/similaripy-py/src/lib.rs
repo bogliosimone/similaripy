@@ -7,7 +7,7 @@ mod progress;
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use numpy::{PyReadonlyArray1, PyReadwriteArray1};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -208,6 +208,28 @@ fn remap_sort_rows(
     .map_err(to_py)
 }
 
+/// In place: canonical rows (sorted, duplicates summed, zeros dropped),
+/// compacted to the front; returns the new indptr.
+#[pyfunction]
+fn canonicalize_rows<'py>(
+    py: Python<'py>,
+    indptr: PyReadonlyArray1<'py, i32>,
+    mut indices: PyReadwriteArray1<'py, i32>,
+    mut data: PyReadwriteArray1<'py, f32>,
+    num_threads: usize,
+) -> PyResult<Bound<'py, PyArray1<i32>>> {
+    let indptr = indptr.as_slice()?;
+    let (indices, data) = (indices.as_slice_mut()?, data.as_slice_mut()?);
+    let new_indptr = py
+        .detach(|| {
+            with_pool(num_threads, || {
+                similaripy_core::prep::canonicalize_rows(indptr, indices, data)
+            })
+        })
+        .map_err(to_py)?;
+    Ok(new_indptr.into_pyarray(py))
+}
+
 /// Threads used with `num_threads = 0`: the global rayon pool (`RAYON_NUM_THREADS`).
 #[pyfunction]
 fn get_num_threads() -> usize {
@@ -219,6 +241,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
     m.add_function(wrap_pyfunction!(get_num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(remap_sort_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(canonicalize_rows, m)?)?;
     m.add_class::<ProgressBar>()?;
     m.add_function(wrap_pyfunction!(normalize::normalize, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::tfidf, m)?)?;

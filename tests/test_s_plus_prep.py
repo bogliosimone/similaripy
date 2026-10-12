@@ -128,3 +128,49 @@ def test_coo_blocked_keeps_zero_score_column():
     out = sim.dot_product(m1, sp.csr_array(m2), block_size=2, **kw)
     assert (0, 5, 0.0) in zip(out.row.tolist(), out.col.tolist(), out.data.tolist())
     assert sorted(zip(out.row, out.col, out.data)) == sorted(zip(ref.row, ref.col, ref.data))
+
+
+def _with_duplicates(m, seed=0):
+    """m's entries plus split copies (v = a + b) and cancelling pairs (+1, -1), shuffled within rows."""
+    rng = np.random.default_rng(seed)
+    coo = m.tocoo()
+    r, c, v = coo.row, coo.col, coo.data
+    split = rng.random(len(v)) < 0.3
+    a = np.where(split, v * 0.25, v)
+    rows = np.concatenate([r, r[split], [0, 0, 3, 3]])
+    cols = np.concatenate([c, c[split], [m.shape[1] - 1] * 2 + [1] * 2])
+    vals = np.concatenate([a, v[split] * 0.75, [1, -1, -2, 2]]).astype(np.float32)
+    order = np.lexsort((rng.random(len(rows)), rows))  # rows grouped, columns shuffled
+    return rows[order], cols[order], vals[order]
+
+
+@pytest.mark.parametrize('fmt', ['csr', 'coo'])
+@pytest.mark.parametrize('binary', [False, True])
+@pytest.mark.parametrize('block_size', [None, 8])
+def test_duplicate_entries_are_summed(fmt, binary, block_size):
+    # 0.7.0 passed CSR duplicates to the kernel unsummed: wrong norms and binary counts.
+    m = _m(60, 40)
+    rows, cols, vals = _with_duplicates(m)
+    if fmt == 'coo':
+        dup = sp.coo_array((vals, (rows, cols)), shape=m.shape)
+    else:
+        indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=m.shape[0]))])
+        dup = sp.csr_array((vals, cols, indptr), shape=m.shape)
+        assert not dup.has_canonical_format
+    clean = sp.csr_array((vals, (rows, cols)), shape=m.shape)  # scipy sums duplicates
+    clean.eliminate_zeros()
+    before = (dup.data.copy(),)
+    kw = {'k': 10, 'binary': binary, 'block_size': block_size, 'verbose': False}
+    for f in (sim.cosine, sim.jaccard, sim.dot_product):
+        _same(f(dup.T, **kw), f(clean.T, **kw))
+        _same(f(m, dup.T.tocsr(), **kw), f(m, clean.T, **kw))
+    np.testing.assert_array_equal(dup.data, before[0])  # caller's matrix untouched
+
+
+def test_coo_output_fed_back():
+    # The wrappers return COO with explicit zero padding; feeding it back must
+    # equal feeding the CSR (the Rust canonicalization drops the padding).
+    m = sp.random_array((200, 60), density=0.01, format='csr', dtype=np.float32, rng=0)
+    s = sim.cosine(m.T, k=20, verbose=False)  # few co-occurrences: rows shorter than k
+    assert (s.data == 0).any()  # padding present
+    _same(sim.dot_product(m, s, k=10, verbose=False), sim.dot_product(m, s.tocsr(), k=10, verbose=False))
