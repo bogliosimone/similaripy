@@ -33,6 +33,9 @@ python tests/benchmarks/compare_benchmarks.py bench_results/result_before_*.json
 python tests/benchmarks/run_small_benchmarks.py
 python tests/benchmarks/run_small_benchmarks.py --cases all
 
+# Recommendation step (URM x item model), with and without filter_cols=URM
+python tests/benchmarks/run_recommend_benchmarks.py --dataset movielens --version 32m
+
 # Custom parameters
 python tests/benchmarks/run_benchmarks.py --dataset movielens --k 200 --shrink 10 --threads 4
 
@@ -80,6 +83,18 @@ smoke set runs (its noise is 10-20%, so it catches big regressions only);
 `--cases all` runs everything. Each timing is the median
 of `--reps` calls (default 21). Run it with a free-threaded Python (3.14t/3.15t)
 for a meaningful concurrency number; the report records `gil_enabled`.
+
+### `run_recommend_benchmarks.py`
+The recommendation step: `dot_product(URM, S)` with S a cosine item model
+(`--model-k`, built once, untimed), with and without `filter_cols=URM` ("exclude
+seen items"). The item-item benchmarks have no realistic matrix-mode filter
+(their output is items x items); this is where one lives, and it is the
+per-request work of a server. Prints median total / prep / kernel / output;
+`--json` writes them.
+
+Every runner reports the time per phase: **kernel** and **output** (un-permute +
+matrix build) come from `similaripy._s_plus._last_timings`, **prep** is the rest
+(wrapper normalization + numpy prep).
 
 ### `compare_benchmarks.py`
 Benchmark comparison tool. Supports:
@@ -188,6 +203,7 @@ tests/benchmarks/
 ├── compare_benchmarks.py  # Benchmark comparison tool (CLI)
 ├── dataset_loaders.py     # Dataset loaders
 ├── run_small_benchmarks.py # Small-workload preset (CLI)
+├── run_recommend_benchmarks.py # Recommendation step, filter_cols=URM (CLI)
 ├── benchmark.py           # Core benchmark functions
 └── README.md              # This file
 

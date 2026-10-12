@@ -157,6 +157,7 @@ def benchmark_similarity(
         - 'similarity_matrix': computed similarity matrix
         - 'computation_time': time taken for similarity computation (seconds)
         - 'kernel_time': time spent inside the compute kernel (seconds)
+        - 'prep_time', 'output_time': everything before the kernel (wrapper normalization + numpy prep) / output build after it (seconds)
         - 'n_items': number of items
         - 'nnz': number of non-zero entries in similarity matrix
         - 'density': similarity matrix density
@@ -210,7 +211,7 @@ def benchmark_similarity(
 
     end_time = time.perf_counter()
     computation_time = end_time - start_time
-    kernel_time = sim._s_plus._last_kernel_time
+    timings = dict(sim._s_plus._last_timings)
 
     # Calculate metrics
     n_items = similarity_matrix.shape[0]
@@ -230,7 +231,9 @@ def benchmark_similarity(
     results = {
         'similarity_matrix': similarity_matrix,
         'computation_time': computation_time,
-        'kernel_time': kernel_time,
+        'kernel_time': timings['kernel'],
+        'prep_time': computation_time - timings['kernel'] - timings['output'],
+        'output_time': timings['output'],
         'n_items': n_items,
         'nnz': nnz,
         'density': density,
