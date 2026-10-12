@@ -169,11 +169,41 @@ fn compute_similarities(
             Some(b) => compute(&inp, k, block_size, out, &|| b.tick()),
             None => compute(&inp, k, block_size, out, &|| {}),
         };
-        if num_threads == 0 {
-            run()
-        } else {
-            cached_pool(num_threads)?.install(run)
-        }
+        with_pool(num_threads, run)
+    })
+    .map_err(to_py)
+}
+
+/// Runs `f` on the global rayon pool (`num_threads = 0`) or on the calling
+/// thread's cached pool of `num_threads` workers.
+fn with_pool<R>(num_threads: usize, f: impl FnOnce() -> Result<R, Error> + Send) -> Result<R, Error>
+where
+    R: Send,
+{
+    if num_threads == 0 {
+        f()
+    } else {
+        cached_pool(num_threads)?.install(f)
+    }
+}
+
+/// In place: renumbers columns by `forward` (empty = keep) and sorts every
+/// row, carrying `data` (prep for the blocked kernel).
+#[pyfunction]
+fn remap_sort_rows(
+    py: Python<'_>,
+    indptr: PyReadonlyArray1<'_, i32>,
+    mut indices: PyReadwriteArray1<'_, i32>,
+    mut data: PyReadwriteArray1<'_, f32>,
+    forward: PyReadonlyArray1<'_, i32>,
+    num_threads: usize,
+) -> PyResult<()> {
+    let (indptr, forward) = (indptr.as_slice()?, forward.as_slice()?);
+    let (indices, data) = (indices.as_slice_mut()?, data.as_slice_mut()?);
+    py.detach(|| {
+        with_pool(num_threads, || {
+            similaripy_core::prep::remap_sort_rows(indptr, indices, data, forward)
+        })
     })
     .map_err(to_py)
 }
@@ -188,6 +218,7 @@ fn get_num_threads() -> usize {
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
     m.add_function(wrap_pyfunction!(get_num_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(remap_sort_rows, m)?)?;
     m.add_class::<ProgressBar>()?;
     m.add_function(wrap_pyfunction!(normalize::normalize, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::tfidf, m)?)?;

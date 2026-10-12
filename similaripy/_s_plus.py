@@ -239,14 +239,18 @@ def _keep_columns(data, indices, indptr, keep_mask):
     return data[sel], indices[sel], new_indptr
 
 
-def _sorted_rows(data, indices, indptr, n_cols):
-    """Rows sorted by column id (scipy, in C); copies first, so the caller's arrays never change."""
-    m = sp.csr_array((data, indices, indptr), shape=(len(indptr) - 1, n_cols), copy=False)
-    if m.has_sorted_indices:
+def _sorted_rows(data, indices, indptr, n_cols, forward, num_threads):
+    """
+    Rows renumbered by `forward` (empty = keep) and sorted by column id, in Rust,
+    in parallel; copies first, so the caller's arrays never change. Without a
+    renumbering, sorted rows are returned as they are.
+    """
+    if len(forward) == 0 and sp.csr_array((data, indices, indptr), shape=(len(indptr) - 1, n_cols),
+                                          copy=False).has_sorted_indices:
         return data, indices
-    m = sp.csr_array((data.copy(), indices.copy(), indptr), shape=m.shape, copy=False)
-    m.sort_indices()
-    return m.data, m.indices.astype(np.int32, copy=False)
+    data, indices = data.copy(), indices.copy()
+    _core.remap_sort_rows(indptr, indices, data, forward, num_threads)
+    return data, indices
 
 
 def _build_csr(rows, cols, values, n_rows: int, n_cols: int) -> sp.csr_array:
@@ -458,11 +462,11 @@ def _s_plus(
     if use_blocking:
         col_nnz = np.bincount(m2_indices, minlength=n_output_cols)
         perm = np.argsort(-col_nnz, kind='stable').astype(np.int32)  # new col -> original col
+        forward = _EMPTY_I32
         if not np.array_equal(perm, np.arange(n_output_cols, dtype=np.int32)):
             back_perm = perm
             forward = np.empty(n_output_cols, dtype=np.int32)
             forward[perm] = np.arange(n_output_cols, dtype=np.int32)
-            m2_indices = forward[m2_indices]
             if l1 != 0:
                 Ytversky = Ytversky[perm]
             if l2 != 0:
@@ -471,11 +475,14 @@ def _s_plus(
                 Ydepop = Ydepop[perm]
             if filter_mode == MODE_MATRIX and len(filter_indices) > 0:
                 ones = np.ones(len(filter_indices), dtype=np.float32)
-                _, filter_indices = _sorted_rows(ones, forward[filter_indices], filter_indptr, n_output_cols)
+                _, filter_indices = _sorted_rows(ones, filter_indices, filter_indptr, n_output_cols,
+                                                 forward, num_threads)
             if target_mode == MODE_MATRIX and len(target_indices) > 0:
                 ones = np.ones(len(target_indices), dtype=np.float32)
-                _, target_indices = _sorted_rows(ones, forward[target_indices], target_indptr, n_output_cols)
-        m2_data, m2_indices = _sorted_rows(m2_data, m2_indices, m2_indptr, n_output_cols)
+                _, target_indices = _sorted_rows(ones, target_indices, target_indptr, n_output_cols,
+                                                 forward, num_threads)
+        m2_data, m2_indices = _sorted_rows(m2_data, m2_indices, m2_indptr, n_output_cols,
+                                           forward, num_threads)
 
     # Output slots: row i owns [i*k, (i+1)*k), the kernel leaves unused slots
     # untouched. With a permutation, cols starts at -1 to tell padding from a
