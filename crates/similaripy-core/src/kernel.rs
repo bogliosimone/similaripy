@@ -100,15 +100,19 @@ pub fn compute<F: Fn() + Sync>(
     }
     let acc_len = if blocked { block_size } else { n_cols };
 
-    // SAFETY: `validate` checked every target against all row-indexed inputs,
-    // the scratch accumulator is `acc_len` long, and m2 rows are sorted when blocked.
+    // SAFETY: `validate` checked every target against all row-indexed inputs and
+    // the selection widths, the scratch accumulator is `acc_len` long, its marks
+    // are built for these selections, and m2 rows are sorted when blocked.
     let row = |sc: &mut Scratch, t: i32, rows: &mut [i32], cols: &mut [i32], values: &mut [f32]| {
         let n = unsafe {
-            if blocked {
+            sc.mark_selections(inp, t as usize, true);
+            let n = if blocked {
                 sc.blocked_row(inp, t as usize, block_size, cols, values)
             } else {
                 sc.single_block_row(inp, t as usize, cols, values)
-            }
+            };
+            sc.mark_selections(inp, t as usize, false);
+            n
         };
         rows[..n].fill(t);
     };
@@ -118,7 +122,7 @@ pub fn compute<F: Fn() + Sync>(
     let next = AtomicUsize::new(0);
     let shared = SharedOutput::new(out, k);
     rayon::broadcast(|_| {
-        let mut sc = Scratch::new(acc_len, k);
+        let mut sc = Scratch::new(acc_len, k, inp);
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(&t) = inp.targets.get(i) else { break };
@@ -207,6 +211,9 @@ fn validate(inp: &Inputs, k: usize, out: &Output) -> Result<(), Error> {
         if sel.n_rows() < rows_needed {
             return bad("column selection has fewer rows than targets need");
         }
+        if sel.n_cols() != n_cols {
+            return bad("column selection columns != m2 columns");
+        }
     }
     Ok(())
 }
@@ -257,19 +264,86 @@ impl Params {
     }
 }
 
+/// One row of a column selection (filter or target_cols) as a bitset over the
+/// output columns, set before the row and cleared after it: one bit test per
+/// candidate instead of a binary search of the selection row, which cost +40%
+/// kernel time with a seen-items filter (ML-32M, Yambda 50M; Step 3). Empty,
+/// and never read, without a selection.
+struct RowMarks {
+    bits: Vec<u64>,
+}
+
+impl RowMarks {
+    fn new(sel: Option<CsrPattern>, n_cols: usize) -> Self {
+        let words = if sel.is_some() {
+            n_cols.div_ceil(64)
+        } else {
+            0
+        };
+        Self {
+            bits: vec![0; words],
+        }
+    }
+
+    /// Sets (`on`) or clears the bits of row `t`. Clearing zeroes whole words:
+    /// only this row's bits are ever set.
+    ///
+    /// # Safety
+    /// `t < sel.n_rows()`, and `self` was built for `sel` (`sel.n_cols()` columns).
+    #[inline]
+    unsafe fn mark(&mut self, sel: &CsrPattern, t: usize, on: bool) {
+        // SAFETY: t in range (caller); columns < n_cols, so c / 64 < bits.len().
+        unsafe {
+            for &c in sel.row_unchecked(t) {
+                let word = self.bits.get_unchecked_mut(c as usize / 64);
+                *word = if on { *word | (1 << (c % 64)) } else { 0 };
+            }
+        }
+    }
+
+    /// # Safety
+    /// `col < n_cols` of the selection `self` was built for.
+    #[inline(always)]
+    unsafe fn contains(&self, col: usize) -> bool {
+        // SAFETY: caller contract.
+        unsafe { (self.bits.get_unchecked(col / 64) >> (col % 64)) & 1 != 0 }
+    }
+}
+
 /// Per-worker state, reused across rows.
 struct Scratch {
     sums: Vec<f32>,
     touched: Vec<u32>,
     topk: TopK,
+    filter: RowMarks,
+    target_cols: RowMarks,
 }
 
 impl Scratch {
-    fn new(acc_len: usize, k: usize) -> Self {
+    fn new(acc_len: usize, k: usize, inp: &Inputs) -> Self {
+        let n_cols = inp.m2.n_cols();
         Self {
             sums: vec![0.0; acc_len],
             touched: Vec::with_capacity(1024),
             topk: TopK::new(k),
+            filter: RowMarks::new(inp.filter, n_cols),
+            target_cols: RowMarks::new(inp.target_cols, n_cols),
+        }
+    }
+
+    /// Sets (`on`) or clears row `t` of both selections.
+    ///
+    /// # Safety
+    /// `t` passed `validate`, and `self` was built for `inp`.
+    unsafe fn mark_selections(&mut self, inp: &Inputs, t: usize, on: bool) {
+        // SAFETY: t < rows of each selection (validate), marks sized for them (new).
+        unsafe {
+            if let Some(f) = &inp.filter {
+                self.filter.mark(f, t, on);
+            }
+            if let Some(g) = &inp.target_cols {
+                self.target_cols.mark(g, t, on);
+            }
         }
     }
 
@@ -389,12 +463,10 @@ impl Scratch {
             let xy = std::mem::take(s);
             let col = offset + local as usize;
             let col_i = col as i32;
-            // SAFETY: t < rows of each selection (validate).
+            // SAFETY: col < n_cols (caller), row t marked (`mark_selections`).
             let keep = unsafe {
-                !inp.filter.is_some_and(|f| f.contains_unchecked(t, col_i))
-                    && inp
-                        .target_cols
-                        .is_none_or(|g| g.contains_unchecked(t, col_i))
+                !(inp.filter.is_some() && self.filter.contains(col))
+                    && (inp.target_cols.is_none() || self.target_cols.contains(col))
             };
             if keep {
                 // SAFETY: t and col in range of the active norms (validate).
