@@ -11,6 +11,7 @@ import os
 import subprocess
 import glob
 import sys
+import threading
 from datetime import datetime
 import similaripy as sim
 from similaripy import _s_plus as _rust_s_plus_module
@@ -264,6 +265,62 @@ def benchmark_similarity(
     }
 
     return results
+
+
+def peak_rss(func):
+    """Run func() while sampling the process memory every 1 ms.
+
+    ru_maxrss can't be reset and the dataset load peaks higher than a call,
+    so the per-call peak is sampled. Spikes shorter than ~1 ms are missed;
+    irrelevant for the GB-scale temporaries this is meant to catch.
+
+    On macOS this samples phys_footprint (Activity Monitor's "Memory"), not
+    RSS: freed malloc pages stay in RSS, so after the dataset load new
+    temporaries reuse resident pages and RSS barely moves (+1 MB measured for
+    an ML-32M call). Elsewhere: psutil RSS.
+
+    Returns
+    -------
+    tuple
+        (func's result, memory before the call in MB, peak above it in MB)
+    """
+    if platform.system() == "Darwin":
+        import ctypes
+
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        buf = ctypes.create_string_buffer(256)
+        pid = os.getpid()
+
+        def current():
+            # rusage_info_v0: uuid[16], then 7 uint64 before ri_phys_footprint
+            if libc.proc_pid_rusage(pid, 0, buf) != 0:
+                raise OSError("proc_pid_rusage failed")
+            return int.from_bytes(buf.raw[72:80], "little")
+    else:
+        import psutil  # only needed for --rss
+
+        proc = psutil.Process()
+
+        def current():
+            return proc.memory_info().rss
+
+    base = peak = current()
+    done = threading.Event()
+
+    def sample():
+        nonlocal peak
+        while not done.wait(0.001):
+            peak = max(peak, current())
+
+    sampler = threading.Thread(target=sample, daemon=True)
+    sampler.start()
+    try:
+        out = func()
+    finally:
+        done.set()
+        sampler.join()
+    peak = max(peak, current())
+    return out, base / 2**20, (peak - base) / 2**20
 
 
 def _get_similarity_function(similarity_type):

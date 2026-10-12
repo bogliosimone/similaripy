@@ -22,12 +22,14 @@ Requirements:
 
 import argparse
 import json
+import multiprocessing
 import statistics
 import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from dataset_loaders import load_URM
-from benchmark import benchmark_similarity, get_system_info
+from benchmark import benchmark_similarity, get_system_info, peak_rss
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -120,6 +122,23 @@ def build_report_stem(sys_info, config):
 
 # ── Core benchmark runner ────────────────────────────────────────────────────
 
+def rss_child(dataset_name, version, dataset_kwargs, call_kwargs):
+    """Peak memory of one call, run as the first call in a fresh process.
+
+    On macOS a repeated call reuses the allocator's cached regions without
+    them counting again: the second identical ML-32M cosine call stayed flat
+    while the first rose by ~490 MB. Only a first call shows its peak.
+
+    Returns
+    -------
+    tuple
+        (memory before the call in MB, peak above it in MB), see peak_rss.
+    """
+    URM, _ = load_URM(dataset_name, version=version, verbose=False, **dataset_kwargs)
+    _, base_mb, peak_mb = peak_rss(lambda: benchmark_similarity(URM, **call_kwargs))
+    return base_mb, peak_mb
+
+
 def run_benchmarks(config, verbose=True):
     """
     Run benchmarks on multiple datasets and similarity types.
@@ -175,18 +194,20 @@ def run_benchmarks(config, verbose=True):
             print(f"URM nnz: {URM.nnz:,}")
             print(f"URM density: {density:.6%}")
 
+        def call_kwargs(sim_type, kernel):
+            return {
+                'similarity_type': sim_type,
+                'k': config['k'],
+                'shrink': config['shrink'],
+                'threshold': config['threshold'],
+                'num_threads': config['num_threads'],
+                'kernel': kernel,
+                'block_size': config['block_size'],
+            }
+
         def run_once(sim_type, kernel):
             # Drop the output matrix right away: keeping one per round adds GBs on Yambda
-            r = benchmark_similarity(
-                URM,
-                similarity_type=sim_type,
-                k=config['k'],
-                shrink=config['shrink'],
-                threshold=config['threshold'],
-                num_threads=config['num_threads'],
-                kernel=kernel,
-                block_size=config['block_size'],
-            )
+            r = benchmark_similarity(URM, **call_kwargs(sim_type, kernel))
             del r['similarity_matrix']
             return r
 
@@ -209,6 +230,21 @@ def run_benchmarks(config, verbose=True):
             result_key(sim_type, kernel): aggregate_rounds(results)
             for (sim_type, kernel), results in round_results.items()
         }
+
+        # Peak memory: untimed, one fresh process per config (see rss_child)
+        if config.get('rss'):
+            spawn = multiprocessing.get_context('spawn')
+            ds_kwargs = config.get('dataset_kwargs', {}).get(dataset_name, {})
+            for sim_type, kernel in configs:
+                with ProcessPoolExecutor(max_workers=1, mp_context=spawn) as ex:
+                    base_mb, peak_mb = ex.submit(
+                        rss_child, dataset_name, version, ds_kwargs, call_kwargs(sim_type, kernel)
+                    ).result()
+                key = result_key(sim_type, kernel)
+                dataset_results[key]['rss_base_mb'] = base_mb
+                dataset_results[key]['rss_peak_mb'] = peak_mb
+                if verbose:
+                    print(f"[rss] {key:<24} peak +{peak_mb:.0f} MB over {base_mb:.0f} MB")
 
         all_results[(dataset_name, version)] = dataset_results
 
@@ -238,7 +274,7 @@ def format_summary_table(all_results, sys_info, block_size):
         Formatted summary table.
     """
     lines = []
-    w = 130
+    w = 141
 
     lines.append('=' * w)
     lines.append('BENCHMARK SUMMARY')
@@ -274,6 +310,7 @@ def format_summary_table(all_results, sys_info, block_size):
             f"{'Throughput':<15} "
             f"{'Output nnz':<15} "
             f"{'Avg Neighbors':<15} "
+            f"{'Peak mem':<10} "
             f"{'Rounds':<10}"
         )
         lines.append(header)
@@ -282,6 +319,8 @@ def format_summary_table(all_results, sys_info, block_size):
         for sim_type in sorted(dataset_results.keys()):
             result = dataset_results[sim_type]
             time_str = format_time(result['computation_time'], result['std_time'])
+            rss = result.get('rss_peak_mb')
+            rss_str = f"+{rss:.0f} MB" if rss is not None else '-'
 
             row = (
                 f"{sim_type:<20} "
@@ -292,6 +331,7 @@ def format_summary_table(all_results, sys_info, block_size):
                 f"{result['throughput']:<15.1f} "
                 f"{result['nnz']:<15,} "
                 f"{result['avg_neighbors']:<15.1f} "
+                f"{rss_str:<10} "
                 f"{result['rounds']:<10}"
             )
             lines.append(row)
@@ -383,6 +423,7 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
             "block_size": format_block_size(config['block_size']),
             "rounds": config['rounds'],
             "warmup": config['warmup'],
+            "rss": bool(config.get('rss')),
             "tag": config.get('tag') or "",
         },
         "datasets": {},
@@ -414,6 +455,9 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
                 "all_times": [round(t, 4) for t in result["all_times"]],
                 "kernel_times": [round(t, 4) for t in result["kernel_times"]],
             }
+            for field in ("rss_base_mb", "rss_peak_mb"):
+                if field in result:
+                    report["results"][key][sim_type][field] = round(result[field], 1)
 
     with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
@@ -450,6 +494,7 @@ def build_config(args):
         'block_size': parse_block_size(args.block_size),
         'rounds': args.rounds,
         'warmup': args.warmup,
+        'rss': args.rss,
         'note': args.note,
         'tag': args.tag,
         'dataset_kwargs': {
@@ -522,6 +567,9 @@ Examples:
     parser.add_argument('--event-type', type=str, default='multi_event',
                         choices=['likes', 'listens', 'multi_event'],
                         help='Yambda event type (default: multi_event)')
+    parser.add_argument('--rss', action='store_true',
+                        help='After the timed rounds, record peak memory per config: one untimed first call '
+                             'in a fresh process each (reloads the dataset; psutil off macOS)')
     parser.add_argument('--quiet', action='store_true',
                         help='Suppress harness progress output (the timed call is always verbose=False)')
     parser.add_argument('--output-dir', type=str, default='bench_results',
