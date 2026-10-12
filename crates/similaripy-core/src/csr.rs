@@ -104,6 +104,7 @@ impl<'a> CsrView<'a> {
 pub struct CsrPattern<'a> {
     indptr: &'a [i32],
     indices: &'a [i32],
+    n_cols: usize,
 }
 
 impl<'a> CsrPattern<'a> {
@@ -119,25 +120,32 @@ impl<'a> CsrPattern<'a> {
                 "{name}: indices not sorted within rows"
             )));
         }
-        Ok(Self { indptr, indices })
+        Ok(Self {
+            indptr,
+            indices,
+            n_cols,
+        })
     }
 
     pub fn n_rows(&self) -> usize {
         self.indptr.len() - 1
     }
 
-    /// Whether row `r` contains column `col`.
+    pub fn n_cols(&self) -> usize {
+        self.n_cols
+    }
+
+    /// Column ids of row `r`, each `< n_cols()`.
     ///
     /// # Safety
     /// `r < self.n_rows()`.
     #[inline(always)]
-    pub unsafe fn contains_unchecked(&self, r: usize, col: i32) -> bool {
+    pub unsafe fn row_unchecked(&self, r: usize) -> &'a [i32] {
         // SAFETY: same invariant as `CsrView::row_unchecked`.
-        let row = unsafe {
+        unsafe {
             let start = *self.indptr.get_unchecked(r) as usize;
             let end = *self.indptr.get_unchecked(r + 1) as usize;
             self.indices.get_unchecked(start..end)
-        };
-        row.binary_search(&col).is_ok()
+        }
     }
 }

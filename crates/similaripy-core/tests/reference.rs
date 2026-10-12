@@ -309,3 +309,26 @@ fn rejects_more_than_i32_max_columns() {
     };
     assert!(compute(&inp, 1, 0, out, &|| {}).is_err());
 }
+
+// The selection bitsets are m2.n_cols wide: a wider selection would index past them.
+#[test]
+fn rejects_selection_wider_than_m2() {
+    let (indptr, indices, data) = ([0, 1], [0], [1.0]);
+    let (sel_indptr, sel_indices) = ([0, 1], [4]);
+    let inp = Inputs {
+        m1: CsrView::new("m1", &indptr, &indices, &data, 1).unwrap(),
+        m2: CsrView::new("m2", &indptr, &indices, &data, 2).unwrap(),
+        targets: &[0],
+        norms: Norms::default(),
+        params: Params::default(),
+        filter: Some(CsrPattern::new("filter", &sel_indptr, &sel_indices, 5).unwrap()),
+        target_cols: None,
+    };
+    let (mut rows, mut cols, mut vals) = ([0], [0], [0.0]);
+    let out = Output {
+        rows: &mut rows,
+        cols: &mut cols,
+        values: &mut vals,
+    };
+    assert!(compute(&inp, 1, 0, out, &|| {}).is_err());
+}
