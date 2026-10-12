@@ -5,7 +5,7 @@ try:
 except PackageNotFoundError:
     __version__ = "unknown"
 
-from .normalization import normalize, bm25, bm25plus, tfidf
+from .normalization import normalize, binarize, bm25, bm25plus, tfidf
 from .similarity import (
     dot_product,
     cosine,
@@ -21,6 +21,7 @@ from .similarity import (
 __all__ = [
     "__version__",
     "normalize",
+    "binarize",
     "bm25",
     "bm25plus",
     "tfidf",

@@ -1,4 +1,7 @@
 
+??? info "Binarize"
+    ::: similaripy.normalization.binarize
+
 ??? info "L1, L2, Max Normalizations"
     ::: similaripy.normalization.normalize
 
