@@ -1,6 +1,6 @@
 //! Python bindings of the Rust core. During Step 2a this mirrors the C++
-//! `compute_similarities_parallel` call, so `s_plus.pyx` can swap kernels
-//! after the identical prep (`_backend='rust'`).
+//! `compute_similarities_parallel` call; `similaripy/_s_plus.py` does the
+//! prep and calls it (`_backend='rust'`).
 
 mod normalize;
 mod progress;
@@ -179,9 +179,16 @@ fn compute_similarities(
     .map_err(to_py)
 }
 
+/// Threads used with `num_threads = 0`: the global rayon pool (`RAYON_NUM_THREADS`).
+#[pyfunction]
+fn get_num_threads() -> usize {
+    rayon::current_num_threads()
+}
+
 #[pymodule]
 fn _similaripy_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
+    m.add_function(wrap_pyfunction!(get_num_threads, m)?)?;
     m.add_class::<ProgressBar>()?;
     m.add_function(wrap_pyfunction!(normalize::normalize, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::tfidf, m)?)?;

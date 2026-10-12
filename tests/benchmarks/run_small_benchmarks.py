@@ -29,6 +29,7 @@ import numpy as np
 import scipy.sparse as sp
 
 import similaripy as sim
+from similaripy import _s_plus as _rust_s_plus_module
 from similaripy.cython_code import s_plus as _s_plus_module
 from benchmark import get_system_info
 from run_benchmarks import (
@@ -104,7 +105,7 @@ def time_call(func, X, kwargs, kernel, num_threads):
     start = time.perf_counter()
     out = func(X, **kw)
     total = time.perf_counter() - start
-    return total, _s_plus_module._last_kernel_time, out
+    return total, (_s_plus_module if kernel == 'cpp' else _rust_s_plus_module)._last_kernel_time, out
 
 
 def measure(func, X, kwargs, kernel, num_threads, reps):

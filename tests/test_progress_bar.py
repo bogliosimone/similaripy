@@ -6,6 +6,7 @@ import pytest
 import scipy.sparse as sp
 
 import similaripy as sim
+import similaripy.cython_code.s_plus  # noqa: F401  editable installs print a rebuild line on first import
 
 # The Rust module exists only after `make install-dev-rust` (Step 2a).
 BACKENDS = ['cython'] + (['rust'] if importlib.util.find_spec('_similaripy_rs') else [])

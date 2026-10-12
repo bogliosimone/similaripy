@@ -383,7 +383,8 @@ def test_example_code():
 
 def test_openmp_enabled():
     try:
-        threads = sim.cython_code.utils.get_num_threads()
+        from similaripy.cython_code import utils  # lazy since Step 2a: not loaded by `import similaripy`
+        threads = utils.get_num_threads()
         print("✅ OpenMP detected — using {} threads".format(threads))
         assert threads >= 1
     except AttributeError:

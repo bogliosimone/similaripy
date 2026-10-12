@@ -13,6 +13,7 @@ import glob
 import sys
 from datetime import datetime
 import similaripy as sim
+from similaripy import _s_plus as _rust_s_plus_module
 from similaripy.cython_code import s_plus as _s_plus_module
 import numpy as np
 import scipy as sp
@@ -228,7 +229,7 @@ def benchmark_similarity(
 
     end_time = time.perf_counter()
     computation_time = end_time - start_time
-    kernel_time = _s_plus_module._last_kernel_time
+    kernel_time = (_s_plus_module if kernel == 'cpp' else _rust_s_plus_module)._last_kernel_time
 
     # Calculate metrics
     n_items = similarity_matrix.shape[0]

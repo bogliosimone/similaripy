@@ -1,9 +1,18 @@
-from .cython_code import s_plus as _sim
+from ._backend import resolve as _resolve_backend
 from .normalization import normalize as _normalize
 import numpy as np
 
 from typing import Optional, Union, Literal
 from scipy.sparse import sparray
+
+
+def _dispatch_s_plus(*args, _backend=None, **kwargs):
+    """Rust path (`_s_plus.py`) or 0.7.0's Cython `s_plus` (the reference until Step 2a slice 5)."""
+    if _resolve_backend(_backend) == 'rust':
+        from . import _s_plus as rust_s_plus
+        return rust_s_plus.s_plus(*args, **kwargs)
+    from .cython_code import s_plus as cython_s_plus
+    return cython_s_plus.s_plus(*args, **kwargs)
 
 
 def dot_product(
@@ -47,7 +56,7 @@ def dot_product(
         containing the top-k dot product similarities.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _sim.s_plus(
+    return _dispatch_s_plus(
         matrix1, matrix2=matrix2,
         k=k,
         stabilized_shrink=stabilized_shrink,
@@ -106,7 +115,7 @@ def cosine(
         A sparse matrix of top-k cosine similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _sim.s_plus(
+    return _dispatch_s_plus(
         matrix1, matrix2=matrix2,
         l2=1,
         c1=0.5, c2=0.5,
@@ -171,7 +180,7 @@ def asymmetric_cosine(
         asymmetric cosine similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _sim.s_plus(
+    return _dispatch_s_plus(
         matrix1, matrix2=matrix2,
         l2=1,
         c1=alpha, c2=1-alpha,
@@ -236,7 +245,7 @@ def tversky(
         A sparse matrix of top-k Tversky similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _sim.s_plus(
+    return _dispatch_s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=alpha, t2=beta,
@@ -297,7 +306,7 @@ def jaccard(
         A sparse matrix of top-k Jaccard similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _sim.s_plus(
+    return _dispatch_s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=1, t2=1,
@@ -358,7 +367,7 @@ def dice(
         A sparse matrix of top-k Dice similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _sim.s_plus(
+    return _dispatch_s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
         t1=0.5, t2=0.5,
@@ -427,7 +436,7 @@ def p3alpha(
     matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
     matrix2.data = np.power(matrix2.data, alpha)
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _sim.s_plus(
+    return _dispatch_s_plus(
         matrix1=matrix1, matrix2=matrix2,
         k=k,
         stabilized_shrink=stabilized_shrink,
@@ -497,7 +506,7 @@ def rp3beta(
     matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
     matrix2.data = np.power(matrix2.data, alpha)
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _sim.s_plus(
+    return _dispatch_s_plus(
         matrix1=matrix1, matrix2=matrix2,
         weight_depop_matrix2=pop_m2,
         p2=beta,
@@ -583,7 +592,7 @@ def s_plus(
         A sparse matrix of top-k s_plus similarities in the specified format.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
-    return _sim.s_plus(
+    return _dispatch_s_plus(
         matrix1, matrix2=matrix2,
         l1=l1, l2=l2, l3=l3,
         t1=t1, t2=t2,

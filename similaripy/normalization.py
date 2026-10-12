@@ -1,4 +1,3 @@
-from .cython_code import normalization as _norm
 from ._backend import resolve as _resolve_backend
 from math import e
 from typing import Optional
@@ -11,13 +10,6 @@ import numpy as np
 _NORMALIZATIONS = ('l1', 'l2', 'max')
 _TF_MODES = ('binary', 'raw', 'sqrt', 'freq', 'log')
 _IDF_MODES = ('unary', 'base', 'smooth', 'prob', 'bm25')
-
-# ---- Norm function dispatch ----
-_NORM_DISPATCH = {
-    'l1': _norm.inplace_normalize_csr_l1,
-    'l2': _norm.inplace_normalize_csr_l2,
-    'max': _norm.inplace_normalize_csr_max,
-}
 
 
 # ---- Private helpers ----
@@ -116,7 +108,8 @@ def normalize(
         import _similaripy_rs
         _similaripy_rs.normalize(X.data, X.indices, X.indptr, X.shape, norm)
     else:
-        _NORM_DISPATCH[norm](shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr)
+        from .cython_code import normalization as _norm
+        getattr(_norm, f'inplace_normalize_csr_{norm}')(shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr)
     return _finalize_csr(X, axis)
 
 
@@ -153,6 +146,7 @@ def bm25(
         import _similaripy_rs
         _similaripy_rs.bm25plus(X.data, X.indices, X.indptr, X.shape, k1, b, 0.0, tf_mode, idf_mode, logbase)
     else:
+        from .cython_code import normalization as _norm
         _norm.inplace_normalize_csr_bm25plus(
             shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
             k1=k1, b=b, delta=0.0,
@@ -196,6 +190,7 @@ def bm25plus(
         import _similaripy_rs
         _similaripy_rs.bm25plus(X.data, X.indices, X.indptr, X.shape, k1, b, delta, tf_mode, idf_mode, logbase)
     else:
+        from .cython_code import normalization as _norm
         _norm.inplace_normalize_csr_bm25plus(
             shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
             k1=k1, b=b, delta=delta,
@@ -233,6 +228,7 @@ def tfidf(
         import _similaripy_rs
         _similaripy_rs.tfidf(X.data, X.indices, X.indptr, X.shape, tf_mode, idf_mode, logbase)
     else:
+        from .cython_code import normalization as _norm
         _norm.inplace_normalize_csr_tfidf(
             shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
             tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase,

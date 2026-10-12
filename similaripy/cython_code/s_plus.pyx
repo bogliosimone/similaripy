@@ -12,7 +12,6 @@ import numpy as np
 import scipy.sparse as sp
 from typing import Optional, Union, Literal
 
-from .._backend import resolve as _resolve_backend
 from .utils import (
     build_coo_matrix,
     build_csr_matrix,
@@ -126,8 +125,7 @@ def s_plus(
     verbose: bool = True,
     format_output: Literal['csr', 'coo'] = 'csr',
     int num_threads = 0,
-    block_size: Optional[int] = 0,
-    _backend: Optional[str] = None
+    block_size: Optional[int] = 0
 ) -> Union[sp.csr_array, sp.coo_array]:
     """
     Compute top-K similarity between rows of two sparse matrices using the S_Plus algorithm.
@@ -173,8 +171,6 @@ def s_plus(
         containing the top-k similarity scores.
     """
 
-    backend = _resolve_backend(_backend)
-
     # if receive only matrix1 in input
     if matrix2 is None:
         matrix2 = matrix1.T
@@ -205,25 +201,9 @@ def s_plus(
     cdef int[:] targets = targets_arr
     cdef int n_targets = targets.shape[0]
 
-    # Indices, indptrs and the output are int32: fail loudly instead of wrapping
-    int32_max = np.iinfo(np.int32).max
-    if matrix1.nnz > int32_max or matrix2.nnz > int32_max:
-        raise ValueError(f"input matrices must have at most {int32_max} non-zeros")
-    if int(n_targets) * int(k) > int32_max:
-        raise ValueError(
-            f"output too large: {n_targets} target rows * k={k} exceeds {int32_max} entries; "
-            "lower k or split target_rows"
-        )
-
-    # Initialize progress bar: C++ for the Cython kernel, Rust (`rbar`) for the Rust one
+    # Initialize progress bar
     cdef ProgressBar * progress = NULL
-    rbar = None
-    if backend == 'rust':
-        import _similaripy_rs
-        if verbose:
-            rbar = _similaripy_rs.ProgressBar(n_targets, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
-            rbar.set_description('Preprocessing')
-    elif verbose:
+    if verbose:
         progress = new ProgressBar(n_targets, False, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
         progress.set_description(b'Preprocessing')
 
@@ -380,60 +360,36 @@ def s_plus(
 
     if progress != NULL:
         progress.set_description(b'Computing')
-    if rbar is not None:
-        rbar.set_description('Computing')
 
-    # Call the parallel kernel (C++ or Rust, same arguments)
+    # Call C++ parallel computation function
     global _last_kernel_time
     kernel_start = time.perf_counter()
-    if backend == 'rust':
-        try:
-            _similaripy_rs.compute_similarities(
-                np.asarray(targets),
-                np.asarray(m1_data), np.asarray(m1_indices), np.asarray(m1_indptr), matrix1.shape[1],
-                np.asarray(m2_data), np.asarray(m2_indices), np.asarray(m2_indptr),
-                np.asarray(Xtversky), np.asarray(Ytversky),
-                np.asarray(Xcosine), np.asarray(Ycosine),
-                np.asarray(Xdepop), np.asarray(Ydepop),
-                a1, l1, l2, l3, t1, t2,
-                stabilized_shrink, bayesian_shrink, threshold,
-                k, n_output_cols,
-                filter_col_mode, np.asarray(filter_m_indptr), np.asarray(filter_m_indices),
-                target_col_mode, np.asarray(target_m_indptr), np.asarray(target_m_indices),
-                np.asarray(rows), np.asarray(cols), np.asarray(values),
-                num_threads, resolved_block_size, rbar,
-            )
-        except BaseException:
-            if rbar is not None:
-                rbar.close('Failed')
-            raise
-    else:
-        with nogil:
-            compute_similarities_parallel[int, float](
-                n_targets,
-                &targets[0],
-                &m1_data[0], &m1_indices[0], &m1_indptr[0],
-                &m2_data[0], &m2_indices[0], &m2_indptr[0],
-                &Xtversky[0], &Ytversky[0],
-                &Xcosine[0], &Ycosine[0],
-                &Xdepop[0], &Ydepop[0],
-                a1,
-                l1, l2, l3,
-                t1, t2,
-                stabilized_shrink,
-                bayesian_shrink,
-                threshold,
-                k,
-                n_output_cols,
-                filter_col_mode,
-                &filter_m_indptr[0], &filter_m_indices[0],
-                target_col_mode,
-                &target_m_indptr[0], &target_m_indices[0],
-                &rows[0], &cols[0], &values[0],
-                progress,
-                num_threads,
-                resolved_block_size
-            )
+    with nogil:
+        compute_similarities_parallel[int, float](
+            n_targets,
+            &targets[0],
+            &m1_data[0], &m1_indices[0], &m1_indptr[0],
+            &m2_data[0], &m2_indices[0], &m2_indptr[0],
+            &Xtversky[0], &Ytversky[0],
+            &Xcosine[0], &Ycosine[0],
+            &Xdepop[0], &Ydepop[0],
+            a1,
+            l1, l2, l3,
+            t1, t2,
+            stabilized_shrink,
+            bayesian_shrink,
+            threshold,
+            k,
+            n_output_cols,
+            filter_col_mode,
+            &filter_m_indptr[0], &filter_m_indices[0],
+            target_col_mode,
+            &target_m_indptr[0], &target_m_indices[0],
+            &rows[0], &cols[0], &values[0],
+            progress,
+            num_threads,
+            resolved_block_size
+        )
     _last_kernel_time = time.perf_counter() - kernel_start
 
     # Un-permute output column indices back to original ordering
@@ -454,8 +410,6 @@ def s_plus(
 
     if progress != NULL:
         progress.set_description(f'Building {format_output} matrix'.encode())
-    if rbar is not None:
-        rbar.set_description(f'Building {format_output} matrix')
 
     # Build result in requested format
     if format_output == 'coo':
@@ -476,8 +430,6 @@ def s_plus(
         )
         if progress != NULL:
             progress.set_description(b'Removing zeros')
-        if rbar is not None:
-            rbar.set_description('Removing zeros')
         res.eliminate_zeros()
 
     # Finalize and cleanup
@@ -486,7 +438,5 @@ def s_plus(
     if progress != NULL:
         progress.close(b'Done')
         del progress
-    if rbar is not None:
-        rbar.close('Done')
 
     return res
