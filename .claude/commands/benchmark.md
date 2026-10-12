@@ -4,7 +4,7 @@ description: Run similarity benchmarks on dataset
 
 Run the similarity benchmarks and analyze the results.
 
-**Default**: Use `make benchmark-similarity` (Movielens 32M dataset - quick regression test)
+**Default**: Use `make benchmark-similarity-small` (Movielens 32M dataset - quick regression test)
 
 After running the benchmarks:
 1. Show execution times for each similarity function

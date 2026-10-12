@@ -190,7 +190,7 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
         cols: &mut cols,
         values: &mut vals,
     };
-    let res = compute(&inp, k, c.block_size, out);
+    let res = compute(&inp, k, c.block_size, out, &|| {});
     let blocked = c.block_size > 0 && n > c.block_size;
     // Unsorted m2 rows only reject when the blocked path would binary-search them.
     if blocked && c.unsorted_m2 && m2.indptr.windows(2).any(|w| w[1] - w[0] > 1) {
@@ -266,4 +266,44 @@ proptest! {
     fn matches_dense_reference(c in case()) {
         check(&c)?;
     }
+}
+
+// Output column ids are i32 (D11): wider m2 is rejected before any allocation.
+#[test]
+fn rejects_more_than_i32_max_columns() {
+    let (indptr, indices, data) = ([0, 0], [], []);
+    let empty: [f32; 0] = [];
+    let inp = Inputs {
+        m1: CsrView::new("m1", &indptr, &indices, &data, 1).unwrap(),
+        m2: CsrView::new("m2", &indptr, &indices, &data, i32::MAX as usize + 1).unwrap(),
+        targets: &[0],
+        norms: Norms {
+            x_tversky: &empty,
+            y_tversky: &empty,
+            x_cosine: &empty,
+            y_cosine: &empty,
+            x_depop: &empty,
+            y_depop: &empty,
+        },
+        params: Params {
+            a1: 1.0,
+            l1: 0.0,
+            l2: 0.0,
+            l3: 0.0,
+            t1: 1.0,
+            t2: 1.0,
+            stabilized_shrink: 0.0,
+            bayesian_shrink: 0.0,
+            threshold: 0.0,
+        },
+        filter: None,
+        target_cols: None,
+    };
+    let (mut rows, mut cols, mut vals) = ([0], [0], [0.0]);
+    let out = Output {
+        rows: &mut rows,
+        cols: &mut cols,
+        values: &mut vals,
+    };
+    assert!(compute(&inp, 1, 0, out, &|| {}).is_err());
 }

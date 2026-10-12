@@ -25,8 +25,9 @@ python tests/benchmarks/run_benchmarks.py --dataset movielens yambda --similarit
 # Stable timing: 1 untimed warm-up round (default) + 5 timed rounds, median reported
 python tests/benchmarks/run_benchmarks.py --dataset movielens --version 32m --rounds 5
 
-# Compare kernels in one process, interleaved per round (ABAB); rust needs the spike build
-python tests/benchmarks/run_benchmarks.py --dataset movielens --kernel cpp rust --rounds 5 --tag spike
+# Compare two builds (e.g. before/after a change): run in each checkout, then compare the JSONs
+python tests/benchmarks/run_benchmarks.py --dataset movielens --rounds 5 --tag before
+python tests/benchmarks/compare_benchmarks.py bench_results/result_before_*.json bench_results/result_after_*.json
 
 # Small-workload preset (synthetic 10k x 10k, millisecond calls): smoke set, or every case
 python tests/benchmarks/run_small_benchmarks.py
@@ -125,7 +126,6 @@ Core benchmarking functions:
 --block-size SIZE      Block size: 0=auto, none=disabled, or int>0 (default: 0)
 --rounds ROUNDS        Number of timed rounds per config (default: 1)
 --warmup N             Untimed warm-up rounds before the timed ones (default: 1)
---kernel K [K ...]     Kernel backend(s): cpp, rust; interleaved per round (default: cpp)
 --tag TAG              Report filename tag (default: similaripy version)
 --output-dir DIR       Output directory for results (default: bench_results)
 --note NOTE            Optional note/comment to attach to the report
@@ -263,13 +263,20 @@ Two speedups in `crates/similaripy-core/src/kernel.rs` depend on what LLVM emits
 - `lower_bound` must stay **branchy**. LLVM likes to turn it into a branchless `csel`/`cmov` loop, which serializes cache misses once the data no longer fits in cache. An empty `asm!` barrier prevents that today.
 - `accumulate` must keep `sums` and the `touched` cursor in registers. As a `&mut self` method, LLVM reloaded them from the stack on every element.
 
-Only Yambda 500M exposes a regression here; ML-32M and Yambda 50M mostly fit in cache. When you upgrade rustc or edit either function, rerun the 500M comparison on an idle machine, and check the cpp time against earlier runs to catch background load:
+Only Yambda 500M exposes a regression here; ML-32M and Yambda 50M mostly fit in cache. When you upgrade rustc or edit either function, rerun the 500M comparison on an idle machine against the previous build (a `git worktree` of the last good commit, its own venv), alternating the two processes:
 
 ```bash
 python run_benchmarks.py --dataset yambda --version 500m --similarities dot_product cosine \
-    --rounds 1 --warmup 0 --kernel cpp rust
+    --rounds 1 --warmup 0
 ```
 
-Until the Python bindings land (v1 Step 2), `--kernel rust` needs the spike hook, which lives only in the commits of the `v1/rust-spike` PR, #28 (`git fetch origin pull/28/head`).
-
 When the Rust kernel became slower than cpp at 500M, the cause was these two loops (+13..16% before the fix, −7..−11% after).
+
+## 0.7.0 reference (Cython)
+
+Cython was removed in 1.0 development; two references remain:
+
+- **Outputs (parity):** `check_kernel_parity.py` and `check_normalization_parity.py` run in two steps: `--dump` under the reference install, `--compare` here (usage in their docstrings). The quick reference is the 0.7.0 wheel from PyPI (`uv run --isolated --no-project --with similaripy==0.7.0 ...`). Run the scripts by path: `python -c` from the repo root imports the checkout instead.
+- **Bit-level and timing:** commit `608cc06` (local tag `v1-cython-ref`; from a fresh clone: `git fetch origin pull/29/head`), the last commit with both kernels in one process (`--kernel cpp rust`, interleaved ABAB). Build it in a `git worktree` with its own venv (`make install-dev`, needs Homebrew GCC on macOS).
+
+The PyPI wheel was compiled by a different GCC (CI runner, `-O3 -ffast-math`), so some scores differ by 1 float32 ulp from the local build the Rust core was matched against. Parity still passes, but near-ties at the k-th score become one-sided entries: ML-32M rp3beta has ~627k (7%) against PyPI and 0 against the tag build; synthetic p3alpha/rp3beta 2/26. For a bit-level check, dump from the tag build.

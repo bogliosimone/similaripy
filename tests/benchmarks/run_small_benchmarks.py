@@ -16,7 +16,6 @@ the report records gil_enabled.
 Usage:
     python run_small_benchmarks.py                 # smoke set, 3 rounds
     python run_small_benchmarks.py --cases all     # every case, incl. concurrency
-    python run_small_benchmarks.py --kernel cpp rust
 """
 
 import argparse
@@ -29,13 +28,11 @@ import numpy as np
 import scipy.sparse as sp
 
 import similaripy as sim
-from similaripy.cython_code import s_plus as _s_plus_module
 from benchmark import get_system_info
 from run_benchmarks import (
     aggregate_rounds,
     build_report_stem,
     format_summary_table,
-    result_key,
     write_json_report,
     write_text_report,
 )
@@ -97,22 +94,20 @@ def build_cases(X):
     ]
 
 
-def time_call(func, X, kwargs, kernel, num_threads):
+def time_call(func, X, kwargs, num_threads):
     """One serial call: (total seconds, kernel seconds, output)."""
     kw = {'k': 100, 'verbose': False, 'num_threads': num_threads, **kwargs}
-    if kernel != 'cpp':
-        kw['_kernel'] = kernel
     start = time.perf_counter()
     out = func(X, **kw)
     total = time.perf_counter() - start
-    return total, _s_plus_module._last_kernel_time, out
+    return total, sim._s_plus._last_kernel_time, out
 
 
-def measure(func, X, kwargs, kernel, num_threads, reps):
+def measure(func, X, kwargs, num_threads, reps):
     """Median of reps serial calls, shaped like benchmark_similarity's result."""
     totals, kernels = [], []
     for _ in range(reps):
-        total, kern, out = time_call(func, X, kwargs, kernel, num_threads)
+        total, kern, out = time_call(func, X, kwargs, num_threads)
         totals.append(total)
         kernels.append(kern)
     n_items = out.shape[0]
@@ -126,11 +121,9 @@ def measure(func, X, kwargs, kernel, num_threads, reps):
     }
 
 
-def measure_concurrent(X, kernel, reps, concurrent):
+def measure_concurrent(X, reps, concurrent):
     """Median wall time of two cosine calls (num_threads=2 each), concurrent or serial."""
     kw = {'k': 100, 'verbose': False, 'num_threads': 2}
-    if kernel != 'cpp':
-        kw['_kernel'] = kernel
     times = []
     with ThreadPoolExecutor(max_workers=2) as pool:
         for _ in range(reps):
@@ -161,8 +154,6 @@ def main():
     parser.add_argument('--reps', type=int, default=21,
                         help='Calls per timing, median taken (default: 21)')
     parser.add_argument('--threads', type=int, default=0, help='Threads for serial cases, 0=auto')
-    parser.add_argument('--kernel', nargs='+', default=['cpp'], choices=['cpp', 'rust'],
-                        help='Kernel backend(s), interleaved per round (default: cpp)')
     parser.add_argument('--tag', type=str, default=None, help='Report filename tag')
     parser.add_argument('--note', type=str, default=None, help='Note attached to the report')
     parser.add_argument('--output-dir', type=str, default='bench_results')
@@ -181,17 +172,10 @@ def main():
 
     measurements = []
     for name, func, kwargs in cases:
-        for kernel in args.kernel:
-            measurements.append((result_key(name, kernel),
-                                 lambda f=func, kw=kwargs, kern=kernel:
-                                 measure(f, X, kw, kern, args.threads, args.reps)))
-    for kernel in args.kernel:
-        for concurrent, name in ((False, 'cosine_2x2_serial'), (True, 'cosine_2x2_concurrent')):
-            if name not in concurrency:
-                continue
-            measurements.append((result_key(name, kernel),
-                                 lambda kern=kernel, c=concurrent:
-                                 measure_concurrent(X, kern, args.reps, c)))
+        measurements.append((name, lambda f=func, kw=kwargs: measure(f, X, kw, args.threads, args.reps)))
+    for concurrent, name in ((False, 'cosine_2x2_serial'), (True, 'cosine_2x2_concurrent')):
+        if name in concurrency:
+            measurements.append((name, lambda c=concurrent: measure_concurrent(X, args.reps, c)))
 
     round_results = {key: [] for key, _ in measurements}
     for round_num in range(args.warmup + args.rounds):
@@ -209,7 +193,6 @@ def main():
     config = {
         'datasets': [DATASET],
         'similarities': [name for name, _, _ in cases] + concurrency,
-        'kernels': args.kernel,
         'k': 100,
         'shrink': 0,
         'threshold': 0,

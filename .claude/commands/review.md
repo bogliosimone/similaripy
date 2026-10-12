@@ -10,13 +10,13 @@ Review the recent code changes in the repository focusing on:
    - Flag any performance changes without explaining benefit/trade-offs first
    - Look for unnecessary allocations, copies, or computations
 
-3. **Cython Best Practices**:
-   - Proper GIL handling (`with nogil:` for parallel sections)
-   - Appropriate use of memory views vs NumPy arrays
-   - Correct type declarations (`cdef` for C variables, `def` for Python-callable)
-   - Pre-allocated buffers instead of repeated allocations
-   - No shared mutable state in OpenMP parallel regions
-   - Float32 vs Float64 usage
+3. **Rust Best Practices**:
+   - GIL released around kernel calls (`py.detach`), no Python objects touched inside
+   - Every `unsafe` block justified by an invariant the Python prep or `CsrView`/`validate` guarantees
+   - Pre-allocated per-thread buffers instead of repeated allocations
+   - No shared mutable state across rayon workers
+   - Float32 vs Float64 usage; codegen-sensitive loops (`tests/benchmarks/README.md`) left intact
+   - `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` clean
 
 5. **Testing**: Suggest additional test cases for edge cases if needed
 

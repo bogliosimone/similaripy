@@ -5,7 +5,7 @@ name: Build and Test
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "master", "v1/main" ]
   pull_request:
 
 # A new push cancels the outdated run of the same branch / PR
@@ -52,3 +52,23 @@ jobs:
       run: |
         python -m pip install pytest
         pytest
+
+  rust:
+    name: Rust core (fmt, clippy, test)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install the pinned toolchain
+      # Runner images ship rustup; no args = install what rust-toolchain.toml says
+      run: rustup toolchain install
+
+    - name: Check formatting
+      run: cargo fmt --check
+
+    - name: Lint with clippy
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
+    - name: Run tests
+      run: cargo test --workspace

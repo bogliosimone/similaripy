@@ -9,11 +9,10 @@ import time
 import platform
 import os
 import subprocess
-import glob
 import sys
+import threading
 from datetime import datetime
 import similaripy as sim
-from similaripy.cython_code import s_plus as _s_plus_module
 import numpy as np
 import scipy as sp
 
@@ -26,7 +25,7 @@ def get_system_info():
     dict
         Dictionary with keys: similaripy_version, numpy_version, scipy_version, python_version, system,
         arch, cpu_model, cpu_count, git_hash, timestamp, os_version, memory_gb,
-        compiler, rustc, gil_enabled.
+        rustc, gil_enabled.
     """
     try:
         similaripy_version = sim.__version__
@@ -85,8 +84,6 @@ def get_system_info():
     except (ValueError, OSError, AttributeError):
         pass
 
-    # Compiler that built the extension: on macOS CMakeLists.txt picks the
-    # newest Homebrew g++-N, elsewhere the default c++ on PATH
     def tool_version(cmd):
         try:
             r = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=5)
@@ -96,15 +93,6 @@ def get_system_info():
             pass
         return "unknown"
 
-    cxx = "c++"
-    if platform.system() == "Darwin":
-        brew_gpp = sorted(
-            glob.glob("/opt/homebrew/bin/g++-[0-9]*") + glob.glob("/usr/local/bin/g++-[0-9]*"),
-            key=lambda p: int(p.rsplit("-", 1)[1]),
-        )
-        if brew_gpp:
-            cxx = brew_gpp[-1]
-    compiler = tool_version(cxx)
     rustc = tool_version("rustc")
 
     return {
@@ -120,7 +108,6 @@ def get_system_info():
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "os_version": os_version,
         "memory_gb": memory_gb,
-        "compiler": compiler,
         "rustc": rustc,
         "gil_enabled": getattr(sys, "_is_gil_enabled", lambda: True)(),
     }
@@ -134,7 +121,6 @@ def benchmark_similarity(
     threshold=0,
     num_threads=0,
     verbose=True,
-    kernel="cpp",
     **similarity_kwargs
 ):
     """
@@ -161,8 +147,6 @@ def benchmark_similarity(
     verbose : bool, optional
         Unused for timing: the similarity call always runs with verbose=False
         so the progress bar stays out of the timed region (default: True)
-    kernel : str, optional
-        Kernel backend: "cpp" (default) or "rust" (spike only, passes _kernel)
     **similarity_kwargs : dict
         Additional similarity-specific parameters
 
@@ -210,8 +194,6 @@ def benchmark_similarity(
     similarity_func = _get_similarity_function(similarity_type)
 
     block_size = similarity_kwargs.pop('block_size', 0)
-    if kernel != "cpp":
-        similarity_kwargs['_kernel'] = kernel
 
     start_time = time.perf_counter()
 
@@ -228,7 +210,7 @@ def benchmark_similarity(
 
     end_time = time.perf_counter()
     computation_time = end_time - start_time
-    kernel_time = _s_plus_module._last_kernel_time
+    kernel_time = sim._s_plus._last_kernel_time
 
     # Calculate metrics
     n_items = similarity_matrix.shape[0]
@@ -249,7 +231,6 @@ def benchmark_similarity(
         'similarity_matrix': similarity_matrix,
         'computation_time': computation_time,
         'kernel_time': kernel_time,
-        'kernel': kernel,
         'n_items': n_items,
         'nnz': nnz,
         'density': density,
@@ -263,6 +244,62 @@ def benchmark_similarity(
     }
 
     return results
+
+
+def peak_rss(func):
+    """Run func() while sampling the process memory every 1 ms.
+
+    ru_maxrss can't be reset and the dataset load peaks higher than a call,
+    so the per-call peak is sampled. Spikes shorter than ~1 ms are missed;
+    irrelevant for the GB-scale temporaries this is meant to catch.
+
+    On macOS this samples phys_footprint (Activity Monitor's "Memory"), not
+    RSS: freed malloc pages stay in RSS, so after the dataset load new
+    temporaries reuse resident pages and RSS barely moves (+1 MB measured for
+    an ML-32M call). Elsewhere: psutil RSS.
+
+    Returns
+    -------
+    tuple
+        (func's result, memory before the call in MB, peak above it in MB)
+    """
+    if platform.system() == "Darwin":
+        import ctypes
+
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        buf = ctypes.create_string_buffer(256)
+        pid = os.getpid()
+
+        def current():
+            # rusage_info_v0: uuid[16], then 7 uint64 before ri_phys_footprint
+            if libc.proc_pid_rusage(pid, 0, buf) != 0:
+                raise OSError("proc_pid_rusage failed")
+            return int.from_bytes(buf.raw[72:80], "little")
+    else:
+        import psutil  # only needed for --rss
+
+        proc = psutil.Process()
+
+        def current():
+            return proc.memory_info().rss
+
+    base = peak = current()
+    done = threading.Event()
+
+    def sample():
+        nonlocal peak
+        while not done.wait(0.001):
+            peak = max(peak, current())
+
+    sampler = threading.Thread(target=sample, daemon=True)
+    sampler.start()
+    try:
+        out = func()
+    finally:
+        done.set()
+        sampler.join()
+    peak = max(peak, current())
+    return out, base / 2**20, (peak - base) / 2**20
 
 
 def _get_similarity_function(similarity_type):

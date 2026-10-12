@@ -22,12 +22,14 @@ Requirements:
 
 import argparse
 import json
+import multiprocessing
 import statistics
 import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from dataset_loaders import load_URM
-from benchmark import benchmark_similarity, get_system_info
+from benchmark import benchmark_similarity, get_system_info, peak_rss
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -56,11 +58,6 @@ def format_block_size(block_size):
     if block_size is None:
         return 'disabled'
     return 'auto' if block_size == 0 else str(block_size)
-
-
-def result_key(sim_type, kernel):
-    """Result key: plain similarity name for cpp (comparable with older reports)."""
-    return sim_type if kernel == 'cpp' else f"{sim_type}@{kernel}"
 
 
 def aggregate_rounds(round_results):
@@ -120,6 +117,23 @@ def build_report_stem(sys_info, config):
 
 # ── Core benchmark runner ────────────────────────────────────────────────────
 
+def rss_child(dataset_name, version, dataset_kwargs, call_kwargs):
+    """Peak memory of one call, run as the first call in a fresh process.
+
+    On macOS a repeated call reuses the allocator's cached regions without
+    them counting again: the second identical ML-32M cosine call stayed flat
+    while the first rose by ~490 MB. Only a first call shows its peak.
+
+    Returns
+    -------
+    tuple
+        (memory before the call in MB, peak above it in MB), see peak_rss.
+    """
+    URM, _ = load_URM(dataset_name, version=version, verbose=False, **dataset_kwargs)
+    _, base_mb, peak_mb = peak_rss(lambda: benchmark_similarity(URM, **call_kwargs))
+    return base_mb, peak_mb
+
+
 def run_benchmarks(config, verbose=True):
     """
     Run benchmarks on multiple datasets and similarity types.
@@ -127,7 +141,7 @@ def run_benchmarks(config, verbose=True):
     Parameters
     ----------
     config : dict
-        Benchmark configuration with keys: datasets, similarities, kernels, k,
+        Benchmark configuration with keys: datasets, similarities, k,
         shrink, threshold, num_threads, block_size, warmup, rounds, dataset_kwargs.
     verbose : bool
         Print progress.
@@ -175,40 +189,55 @@ def run_benchmarks(config, verbose=True):
             print(f"URM nnz: {URM.nnz:,}")
             print(f"URM density: {density:.6%}")
 
-        def run_once(sim_type, kernel):
+        def call_kwargs(sim_type):
+            return {
+                'similarity_type': sim_type,
+                'k': config['k'],
+                'shrink': config['shrink'],
+                'threshold': config['threshold'],
+                'num_threads': config['num_threads'],
+                'block_size': config['block_size'],
+            }
+
+        def run_once(sim_type):
             # Drop the output matrix right away: keeping one per round adds GBs on Yambda
-            r = benchmark_similarity(
-                URM,
-                similarity_type=sim_type,
-                k=config['k'],
-                shrink=config['shrink'],
-                threshold=config['threshold'],
-                num_threads=config['num_threads'],
-                kernel=kernel,
-                block_size=config['block_size'],
-            )
+            r = benchmark_similarity(URM, **call_kwargs(sim_type))
             del r['similarity_matrix']
             return r
 
         # Interleave configs within each round (ABAB) so drift hits all equally
-        configs = [(s, kern) for s in config['similarities'] for kern in config['kernels']]
+        configs = config['similarities']
         round_results = {c: [] for c in configs}
         warmup = config['warmup']
         for round_num in range(warmup + rounds):
             is_warmup = round_num < warmup
-            for sim_type, kernel in configs:
-                r = run_once(sim_type, kernel)
+            for sim_type in configs:
+                r = run_once(sim_type)
                 if verbose:
                     label = 'warmup' if is_warmup else f"round {round_num - warmup + 1}/{rounds}"
-                    print(f"[{label}] {result_key(sim_type, kernel):<24} "
+                    print(f"[{label}] {sim_type:<24} "
                           f"total {r['computation_time']:.3f}s  kernel {r['kernel_time']:.3f}s")
                 if not is_warmup:
-                    round_results[(sim_type, kernel)].append(r)
+                    round_results[sim_type].append(r)
 
         dataset_results = {
-            result_key(sim_type, kernel): aggregate_rounds(results)
-            for (sim_type, kernel), results in round_results.items()
+            sim_type: aggregate_rounds(results)
+            for sim_type, results in round_results.items()
         }
+
+        # Peak memory: untimed, one fresh process per config (see rss_child)
+        if config.get('rss'):
+            spawn = multiprocessing.get_context('spawn')
+            ds_kwargs = config.get('dataset_kwargs', {}).get(dataset_name, {})
+            for sim_type in configs:
+                with ProcessPoolExecutor(max_workers=1, mp_context=spawn) as ex:
+                    base_mb, peak_mb = ex.submit(
+                        rss_child, dataset_name, version, ds_kwargs, call_kwargs(sim_type)
+                    ).result()
+                dataset_results[sim_type]['rss_base_mb'] = base_mb
+                dataset_results[sim_type]['rss_peak_mb'] = peak_mb
+                if verbose:
+                    print(f"[rss] {sim_type:<24} peak +{peak_mb:.0f} MB over {base_mb:.0f} MB")
 
         all_results[(dataset_name, version)] = dataset_results
 
@@ -238,7 +267,7 @@ def format_summary_table(all_results, sys_info, block_size):
         Formatted summary table.
     """
     lines = []
-    w = 130
+    w = 141
 
     lines.append('=' * w)
     lines.append('BENCHMARK SUMMARY')
@@ -253,7 +282,7 @@ def format_summary_table(all_results, sys_info, block_size):
     lines.append(f"Architecture: {sys_info['system']} {sys_info['arch']}")
     lines.append(f"CPU cores available: {sys_info['cpu_count']}")
     lines.append(f"OS: {sys_info['os_version']}, RAM: {sys_info['memory_gb']} GB")
-    lines.append(f"Compiler: {sys_info['compiler']}, rustc: {sys_info['rustc']}")
+    lines.append(f"rustc: {sys_info['rustc']}")
     lines.append(f"GIL enabled: {sys_info['gil_enabled']}")
     lines.append(f"Block size: {format_block_size(block_size)}")
     lines.append('=' * w)
@@ -274,6 +303,7 @@ def format_summary_table(all_results, sys_info, block_size):
             f"{'Throughput':<15} "
             f"{'Output nnz':<15} "
             f"{'Avg Neighbors':<15} "
+            f"{'Peak mem':<10} "
             f"{'Rounds':<10}"
         )
         lines.append(header)
@@ -282,6 +312,8 @@ def format_summary_table(all_results, sys_info, block_size):
         for sim_type in sorted(dataset_results.keys()):
             result = dataset_results[sim_type]
             time_str = format_time(result['computation_time'], result['std_time'])
+            rss = result.get('rss_peak_mb')
+            rss_str = f"+{rss:.0f} MB" if rss is not None else '-'
 
             row = (
                 f"{sim_type:<20} "
@@ -292,6 +324,7 @@ def format_summary_table(all_results, sys_info, block_size):
                 f"{result['throughput']:<15.1f} "
                 f"{result['nnz']:<15,} "
                 f"{result['avg_neighbors']:<15.1f} "
+                f"{rss_str:<10} "
                 f"{result['rounds']:<10}"
             )
             lines.append(row)
@@ -329,7 +362,6 @@ def write_text_report(output_path, config, dataset_info, all_results, sys_info):
         f.write(f"Parameters: k={config['k']}, shrink={config['shrink']}, threshold={config['threshold']}\n")
         f.write(f"Threads: {config['num_threads'] if config['num_threads'] > 0 else 'auto'}\n")
         f.write(f"Block size: {format_block_size(config['block_size'])}\n")
-        f.write(f"Kernels: {', '.join(config['kernels'])}\n")
         f.write(f"Rounds: {config['rounds']} (+{config['warmup']} warmup)\n")
         if config.get('note'):
             f.write(f"Note: {config['note']}\n")
@@ -375,7 +407,6 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
         "config": {
             "datasets": [[d, v] for d, v in config['datasets']],
             "similarities": config['similarities'],
-            "kernels": config['kernels'],
             "k": config['k'],
             "shrink": config['shrink'],
             "threshold": config['threshold'],
@@ -383,6 +414,7 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
             "block_size": format_block_size(config['block_size']),
             "rounds": config['rounds'],
             "warmup": config['warmup'],
+            "rss": bool(config.get('rss')),
             "tag": config.get('tag') or "",
         },
         "datasets": {},
@@ -414,6 +446,9 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
                 "all_times": [round(t, 4) for t in result["all_times"]],
                 "kernel_times": [round(t, 4) for t in result["kernel_times"]],
             }
+            for field in ("rss_base_mb", "rss_peak_mb"):
+                if field in result:
+                    report["results"][key][sim_type][field] = round(result[field], 1)
 
     with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
@@ -442,7 +477,6 @@ def build_config(args):
     return {
         'datasets': datasets,
         'similarities': args.similarities,
-        'kernels': args.kernel,
         'k': args.k,
         'shrink': args.shrink,
         'threshold': args.threshold,
@@ -450,6 +484,7 @@ def build_config(args):
         'block_size': parse_block_size(args.block_size),
         'rounds': args.rounds,
         'warmup': args.warmup,
+        'rss': args.rss,
         'note': args.note,
         'tag': args.tag,
         'dataset_kwargs': {
@@ -469,7 +504,6 @@ def print_config_header(config):
     print(f"Parameters: k={config['k']}, shrink={config['shrink']}, threshold={config['threshold']}")
     print(f"Threads: {config['num_threads'] if config['num_threads'] > 0 else 'auto'}")
     print(f"Block size: {format_block_size(config['block_size'])}")
-    print(f"Kernels: {', '.join(config['kernels'])}")
     print(f"Rounds: {config['rounds']} (+{config['warmup']} warmup)")
     if config.get('note'):
         print(f"Note: {config['note']}")
@@ -513,8 +547,6 @@ Examples:
                         help='Number of timed rounds per config (default: 1)')
     parser.add_argument('--warmup', type=int, default=1,
                         help='Untimed warm-up rounds before the timed ones (default: 1)')
-    parser.add_argument('--kernel', nargs='+', default=['cpp'], choices=['cpp', 'rust'],
-                        help='Kernel backend(s), interleaved per round (default: cpp)')
     parser.add_argument('--tag', type=str, default=None,
                         help='Report filename tag (default: similaripy version)')
     parser.add_argument('--block-size', type=str, default='0',
@@ -522,6 +554,9 @@ Examples:
     parser.add_argument('--event-type', type=str, default='multi_event',
                         choices=['likes', 'listens', 'multi_event'],
                         help='Yambda event type (default: multi_event)')
+    parser.add_argument('--rss', action='store_true',
+                        help='After the timed rounds, record peak memory per config: one untimed first call '
+                             'in a fresh process each (reloads the dataset; psutil off macOS)')
     parser.add_argument('--quiet', action='store_true',
                         help='Suppress harness progress output (the timed call is always verbose=False)')
     parser.add_argument('--output-dir', type=str, default='bench_results',

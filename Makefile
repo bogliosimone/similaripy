@@ -6,11 +6,6 @@ install:
 install-dev:
 	uv pip install -e '.[dev,bench,notebook]'
 
-.PHONY: install-dev-editable
-# The first time, you must run install-dev before, to have dependencies installed
-install-dev-editable:
-	SKBUILD_EDITABLE_REBUILD=true uv pip install -e '.[dev,bench,notebook]' --no-build-isolation -v
-
 .PHONY: test
 test:
 	uv run tox -e py311
@@ -51,7 +46,7 @@ benchmark-similarity-large:
 clean:
 	rm -rf build/ dist/ *.egg-info
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	find . -name '*.so' -path '*/cython_code/*' -delete 2>/dev/null || true
+	rm -f similaripy/_core*.so similaripy/_core*.pyd
 
 .PHONY: mkdocs
 mkdocs:

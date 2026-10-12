@@ -232,7 +232,7 @@ def col_scale(X, array_scale):
 
 
 def check_similarity(m, k, rtol=0.0001, full=False):
-    # cython
+    # similaripy
     dot = sim.dot_product(m, k=k, verbose=VERBOSE)
     cosine = sim.cosine(m, k=k, verbose=VERBOSE)
     asy_cosine = sim.asymmetric_cosine(m, alpha=0.2, k=k, verbose=VERBOSE)
@@ -323,7 +323,7 @@ def test_shrink_types():
     m = generate_random_matrix(rows, cols, density=density).tocsr()
     
     for mode in ('stabilized', 'bayesian', 'additive'):
-        # cython
+        # similaripy
         cosine = sim.cosine(m, k=k, shrink=10, shrink_type=mode, verbose=VERBOSE)
         # python
         cosine2 = py_cosine(m, k, h=10, shrink_mode=mode).tocsr()
@@ -379,15 +379,6 @@ def test_example_code():
         filter_cols=urm
     )
     print('✅ Test README.md sample code passed')
-
-
-def test_openmp_enabled():
-    try:
-        threads = sim.cython_code.utils.get_num_threads()
-        print("✅ OpenMP detected — using {} threads".format(threads))
-        assert threads >= 1
-    except AttributeError:
-        print("⚠️ OpenMP not detected or extension built without OpenMP — skipping test")
 
 
 def test_target_rows():
@@ -618,7 +609,6 @@ def test_filter_cols_matrix():
 
 
 if __name__ == "__main__":
-    test_openmp_enabled()
     test_similarity_topk()
     test_similarity_full()
     test_shrink_types()

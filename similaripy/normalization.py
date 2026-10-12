@@ -1,4 +1,4 @@
-from .cython_code import normalization as _norm
+from . import _core
 from math import e
 
 import scipy.sparse as sps
@@ -9,13 +9,6 @@ import numpy as np
 _NORMALIZATIONS = ('l1', 'l2', 'max')
 _TF_MODES = ('binary', 'raw', 'sqrt', 'freq', 'log')
 _IDF_MODES = ('unary', 'base', 'smooth', 'prob', 'bm25')
-
-# ---- Norm function dispatch ----
-_NORM_DISPATCH = {
-    'l1': _norm.inplace_normalize_csr_l1,
-    'l2': _norm.inplace_normalize_csr_l2,
-    'max': _norm.inplace_normalize_csr_max,
-}
 
 
 # ---- Private helpers ----
@@ -109,7 +102,7 @@ def normalize(
     if norm not in _NORMALIZATIONS:
         raise ValueError(f"norm must be one of {_NORMALIZATIONS}, got '{norm}'")
     X = _prepare_csr(X, axis, inplace)
-    _NORM_DISPATCH[norm](shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr)
+    _core.normalize(X.data, X.indices, X.indptr, X.shape, norm)
     return _finalize_csr(X, axis)
 
 
@@ -141,11 +134,7 @@ def bm25(
     """
     _validate_modes(tf_mode, idf_mode)
     X = _prepare_csr(X, axis, inplace)
-    _norm.inplace_normalize_csr_bm25plus(
-        shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
-        k1=k1, b=b, delta=0.0,
-        tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase,
-    )
+    _core.bm25plus(X.data, X.indices, X.indptr, X.shape, k1, b, 0.0, tf_mode, idf_mode, logbase)
     return _finalize_csr(X, axis)
 
 
@@ -179,11 +168,7 @@ def bm25plus(
     """
     _validate_modes(tf_mode, idf_mode)
     X = _prepare_csr(X, axis, inplace)
-    _norm.inplace_normalize_csr_bm25plus(
-        shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
-        k1=k1, b=b, delta=delta,
-        tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase,
-    )
+    _core.bm25plus(X.data, X.indices, X.indptr, X.shape, k1, b, delta, tf_mode, idf_mode, logbase)
     return _finalize_csr(X, axis)
 
 
@@ -211,10 +196,7 @@ def tfidf(
     """
     _validate_modes(tf_mode, idf_mode)
     X = _prepare_csr(X, axis, inplace)
-    _norm.inplace_normalize_csr_tfidf(
-        shape=X.shape, data=X.data, indices=X.indices, indptr=X.indptr,
-        tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase,
-    )
+    _core.tfidf(X.data, X.indices, X.indptr, X.shape, tf_mode, idf_mode, logbase)
     return _finalize_csr(X, axis)
 
     

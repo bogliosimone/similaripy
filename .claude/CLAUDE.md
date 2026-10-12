@@ -5,7 +5,7 @@
 SimilariPy is a high-performance KNN similarity library for Python, optimized for sparse matrices. Primarily designed for Recommender Systems and Information Retrieval tasks.
 
 **Key Technologies:**
-- Cython/C++ implementation with OpenMP parallelization
+- Rust core (PyO3 + rayon), built with maturin
 - Optimized for sparse CSR matrices
 - Multi-threaded, GIL-free computation
 
@@ -16,17 +16,20 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
 ## Code Architecture
 
 ### Design Principles
-- **Public APIs**: Python interface with validation, wraps Cython implementations
+- **Public APIs**: Python interface with validation, calls the Rust extension `similaripy._core`
   - [similarity.py](similaripy/similarity.py) - Similarity functions (cosine, jaccard, s_plus, etc.)
+  - [_s_plus.py](similaripy/_s_plus.py) - numpy prep (copies, sorting, column filters), kernel call, output build
   - [normalization.py](similaripy/normalization.py) - Normalization functions (BM25, TF-IDF, etc.)
 
-- **Cython Core**: C++ compiled code with direct CSR matrix memory access, OpenMP parallel execution
-  - [s_plus.pyx](similaripy/cython_code/s_plus.pyx) - S-Plus algorithm (reference implementation)
-  - [normalization.pyx](similaripy/cython_code/normalization.pyx) - Normalization implementations
-  - [utils.pyx](similaripy/cython_code/utils.pyx) - Common utilities
+- **Rust core** ([crates/similaripy-core](crates/similaripy-core)): pure Rust, no Python
+  - [kernel.rs](crates/similaripy-core/src/kernel.rs) - S-Plus kernel (single-block and blocked paths, rayon)
+  - [normalize.rs](crates/similaripy-core/src/normalize.rs) - Normalizations, in place over CSR data
+  - [csr.rs](crates/similaripy-core/src/csr.rs), [topk.rs](crates/similaripy-core/src/topk.rs) - CSR views, top-K heap
+- **Bindings** ([crates/similaripy-py](crates/similaripy-py)): PyO3 module `similaripy._core`, thread pools, progress bar
 
 **Config:**
-- [pyproject.toml](pyproject.toml) - Dependencies, build config
+- [pyproject.toml](pyproject.toml) - Dependencies, build config (`[tool.maturin]`)
+- [Cargo.toml](Cargo.toml) + [rust-toolchain.toml](rust-toolchain.toml) - Rust workspace, pinned compiler
 - [Makefile](Makefile) - Development commands
 
 ---
@@ -34,38 +37,38 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
 ## Performance Architecture
 
 **Key Optimizations:**
-- **Float32 precision** + **Pre-allocated buffers** + **GIL-free computation** (`with nogil:`)
+- **Float32 precision** + **Pre-allocated per-thread buffers** + **GIL-free computation** (`py.detach`)
 - **Top-K filtering** with efficient heap structures (pre-allocated), **Lazy normalization** (only when needed)
 - **In-place operations** for zero-copy modifications
 
-**Reference:** See [s_plus.pyx](similaripy/cython_code/s_plus.pyx) for implementation patterns.
+**Reference:** See [kernel.rs](crates/similaripy-core/src/kernel.rs) for implementation patterns, and the codegen-sensitive loops in [tests/benchmarks/README.md](tests/benchmarks/README.md).
 
 ---
 
 ## Development Workflow
 
 ### Package Manager & Build System
-Uses **uv** for package management. Built with **scikit-build-core** + CMake. Requires GCC with OpenMP support.
+Uses **uv** for package management. Built with **maturin**. Requires the Rust toolchain (rustup; `rust-toolchain.toml` pins the version).
 
 ### Setup
 ```bash
-# First time setup (install dependencies)
+# Editable install with dependencies; `uv run` rebuilds it after Rust edits
 make install-dev
-
-# Development mode (editable install, auto-recompiles on test)
-make install-dev-editable
 ```
 
 ### Testing
 ```bash
 # Local tests (fast, correctness only)
 make test-dev
+
+# Rust core
+cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
 ### Benchmarking
 ```bash
 # Small dataset for quick regression test (Movielens 32M)
-make benchmark-similarity
+make benchmark-similarity-small
 ```
 
 **Test files:** [tests/test_similarity.py](tests/test_similarity.py), [tests/test_normalization.py](tests/test_normalization.py)
@@ -91,7 +94,7 @@ make benchmark-similarity
 - Document performance characteristics of new algorithms
 
 ### Before Submitting Changes
-1. Run `make test-dev` to verify compilation and unit tests
+1. Run `make test-dev` (and the cargo checks for Rust changes) to verify compilation and unit tests
 2. Suggest test updates for new features or uncovered bugs
 
 ---
@@ -102,14 +105,13 @@ make benchmark-similarity
 - All functions expect **CSR format** (converted automatically)
 - **Always call `eliminate_zeros()`** in the init phase to maintain sparsity and avoid binary flag issues
 
-### Cython Development
-- Changes to `.pyx` files require recompilation
-- **Editable mode auto-recompiles on test execution** (`make test-dev`)
-- Use `cdef` for C variables, `def` for Python-callable functions
-- Memory views (`float[:]`) faster than NumPy arrays in loops
-- Always release GIL (`with nogil:`) for parallel C++ code
-- OpenMP: `num_threads=0` = use all cores; set `OMP_NUM_THREADS` to limit
-- Ensure no shared mutable state in parallel regions
+### Rust Development
+- `uv run` (e.g. `make test-dev`) rebuilds the extension after `.rs` edits (`[tool.uv] cache-keys`)
+- The Python prep guarantees the kernel's invariants (int32, sorted m2 when blocking, no explicit zeros); the core still validates once per call, the hot loops don't
+- Release the GIL (`py.detach`) around kernel calls; free-threaded builds (3.14t+) are supported
+- Threads: `num_threads=0` = rayon global pool (`RAYON_NUM_THREADS` to limit), `n` = a pool cached per calling thread
+- Ensure no shared mutable state across rayon workers
+- Parity with 0.7.0 (Cython): `check_kernel_parity.py` / `check_normalization_parity.py` (`--dump` / `--compare`, see [tests/benchmarks/README.md](tests/benchmarks/README.md))
 
 ---
 
