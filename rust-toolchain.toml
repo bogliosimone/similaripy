@@ -1,0 +1,6 @@
+# Pinned: the D14 codegen fixes were benchmarked on this compiler.
+# Upgrading = rerun Yambda 500M (tests/benchmarks/README.md, "Codegen-sensitive hot loops").
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

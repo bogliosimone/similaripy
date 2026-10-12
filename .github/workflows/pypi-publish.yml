@@ -7,12 +7,16 @@ on:
   release:
     types: [published]
   push:
-    branches: [ "master" ]
+    branches: [ "master", "v1/main" ]
     paths: &build-paths
       - "pyproject.toml"
       - "CMakeLists.txt"
       - "similaripy/**"
       - "tests/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/pypi-publish.yml"
   pull_request:
     paths: *build-paths
