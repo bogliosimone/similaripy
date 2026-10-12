@@ -77,6 +77,8 @@ def aggregate_rounds(round_results):
         'std_time': std_time,
         'median_time': median_time,
         'kernel_median_time': statistics.median(kernel_times),
+        'prep_median_time': statistics.median(r['prep_time'] for r in round_results),
+        'output_median_time': statistics.median(r['output_time'] for r in round_results),
         'spread': (max(all_times) - min(all_times)) / median_time,
         'n_items': first['n_items'],
         'nnz': first['nnz'],
@@ -216,7 +218,8 @@ def run_benchmarks(config, verbose=True):
                 if verbose:
                     label = 'warmup' if is_warmup else f"round {round_num - warmup + 1}/{rounds}"
                     print(f"[{label}] {sim_type:<24} "
-                          f"total {r['computation_time']:.3f}s  kernel {r['kernel_time']:.3f}s")
+                          f"total {r['computation_time']:.3f}s  prep {r['prep_time']:.3f}s  "
+                          f"kernel {r['kernel_time']:.3f}s  output {r['output_time']:.3f}s")
                 if not is_warmup:
                     round_results[sim_type].append(r)
 
@@ -267,7 +270,7 @@ def format_summary_table(all_results, sys_info, block_size):
         Formatted summary table.
     """
     lines = []
-    w = 141
+    w = 167
 
     lines.append('=' * w)
     lines.append('BENCHMARK SUMMARY')
@@ -297,7 +300,9 @@ def format_summary_table(all_results, sys_info, block_size):
         header = (
             f"{'Similarity':<20} "
             f"{'Median (s)':<12} "
+            f"{'Prep (s)':<12} "
             f"{'Kernel (s)':<12} "
+            f"{'Output (s)':<12} "
             f"{'Spread':<8} "
             f"{'Mean ± std (s)':<18} "
             f"{'Throughput':<15} "
@@ -318,7 +323,9 @@ def format_summary_table(all_results, sys_info, block_size):
             row = (
                 f"{sim_type:<20} "
                 f"{result['median_time']:<12.4g} "
+                f"{result['prep_median_time']:<12.4g} "
                 f"{result['kernel_median_time']:<12.4g} "
+                f"{result['output_median_time']:<12.4g} "
                 f"{result['spread']:<8.1%} "
                 f"{time_str:<18} "
                 f"{result['throughput']:<15.1f} "
@@ -437,7 +444,9 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
                 "computation_time": round(result["computation_time"], 4),
                 "std_time": round(result["std_time"], 4),
                 "median_time": round(result["median_time"], 4),
+                "prep_median_time": round(result["prep_median_time"], 4),
                 "kernel_median_time": round(result["kernel_median_time"], 4),
+                "output_median_time": round(result["output_median_time"], 4),
                 "spread": round(result["spread"], 4),
                 "throughput": round(result["throughput"], 1),
                 "nnz": result["nnz"],

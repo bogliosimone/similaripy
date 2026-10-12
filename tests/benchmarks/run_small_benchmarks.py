@@ -95,25 +95,26 @@ def build_cases(X):
 
 
 def time_call(func, X, kwargs, num_threads):
-    """One serial call: (total seconds, kernel seconds, output)."""
+    """One serial call: (total seconds, {prep, kernel, output} seconds, output); prep = the rest."""
     kw = {'k': 100, 'verbose': False, 'num_threads': num_threads, **kwargs}
     start = time.perf_counter()
     out = func(X, **kw)
     total = time.perf_counter() - start
-    return total, sim._s_plus._last_kernel_time, out
+    t = sim._s_plus._last_timings
+    return total, {'prep': total - t['kernel'] - t['output'], **t}, out
 
 
 def measure(func, X, kwargs, num_threads, reps):
     """Median of reps serial calls, shaped like benchmark_similarity's result."""
-    totals, kernels = [], []
+    totals, phases = [], []
     for _ in range(reps):
-        total, kern, out = time_call(func, X, kwargs, num_threads)
+        total, timings, out = time_call(func, X, kwargs, num_threads)
         totals.append(total)
-        kernels.append(kern)
+        phases.append(timings)
     n_items = out.shape[0]
     return {
         'computation_time': statistics.median(totals),
-        'kernel_time': statistics.median(kernels),
+        **{f'{p}_time': statistics.median(t[p] for t in phases) for p in ('prep', 'kernel', 'output')},
         'n_items': n_items,
         'nnz': out.nnz,
         'density': out.nnz / (n_items * out.shape[1]),
@@ -137,7 +138,8 @@ def measure_concurrent(X, reps, concurrent):
     n_items = out.shape[0]
     return {
         'computation_time': statistics.median(times),
-        'kernel_time': float('nan'),  # per-call global is racy under concurrency
+        # per-call global is racy under concurrency
+        'prep_time': float('nan'), 'kernel_time': float('nan'), 'output_time': float('nan'),
         'n_items': n_items,
         'nnz': out.nnz,
         'density': out.nnz / (n_items * out.shape[1]),

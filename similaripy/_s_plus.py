@@ -25,9 +25,11 @@ MODE_NONE = 0    # use all columns
 MODE_ARRAY = 1   # list/array, pre-filtered here: the kernel treats it as NONE
 MODE_MATRIX = 2  # sparse matrix, per-row check in the kernel
 
-# Wall time (s) of the last kernel call, read by the benchmark harness.
-# Racy under concurrent calls: read it only after serial calls.
-_last_kernel_time = 0.0
+# Wall time (s) of the last call's kernel and output build (un-permute +
+# matrix); the harness takes prep as total - kernel - output, so it includes
+# the wrappers' normalization. Racy under concurrent calls: read it only after
+# serial calls.
+_last_timings = {'kernel': 0.0, 'output': 0.0}
 
 _EMPTY_F32 = np.empty(0, dtype=np.float32)
 _EMPTY_I32 = np.empty(0, dtype=np.int32)
@@ -405,8 +407,6 @@ def _s_plus(
     stabilized_shrink, bayesian_shrink, additive_shrink, threshold, binary,
     filter_cols, target_cols, format_output, num_threads, block_size,
 ):
-    global _last_kernel_time
-
     m1 = _csr_without_zeros(matrix1)
     m2 = _csr_without_zeros(matrix2)
     n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]
@@ -501,7 +501,7 @@ def _s_plus(
         rows, cols, vals,
         num_threads, block_size, bar,
     )
-    _last_kernel_time = time.perf_counter() - kernel_start
+    kernel_end = time.perf_counter()
 
     # Un-permute output columns; padding (-1) back to column 0
     if back_perm is not None:
@@ -512,5 +512,8 @@ def _s_plus(
     if bar is not None:
         bar.set_description(f'Building {format_output} matrix')
     if format_output == 'coo':
-        return sp.coo_array((vals, (rows, cols)), shape=(n_output_rows, n_output_cols), dtype=np.float32)
-    return _build_csr(rows, cols, vals, n_output_rows, n_output_cols)
+        out = sp.coo_array((vals, (rows, cols)), shape=(n_output_rows, n_output_cols), dtype=np.float32)
+    else:
+        out = _build_csr(rows, cols, vals, n_output_rows, n_output_cols)
+    _last_timings.update(kernel=kernel_end - kernel_start, output=time.perf_counter() - kernel_end)
+    return out
