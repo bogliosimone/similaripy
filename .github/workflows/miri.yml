@@ -1,0 +1,41 @@
+# Undefined-behaviour check of the Rust core's unsafe code (make test-miri).
+# Runs only when the core changes: ~75 s of tests plus the nightly install.
+
+name: Miri
+
+on:
+  push:
+    branches: [ "master", "v1/main" ]
+    paths: &core-paths
+      - "crates/similaripy-core/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "Makefile"
+      - ".github/workflows/miri.yml"
+  pull_request:
+    paths: *core-paths
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned: an unpinned nightly can break the job with no change on our side
+  MIRI_TOOLCHAIN: nightly-2026-10-12
+
+jobs:
+  miri:
+    name: Miri (similaripy-core)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install the pinned nightly with Miri
+      run: |
+        rustup toolchain install "$MIRI_TOOLCHAIN" --profile minimal --component miri,rust-src
+        cargo "+$MIRI_TOOLCHAIN" miri setup
+
+    - name: Run Miri
+      run: make test-miri MIRI_TOOLCHAIN="$MIRI_TOOLCHAIN"

@@ -33,14 +33,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS runners are pinned: the wheel's minimum macOS follows the runner's version
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-15, macos-15-intel]
+        # macos-15-intel: the last Intel image (no "latest" label for Intel)
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest, macos-15-intel]
 
     steps:
       - uses: actions/checkout@v7
 
       - name: Build and test wheels
         uses: pypa/cibuildwheel@v4.3.1
+        env:
+          # PRs build one Python (GIL + free-threaded) per platform; pushes and releases build all
+          CIBW_BUILD: ${{ github.event_name == 'pull_request' && 'cp314-* cp314t-*' || '*' }}
 
       - uses: actions/upload-artifact@v7
         with:
