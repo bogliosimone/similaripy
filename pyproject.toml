@@ -78,12 +78,6 @@ test-command = "pytest {project}/tests"
 before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none && cd {project} && $HOME/.cargo/bin/rustup toolchain install"
 environment = { PATH = "$HOME/.cargo/bin:$PATH" }
 
-[tool.cibuildwheel.macos]
-# Runner images ship Homebrew GCC; install it only if an image stops doing so
-before-all = 'ls "$(brew --prefix)"/bin/g++-* >/dev/null 2>&1 || brew install gcc'
-# Homebrew GCC runtime libs (bundled by delocate) require the runner's macOS version
-environment = { MACOSX_DEPLOYMENT_TARGET = "15.0" }
-
 [project.optional-dependencies]
 dev = [
   "maturin",

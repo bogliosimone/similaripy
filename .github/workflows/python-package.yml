@@ -31,12 +31,6 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
-    - name: Ensure Homebrew GCC on macOS
-      if: runner.os == 'macOS'
-      run: |
-        # Runner images ship Homebrew GCC; install it only if an image stops doing so
-        ls "$(brew --prefix)"/bin/g++-* >/dev/null 2>&1 || brew install gcc
-
     - name: Build and install the package
       run: |
         python -m pip install --upgrade pip
