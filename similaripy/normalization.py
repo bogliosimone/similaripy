@@ -106,6 +106,30 @@ def normalize(
     return _finalize_csr(X, axis)
 
 
+def binarize(
+    X: sps.sparray,
+    inplace: bool = False,
+) -> sps.csr_array:
+    """
+    Set every non-zero entry to 1.0 and drop explicit zeros (set semantics).
+
+    Same values as `binary=True` in the similarity functions, as a separate
+    step: binarize only one of the two matrices, or binarize before another
+    normalization.
+
+    Args:
+        X: Input sparse matrix.
+        inplace: Whether to modify the matrix in place.
+
+    Returns:
+        Binarized CSR matrix.
+    """
+    X = _prepare_csr(X, 1, inplace)
+    X.eliminate_zeros()
+    X.data[:] = 1
+    return X
+
+
 def bm25(
     X: sps.sparray,
     axis: int = 1,

@@ -9,6 +9,23 @@ def generate_random_matrix(n_rows=100, n_cols=50, density=0.05, seed=42):
     return sp.random_array((n_rows, n_cols), density=density, format='csr', dtype=np.float32, random_state=rng)
 
 
+def test_binarize():
+    X = generate_random_matrix()
+    X.data[::5] = 0  # explicit zeros must go, not become 1
+    before = X.data.copy()
+    B = norm.binarize(X)
+
+    expected = (X.toarray() != 0).astype(np.float32)
+    np.testing.assert_array_equal(B.toarray(), expected)
+    assert B.nnz == np.count_nonzero(before) and B.data.dtype == np.float32
+    np.testing.assert_array_equal(X.data, before)  # not in place by default
+    # same scores as binary=True
+    import similaripy as sim
+    np.testing.assert_allclose(sim.jaccard(B, k=10, verbose=False).toarray(),
+                               sim.jaccard(X, k=10, binary=True, verbose=False).toarray(), rtol=1e-6)
+    print('✅ binarize correctness passed')
+
+
 def test_normalize_l1():
     X = generate_random_matrix()
     X_norm = norm.normalize(X, norm='l1')
@@ -97,6 +114,7 @@ def test_bm25():
 
 
 if __name__ == "__main__":
+        test_binarize()
         test_normalize_l1()
         test_normalize_l2()
         test_normalize_max()

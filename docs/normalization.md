@@ -6,6 +6,7 @@ SimilariPy includes several normalization functions designed for sparse matrix p
 
 | Function        | Description |
 |-----------------|-------------|
+| `binarize(X)` | Sets non-zero entries to 1.0 and drops explicit zeros, as `binary=True` in the similarity functions, but as a separate step. |
 | `normalize(X, norm='l2')` | Standard row or column-wise normalization. Supports `'l1'`, `'l2'`, and `'max'`. |
 | `tfidf(X, tf_mode='sqrt', idf_mode='smooth')` | TF-IDF weighting with customizable term-frequency and inverse-document-frequency modes. |
 | `bm25(X, k1=1.2, b=0.75)` | BM25 weighting, a standard IR normalization used for relevance scoring. |
