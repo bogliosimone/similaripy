@@ -78,6 +78,12 @@ test-command = "pytest {project}/tests"
 before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none && cd {project} && $HOME/.cargo/bin/rustup toolchain install"
 environment = { PATH = "$HOME/.cargo/bin:$PATH" }
 
+[[tool.cibuildwheel.overrides]]
+# rustc's minimum for x86_64 macOS is 10.12; cibuildwheel's default (10.9 on
+# older Pythons) makes delocate reject the wheel. arm64 keeps the default 11.0.
+select = "*-macosx_x86_64"
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.12" }
+
 [project.optional-dependencies]
 dev = [
   "maturin",
