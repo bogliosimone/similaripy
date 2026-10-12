@@ -477,10 +477,12 @@ def _s_plus(
                 _, target_indices = _sorted_rows(ones, forward[target_indices], target_indptr, n_output_cols)
         m2_data, m2_indices = _sorted_rows(m2_data, m2_indices, m2_indptr, n_output_cols)
 
-    # Output slots: row i owns [i*k, (i+1)*k), unused slots stay zero
+    # Output slots: row i owns [i*k, (i+1)*k), the kernel leaves unused slots
+    # untouched. With a permutation, cols starts at -1 to tell padding from a
+    # real (col 0, 0.0) result; padding goes back to 0 below.
     n_out = len(targets) * k
     rows = np.zeros(n_out, dtype=np.int32)
-    cols = np.zeros(n_out, dtype=np.int32)
+    cols = np.full(n_out, -1 if back_perm is not None else 0, dtype=np.int32)
     vals = np.zeros(n_out, dtype=np.float32)
 
     if bar is not None:
@@ -501,10 +503,11 @@ def _s_plus(
     )
     _last_kernel_time = time.perf_counter() - kernel_start
 
-    # Un-permute output columns, skipping the zero padding (as 0.7.0)
+    # Un-permute output columns; padding (-1) back to column 0
     if back_perm is not None:
-        used = (cols != 0) | (vals != 0)
+        used = cols >= 0
         cols[used] = back_perm[cols[used]]
+        cols[~used] = 0
 
     if bar is not None:
         bar.set_description(f'Building {format_output} matrix')
