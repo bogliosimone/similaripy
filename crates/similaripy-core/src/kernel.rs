@@ -496,7 +496,7 @@ impl Scratch {
 ///
 /// A column whose sum is exactly 0.0 (an underflowed product) is pushed again on
 /// its next hit, as in 0.7.0; drain then scores the duplicate with xy = 0. Kept
-/// for parity; the one-push-per-element bound still holds, so `reserve` covers it.
+/// for parity; there is at most one write per element, so `reserve` covers it.
 ///
 /// # Safety
 /// Every `c - offset` is `< sums.len()`.
@@ -582,5 +582,51 @@ mod tests {
             s.sort_unstable();
             prop_assert_eq!(lower_bound(&s, x), s.partition_point(|&c| c < x));
         }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
+        // Branchless first touch == the branchy 0.7.0 loop, including sums that
+        // cancel back to exactly 0.0 (signed data, re-pushed on the next hit).
+        #[test]
+        fn accumulate_matches_branchy_push(
+            segs in proptest::collection::vec(
+                (proptest::collection::vec((0i32..8, -3i8..=3), 0..12), -2i8..=2),
+                0..6,
+            ),
+            offset in 0usize..3,
+        ) {
+            let (mut sums, mut touched) = (vec![0.0f32; 8], Vec::new());
+            let (mut ref_sums, mut ref_touched) = (vec![0.0f32; 8], Vec::new());
+            for (seg, v1) in &segs {
+                let cols: Vec<i32> = seg.iter().map(|&(c, _)| c + offset as i32).collect();
+                let vals: Vec<f32> = seg.iter().map(|&(_, v)| f32::from(v)).collect();
+                let v1 = f32::from(*v1);
+                // SAFETY: c + offset - offset = c < 8 = sums.len().
+                unsafe { accumulate(&mut sums, &mut touched, &cols, &vals, v1, offset) };
+                for (&c, &v2) in cols.iter().zip(&vals) {
+                    let local = c as usize - offset;
+                    if ref_sums[local] == 0.0 {
+                        ref_touched.push(local as u32);
+                    }
+                    ref_sums[local] += v2 * v1;
+                }
+            }
+            prop_assert_eq!(touched, ref_touched);
+            prop_assert_eq!(sums, ref_sums);
+        }
+    }
+
+    #[test]
+    fn accumulate_repushes_a_sum_that_cancels_to_zero() {
+        let (mut sums, mut touched) = (vec![0.0f32; 4], Vec::new());
+        // SAFETY: all columns < 4, offset 0.
+        unsafe {
+            accumulate(&mut sums, &mut touched, &[1, 3], &[2.0, 1.0], 1.0, 0);
+            accumulate(&mut sums, &mut touched, &[1, 2], &[-2.0, 1.0], 1.0, 0); // col 1 back to 0
+            accumulate(&mut sums, &mut touched, &[1], &[5.0], 1.0, 0); // pushed again
+        }
+        assert_eq!(touched, [1, 3, 2, 1]);
+        assert_eq!(sums, [0.0, 5.0, 1.0, 1.0]);
     }
 }
