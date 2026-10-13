@@ -276,7 +276,7 @@ python tests/benchmarks/run_benchmarks.py --dataset movielens --output-dir my_re
 
 Two speedups in `crates/similaripy-core/src/kernel.rs` depend on what LLVM emits, and no unit test can see them:
 
-- `lower_bound` must stay **branchy**. LLVM likes to turn it into a branchless `csel`/`cmov` loop, which serializes cache misses once the data no longer fits in cache. An empty `asm!` barrier prevents that today.
+- `lower_bound` must stay **branchy**. LLVM likes to turn it into a branchless `csel`/`cmov` loop, which serializes cache misses once the data no longer fits in cache. An empty `asm!` barrier prevents that today. With the per-row block cursor, it only finds where a block ends inside the rest of an m2 row.
 - `accumulate` must keep `sums` and the `touched` cursor in registers. As a `&mut self` method, LLVM reloaded them from the stack on every element.
 
 Only Yambda 500M exposes a regression here; ML-32M and Yambda 50M mostly fit in cache. When you upgrade rustc or edit either function, rerun the 500M comparison on an idle machine against the previous build (a `git worktree` of the last good commit, its own venv), alternating the two processes:
@@ -286,7 +286,7 @@ python run_benchmarks.py --dataset yambda --version 500m --similarities dot_prod
     --rounds 1 --warmup 0
 ```
 
-When the Rust kernel became slower than cpp at 500M, the cause was these two loops (+13..16% before the fix, −7..−11% after).
+When the Rust kernel became slower than cpp at 500M, the cause was these two loops (+13..16% before the fix, −7..−11% after). The block cursor (each m2 row read once, front to back, per output row) took it to −13..−17%.
 
 ## 0.7.0 reference (Cython)
 

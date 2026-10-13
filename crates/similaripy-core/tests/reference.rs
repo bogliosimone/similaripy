@@ -332,3 +332,54 @@ fn rejects_selection_wider_than_m2() {
     };
     assert!(compute(&inp, 1, 0, out, &|| {}).is_err());
 }
+
+/// Top-`n` of `m1 · m2` (dot product, every column kept), each row sorted by column.
+fn all_scores(m1: &Csr, m2: &Csr, m: usize, n: usize, r: usize, block: usize) -> Vec<(i32, u32)> {
+    let targets: Vec<i32> = (0..r as i32).collect();
+    let inp = Inputs {
+        m1: CsrView::new("m1", &m1.indptr, &m1.indices, &m1.data, m).unwrap(),
+        m2: CsrView::new("m2", &m2.indptr, &m2.indices, &m2.data, n).unwrap(),
+        targets: &targets,
+        norms: Norms::default(),
+        params: Params::default(),
+        filter: None,
+        target_cols: None,
+    };
+    let (mut rows, mut cols, mut vals) = (vec![0; r * n], vec![-1; r * n], vec![0.0; r * n]);
+    let out = Output {
+        rows: &mut rows,
+        cols: &mut cols,
+        values: &mut vals,
+    };
+    compute(&inp, n, block, out, &|| {}).unwrap();
+    let mut got: Vec<(i32, u32)> = cols
+        .iter()
+        .zip(&vals)
+        .map(|(&c, &v)| (c, v.to_bits()))
+        .collect();
+    for row in got.chunks_mut(n) {
+        row.sort_unstable();
+    }
+    got
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 1000 }))]
+    // Non-integer values make f32 sums order-dependent: blocking must add each
+    // column's terms in the same order as the single-block path (bit-equal).
+    #[test]
+    fn blocked_matches_single_block_bitwise(
+        (m1, m2, n, block) in (1usize..6, 1usize..8, 2usize..40).prop_flat_map(|(r, m, n)| {
+            let cell = prop_oneof![2 => Just(0.0f32), 1 => 0.1f32..3.0];
+            let dense = |a, b| prop::collection::vec(prop::collection::vec(cell.clone(), b), a);
+            (dense(r, m), dense(m, n), Just(n), 1..n)
+        })
+    ) {
+        let (a, b) = (to_csr(&m1), to_csr(&m2));
+        let m = m2.len();
+        prop_assert_eq!(
+            all_scores(&a, &b, m, n, m1.len(), block),
+            all_scores(&a, &b, m, n, m1.len(), 0)
+        );
+    }
+}
