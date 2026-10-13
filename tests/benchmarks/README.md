@@ -274,19 +274,31 @@ python tests/benchmarks/run_benchmarks.py --dataset movielens --output-dir my_re
 
 ## Codegen-sensitive hot loops (Rust core)
 
-Two speedups in `crates/similaripy-core/src/kernel.rs` depend on what LLVM emits, and no unit test can see them:
+Three speedups in `crates/similaripy-core/src/kernel.rs` depend on what LLVM emits, and no unit test can see them:
 
 - `lower_bound` must stay **branchy**. LLVM likes to turn it into a branchless `csel`/`cmov` loop, which serializes cache misses once the data no longer fits in cache. An empty `asm!` barrier prevents that today. With the per-row block cursor, it only finds where a block ends inside the rest of an m2 row.
 - `accumulate` must keep `sums` and the `touched` cursor in registers. As a `&mut self` method, LLVM reloaded them from the stack on every element.
+- `accumulate`'s first-touch push must stay **branchless**: always write the slot, then `n += (old == 0.0)`. On Yambda ~39% of elements are first touches, so a branch there is mispredicted all the time; replacing it cut kernel time by ~20% on Yambda 50M. Check for `cinc` (aarch64) / `cmpeqss` + `and` + `add` (x86_64) and no branch on the old sum.
 
-Only Yambda 500M exposes a regression here; ML-32M and Yambda 50M mostly fit in cache. When you upgrade rustc or edit either function, rerun the 500M comparison on an idle machine against the previous build (a `git worktree` of the last good commit, its own venv), alternating the two processes:
+The first two only show on Yambda 500M (ML-32M and Yambda 50M mostly fit in cache); the first-touch branch shows most on Yambda 50M. When you upgrade rustc or edit these loops, rerun Yambda 50M and the 500M comparison on an idle machine against the previous build (a `git worktree` of the last good commit, its own venv), alternating the two processes:
 
 ```bash
 python run_benchmarks.py --dataset yambda --version 500m --similarities dot_product cosine \
     --rounds 1 --warmup 0
 ```
 
-When the Rust kernel became slower than cpp at 500M, the cause was these two loops (+13..16% before the fix, −7..−11% after). The block cursor (each m2 row read once, front to back, per output row) took it to −13..−17%.
+When the Rust kernel became slower than cpp at 500M, the cause was `lower_bound` and the `accumulate` register reloads (+13..16% before the fix, −7..−11% after). The block cursor (each m2 row read once, front to back, per output row) took it to −13..−17%.
+
+## Profiling the kernel (macOS)
+
+Per-phase shares (accumulate, drain/score, top-K, row setup) come from `/usr/bin/sample` on a **stripped plain-release** build: the `[profile.release]` in `Cargo.toml`, which has no debug info, plus `strip -x` to drop the local symbols. With debug info (even after `strip -x`, since `sample` finds it by UUID) or with local symbols, `sample` collapses the inlined kernel into one symbol. Stripped, it reports raw offsets, one per instruction.
+
+1. Build the release extension (`make install-dev`) and keep an unstripped copy for disassembly. Then `strip -x similaripy/_core.cpython-*-darwin.so`. Run Python from `.venv/bin/python` directly: `uv run` rebuilds over the stripped file.
+2. In a script: load the dataset, start `/usr/bin/sample <pid> <seconds> -file out.txt` **before** the call, and give it more seconds than the call takes. Sample the whole call: row order isn't random (popularity-ordered rows), so a time window biases the shares.
+3. Read the "Sort by top of stack" section. It gives samples per `_core` offset. Bucket the offsets into phases with address ranges read from `objdump -d --start-address=.. --stop-address=..` of the unstripped copy (symbols from `nm -n`). `single_block_row`, `blocked_row` and `PeekMut` drop are own symbols; accumulate, drain and `lower_bound` are inlined into them. Leave rayon's park/steal code out of the denominator.
+4. Samples land on the instruction *after* a stall: read the pattern around a branch or a load, not one address.
+
+`sample` slows the run by ~25–35%, so take seconds from an unsampled run. For work counts that hold on every CPU (elements accumulated, first touches, heap replacements, root rejections), a throwaway patch with per-worker counters is more reliable than shares; don't time that build. To check x86_64 codegen from a Mac: `rustup target add x86_64-unknown-linux-gnu`, then `cargo rustc -p similaripy-core --release --lib --target x86_64-unknown-linux-gnu -- --emit asm` (no linker needed; LTO into the extension can still change inlining).
 
 ## 0.7.0 reference (Cython)
 
