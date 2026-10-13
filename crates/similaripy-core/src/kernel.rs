@@ -519,10 +519,11 @@ unsafe fn accumulate(
         unsafe {
             let s = sums.get_unchecked_mut(local);
             let old = *s; // reuse: the touched store may alias, re-reading costs a load
-            if old == 0.0 {
-                buf.add(n).write(local as u32);
-                n += 1;
-            }
+            // Branchless first touch: always write the slot, keep it only if new.
+            // The branch was near-random at Yambda shape (39% first touches,
+            // mispredicted; Step 3c profile); the extra store is sequential.
+            buf.add(n).write(local as u32);
+            n += (old == 0.0) as usize;
             *s = old + v2 * v1;
         }
     }
