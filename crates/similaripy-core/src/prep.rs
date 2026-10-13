@@ -165,6 +165,8 @@ mod tests {
     use proptest::prelude::*;
 
     proptest! {
+        // Miri runs ~1000x slower: 8 cases (256 made the Miri job 80-105 min).
+        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
         // Same rows as a remap + sort per row, each value still on its column, however it splits.
         #[test]
         fn matches_per_row_sort(
@@ -204,6 +206,8 @@ mod tests {
     }
 
     proptest! {
+        // Miri runs ~1000x slower: 8 cases (256 made the Miri job 80-105 min).
+        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
         // Same as a dense per-row sum: every column once, sorted, non-zero sums only.
         #[test]
         fn canonicalize_matches_dense_sum(

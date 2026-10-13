@@ -359,6 +359,8 @@ mod tests {
     use std::sync::Mutex;
 
     proptest! {
+        // Miri runs ~1000x slower: 8 cases (256 made the Miri job 80-105 min).
+        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
         // Every row is visited once, with its own offset and entries, however it splits.
         #[test]
         fn par_rows_visits_each_row_once(
