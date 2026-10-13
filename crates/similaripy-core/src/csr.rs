@@ -86,10 +86,36 @@ impl<'a> CsrView<'a> {
     /// `r < self.n_rows()`.
     #[inline(always)]
     pub unsafe fn row_unchecked(&self, r: usize) -> (&'a [i32], &'a [f32]) {
-        // SAFETY: r < n_rows, and `new` checked indptr is monotone and ends at len(indices).
+        // SAFETY: caller contract, forwarded.
         unsafe {
-            let start = *self.indptr.get_unchecked(r) as usize;
-            let end = *self.indptr.get_unchecked(r + 1) as usize;
+            let (start, end) = self.row_span_unchecked(r);
+            self.span_unchecked(start, end)
+        }
+    }
+
+    /// Start and end of row `r` in `indices`/`data`.
+    ///
+    /// # Safety
+    /// `r < self.n_rows()`.
+    #[inline(always)]
+    pub unsafe fn row_span_unchecked(&self, r: usize) -> (usize, usize) {
+        // SAFETY: r + 1 < len(indptr).
+        unsafe {
+            (
+                *self.indptr.get_unchecked(r) as usize,
+                *self.indptr.get_unchecked(r + 1) as usize,
+            )
+        }
+    }
+
+    /// Column indices and values at positions `start..end`.
+    ///
+    /// # Safety
+    /// `start <= end <= nnz`, e.g. a sub-span of `row_span_unchecked`.
+    #[inline(always)]
+    pub unsafe fn span_unchecked(&self, start: usize, end: usize) -> (&'a [i32], &'a [f32]) {
+        // SAFETY: caller contract; len(data) == len(indices) (`new`).
+        unsafe {
             (
                 self.indices.get_unchecked(start..end),
                 self.data.get_unchecked(start..end),

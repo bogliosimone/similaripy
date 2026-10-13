@@ -314,6 +314,8 @@ impl RowMarks {
 struct Scratch {
     sums: Vec<f32>,
     touched: Vec<u32>,
+    /// Blocked path: `(pos, end)` in m2 per entry of the current m1 row.
+    cursor: Vec<(u32, u32)>,
     topk: TopK,
     filter: RowMarks,
     target_cols: RowMarks,
@@ -325,6 +327,7 @@ impl Scratch {
         Self {
             sums: vec![0.0; acc_len],
             touched: Vec::with_capacity(1024),
+            cursor: Vec::new(),
             topk: TopK::new(k),
             filter: RowMarks::new(inp.filter, n_cols),
             target_cols: RowMarks::new(inp.target_cols, n_cols),
@@ -390,43 +393,49 @@ impl Scratch {
         let n_cols = inp.m2.n_cols();
         // SAFETY: as in `single_block_row`; m1 row t is in range.
         let (u_cols, u_vals) = unsafe { inp.m1.row_unchecked(t) };
+        // Per m1 entry, the unread rest of its m2 row. Blocks run in column order
+        // and rows are sorted, so each block's span starts at the cursor: no `lo`
+        // search, and each m2 row is read once, front to back (decisions D34).
+        // Positions fit u32: indptr is i32, so nnz <= i32::MAX (`CsrView::new`).
+        self.cursor.clear();
+        self.cursor.extend(u_cols.iter().map(|&u| {
+            // SAFETY: m1 indices < m2.n_rows.
+            let (a, b) = unsafe { inp.m2.row_span_unchecked(u as usize) };
+            (a as u32, b as u32)
+        }));
         for start in (0..n_cols).step_by(block) {
-            let end = (start + block).min(n_cols);
-            let (lo_col, hi_col) = (start as i32, end as i32);
-            for (&u, &v1) in u_cols.iter().zip(u_vals) {
-                // SAFETY: m1 indices < m2.n_rows.
-                let (c_cols, c_vals) = unsafe { inp.m2.row_unchecked(u as usize) };
+            let hi_col = (start + block).min(n_cols) as i32;
+            for (cur, &v1) in self.cursor.iter_mut().zip(u_vals) {
+                let (pos, end) = (cur.0 as usize, cur.1 as usize);
+                // SAFETY: pos..end is a suffix of an m2 row span.
+                let (c_cols, c_vals) = unsafe { inp.m2.span_unchecked(pos, end) };
                 let (Some(&first), Some(&last)) = (c_cols.first(), c_cols.last()) else {
-                    continue;
+                    continue; // row done
                 };
-                if last < lo_col || first >= hi_col {
-                    continue; // row misses this block
+                if first >= hi_col {
+                    continue; // row resumes in a later block
                 }
-                // Sorted row: binary-search the block's span, skipped when the row fits.
-                let lo = if first >= lo_col {
-                    0
-                } else {
-                    lower_bound(c_cols, lo_col)
-                };
-                let hi = if last < hi_col {
+                // All of c_cols is >= start (cursor), so only the block end is searched.
+                let n = if last < hi_col {
                     c_cols.len()
                 } else {
-                    lo + lower_bound(&c_cols[lo..], hi_col)
+                    lower_bound(c_cols, hi_col)
                 };
-                // SAFETY: start <= c < end, so c - start < block == sums.len().
+                // SAFETY: start <= c < hi_col, so c - start < block == sums.len().
                 unsafe {
                     accumulate(
                         &mut self.sums,
                         &mut self.touched,
-                        &c_cols[lo..hi],
-                        &c_vals[lo..hi],
+                        &c_cols[..n],
+                        &c_vals[..n],
                         v1,
                         start,
                     )
                 };
+                cur.0 = (pos + n) as u32;
             }
             if !self.touched.is_empty() {
-                // SAFETY: touched + start < end <= n_cols.
+                // SAFETY: touched + start < hi_col <= n_cols.
                 unsafe { self.drain(inp, t, start) };
             }
         }
