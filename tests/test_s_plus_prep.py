@@ -190,11 +190,32 @@ def test_duplicate_entries_are_summed(fmt, binary, block_size):
     np.testing.assert_array_equal(dup.data, before[0])  # caller's matrix untouched
 
 
-def test_coo_output_fed_back():
-    # Feeding an output back (chained calls) must equal feeding its CSR form.
+def test_coo_output_fed_back(monkeypatch):
+    # Feeding an output back (chained calls) must equal feeding its CSR form,
+    # and skip the canonicalization: the output is canonical already.
+    from similaripy import _core
     m = sp.random_array((200, 60), density=0.01, format='csr', dtype=np.float32, rng=0)
     s = sim.cosine(m.T, k=20, verbose=False)  # few co-occurrences: rows shorter than k
-    _same(sim.dot_product(m, s, k=10, verbose=False), sim.dot_product(m, s.tocsr(), k=10, verbose=False))
+    ref = sim.dot_product(m, s.tocsr(), k=10, verbose=False)
+
+    def fail(*args):
+        raise AssertionError('canonicalize_rows called on a canonical input')
+    monkeypatch.setattr(_core, 'canonicalize_rows', fail)
+    _same(sim.dot_product(m, s, k=10, verbose=False), ref)
+    _same(sim.dot_product(m, s.tocsr(), k=10, verbose=False), ref)
+
+
+def test_canonical_coo_with_zeros():
+    # A canonical COO (scipy's sum_duplicates) may keep explicit zeros: dropped as for CSR.
+    m = _m(60, 40)
+    coo = m.tocoo()
+    coo.data[::7] = 0
+    coo.sum_duplicates()
+    assert coo.has_canonical_format and (coo.data == 0).any()
+    clean = coo.tocsr()
+    clean.eliminate_zeros()
+    kw = {'k': 10, 'binary': True, 'verbose': False}
+    _same(sim.cosine(coo, **kw), sim.cosine(clean, **kw))
 
 
 def _assert_canonical(out):
