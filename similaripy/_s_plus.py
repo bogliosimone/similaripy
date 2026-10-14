@@ -164,17 +164,20 @@ def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
     Explicit zeros are wrong in binary mode (they would become 1.0), and
     unsummed duplicates give wrong norms and binary counts (a bug in 0.7.0
     for CSR input). Canonical CSR passes through (copied only when it has
-    zeros); COO and non-canonical CSR go through the Rust canonicalization,
+    zeros), and so does a canonical COO (indptr from the rows); other COO and
+    non-canonical CSR go through the Rust canonicalization,
     which replaces scipy's single-threaded COO -> CSR (2.2 s on a 93M-entry
     COO item model).
     """
+    if matrix.format == 'coo' and matrix.has_canonical_format:
+        # Row-major, sorted, summed (e.g. our own COO output, fed back): only
+        # the indptr to build, then the canonical CSR path below.
+        indptr = np.zeros(matrix.shape[0] + 1, dtype=np.int32)
+        np.cumsum(np.bincount(matrix.row, minlength=matrix.shape[0]), out=indptr[1:])
+        matrix = sp.csr_array((matrix.data, matrix.col, indptr), shape=matrix.shape)
+        matrix.has_canonical_format = True
     if matrix.format == 'coo':
         rows, cols, data = matrix.row, matrix.col, matrix.data
-        if np.any(rows[1:] < rows[:-1]):
-            # Our own COO output: rows ascend except the zero padding at row 0;
-            # zeros are dropped anyway, so drop them first and skip the sort.
-            keep = data != 0
-            rows, cols, data = rows[keep], cols[keep], data[keep]
         if np.any(rows[1:] < rows[:-1]):
             order = np.argsort(rows, kind='stable')
             rows, cols, data = rows[order], cols[order], data[order]
