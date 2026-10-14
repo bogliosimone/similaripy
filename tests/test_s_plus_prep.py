@@ -205,7 +205,7 @@ def test_coo_output_fed_back(monkeypatch):
     # and skip the canonicalization: the output is canonical already.
     from similaripy import _core
     m = sp.random_array((200, 60), density=0.01, format='csr', dtype=np.float32, rng=0)
-    s = sim.cosine(m.T, k=20, verbose=False)  # few co-occurrences: rows shorter than k
+    s = sim.cosine(m.T, k=20, format_output='coo', verbose=False)  # rows shorter than k
     ref = sim.dot_product(m, s.tocsr(), k=10, verbose=False)
 
     def fail(*args):
@@ -253,7 +253,7 @@ def test_output_exact_and_canonical(order, block_size, monkeypatch):
     ref = sim.cosine(m.T, block_size=None, format_output='csr', **kw)
     for a in ('indptr', 'indices', 'data'):
         np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
-    coo = sim.cosine(m.T, block_size=block_size, **kw)  # 'coo' default until commit 7
+    coo = sim.cosine(m.T, block_size=block_size, format_output='coo', **kw)
     assert coo.has_canonical_format
     want = out.tocoo()
     for a in ('row', 'col', 'data'):
