@@ -191,12 +191,59 @@ def test_duplicate_entries_are_summed(fmt, binary, block_size):
 
 
 def test_coo_output_fed_back():
-    # The wrappers return COO with explicit zero padding; feeding it back must
-    # equal feeding the CSR (the Rust canonicalization drops the padding).
+    # Feeding an output back (chained calls) must equal feeding its CSR form.
     m = sp.random_array((200, 60), density=0.01, format='csr', dtype=np.float32, rng=0)
     s = sim.cosine(m.T, k=20, verbose=False)  # few co-occurrences: rows shorter than k
-    assert (s.data == 0).any()  # padding present
     _same(sim.dot_product(m, s, k=10, verbose=False), sim.dot_product(m, s.tocsr(), k=10, verbose=False))
+
+
+def _assert_canonical(out):
+    """No padding or zeros, rows sorted with unique columns (scipy re-checks a fresh copy)."""
+    assert out.has_canonical_format
+    assert (out.data != 0).all()
+    fresh = sp.csr_array((out.data, out.indices, out.indptr), shape=out.shape)
+    assert fresh.has_canonical_format
+
+
+@pytest.mark.parametrize('order', ['popularity', 'original'])
+@pytest.mark.parametrize('block_size', [None, 8])
+def test_output_exact_and_canonical(order, block_size, monkeypatch):
+    # D37/F5: rows packed (no padding), sorted by column, canonical in both
+    # formats; blocked, permuted and unblocked give the same arrays exactly.
+    from similaripy import _s_plus
+    monkeypatch.setattr(_s_plus, '_COLUMN_ORDER', order)
+    m = sp.random_array((300, 60), density=0.03, format='csr', dtype=np.float32, rng=2)
+    m = sp.csr_array(m.multiply((np.arange(60) != 5).astype(np.float32)))  # column 5 empty:
+    m.eliminate_zeros()                                                     # output row 5 empty
+    kw = {'k': 15, 'verbose': False}
+    out = sim.cosine(m.T, block_size=block_size, format_output='csr', **kw)
+    _assert_canonical(out)
+    assert out.indptr[6] == out.indptr[5]
+    ref = sim.cosine(m.T, block_size=None, format_output='csr', **kw)
+    for a in ('indptr', 'indices', 'data'):
+        np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
+    coo = sim.cosine(m.T, block_size=block_size, **kw)  # 'coo' default until commit 7
+    assert coo.has_canonical_format
+    want = out.tocoo()
+    for a in ('row', 'col', 'data'):
+        np.testing.assert_array_equal(getattr(coo, a), getattr(want, a))
+
+
+@pytest.mark.parametrize('fmt', ['csr', 'coo'])
+def test_duplicate_and_unsorted_target_rows(fmt):
+    # F15: a repeated target gave a row with every entry twice (scipy then summed them).
+    m = _m(60, 40)
+    kw = {'k': 5, 'format_output': fmt, 'verbose': False}
+    out = sim.cosine(m, target_rows=[30, 3, 1, 3, 30], **kw)
+    ref = sim.cosine(m, target_rows=[1, 3, 30], **kw)
+    assert out.nnz == ref.nnz == 15
+    _same(out, ref)
+    _assert_canonical(out.tocsr())
+
+
+def test_k_larger_than_columns():
+    m = _m(60, 40)
+    _same(sim.cosine(m, k=1000, verbose=False), sim.cosine(m, k=60, verbose=False))  # 60 output cols
 
 
 _SIMILARITIES = ['dot_product', 'cosine', 'asymmetric_cosine', 'tversky', 'jaccard', 'dice',

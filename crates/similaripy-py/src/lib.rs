@@ -13,7 +13,7 @@ use pyo3::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
 use progress::ProgressBar;
-use similaripy_core::{CsrPattern, CsrView, Error, Inputs, Norms, Output, Params, compute};
+use similaripy_core::{CsrPattern, CsrView, Error, Inputs, Norms, Params, compute};
 
 const SELECTION_MATRIX: i32 = 2;
 
@@ -58,13 +58,16 @@ fn selection<'a>(
         .map_err(to_py)
 }
 
-/// Same arguments as the C++ kernel. Writes into the caller's initialised
-/// `rows`/`cols`/`values`; slots past a row's results stay untouched. Releases the GIL. `num_threads = 0` runs on the
-/// global rayon pool (concurrent callers queue on it).
+/// The C++ kernel's arguments, plus `col_map` (output id of each m2 column;
+/// empty = keep the ids). Returns `(cols, values, counts)`: row `i` of
+/// `targets` has `counts[i]` results, sorted by column, packed in
+/// `cols`/`values` (numpy arrays over the Rust buffers, no copy). Releases the
+/// GIL. `num_threads = 0` runs on the global rayon pool (concurrent callers
+/// queue on it).
 #[pyfunction]
-#[allow(clippy::too_many_arguments)]
-fn compute_similarities(
-    py: Python<'_>,
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn compute_similarities<'py>(
+    py: Python<'py>,
     targets: PyReadonlyArray1<i32>,
     m1_data: PyReadonlyArray1<f32>,
     m1_indices: PyReadonlyArray1<i32>,
@@ -96,13 +99,15 @@ fn compute_similarities(
     target_mode: i32,
     target_indptr: PyReadonlyArray1<i32>,
     target_indices: PyReadonlyArray1<i32>,
-    mut rows: PyReadwriteArray1<i32>,
-    mut cols: PyReadwriteArray1<i32>,
-    mut values: PyReadwriteArray1<f32>,
+    col_map: PyReadonlyArray1<i32>,
     num_threads: usize,
     block_size: usize,
     progress: Option<Bound<'_, ProgressBar>>,
-) -> PyResult<()> {
+) -> PyResult<(
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<f32>>,
+    Bound<'py, PyArray1<u32>>,
+)> {
     let m1 = CsrView::new(
         "m1",
         m1_indptr.as_slice()?,
@@ -155,23 +160,25 @@ fn compute_similarities(
             target_indices.as_slice()?,
             n_output_cols,
         )?,
-    };
-    let out = Output {
-        rows: rows.as_slice_mut()?,
-        cols: cols.as_slice_mut()?,
-        values: values.as_slice_mut()?,
+        col_map: Some(col_map.as_slice()?).filter(|m| !m.is_empty()),
     };
 
     let bar = progress.as_ref().map(|b| b.get());
-    py.detach(|| {
-        // Separate instantiations: without a bar the kernel has no per-row branch.
-        let run = || match bar {
-            Some(b) => compute(&inp, k, block_size, out, &|| b.tick()),
-            None => compute(&inp, k, block_size, out, &|| {}),
-        };
-        with_pool(num_threads, run)
-    })
-    .map_err(to_py)
+    let out = py
+        .detach(|| {
+            // Separate instantiations: without a bar the kernel has no per-row branch.
+            let run = || match bar {
+                Some(b) => compute(&inp, k, block_size, &|| b.tick()),
+                None => compute(&inp, k, block_size, &|| {}),
+            };
+            with_pool(num_threads, run)
+        })
+        .map_err(to_py)?;
+    Ok((
+        out.cols.into_pyarray(py),
+        out.values.into_pyarray(py),
+        out.counts.into_pyarray(py),
+    ))
 }
 
 /// Runs `f` on the global rayon pool (`num_threads = 0`) or on the calling
