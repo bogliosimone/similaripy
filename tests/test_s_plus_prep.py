@@ -174,3 +174,49 @@ def test_coo_output_fed_back():
     s = sim.cosine(m.T, k=20, verbose=False)  # few co-occurrences: rows shorter than k
     assert (s.data == 0).any()  # padding present
     _same(sim.dot_product(m, s, k=10, verbose=False), sim.dot_product(m, s.tocsr(), k=10, verbose=False))
+
+
+_SIMILARITIES = ['dot_product', 'cosine', 'asymmetric_cosine', 'tversky', 'jaccard', 'dice',
+                 'p3alpha', 'rp3beta', 's_plus']
+_NORMALIZATIONS = [('normalize', {'norm': 'l1'}), ('normalize', {'norm': 'l2'}),
+                   ('normalize', {'norm': 'max'}), ('binarize', {}), ('bm25', {}),
+                   ('bm25plus', {}), ('tfidf', {})]
+
+
+def _non_canonical(seed=0):
+    """(CSR with duplicates, unsorted columns and explicit zeros, its canonical form)."""
+    m = _m(60, 40, seed)
+    rows, cols, vals = _with_duplicates(m, seed)
+    indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=m.shape[0]))])
+    dup = sp.csr_array((vals, cols, indptr), shape=m.shape)
+    assert not dup.has_canonical_format
+    clean = sp.csr_array((vals, (rows, cols)), shape=m.shape)  # scipy sums duplicates
+    clean.eliminate_zeros()
+    return dup, clean
+
+
+@pytest.mark.parametrize('name', _SIMILARITIES)
+@pytest.mark.parametrize('binary', [False, True])
+def test_similarity_canonicalizes_input(name, binary):
+    # R6: p3alpha/rp3beta normalize (and take popularity) before s_plus canonicalizes
+    dup, clean = _non_canonical()
+    f = getattr(sim, name)
+    kw = {'k': 10, 'binary': binary, 'verbose': False}
+    _same(f(dup.T, **kw), f(clean.T, **kw))
+
+
+@pytest.mark.parametrize('name, kw', _NORMALIZATIONS)
+@pytest.mark.parametrize('axis', [0, 1])
+def test_normalization_canonicalizes_input(name, kw, axis):
+    # R6: duplicates gave e.g. l2 row norms of 1.414 and negative bm25/tfidf weights
+    from similaripy import normalization
+    dup, clean = _non_canonical()
+    f = getattr(normalization, name)
+    if name != 'binarize':
+        kw = {**kw, 'axis': axis}
+    before = dup.data.copy()
+    _same(f(dup, **kw), f(clean, **kw))
+    np.testing.assert_array_equal(dup.data, before)  # not in place by default
+    f(dup, inplace=True, **kw)
+    if axis == 1 or name == 'binarize':  # a CSR caller's matrix is canonicalized in place
+        assert dup.has_canonical_format and (dup.data != 0).all()
