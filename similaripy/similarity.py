@@ -19,7 +19,7 @@ def dot_product(
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
-    format_output: Literal['csr', 'coo'] = 'coo',
+    format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
 ) -> sparray:
@@ -38,7 +38,7 @@ def dot_product(
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
-        format_output: Output format: 'csr' or 'coo'. Use 'coo' on Windows.
+        format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads to use (0 means all available cores).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
@@ -77,7 +77,7 @@ def cosine(
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
-    format_output: Literal['csr', 'coo'] = 'coo',
+    format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
 ) -> sparray:
@@ -96,7 +96,7 @@ def cosine(
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
-        format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
+        format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads to use (0 = all available cores).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
@@ -137,7 +137,7 @@ def asymmetric_cosine(
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
-    format_output: Literal['csr', 'coo'] = 'coo',
+    format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
 ) -> sparray:
@@ -158,7 +158,7 @@ def asymmetric_cosine(
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
-        format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
+        format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads to use (0 = all available cores).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
@@ -201,7 +201,7 @@ def tversky(
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
-    format_output: Literal['csr', 'coo'] = 'coo',
+    format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
 ) -> sparray:
@@ -222,7 +222,7 @@ def tversky(
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
-        format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
+        format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads to use (0 = all available cores).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
@@ -262,7 +262,7 @@ def jaccard(
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
-    format_output: Literal['csr', 'coo'] = 'coo',
+    format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
 ) -> sparray:
@@ -281,7 +281,7 @@ def jaccard(
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
-        format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
+        format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads to use (0 = all available cores).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
@@ -321,7 +321,7 @@ def dice(
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
-    format_output: Literal['csr', 'coo'] = 'coo',
+    format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
 ) -> sparray:
@@ -340,7 +340,7 @@ def dice(
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
-        format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
+        format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads to use (0 = all available cores).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
@@ -381,7 +381,7 @@ def p3alpha(
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
-    format_output: Literal['csr', 'coo'] = 'coo',
+    format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
 ) -> sparray:
@@ -401,7 +401,7 @@ def p3alpha(
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
-        format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
+        format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads to use (0 = all available cores).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
@@ -448,7 +448,7 @@ def rp3beta(
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
-    format_output: Literal['csr', 'coo'] = 'coo',
+    format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
 ) -> sparray:
@@ -469,7 +469,7 @@ def rp3beta(
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
-        format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
+        format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads to use (0 = all available cores).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
@@ -530,7 +530,7 @@ def s_plus(
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     verbose: bool = True,
-    format_output: Literal['csr', 'coo'] = 'coo',
+    format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
 ) -> sparray:
@@ -562,7 +562,7 @@ def s_plus(
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
-        format_output: Output format, either 'csr' or 'coo'. Use 'coo' on Windows.
+        format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads to use (0 = all available cores).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 

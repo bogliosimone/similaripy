@@ -33,7 +33,7 @@ All similarity functions in Similaripy share the following parameters:
 | `target_cols`    | Subset of columns to consider **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
 | `filter_cols`    | Subset of columns to filter **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
 | `verbose`        | If `True`, shows a progress bar. *(default: `True`)* |
-| `format_output`  | Output format: `'coo'` or `'csr'`. *(default: `'coo'`)*<br/>*Note: `'csr'` not currently supported on Windows.* |
+| `format_output`  | Output format: `'csr'` or `'coo'`. *(default: `'csr'`)* |
 | `num_threads`    | Number of threads to use. `0` means use all available cores. *(default: `0`)* |
 | `block_size`     | Block size for column-blocked accumulation. `0` = auto (recommended), `None` = disabled. *(default: `0`)* |
 
@@ -68,7 +68,6 @@ $s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i (x_i^2 + h)} \cdot \sqrt{\sum_i (y_i^2 +
 - All similarity functions are implemented in **Cython + OpenMP** for high-performance computation on CSR matrixes.
 - Computations are fully **multi-threaded** and scale with CPU cores.
 - Supports **CSR** and **COO** sparse matrix formats as output.
-- ⚠️ **Windows**: use `format_output='coo'` (CSR output is not supported on Windows due to a platform data type mismatch).
 
 ## Math Equations
 
