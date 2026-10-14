@@ -613,10 +613,18 @@ SIMILARITIES = ('dot_product', 'cosine', 'asymmetric_cosine', 'tversky', 'jaccar
                 'p3alpha', 'rp3beta', 's_plus')
 
 
+# shrink types that do nothing for a similarity are rejected (F9, test_s_plus_prep)
+_NO_COSINE = {'dot_product', 'tversky', 'jaccard', 'dice', 'p3alpha', 'rp3beta'}
+_NO_DENOMINATOR = {'dot_product', 'p3alpha'}
+
+
 @pytest.mark.parametrize('name', SIMILARITIES)
 @pytest.mark.parametrize('shrink_type', ['stabilized', 'bayesian', 'additive'])
 def test_every_shrink_type_scores(name, shrink_type):
     # F1: bayesian shrink without a normalization term returned an empty matrix (0.7.0 too)
+    if (shrink_type == 'additive' and name in _NO_COSINE) or \
+            (shrink_type == 'stabilized' and name in _NO_DENOMINATOR):
+        pytest.skip('rejected: the shrink would do nothing (F9)')
     m = generate_random_matrix(80, 30, density=0.1).tocsr()
     out = getattr(sim, name)(m, k=10, shrink=5, shrink_type=shrink_type, verbose=VERBOSE)
     assert out.nnz > 0
