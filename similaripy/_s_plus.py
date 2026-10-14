@@ -31,6 +31,11 @@ MODE_MATRIX = 2  # sparse matrix, per-row check in the kernel
 # serial calls.
 _last_timings = {'kernel': 0.0, 'output': 0.0}
 
+# Kernel column order: 'popularity' (default, see `_s_plus`) or 'original'
+# (no renumbering: ties go to the lower original column). Private switch for
+# benchmarks and tests, not an API; don't flip it under concurrent calls.
+_COLUMN_ORDER = 'popularity'
+
 _EMPTY_F32 = np.empty(0, dtype=np.float32)
 _EMPTY_I32 = np.empty(0, dtype=np.int32)
 
@@ -485,14 +490,17 @@ def _s_plus(
         keep = _array_keep_mask(filter_cols, target_cols, n_output_cols)
         m2_data, m2_indices, m2_indptr = _keep_columns(m2_data, m2_indices, m2_indptr, keep)
 
-    # Blocking: renumber m2 columns by descending popularity (popular columns
-    # share the first, cache-hot blocks; output un-permuted below), and sort
-    # m2 rows, which the blocked kernel binary-searches.
+    # Popularity order (default, `_COLUMN_ORDER`): renumber m2 columns by
+    # descending count, on every call, blocked or not. Popular columns share the
+    # first, cache-hot blocks, and the kernel's tie rule (lower column wins) means
+    # the same thing on every path: ties go to the more popular column, then to
+    # the lower original id (stable sort). Output un-permuted below. Blocking
+    # also needs sorted m2 rows (binary search).
     back_perm = None
-    if use_blocking:
+    forward = _EMPTY_I32
+    if _COLUMN_ORDER == 'popularity':
         col_nnz = np.bincount(m2_indices, minlength=n_output_cols)
         perm = np.argsort(-col_nnz, kind='stable').astype(np.int32)  # new col -> original col
-        forward = _EMPTY_I32
         if not np.array_equal(perm, np.arange(n_output_cols, dtype=np.int32)):
             back_perm = perm
             forward = np.empty(n_output_cols, dtype=np.int32)
@@ -511,6 +519,9 @@ def _s_plus(
                 ones = np.ones(len(target_indices), dtype=np.float32)
                 _, target_indices = _sorted_rows(ones, target_indices, target_indptr, n_output_cols,
                                                  forward, num_threads)
+    if use_blocking or back_perm is not None:
+        # ponytail: unblocked + permuted sorts too (one Rust pass does both); a
+        # remap-only pass would skip the sort if it ever shows in a profile
         m2_data, m2_indices = _sorted_rows(m2_data, m2_indices, m2_indptr, n_output_cols,
                                            forward, num_threads)
 
