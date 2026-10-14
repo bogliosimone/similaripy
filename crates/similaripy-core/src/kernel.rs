@@ -227,15 +227,18 @@ impl Params {
             || self.bayesian_shrink != 0.0
     }
 
-    /// Same arithmetic, in the same order, as the C++ `computeSimilarity`.
+    /// The C++ `computeSimilarity` arithmetic, in the same order, except two 0.7.0
+    /// bugs: `a1` applies without normalization too (F14), and bayesian shrink
+    /// without a denominator term scales xy_pow instead of returning 0 (F1).
     ///
     /// # Safety
     /// `row` and `col` are in range of every norm pair whose weight is non-zero.
     #[inline(always)]
     /// `POW` must equal `a1 != 1.0` (see `Scratch::drain`).
     unsafe fn score<const POW: bool>(&self, n: &Norms, row: usize, col: usize, xy: f32) -> f32 {
+        let xy_pow = if POW { xy.powf(self.a1) } else { xy };
         if !self.normalizes() {
-            return xy; // a1 is ignored without normalization, as in 0.7.0
+            return xy_pow;
         }
         let (mut tv, mut cs, mut dp) = (0.0, 0.0, 0.0);
         // SAFETY: caller contract, checked in `validate`.
@@ -254,9 +257,21 @@ impl Params {
                 dp = self.l3 * (n.x_depop.get_unchecked(row) * n.y_depop.get_unchecked(col));
             }
         }
-        let xy_pow = if POW { xy.powf(self.a1) } else { xy };
+        // den != 0 first: the hot path stays the 0.7.0 one. den == 0 means either
+        // no denominator term (only bayesian shrink: the raw xy_pow) or terms
+        // summing to 0 (tversky t1 = t2 = 0, negative shrink: 0).
         let den = tv + cs + dp + self.stabilized_shrink;
-        let mut val = if den != 0.0 { xy_pow / den } else { 0.0 };
+        let mut val = if den != 0.0 {
+            xy_pow / den
+        } else if self.l1 == 0.0
+            && self.l2 == 0.0
+            && self.l3 == 0.0
+            && self.stabilized_shrink == 0.0
+        {
+            xy_pow
+        } else {
+            0.0
+        };
         if self.bayesian_shrink != 0.0 {
             val *= xy_pow / (xy_pow + self.bayesian_shrink);
         }

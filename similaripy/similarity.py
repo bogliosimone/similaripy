@@ -547,7 +547,8 @@ def s_plus(
         c2: Cosine exponent coefficient for matrix2.
         pop1: Popularity weights for matrix1. 'none', 'sum', or custom array.
         pop2: Popularity weights for matrix2. 'none', 'sum', or custom array.
-        alpha: Coefficient applied on the raw similarity value before normalizations.
+        alpha: Power applied to the raw similarity value before normalizations (also without
+            them); must be > 0.
         beta1: Popularity penalization coefficient for matrix1 items.
         beta2: Popularity penalization coefficient for matrix2 items.
         k: Number of top-k items per row to keep.
