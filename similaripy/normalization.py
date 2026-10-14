@@ -35,7 +35,9 @@ def _check_matrix(X: sps.sparray) -> sps.sparray:
 
 def _prepare_csr(X: sps.sparray, axis: int, inplace: bool) -> sps.csr_array:
     """
-    Validate, optionally copy, handle axis transposition, and convert to CSR.
+    Validate, optionally copy, handle axis transposition, and convert to
+    canonical CSR: duplicates summed, explicit zeros dropped (with
+    `inplace=True` on a CSR, the caller's matrix is canonicalized too).
 
     Args:
         X: Input sparse matrix.
@@ -56,7 +58,10 @@ def _prepare_csr(X: sps.sparray, axis: int, inplace: bool) -> sps.csr_array:
         X = X.copy()
     if axis == 0:
         X = X.T
-    return X.tocsr()
+    X = X.tocsr()
+    X.sum_duplicates()  # no-op when already canonical
+    X.eliminate_zeros()
+    return X
 
 
 def _finalize_csr(X: sps.sparray, axis: int) -> sps.csr_array:
@@ -126,8 +131,6 @@ def binarize(
         Binarized CSR matrix.
     """
     X = _prepare_csr(X, 1, inplace)
-    X.sum_duplicates()
-    X.eliminate_zeros()
     X.data[:] = 1
     return X
 
