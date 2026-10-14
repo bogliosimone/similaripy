@@ -179,13 +179,20 @@ def load_yambda(version="50m", event_type="multi_event", verbose=True):
     if verbose:
         print(f"Loading Yandex Music Yambda {version} ({event_type})...")
 
-    # Load from HuggingFace
-    ds = load_dataset(
-        "yandex/yambda",
-        data_dir=config["data_dir"],
-        data_files=data_files
-    )
-    df = ds["train"].to_pandas()
+    # Local HF cache first: no network call (the Hub API can rate-limit or fail).
+    # Only uid/item_id are used and ids are re-coded below, so the URM is the same.
+    try:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download("yandex/yambda", f"{config['data_dir']}/{data_files}",
+                               repo_type="dataset", local_files_only=True)
+        df = pd.read_parquet(path, columns=["uid", "item_id"])
+    except (ImportError, FileNotFoundError):  # not cached yet: download
+        ds = load_dataset(
+            "yandex/yambda",
+            data_dir=config["data_dir"],
+            data_files=data_files
+        )
+        df = ds["train"].to_pandas()
 
     if verbose:
         print(f"Loaded {len(df)} interactions")
