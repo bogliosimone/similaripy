@@ -1,4 +1,5 @@
 import similaripy as sim
+import pytest
 import numpy as np
 import scipy.sparse as sp
 from similaripy.normalization import normalize
@@ -606,6 +607,41 @@ def test_filter_cols_matrix():
         )
 
     print('✅ Test filter_cols with matrix (seen items) passed')
+
+
+SIMILARITIES = ('dot_product', 'cosine', 'asymmetric_cosine', 'tversky', 'jaccard', 'dice',
+                'p3alpha', 'rp3beta', 's_plus')
+
+
+@pytest.mark.parametrize('name', SIMILARITIES)
+@pytest.mark.parametrize('shrink_type', ['stabilized', 'bayesian', 'additive'])
+def test_every_shrink_type_scores(name, shrink_type):
+    # F1: bayesian shrink without a normalization term returned an empty matrix (0.7.0 too)
+    m = generate_random_matrix(80, 30, density=0.1).tocsr()
+    out = getattr(sim, name)(m, k=10, shrink=5, shrink_type=shrink_type, verbose=VERBOSE)
+    assert out.nnz > 0
+
+
+def test_dot_product_bayesian_shrink_formula():
+    m = generate_random_matrix(80, 30, density=0.1).tocsr()
+    xy = (m @ m.T).toarray()
+    expected = xy * xy / (xy + 5)
+    out = sim.dot_product(m, k=m.shape[0], shrink=5, shrink_type='bayesian', verbose=VERBOSE)
+    np.testing.assert_allclose(out.toarray(), expected, rtol=1e-5)
+
+
+def test_s_plus_alpha_without_normalization():
+    # F14: alpha was ignored when no normalization term was active
+    m = generate_random_matrix(80, 30, density=0.1).tocsr()
+    xy = (m @ m.T).toarray()
+    out = sim.s_plus(m, l1=0, l2=0, l3=0, alpha=2, k=m.shape[0], verbose=VERBOSE)
+    np.testing.assert_allclose(out.toarray(), xy ** 2, rtol=1e-5)
+
+
+@pytest.mark.parametrize('alpha', [0, -1, float('nan')])
+def test_s_plus_rejects_non_positive_alpha(alpha):
+    with pytest.raises(ValueError, match='alpha'):
+        sim.s_plus(generate_random_matrix(), alpha=alpha, verbose=VERBOSE)
 
 
 if __name__ == "__main__":

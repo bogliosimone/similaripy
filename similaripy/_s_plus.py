@@ -341,7 +341,7 @@ def s_plus(
         weight_depop_matrix2: Depopularization weights for matrix2: 'none', 'sum', or custom array.
         p1: Power for depopularization weights on matrix1.
         p2: Power for depopularization weights on matrix2.
-        a1: Power applied to dot product values.
+        a1: Power applied to dot product values (with or without normalization); must be > 0.
         l1: Weight for Tversky similarity term.
         l2: Weight for Cosine similarity term.
         l3: Weight for Depopularization term.
@@ -390,6 +390,9 @@ def s_plus(
         verbose=verbose,
         format_output=format_output
     )
+
+    if not a1 > 0:  # powf(0, a1 <= 0) would score cancelled sums; also rejects NaN
+        raise ValueError(f'alpha (a1) must be > 0, got {a1}')
 
     if block_size is not None and block_size < 0:
         raise ValueError(f'block_size must be None (no blocking), 0 (auto) or > 0, got {block_size}')

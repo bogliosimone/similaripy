@@ -104,21 +104,28 @@ fn case() -> impl Strategy<Value = Case> {
     })
 }
 
-/// Independent f64 version of the 0.7.0 scoring formula. Returns the score
+/// Independent f64 version of the 0.7.0 scoring formula (with the F1/F14 fixes). Returns the score
 /// and its absolute tolerance: the f32 kernel loses about `eps * cond` relative
 /// accuracy when the denominator terms cancel (cond = sum|terms| / |den|).
 fn ref_score(c: &Case, row: usize, col: usize, xy: f64) -> (f64, f64) {
     let [a1, l1, l2, l3, t1, t2, ss, bs] = c.params.map(f64::from);
     let n = |i: usize, j: usize| f64::from(c.norms[i][j]);
+    let p = xy.powf(a1);
     if l1 == 0.0 && l2 == 0.0 && l3 == 0.0 && ss == 0.0 && bs == 0.0 {
-        return (xy, ATOL + RTOL * xy); // no normalization: a1 is ignored, as in 0.7.0
+        return (p, ATOL + RTOL * p);
     }
     let tv = l1 * (t1 * (n(0, row) - xy) + t2 * (n(1, col) - xy) + xy);
     let cs = l2 * n(2, row) * n(3, col);
     let dp = l3 * n(4, row) * n(5, col);
-    let p = xy.powf(a1);
     let den = tv + cs + dp + ss;
-    let mut v = if den != 0.0 { p / den } else { 0.0 };
+    let has_den = l1 != 0.0 || l2 != 0.0 || l3 != 0.0 || ss != 0.0;
+    let mut v = if !has_den {
+        p
+    } else if den != 0.0 {
+        p / den
+    } else {
+        0.0
+    };
     if bs != 0.0 {
         v *= p / (p + bs);
     }
