@@ -99,11 +99,21 @@ def test_get_num_threads():
     assert _s_plus.get_num_threads() >= 1
 
 
-def test_int32_output_guard():
-    # 50000 rows * k=50000 > int32 max: must fail before allocating the output
-    m = sp.csr_array((50000, 50000), dtype=np.float32)
-    with pytest.raises(ValueError, match='output too large'):
-        sim.dot_product(m, k=50000, verbose=False)
+@pytest.mark.parametrize('limit, dtype', [(None, np.int32), (100, np.int64)])
+def test_csr_index_dtype_past_int32_nnz(limit, dtype, monkeypatch):
+    # D42: past 2^31 results the CSR gets int64 indptr and indices; tested at a
+    # lowered limit (a real run needs ~26 GB). Same matrix either way.
+    from similaripy import _s_plus
+    m = _m(60, 40)
+    ref = sim.cosine(m, k=10, format_output='csr', verbose=False)
+    if limit is not None:
+        monkeypatch.setattr(_s_plus, '_MAX_INT32_NNZ', limit)
+    out = sim.cosine(m, k=10, format_output='csr', verbose=False)
+    assert out.nnz > 100
+    assert out.indptr.dtype == out.indices.dtype == dtype
+    assert out.has_canonical_format
+    for a in ('indptr', 'indices', 'data'):
+        np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
 
 
 def test_negative_block_size():

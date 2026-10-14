@@ -36,6 +36,10 @@ _last_timings = {'kernel': 0.0, 'output': 0.0}
 # benchmarks and tests, not an API; don't flip it under concurrent calls.
 _COLUMN_ORDER = 'popularity'
 
+# Largest output nnz with an int32 CSR indptr; past it indptr and indices
+# are int64 (D42). A module constant so tests can lower it.
+_MAX_INT32_NNZ = np.iinfo(np.int32).max
+
 _EMPTY_F32 = np.empty(0, dtype=np.float32)
 _EMPTY_I32 = np.empty(0, dtype=np.int32)
 
@@ -365,7 +369,7 @@ def s_plus(
 
     Raises:
         ValueError: invalid shapes or parameters (see `validate_s_plus_inputs`),
-            a negative block_size, or int32 overflow of inputs or output.
+            a negative block_size, or more than 2^31 - 1 non-zeros in an input.
     """
     if matrix2 is None:
         matrix2 = matrix1.T
@@ -399,15 +403,11 @@ def s_plus(
     targets = np.arange(matrix1.shape[0], dtype=np.int32) if target_rows is None else target_rows
     n_targets = len(targets)
 
-    # Indices, indptrs and the output are int32: fail loudly instead of wrapping
+    # Input indices and indptrs are int32: fail loudly instead of wrapping. The
+    # output may pass 2^31 results (D42, see `_MAX_INT32_NNZ`).
     int32_max = np.iinfo(np.int32).max
     if matrix1.nnz > int32_max or matrix2.nnz > int32_max:
         raise ValueError(f"input matrices must have at most {int32_max} non-zeros")
-    if n_targets * k > int32_max:
-        raise ValueError(
-            f"output too large: {n_targets} target rows * k={k} exceeds {int32_max} entries; "
-            "lower k or split target_rows"
-        )
 
     bar = None
     if verbose:
@@ -545,7 +545,11 @@ def _s_plus(
         indptr = np.zeros(n_output_rows + 1, dtype=np.int64)
         indptr[targets + 1] = counts
         np.cumsum(indptr, out=indptr)
-        out = sp.csr_array((vals, cols, indptr.astype(np.int32)), shape=shape)
+        if indptr[-1] <= _MAX_INT32_NNZ:
+            indptr = indptr.astype(np.int32)
+        else:  # scipy wants one index dtype: it would upcast cols anyway
+            cols = cols.astype(np.int64)
+        out = sp.csr_array((vals, cols, indptr), shape=shape)
     out.has_canonical_format = True
     _last_timings.update(kernel=kernel_end - kernel_start, output=time.perf_counter() - kernel_end)
     return out
