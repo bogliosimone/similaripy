@@ -56,19 +56,31 @@ impl TopK {
         }
     }
 
-    /// Writes the kept (col, score) pairs in heap order and empties the heap.
-    /// Slots past the number of results are left untouched.
-    pub fn drain_into(&mut self, cols: &mut [i32], values: &mut [f32]) -> usize {
-        let n = self.heap.len();
-        for ((Reverse(e), c), v) in self
-            .heap
-            .drain()
-            .zip(cols.iter_mut())
-            .zip(values.iter_mut())
-        {
+    /// Writes the kept (col, score) pairs sorted by column, ids renumbered
+    /// through `col_map` if given (a permutation), empties the heap and returns
+    /// the count. Slots past it are left untouched. Once per row: the sort is
+    /// k log k, outside the scoring loop.
+    pub fn drain_into(
+        &mut self,
+        col_map: Option<&[i32]>,
+        cols: &mut [i32],
+        values: &mut [f32],
+    ) -> usize {
+        // The heap's own buffer, sorted in place and handed back empty: no allocation.
+        let mut kept = std::mem::take(&mut self.heap).into_vec();
+        if let Some(map) = col_map {
+            for Reverse(e) in &mut kept {
+                e.col = map[e.col as usize];
+            }
+        }
+        kept.sort_unstable_by_key(|Reverse(e)| e.col);
+        for ((Reverse(e), c), v) in kept.iter().zip(cols).zip(values) {
             *c = e.col;
             *v = e.score;
         }
+        let n = kept.len();
+        kept.clear();
+        self.heap = BinaryHeap::from(kept);
         n
     }
 }
@@ -81,15 +93,27 @@ mod tests {
 
     fn kept(t: &mut TopK, n: usize) -> Vec<(i32, f32)> {
         let (mut cols, mut vals) = (vec![-1; n + 1], vec![-1.0; n + 1]);
-        let len = t.drain_into(&mut cols, &mut vals);
+        let len = t.drain_into(None, &mut cols, &mut vals);
         assert_eq!((cols[len], vals[len]), (-1, -1.0)); // slots past the results untouched
-        let mut got: Vec<_> = cols[..len]
+        cols[..len]
             .iter()
             .copied()
             .zip(vals[..len].iter().copied())
-            .collect();
-        got.sort_by_key(|&(c, _)| c);
-        got
+            .collect()
+    }
+
+    #[test]
+    fn drain_renumbers_sorts_and_reuses_the_heap() {
+        let mut t = TopK::new(3);
+        for (c, s) in [(0, 1.0), (1, 3.0), (2, 2.0)] {
+            t.push(c, s);
+        }
+        let (mut cols, mut vals) = ([0; 3], [0.0; 3]);
+        // kernel columns 0, 1, 2 are original columns 7, 5, 6
+        assert_eq!(t.drain_into(Some(&[7, 5, 6]), &mut cols, &mut vals), 3);
+        assert_eq!((cols, vals), ([5, 6, 7], [3.0, 2.0, 1.0]));
+        t.push(4, 1.0); // empty again, same capacity
+        assert_eq!(kept(&mut t, 3), vec![(4, 1.0)]);
     }
 
     #[test]

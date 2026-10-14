@@ -34,7 +34,7 @@ def dot_product(
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain.
         binary: Whether to binarize the input matrix before similarity computation.
-        target_rows: List or array of row indices to compute. If None, computes all.
+        target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
@@ -92,7 +92,7 @@ def cosine(
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain.
         binary: Whether to binarize the input matrix before computation.
-        target_rows: List or array of row indices to compute. If None, computes all.
+        target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
@@ -154,7 +154,7 @@ def asymmetric_cosine(
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain.
         binary: Whether to binarize the input matrix before computation.
-        target_rows: List or array of row indices to compute. If None, computes all.
+        target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
@@ -218,7 +218,7 @@ def tversky(
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain.
         binary: Whether to binarize the input matrix before computation.
-        target_rows: List or array of row indices to compute. If None, computes all.
+        target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
@@ -277,7 +277,7 @@ def jaccard(
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain.
         binary: Whether to binarize the input matrix before computation.
-        target_rows: List or array of row indices to compute. If None, computes all.
+        target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
@@ -336,7 +336,7 @@ def dice(
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain.
         binary: Whether to binarize the input matrix before computation.
-        target_rows: List or array of row indices to compute. If None, computes all.
+        target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
@@ -397,7 +397,7 @@ def p3alpha(
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain.
         binary: Whether to binarize the input matrix before computation.
-        target_rows: List or array of row indices to compute. If None, computes all.
+        target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
@@ -465,7 +465,7 @@ def rp3beta(
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain.
         binary: Whether to binarize the input matrix before computation.
-        target_rows: List or array of row indices to compute. If None, computes all.
+        target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
@@ -558,7 +558,7 @@ def s_plus(
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain.
         binary: Whether to binarize the input matrix before computation.
-        target_rows: List or array of row indices to compute. If None, computes all.
+        target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.

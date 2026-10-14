@@ -65,14 +65,18 @@ pub struct Inputs<'a> {
     pub filter: Option<CsrPattern<'a>>,
     /// Per-row columns to keep (all others are excluded).
     pub target_cols: Option<CsrPattern<'a>>,
+    /// Output column ids: kernel column `c` is written as `col_map[c]`. A
+    /// permutation of `0..m2.n_cols()` (m2 columns renumbered by the caller), or
+    /// `None` to keep the ids.
+    pub col_map: Option<&'a [i32]>,
 }
 
-/// Output buffers, `len(targets) * k` each, initialised by the caller. Row `i`
-/// owns slots `[i*k, (i+1)*k)`; slots past its result count stay untouched.
-pub struct Output<'a> {
-    pub rows: &'a mut [i32],
-    pub cols: &'a mut [i32],
-    pub values: &'a mut [f32],
+/// The results, rows in `targets` order: row `i` has `counts[i]` entries,
+/// sorted by column, packed one after another in `cols`/`values` (no padding).
+pub struct Output {
+    pub cols: Vec<i32>,
+    pub values: Vec<f32>,
+    pub counts: Vec<u32>,
 }
 
 /// Computes the top-`k` scores for every target row on the current rayon pool.
@@ -82,12 +86,17 @@ pub fn compute<F: Fn() + Sync>(
     inp: &Inputs,
     k: usize,
     block_size: usize,
-    out: Output,
     on_row: &F,
-) -> Result<(), Error> {
-    validate(inp, k, &out)?;
-    if k == 0 || inp.targets.is_empty() {
-        return Ok(());
+) -> Result<Output, Error> {
+    let n_slots = validate(inp, k)?;
+    let counts = vec![0; inp.targets.len()];
+    if n_slots == 0 {
+        let (cols, values) = (Vec::new(), Vec::new());
+        return Ok(Output {
+            cols,
+            values,
+            counts,
+        });
     }
     let n_cols = inp.m2.n_cols();
     let blocked = block_size > 0 && n_cols > block_size;
@@ -99,61 +108,87 @@ pub fn compute<F: Fn() + Sync>(
         ));
     }
     let acc_len = if blocked { block_size } else { n_cols };
+    // Padded: row i owns slots [i*k, (i+1)*k) until `compact`. Zeroed = calloc,
+    // so pages a row never reaches are never touched.
+    let mut out = Output {
+        cols: vec![0; n_slots],
+        values: vec![0.0; n_slots],
+        counts,
+    };
 
     // SAFETY: `validate` checked every target against all row-indexed inputs and
     // the selection widths, the scratch accumulator is `acc_len` long, its marks
     // are built for these selections, and m2 rows are sorted when blocked.
-    let row = |sc: &mut Scratch, t: i32, rows: &mut [i32], cols: &mut [i32], values: &mut [f32]| {
-        let n = unsafe {
-            sc.mark_selections(inp, t as usize, true);
-            let n = if blocked {
-                sc.blocked_row(inp, t as usize, block_size, cols, values)
-            } else {
-                sc.single_block_row(inp, t as usize, cols, values)
-            };
-            sc.mark_selections(inp, t as usize, false);
-            n
+    let row = |sc: &mut Scratch, t: i32, cols: &mut [i32], values: &mut [f32]| unsafe {
+        sc.mark_selections(inp, t as usize, true);
+        let n = if blocked {
+            sc.blocked_row(inp, t as usize, block_size, cols, values)
+        } else {
+            sc.single_block_row(inp, t as usize, cols, values)
         };
-        rows[..n].fill(t);
+        sc.mark_selections(inp, t as usize, false);
+        n as u32 // n <= k <= n_cols <= i32::MAX (validate)
     };
     // `broadcast` + an atomic row counter = OpenMP's `schedule(dynamic, 1)`, one
     // scratch per worker. Rayon's adaptive splitting was +65..86% on ML-32M:
     // popularity-ordered rows put most of the work in the first few chunks (D9).
     let next = AtomicUsize::new(0);
-    let shared = SharedOutput::new(out, k);
+    let shared = SharedOutput::new(&mut out, k);
     rayon::broadcast(|_| {
         let mut sc = Scratch::new(acc_len, k, inp);
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(&t) = inp.targets.get(i) else { break };
             // SAFETY: the counter hands out each i exactly once, and i < len(targets).
-            let (rows, cols, values) = unsafe { shared.chunk(i) };
-            row(&mut sc, t, rows, cols, values);
+            let (cols, values, count) = unsafe { shared.chunk(i) };
+            *count = row(&mut sc, t, cols, values);
             on_row();
         }
     });
-    Ok(())
+    compact(&mut out, k);
+    Ok(out)
+}
+
+/// Packs each row's results right after the previous row's, dropping the
+/// padding, then gives the unused tail back to the allocator. One serial
+/// pass; rows already in place (all rows before them full) are skipped.
+fn compact(out: &mut Output, k: usize) {
+    let mut end = 0;
+    for (i, &n) in out.counts.iter().enumerate() {
+        let (start, n) = (i * k, n as usize);
+        if start != end {
+            out.cols.copy_within(start..start + n, end);
+            out.values.copy_within(start..start + n, end);
+        }
+        end += n;
+    }
+    // A shrinking realloc: in place for large blocks on macOS (Step 3c part b
+    // review), so the peak stays the padded size, never padded + packed.
+    out.cols.truncate(end);
+    out.values.truncate(end);
+    out.cols.shrink_to_fit();
+    out.values.shrink_to_fit();
 }
 
 /// Output buffers shared by the workers. Each row index is claimed
 /// by one worker only, so the `k`-slot chunks they write never overlap.
 struct SharedOutput<'a> {
-    rows: *mut i32,
     cols: *mut i32,
     values: *mut f32,
+    counts: *mut u32,
     k: usize,
-    _out: PhantomData<Output<'a>>,
+    _out: PhantomData<&'a mut Output>,
 }
 
 // SAFETY: workers only write disjoint chunks (see `chunk`).
 unsafe impl Sync for SharedOutput<'_> {}
 
 impl<'a> SharedOutput<'a> {
-    fn new(out: Output<'a>, k: usize) -> Self {
+    fn new(out: &'a mut Output, k: usize) -> Self {
         Self {
-            rows: out.rows.as_mut_ptr(),
             cols: out.cols.as_mut_ptr(),
             values: out.values.as_mut_ptr(),
+            counts: out.counts.as_mut_ptr(),
             k,
             _out: PhantomData,
         }
@@ -162,28 +197,29 @@ impl<'a> SharedOutput<'a> {
     /// # Safety
     /// `i < len(targets)`, and no other live reference to chunk `i` exists.
     #[allow(clippy::mut_from_ref)]
-    unsafe fn chunk(&self, i: usize) -> (&mut [i32], &mut [i32], &mut [f32]) {
-        // SAFETY: buffers are len(targets) * k long (validate), chunk i is exclusive (caller).
+    unsafe fn chunk(&self, i: usize) -> (&mut [i32], &mut [f32], &mut u32) {
+        // SAFETY: cols/values are len(targets) * k long, counts len(targets)
+        // (`compute`), chunk i is exclusive (caller).
         unsafe {
             (
-                std::slice::from_raw_parts_mut(self.rows.add(i * self.k), self.k),
                 std::slice::from_raw_parts_mut(self.cols.add(i * self.k), self.k),
                 std::slice::from_raw_parts_mut(self.values.add(i * self.k), self.k),
+                &mut *self.counts.add(i),
             )
         }
     }
 }
 
-fn validate(inp: &Inputs, k: usize, out: &Output) -> Result<(), Error> {
+/// Checks the inputs; returns the output slot count, `len(targets) * k`.
+fn validate(inp: &Inputs, k: usize) -> Result<usize, Error> {
     let bad = |msg: &str| Err(Error::InvalidInput(msg.into()));
     let (m1, m2, p, n) = (&inp.m1, &inp.m2, &inp.params, &inp.norms);
     if m1.n_cols() != m2.n_rows() {
         return bad("m1 columns != m2 rows");
     }
-    let n_out = inp.targets.len() * k;
-    if out.rows.len() != n_out || out.cols.len() != n_out || out.values.len() != n_out {
-        return bad("output length != len(targets) * k");
-    }
+    let Some(n_slots) = inp.targets.len().checked_mul(k) else {
+        return bad("output too large: len(targets) * k overflows usize");
+    };
     // Rows needed by every row-indexed input: max target + 1.
     let rows_needed = match inp.targets.iter().min() {
         Some(&t) if t < 0 => return bad("negative target row"),
@@ -197,6 +233,9 @@ fn validate(inp: &Inputs, k: usize, out: &Output) -> Result<(), Error> {
     // Output column ids are i32 (D11).
     if n_cols > i32::MAX as usize {
         return bad("more than i32::MAX output columns");
+    }
+    if inp.col_map.is_some_and(|m| m.len() != n_cols) {
+        return bad("col_map length != m2 columns");
     }
     for (w, x, y, name) in [
         (p.l1, n.x_tversky, n.y_tversky, "tversky"),
@@ -215,7 +254,7 @@ fn validate(inp: &Inputs, k: usize, out: &Output) -> Result<(), Error> {
             return bad("column selection columns != m2 columns");
         }
     }
-    Ok(())
+    Ok(n_slots)
 }
 
 impl Params {
@@ -388,7 +427,7 @@ impl Scratch {
             // block offset 0, so local col == real col.
             self.drain(inp, t, 0);
         }
-        self.topk.drain_into(cols, values)
+        self.topk.drain_into(inp.col_map, cols, values)
     }
 
     /// Same as `single_block_row`, but over column blocks of `block` columns:
@@ -454,7 +493,7 @@ impl Scratch {
                 unsafe { self.drain(inp, t, start) };
             }
         }
-        self.topk.drain_into(cols, values)
+        self.topk.drain_into(inp.col_map, cols, values)
     }
 
     /// Scores every touched column, pushes the survivors to top-K and

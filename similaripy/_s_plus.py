@@ -25,8 +25,8 @@ MODE_NONE = 0    # use all columns
 MODE_ARRAY = 1   # list/array, pre-filtered here: the kernel treats it as NONE
 MODE_MATRIX = 2  # sparse matrix, per-row check in the kernel
 
-# Wall time (s) of the last call's kernel and output build (un-permute +
-# matrix); the harness takes prep as total - kernel - output, so it includes
+# Wall time (s) of the last call's kernel (scoring, top-K, per-row un-permute
+# + sort, compaction) and output build (matrix wrap); the harness takes prep as total - kernel - output, so it includes
 # the wrappers' normalization. Racy under concurrent calls: read it only after
 # serial calls.
 _last_timings = {'kernel': 0.0, 'output': 0.0}
@@ -285,23 +285,6 @@ def _sorted_rows(data, indices, indptr, n_cols, forward, num_threads):
     return data, indices
 
 
-def _build_csr(rows, cols, values, n_rows: int, n_cols: int) -> sp.csr_array:
-    """
-    CSR from the kernel's (rows, cols, values) slots, zeros dropped
-    (= 0.7.0's coo_to_csr + eliminate_zeros, same order within rows).
-    """
-    # 0.7.0 picks the index dtype before dropping the zero padding
-    idx_dtype = np.int32 if max(len(values), n_cols) <= np.iinfo(np.int32).max else np.int64
-    keep = values != 0
-    rows, cols, values = rows[keep], cols[keep], values[keep]
-    if np.any(rows[1:] < rows[:-1]):  # target_rows not ascending
-        order = np.argsort(rows, kind='stable')
-        rows, cols, values = rows[order], cols[order], values[order]
-    indptr = np.zeros(n_rows + 1, dtype=idx_dtype)
-    np.cumsum(np.bincount(rows, minlength=n_rows), out=indptr[1:])
-    return sp.csr_array((values, cols.astype(idx_dtype, copy=False), indptr), shape=(n_rows, n_cols))
-
-
 # ---- Entry point ----
 
 def s_plus(
@@ -360,7 +343,7 @@ def s_plus(
         additive_shrink: Additive shrinkage for cosine normalization.
         threshold: Minimum similarity threshold.
         binary: If True, treat all non-zero values as 1.0 (set theory).
-        target_rows: Specific rows to compute. If None, compute all rows.
+        target_rows: Specific rows to compute (duplicates ignored). If None, compute all rows.
         filter_cols: Columns to exclude from results (e.g., already seen items).
         target_cols: Columns to include in results (only compute these).
         verbose: Show progress bar during computation.
@@ -374,7 +357,8 @@ def s_plus(
 
     Returns:
         A sparse matrix of shape (n_rows, n_cols) in the specified format,
-        containing the top-k similarity scores.
+        containing the top-k similarity scores: at most k entries per row, rows
+        sorted by column, canonical (`has_canonical_format`).
 
     Raises:
         ValueError: invalid shapes or parameters (see `validate_s_plus_inputs`),
@@ -382,6 +366,11 @@ def s_plus(
     """
     if matrix2 is None:
         matrix2 = matrix1.T
+
+    # Sorted, unique: output rows come out in row order (CSR straight from the
+    # counts), and a duplicate target would duplicate its row's entries.
+    if target_rows is not None:
+        target_rows = np.unique(np.asarray(target_rows, dtype=np.int32))
 
     validate_s_plus_inputs(
         matrix1=matrix1,
@@ -404,10 +393,7 @@ def s_plus(
 
     k = min(k, matrix2.shape[1])  # do not allocate unnecessary space
 
-    if target_rows is None:
-        targets = np.arange(matrix1.shape[0], dtype=np.int32)
-    else:
-        targets = np.ascontiguousarray(target_rows, dtype=np.int32)
+    targets = np.arange(matrix1.shape[0], dtype=np.int32) if target_rows is None else target_rows
     n_targets = len(targets)
 
     # Indices, indptrs and the output are int32: fail loudly instead of wrapping
@@ -494,8 +480,8 @@ def _s_plus(
     # descending count, on every call, blocked or not. Popular columns share the
     # first, cache-hot blocks, and the kernel's tie rule (lower column wins) means
     # the same thing on every path: ties go to the more popular column, then to
-    # the lower original id (stable sort). Output un-permuted below. Blocking
-    # also needs sorted m2 rows (binary search).
+    # the lower original id (stable sort). The kernel writes original ids
+    # (`back_perm`). Blocking also needs sorted m2 rows (binary search).
     back_perm = None
     forward = _EMPTY_I32
     if _COLUMN_ORDER == 'popularity':
@@ -525,18 +511,10 @@ def _s_plus(
         m2_data, m2_indices = _sorted_rows(m2_data, m2_indices, m2_indptr, n_output_cols,
                                            forward, num_threads)
 
-    # Output slots: row i owns [i*k, (i+1)*k), the kernel leaves unused slots
-    # untouched. With a permutation, cols starts at -1 to tell padding from a
-    # real (col 0, 0.0) result; padding goes back to 0 below.
-    n_out = len(targets) * k
-    rows = np.zeros(n_out, dtype=np.int32)
-    cols = np.full(n_out, -1 if back_perm is not None else 0, dtype=np.int32)
-    vals = np.zeros(n_out, dtype=np.float32)
-
     if bar is not None:
         bar.set_description('Computing')
     kernel_start = time.perf_counter()
-    _core.compute_similarities(
+    cols, vals, counts = _core.compute_similarities(
         targets,
         m1_data, m1_indices, m1_indptr, m1.shape[1],
         m2_data, m2_indices, m2_indptr,
@@ -546,22 +524,25 @@ def _s_plus(
         k, n_output_cols,
         filter_mode, filter_indptr, filter_indices,
         target_mode, target_indptr, target_indices,
-        rows, cols, vals,
+        _EMPTY_I32 if back_perm is None else back_perm,
         num_threads, block_size, bar,
     )
     kernel_end = time.perf_counter()
 
-    # Un-permute output columns; padding (-1) back to column 0
-    if back_perm is not None:
-        used = cols >= 0
-        cols[used] = back_perm[cols[used]]
-        cols[~used] = 0
-
+    # Rows come back exact (no padding), sorted by column, in target order
+    # (ascending, unique), so both formats wrap the kernel's arrays without a
+    # copy. Canonical as well: no duplicates, and no zeros under D6 (non-negative
+    # input never sums to exactly 0.0).
     if bar is not None:
         bar.set_description(f'Building {format_output} matrix')
+    shape = (n_output_rows, n_output_cols)
     if format_output == 'coo':
-        out = sp.coo_array((vals, (rows, cols)), shape=(n_output_rows, n_output_cols), dtype=np.float32)
+        out = sp.coo_array((vals, (np.repeat(targets, counts), cols)), shape=shape)
     else:
-        out = _build_csr(rows, cols, vals, n_output_rows, n_output_cols)
+        indptr = np.zeros(n_output_rows + 1, dtype=np.int64)
+        indptr[targets + 1] = counts
+        np.cumsum(indptr, out=indptr)
+        out = sp.csr_array((vals, cols, indptr.astype(np.int32)), shape=shape)
+    out.has_canonical_format = True
     _last_timings.update(kernel=kernel_end - kernel_start, output=time.perf_counter() - kernel_end)
     return out

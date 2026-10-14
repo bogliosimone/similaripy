@@ -3,7 +3,7 @@
 //! (any column whose reference score ties the k-th within tolerance may swap).
 
 use proptest::prelude::*;
-use similaripy_core::{CsrPattern, CsrView, Inputs, Norms, Output, Params, compute};
+use similaripy_core::{CsrPattern, CsrView, Inputs, Norms, Params, compute};
 
 const RTOL: f64 = 1e-5;
 const ATOL: f64 = 1e-6;
@@ -189,24 +189,19 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
         },
         filter: pattern(&filter, n),
         target_cols: pattern(&target, n),
+        col_map: None,
     };
     let k = c.k;
-    // cols starts at -1 (a value the kernel never writes): padding must stay untouched,
-    // the Python un-permute relies on it.
-    let (mut rows, mut cols, mut vals) = (vec![0; r * k], vec![-1; r * k], vec![0.0; r * k]);
-    let out = Output {
-        rows: &mut rows,
-        cols: &mut cols,
-        values: &mut vals,
-    };
-    let res = compute(&inp, k, c.block_size, out, &|| {});
+    let res = compute(&inp, k, c.block_size, &|| {});
     let blocked = c.block_size > 0 && n > c.block_size;
     // Unsorted m2 rows only reject when the blocked path would binary-search them.
     if blocked && c.unsorted_m2 && m2.indptr.windows(2).any(|w| w[1] - w[0] > 1) {
         prop_assert!(res.is_err(), "unsorted m2 accepted on the blocked path");
         return Ok(());
     }
-    res.unwrap();
+    let out = res.unwrap();
+    prop_assert_eq!(out.counts.len(), r);
+    let mut start = 0;
 
     for (i, &t) in c.targets.iter().enumerate() {
         // Reference scores of every eligible (touched, selected) column.
@@ -226,22 +221,21 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
         let expected = k.min(eligible.len());
         let mut sorted: Vec<f64> = eligible.iter().map(|e| e.1).collect();
         sorted.sort_by(|a, b| b.total_cmp(a));
-        let span = i * k..(i + 1) * k;
-        let got: Vec<(i32, f32)> = cols[span.clone()]
+        // Packed rows: exactly the expected count, sorted by column, no duplicates.
+        prop_assert_eq!(out.counts[i] as usize, expected, "row {}: count", t);
+        let span = start..start + expected;
+        start = span.end;
+        let got: Vec<(i32, f32)> = out.cols[span.clone()]
             .iter()
             .copied()
-            .zip(vals[span.clone()].iter().copied())
+            .zip(out.values[span].iter().copied())
             .collect();
-        for (j, &(col, score)) in got.iter().enumerate() {
-            if j >= expected {
-                prop_assert_eq!(
-                    (rows[i * k + j], col, score),
-                    (0, -1, 0.0),
-                    "padding touched"
-                );
-                continue;
-            }
-            prop_assert_eq!(rows[i * k + j], t as i32);
+        prop_assert!(
+            got.windows(2).all(|w| w[0].0 < w[1].0),
+            "row {}: not sorted",
+            t
+        );
+        for &(col, score) in &got {
             let reference = eligible.iter().find(|e| e.0 == col as usize);
             prop_assert!(reference.is_some(), "row {t}: col {col} not eligible");
             let &(_, reference, tol) = reference.unwrap();
@@ -260,11 +254,9 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
                 "row {t}: col {col} below k-th"
             );
         }
-        let mut kept: Vec<i32> = got[..expected].iter().map(|g| g.0).collect();
-        kept.sort();
-        kept.dedup();
-        prop_assert_eq!(kept.len(), expected, "row {}: duplicate columns", t);
     }
+    prop_assert_eq!(out.cols.len(), start, "padding left");
+    prop_assert_eq!(out.values.len(), start, "padding left");
     Ok(())
 }
 
@@ -307,14 +299,9 @@ fn rejects_more_than_i32_max_columns() {
         },
         filter: None,
         target_cols: None,
+        col_map: None,
     };
-    let (mut rows, mut cols, mut vals) = ([0], [0], [0.0]);
-    let out = Output {
-        rows: &mut rows,
-        cols: &mut cols,
-        values: &mut vals,
-    };
-    assert!(compute(&inp, 1, 0, out, &|| {}).is_err());
+    assert!(compute(&inp, 1, 0, &|| {}).is_err());
 }
 
 // The selection bitsets are m2.n_cols wide: a wider selection would index past them.
@@ -330,17 +317,14 @@ fn rejects_selection_wider_than_m2() {
         params: Params::default(),
         filter: Some(CsrPattern::new("filter", &sel_indptr, &sel_indices, 5).unwrap()),
         target_cols: None,
+        col_map: None,
     };
-    let (mut rows, mut cols, mut vals) = ([0], [0], [0.0]);
-    let out = Output {
-        rows: &mut rows,
-        cols: &mut cols,
-        values: &mut vals,
-    };
-    assert!(compute(&inp, 1, 0, out, &|| {}).is_err());
+    assert!(compute(&inp, 1, 0, &|| {}).is_err());
 }
 
-/// Top-`k` of `m1 · m2` (dot product), each row sorted by column.
+/// Top-`k` of `m1 · m2` (dot product): per-row counts and the packed
+/// (col, score bits) entries, exactly as the kernel returns them.
+#[allow(clippy::too_many_arguments)]
 fn top_scores(
     m1: &Csr,
     m2: &Csr,
@@ -349,7 +333,8 @@ fn top_scores(
     r: usize,
     k: usize,
     block: usize,
-) -> Vec<(i32, u32)> {
+    col_map: Option<&[i32]>,
+) -> (Vec<u32>, Vec<(i32, u32)>) {
     let targets: Vec<i32> = (0..r as i32).collect();
     let inp = Inputs {
         m1: CsrView::new("m1", &m1.indptr, &m1.indices, &m1.data, m).unwrap(),
@@ -359,23 +344,41 @@ fn top_scores(
         params: Params::default(),
         filter: None,
         target_cols: None,
+        col_map,
     };
-    let (mut rows, mut cols, mut vals) = (vec![0; r * k], vec![-1; r * k], vec![0.0; r * k]);
-    let out = Output {
-        rows: &mut rows,
-        cols: &mut cols,
-        values: &mut vals,
-    };
-    compute(&inp, k, block, out, &|| {}).unwrap();
-    let mut got: Vec<(i32, u32)> = cols
+    let out = compute(&inp, k, block, &|| {}).unwrap();
+    let got = out
+        .cols
         .iter()
-        .zip(&vals)
+        .zip(&out.values)
         .map(|(&c, &v)| (c, v.to_bits()))
         .collect();
-    for row in got.chunks_mut(k) {
-        row.sort_unstable();
+    (out.counts, got)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 1000 }))]
+    // m2 with columns renumbered (kernel col j = original col map[j]) + col_map
+    // gives the same packed rows as the original m2. k = n keeps every column,
+    // so the tie rule (on kernel ids) can't pick different ones.
+    #[test]
+    fn col_map_restores_original_ids(
+        (m1, m2, n, map, block) in (1usize..6, 1usize..8, 2usize..40).prop_flat_map(|(r, m, n)| {
+            let ids: Vec<i32> = (0..n as i32).collect();
+            (dense(r, m), dense(m, n), Just(n), Just(ids).prop_shuffle(), 0..n)
+        })
+    ) {
+        let permuted: Vec<Vec<f32>> = m2
+            .iter()
+            .map(|row| map.iter().map(|&o| row[o as usize]).collect())
+            .collect();
+        let (a, b, bp) = (to_csr(&m1), to_csr(&m2), to_csr(&permuted));
+        let m = m2.len();
+        prop_assert_eq!(
+            top_scores(&a, &bp, m, n, m1.len(), n, block, Some(&map)),
+            top_scores(&a, &b, m, n, m1.len(), n, block, None)
+        );
     }
-    got
 }
 
 proptest! {
@@ -393,8 +396,8 @@ proptest! {
         let (a, b) = (to_csr(&m1), to_csr(&m2));
         let m = m2.len();
         prop_assert_eq!(
-            top_scores(&a, &b, m, n, m1.len(), n, block),
-            top_scores(&a, &b, m, n, m1.len(), n, 0)
+            top_scores(&a, &b, m, n, m1.len(), n, block, None),
+            top_scores(&a, &b, m, n, m1.len(), n, 0, None)
         );
     }
 }
@@ -413,8 +416,8 @@ proptest! {
         let (a, b) = (to_csr(&m1), to_csr(&m2));
         let m = m2.len();
         prop_assert_eq!(
-            top_scores(&a, &b, m, n, m1.len(), k, block),
-            top_scores(&a, &b, m, n, m1.len(), k, 0)
+            top_scores(&a, &b, m, n, m1.len(), k, block, None),
+            top_scores(&a, &b, m, n, m1.len(), k, 0, None)
         );
     }
 }
