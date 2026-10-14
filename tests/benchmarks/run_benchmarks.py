@@ -199,6 +199,7 @@ def run_benchmarks(config, verbose=True):
                 'threshold': config['threshold'],
                 'num_threads': config['num_threads'],
                 'block_size': config['block_size'],
+                'column_order': config['column_order'],
             }
 
         def run_once(sim_type):
@@ -419,6 +420,7 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
             "threshold": config['threshold'],
             "num_threads": config['num_threads'],
             "block_size": format_block_size(config['block_size']),
+            "column_order": config['column_order'] or "default",
             "rounds": config['rounds'],
             "warmup": config['warmup'],
             "rss": bool(config.get('rss')),
@@ -491,6 +493,7 @@ def build_config(args):
         'threshold': args.threshold,
         'num_threads': args.threads,
         'block_size': parse_block_size(args.block_size),
+        'column_order': args.column_order,
         'rounds': args.rounds,
         'warmup': args.warmup,
         'rss': args.rss,
@@ -560,6 +563,8 @@ Examples:
                         help='Report filename tag (default: similaripy version)')
     parser.add_argument('--block-size', type=str, default='0',
                         help='Block size: 0=auto, none=disabled, or int>0 (default: 0)')
+    parser.add_argument('--column-order', default=None, choices=['popularity', 'original'],
+                        help="Kernel column order (private switch; default: the library's, popularity)")
     parser.add_argument('--event-type', type=str, default='multi_event',
                         choices=['likes', 'listens', 'multi_event'],
                         help='Yambda event type (default: multi_event)')

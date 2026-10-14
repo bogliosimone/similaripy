@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 from datetime import datetime
+from functools import partial
 import similaripy as sim
 import numpy as np
 import scipy as sp
@@ -195,6 +196,10 @@ def benchmark_similarity(
     similarity_func = _get_similarity_function(similarity_type)
 
     block_size = similarity_kwargs.pop('block_size', 0)
+    # Private kernel column order ('popularity' / 'original'); None = library default
+    column_order = similarity_kwargs.pop('column_order', None)
+    if column_order is not None:
+        sim._s_plus._COLUMN_ORDER = column_order
 
     start_time = time.perf_counter()
 
@@ -309,6 +314,7 @@ def _get_similarity_function(similarity_type):
     """Get similarity function from similaripy."""
     similarity_map = {
         'dot_product': sim.dot_product,
+        'dot_product_binary': partial(sim.dot_product, binary=True),  # integer scores: tie-heavy
         'cosine': sim.cosine,
         'asymmetric_cosine': sim.asymmetric_cosine,
         'jaccard': sim.jaccard,
