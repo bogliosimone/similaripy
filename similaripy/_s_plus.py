@@ -55,10 +55,8 @@ def validate_s_plus_inputs(
     weight_depop_matrix1: Union[str, np.ndarray],
     weight_depop_matrix2: Union[str, np.ndarray],
     k: int,
-    target_rows: Optional[Union[List, np.ndarray]],
     filter_cols: Optional[Union[List, np.ndarray, sp.sparray]],
     target_cols: Optional[Union[List, np.ndarray, sp.sparray]],
-    verbose: bool,
     format_output: str
 ) -> None:
     """
@@ -70,10 +68,8 @@ def validate_s_plus_inputs(
         weight_depop_matrix1: Depopularization weights for matrix1.
         weight_depop_matrix2: Depopularization weights for matrix2.
         k: Number of top items to keep.
-        target_rows: Rows to compute.
         filter_cols: Columns to filter out.
         target_cols: Columns to target.
-        verbose: Whether to show progress.
         format_output: Output format ('coo' or 'csr').
 
     Raises:
@@ -93,69 +89,74 @@ def validate_s_plus_inputs(
             f'must equal matrix2.shape[0]={matrix2.shape[0]}'
         )
 
-    # Check k parameter
-    if k < 1:
-        raise ValueError(f'k must be >= 1, got {k}')
+    if not _is_int(k) or k < 1:
+        raise ValueError(f'k must be an integer >= 1, got {k!r}')
 
-    # Check depopularization weights
-    if not (len(weight_depop_matrix1) == matrix1.shape[0] or
-            weight_depop_matrix1 in ('none', 'sum')):
-        raise ValueError(
-            f'weight_depop_matrix1 must be array of length {matrix1.shape[0]} '
-            f'or one of ("none", "sum"), got length {len(weight_depop_matrix1)}'
-        )
+    _check_depop('weight_depop_matrix1 (pop1)', weight_depop_matrix1, matrix1.shape[0])
+    _check_depop('weight_depop_matrix2 (pop2)', weight_depop_matrix2, matrix2.shape[1])
 
-    if not (len(weight_depop_matrix2) == matrix2.shape[1] or
-            weight_depop_matrix2 in ('none', 'sum')):
-        raise ValueError(
-            f'weight_depop_matrix2 must be array of length {matrix2.shape[1]} '
-            f'or one of ("none", "sum"), got length {len(weight_depop_matrix2)}'
-        )
-
-    # Check target_rows
-    if target_rows is not None and len(target_rows) > matrix1.shape[0]:
-        raise ValueError(
-            f'target_rows length ({len(target_rows)}) cannot exceed '
-            f'matrix1.shape[0] ({matrix1.shape[0]})'
-        )
-
-    # Check filter_cols format and shape
-    if filter_cols is not None:
-        if not (sp.issparse(filter_cols) or isinstance(filter_cols, (list, np.ndarray))):
-            raise TypeError(
-                'filter_cols must be a sparse matrix, list, numpy array, or None'
-            )
-        # Validate shape for sparse matrices
-        if sp.issparse(filter_cols) and filter_cols.data.shape[0] != 0:
-            expected_shape = (matrix1.shape[0], matrix2.shape[1])
-            if filter_cols.shape != expected_shape:
-                raise ValueError(
-                    f'filter_cols shape {filter_cols.shape} does not match expected '
-                    f'shape {expected_shape}'
-                )
-
-    # Check target_cols format and shape
-    if target_cols is not None:
-        if not (sp.issparse(target_cols) or isinstance(target_cols, (list, np.ndarray))):
-            raise TypeError(
-                'target_cols must be a sparse matrix, list, numpy array, or None'
-            )
-        # Validate shape for sparse matrices
-        if sp.issparse(target_cols) and target_cols.data.shape[0] != 0:
-            expected_shape = (matrix1.shape[0], matrix2.shape[1])
-            if target_cols.shape != expected_shape:
-                raise ValueError(
-                    f'target_cols shape {target_cols.shape} does not match expected '
-                    f'shape {expected_shape}'
-                )
-
-    # Check verbose
-    if not isinstance(verbose, bool):
-        raise TypeError(f'verbose must be boolean, got {type(verbose).__name__}')
+    # Column selectors: a list/array is one set of column ids for every row, a
+    # sparse matrix one row of columns per output row.
+    expected_shape = (matrix1.shape[0], matrix2.shape[1])
+    for name, cols in (('filter_cols', filter_cols), ('target_cols', target_cols)):
+        if cols is None:
+            continue
+        if isinstance(cols, (list, np.ndarray)):
+            _ids(name, cols, matrix2.shape[1])
+        elif not sp.issparse(cols):
+            raise TypeError(f'{name} must be a sparse matrix, list, numpy array, or None')
+        elif cols.data.shape[0] != 0 and cols.shape != expected_shape:
+            raise ValueError(f'{name} shape {cols.shape} does not match expected shape {expected_shape}')
 
     # Check format_output
     if format_output not in ('coo', 'csr'):
         raise ValueError(f"format_output must be 'coo' or 'csr', got '{format_output}'")
+
+
+def _is_int(x) -> bool:
+    return isinstance(x, (int, np.integer)) and not isinstance(x, (bool, np.bool_))
+
+
+def _check_scalar(name: str, value, strict: bool = False) -> None:
+    """Finite and >= 0 (> 0 if `strict`)."""
+    if not (np.isfinite(value) and (value > 0 if strict else value >= 0)):
+        raise ValueError(f'{name} must be finite and {">" if strict else ">="} 0, got {value}')
+
+
+def _ids(name: str, ids, n: int) -> np.ndarray:
+    """`ids` as an integer array, every id in [0, n)."""
+    ids = np.asarray(ids)
+    if ids.size == 0:
+        return ids.astype(np.int64)
+    if not np.issubdtype(ids.dtype, np.integer):
+        raise TypeError(f'{name} must hold integer ids, got dtype {ids.dtype}')
+    if ids.min() < 0 or ids.max() >= n:
+        raise ValueError(f'{name} ids must be in [0, {n}), got min {ids.min()} and max {ids.max()}')
+    return ids
+
+
+def _check_depop(name: str, weights, n: int) -> None:
+    """'none', 'sum' or n finite weights >= 0 (a negative one would flip signs); > 0 where
+    it is used is checked in `_s_plus` (`_check_used_weights`)."""
+    if isinstance(weights, str):
+        if weights not in ('none', 'sum'):
+            raise ValueError(f'{name} must be "none", "sum" or an array of length {n}, got {weights!r}')
+        return
+    w = np.asarray(weights)
+    if w.shape != (n,):
+        raise ValueError(f'{name} must be "none", "sum" or an array of length {n}, got shape {w.shape}')
+    if not np.all((w >= 0) & (w < np.inf)):
+        raise ValueError(f'{name} weights must be finite and >= 0')
+
+
+def _check_used_weights(name: str, weights, used: np.ndarray) -> None:
+    """
+    Custom weights > 0 on the rows/columns with entries: only those reach a
+    denominator, where a 0 weight would score 0.0. Empty ones (e.g. items with
+    no interactions, pop 0 when computed as counts) are never read.
+    """
+    if not isinstance(weights, str) and not np.all(np.asarray(weights)[used] > 0):
+        raise ValueError(f'{name} weights must be > 0 on every row/column with entries')
 
 
 # ---- Prep helpers (numpy, D19) ----
@@ -226,8 +227,8 @@ def _col_sums(values: np.ndarray, indices: np.ndarray, n_cols: int) -> np.ndarra
 
 def _depop_weights(weight_spec, sums, p: float, n: int) -> np.ndarray:
     """Depopularization weights: custom array ** p, 'none' (ones) or row/col sums ** p."""
-    if isinstance(weight_spec, (list, np.ndarray)):
-        return np.power(weight_spec, p, dtype=np.float32)
+    if not isinstance(weight_spec, str):
+        return np.power(np.asarray(weight_spec, dtype=np.float32), p, dtype=np.float32)
     if weight_spec == 'none':
         return np.ones(n, dtype=np.float32)  # 1 ** p == 1
     return np.power(sums(), p, dtype=np.float32)
@@ -253,18 +254,16 @@ def _column_selector(cols):
 def _array_keep_mask(filter_cols, target_cols, n_cols: int) -> np.ndarray:
     """
     Mask of the columns kept by array-mode selectors: the target array (or all columns)
-    minus the filter array. Out-of-range ids are ignored. Only called when at
+    minus the filter array (ids validated in range). Only called when at
     least one selector is an array; a matrix selector here counts as "all".
     """
     if isinstance(target_cols, (list, np.ndarray)) and len(target_cols) != 0:
         mask = np.zeros(n_cols, dtype=bool)
-        idx = np.asarray(target_cols, dtype=np.int64)
-        mask[idx[(idx >= 0) & (idx < n_cols)]] = True
+        mask[np.asarray(target_cols)] = True
     else:
         mask = np.ones(n_cols, dtype=bool)
     if isinstance(filter_cols, (list, np.ndarray)) and len(filter_cols) != 0:
-        idx = np.asarray(filter_cols, dtype=np.int64)
-        mask[idx[(idx >= 0) & (idx < n_cols)]] = False
+        mask[np.asarray(filter_cols)] = False
     return mask
 
 
@@ -374,29 +373,38 @@ def s_plus(
     if matrix2 is None:
         matrix2 = matrix1.T
 
-    # Sorted, unique: output rows come out in row order (CSR straight from the
-    # counts), and a duplicate target would duplicate its row's entries.
-    if target_rows is not None:
-        target_rows = np.unique(np.asarray(target_rows, dtype=np.int32))
-
     validate_s_plus_inputs(
         matrix1=matrix1,
         matrix2=matrix2,
         weight_depop_matrix1=weight_depop_matrix1,
         weight_depop_matrix2=weight_depop_matrix2,
         k=k,
-        target_rows=target_rows,
         filter_cols=filter_cols,
         target_cols=target_cols,
-        verbose=verbose,
         format_output=format_output
     )
 
-    if not a1 > 0:  # powf(0, a1 <= 0) would score cancelled sums; also rejects NaN
-        raise ValueError(f'alpha (a1) must be > 0, got {a1}')
+    # Every weight >= 0 and the input positive (checked in `_s_plus`): every
+    # product, sum and denominator is then > 0, so no score is exactly 0.0
+    # (D6). Negative values would flip signs or make NaN (a negative base to a
+    # fractional power); alpha <= 0 would flatten or invert the ranking.
+    for name, value in (('l1', l1), ('l2', l2), ('l3', l3), ('t1 (tversky alpha)', t1),
+                        ('t2 (tversky beta)', t2), ('c1', c1), ('c2', c2), ('p1 (beta1)', p1),
+                        ('p2 (beta2, rp3beta beta)', p2), ('threshold', threshold),
+                        ('stabilized_shrink', stabilized_shrink), ('bayesian_shrink', bayesian_shrink),
+                        ('additive_shrink', additive_shrink)):
+        _check_scalar(name, value)
+    _check_scalar('a1 (alpha)', a1, strict=True)
 
-    if block_size is not None and block_size < 0:
-        raise ValueError(f'block_size must be None (no blocking), 0 (auto) or > 0, got {block_size}')
+    if block_size is not None and not (_is_int(block_size) and block_size >= 0):
+        raise ValueError(f'block_size must be None (no blocking), 0 (auto) or > 0, got {block_size!r}')
+    if not (_is_int(num_threads) and num_threads >= 0):
+        raise ValueError(f'num_threads must be an integer >= 0, got {num_threads!r}')
+
+    # Sorted, unique: output rows come out in row order (CSR straight from the
+    # counts), and a duplicate target would duplicate its row's entries.
+    if target_rows is not None:
+        target_rows = np.unique(_ids('target_rows', target_rows, matrix1.shape[0])).astype(np.int32)
 
     k = min(k, matrix2.shape[1])  # do not allocate unnecessary space
 
@@ -437,6 +445,11 @@ def _s_plus(
 ):
     m1 = _canonical_csr(matrix1, num_threads)
     m2 = _canonical_csr(matrix2, num_threads)
+    # D6 enforced: positive values only (zeros are gone already). Signed data
+    # is a follow-up; until then a clear error beats wrong top-K rows.
+    for name, m in (('matrix1', m1), ('matrix2', m2)):
+        if not np.all((m.data > 0) & (m.data < np.inf)):
+            raise ValueError(f'{name} values must be finite and > 0 (signed data is not supported)')
     n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]
 
     # Block size: 0 = auto, None = disabled (0 for the kernel), int > 0 = explicit
@@ -466,6 +479,9 @@ def _s_plus(
         Xcosine = np.power(m1_sq + np.float32(additive_shrink), np.float32(c1), dtype=np.float32)
         Ycosine = np.power(m2_sq + np.float32(additive_shrink), np.float32(c2), dtype=np.float32)
     if l3 != 0:
+        _check_used_weights('weight_depop_matrix1 (pop1)', weight_depop_matrix1, np.diff(m1_indptr) > 0)
+        _check_used_weights('weight_depop_matrix2 (pop2)', weight_depop_matrix2,
+                            np.bincount(m2_indices, minlength=n_output_cols) > 0)
         Xdepop = _depop_weights(weight_depop_matrix1, lambda: _row_sums(m1_data, m1_indptr),
                                 np.float32(p1), n_output_rows)
         Ydepop = _depop_weights(weight_depop_matrix2, lambda: _col_sums(m2_data, m2_indices, n_output_cols),

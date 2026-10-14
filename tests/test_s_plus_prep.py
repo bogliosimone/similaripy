@@ -150,17 +150,78 @@ def test_tie_rule_independent_of_blocking(order, block_size, monkeypatch):
         assert sorted(got.tolist()) == sorted(best.tolist()), row
 
 
-def test_coo_blocked_keeps_zero_score_column():
-    # Column 5 is the most popular (permuted to 0) and scores exactly 0.0 for row 0.
-    # The un-permute treated (col 0, val 0.0) as padding and left it at column 0.
-    m2 = np.zeros((3, 8), dtype=np.float32)
-    m2[0, 5], m2[1, 5], m2[2, 5], m2[0, 3] = 1, -1, 1, 1
-    m1 = sp.csr_array(np.array([[1, 1, 0]], dtype=np.float32))
-    kw = {'k': 4, 'format_output': 'coo', 'verbose': False}
-    ref = sim.dot_product(m1, sp.csr_array(m2), block_size=None, **kw)
-    out = sim.dot_product(m1, sp.csr_array(m2), block_size=2, **kw)
-    assert (0, 5, 0.0) in zip(out.row.tolist(), out.col.tolist(), out.data.tolist())
-    assert sorted(zip(out.row, out.col, out.data)) == sorted(zip(ref.row, ref.col, ref.data))
+@pytest.mark.parametrize('bad', [-1.0, np.nan, np.inf])
+@pytest.mark.parametrize('side', ['matrix1', 'matrix2'])
+def test_rejects_non_positive_values(bad, side):
+    # D6 enforced: signed or non-finite input would break the top-K (NaN, cancelled
+    # sums scoring 0.0); rejected until signed data has its own design.
+    m = _m(60, 40)
+    bad_m = m.copy()
+    bad_m.data[3] = bad
+    m1, m2 = (bad_m, m.T) if side == 'matrix1' else (m, bad_m.T)
+    with pytest.raises(ValueError, match=f'{side} values must be finite and > 0'):
+        sim.dot_product(m1, m2, k=5, verbose=False)
+    with pytest.raises(ValueError, match='finite and > 0'):
+        sim.p3alpha(bad_m, k=5, verbose=False)  # checked after the wrapper's normalization
+
+
+_BAD_PARAMS = [
+    ('dot_product', {'k': 0}, 'k must be'),
+    ('dot_product', {'k': 2.5}, 'k must be'),
+    ('dot_product', {'num_threads': -1}, 'num_threads'),
+    ('dot_product', {'block_size': 1.5}, 'block_size'),
+    ('dot_product', {'threshold': -0.1}, 'threshold'),
+    ('dot_product', {'threshold': np.nan}, 'threshold'),
+    ('dot_product', {'target_rows': [0, 60]}, 'target_rows ids'),
+    ('dot_product', {'target_rows': [0.0, 1.5]}, 'integer ids'),
+    ('dot_product', {'filter_cols': [3, 60]}, 'filter_cols ids'),
+    ('dot_product', {'target_cols': [-1]}, 'target_cols ids'),
+    ('cosine', {'shrink': -1}, 'shrink must be'),
+    ('cosine', {'shrink_type': 'other'}, 'shrink_type'),
+    ('dot_product', {'shrink': 5, 'shrink_type': 'stabilized'}, 'only rescales'),
+    ('p3alpha', {'shrink': 5, 'shrink_type': 'stabilized'}, 'only rescales'),
+    ('jaccard', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
+    ('rp3beta', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
+    ('asymmetric_cosine', {'alpha': 1.5}, 'alpha must be in'),
+    ('tversky', {'alpha': -0.5}, 'tversky alpha'),
+    ('p3alpha', {'alpha': 0}, 'alpha must be finite and > 0'),
+    ('rp3beta', {'alpha': -1}, 'alpha must be finite and > 0'),
+    ('rp3beta', {'beta': -0.5}, 'rp3beta beta'),
+    ('s_plus', {'l2': -1}, 'l2'),
+    ('s_plus', {'c1': np.inf}, 'c1'),
+    ('s_plus', {'beta1': -1, 'l3': 1}, 'beta1'),
+    ('s_plus', {'pop2': np.ones(5)}, 'array of length 60'),
+    ('s_plus', {'pop2': 'max'}, 'pop2'),
+    ('s_plus', {'pop1': np.zeros(60), 'l3': 1}, 'on every row/column with entries'),
+    ('s_plus', {'pop2': -np.ones(60), 'l3': 1}, 'finite and >= 0'),
+]
+
+
+@pytest.mark.parametrize('name, kwargs, match', _BAD_PARAMS)
+def test_rejects_bad_parameters(name, kwargs, match):
+    with pytest.raises((ValueError, TypeError), match=match):
+        getattr(sim, name)(_m(60, 60), verbose=False, **kwargs)
+
+
+def test_zero_weight_on_empty_columns_accepted():
+    # pop as interaction counts is 0 for items nobody touched: never scored, so allowed.
+    m = _m(60, 60)
+    m = sp.csr_array(m.multiply((np.arange(60) != 7).astype(np.float32)))  # column 7 empty
+    m.eliminate_zeros()
+    counts = np.diff(m.tocsc().indptr).astype(np.float64)
+    assert counts[7] == 0
+    ones = np.where(counts == 0, 1.0, counts)
+    kw = {'l1': 0, 'l2': 0, 'l3': 1, 'beta2': 0.5, 'k': 10, 'verbose': False}
+    _same(sim.s_plus(m.T, m, pop2=counts, **kw), sim.s_plus(m.T, m, pop2=ones, **kw))
+
+
+def test_accepts_numpy_scalars_and_sequences():
+    # Validation must not reject numpy types or tuples the old code took.
+    m = _m(60, 60)
+    ref = sim.s_plus(m, l3=1, pop1=list(np.arange(1, 61)), k=np.int64(5), verbose=False)
+    out = sim.s_plus(m, l3=1, pop1=tuple(np.arange(1, 61)), k=5, verbose=np.True_,
+                     target_rows=np.arange(60, dtype=np.int64), num_threads=np.int32(0))
+    _same(out, ref)
 
 
 def _with_duplicates(m, seed=0):

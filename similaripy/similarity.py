@@ -27,12 +27,13 @@ def dot_product(
     Compute dot product similarity between rows of matrix1 and columns of matrix2.
 
     Args:
-        matrix1: Input sparse matrix (e.g., user-item or item-user).
+        matrix1: Input sparse matrix (e.g., user-item or item-user); values finite and > 0.
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row.
-        shrink: Shrinkage value that prevents instability when normalizations are small.
+        shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
+            A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
-        threshold: Minimum similarity value to retain.
+        threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before similarity computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -46,7 +47,8 @@ def dot_product(
         A sparse matrix of shape (n_rows, n_cols) in the specified format,
         containing the top-k dot product similarities.
     """
-    stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
+    stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
+        shrink, shrink_type, 'dot_product', cosine=False, denominator=False)
     return _s_plus(
         matrix1, matrix2=matrix2,
         k=k,
@@ -85,12 +87,13 @@ def cosine(
     Compute cosine similarity between sparse vectors.
 
     Args:
-        matrix1: Input sparse matrix.
+        matrix1: Input sparse matrix; values finite and > 0.
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value that prevents instability when normalizations are small.
+        shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
+            A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
-        threshold: Minimum similarity value to retain.
+        threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -103,7 +106,8 @@ def cosine(
     Returns:
         A sparse matrix of top-k cosine similarities in the specified format.
     """
-    stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
+    stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
+        shrink, shrink_type, 'cosine', cosine=True, denominator=True)
     return _s_plus(
         matrix1, matrix2=matrix2,
         l2=1,
@@ -145,14 +149,15 @@ def asymmetric_cosine(
     Compute asymmetric cosine similarity.
 
     Args:
-        matrix1: Input sparse matrix (e.g., user-item or item-user).
+        matrix1: Input sparse matrix (e.g., user-item or item-user); values finite and > 0.
         matrix2: Optional second matrix. If None, uses matrix1.T.
-        alpha: Controls asymmetry in cosine weighting.
+        alpha: Controls asymmetry in cosine weighting, in [0, 1].
                `alpha=1` weighs only matrix1; `alpha=0.5` is symmetric.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value that prevents instability when normalizations are small.
+        shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
+            A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
-        threshold: Minimum similarity value to retain.
+        threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -166,7 +171,10 @@ def asymmetric_cosine(
         A sparse matrix of shape (n_rows, n_cols) containing the top-k
         asymmetric cosine similarities in the specified format.
     """
-    stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
+    stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
+        shrink, shrink_type, 'asymmetric_cosine', cosine=True, denominator=True)
+    if not 0 <= alpha <= 1:  # c2 = 1 - alpha must stay >= 0; also rejects NaN
+        raise ValueError(f'alpha must be in [0, 1], got {alpha}')
     return _s_plus(
         matrix1, matrix2=matrix2,
         l2=1,
@@ -209,14 +217,15 @@ def tversky(
     Compute Tversky similarity between sparse vectors.
 
     Args:
-        matrix1: Input sparse matrix.
+        matrix1: Input sparse matrix; values finite and > 0.
         matrix2: Optional second matrix. If None, uses matrix1.T.
-        alpha: Tversky weight for elements unique to matrix1.
-        beta: Tversky weight for elements unique to matrix2.
+        alpha: Tversky weight for elements unique to matrix1 (>= 0).
+        beta: Tversky weight for elements unique to matrix2 (>= 0).
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value that prevents instability when normalizations are small.
+        shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
+            A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
-        threshold: Minimum similarity value to retain.
+        threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -229,7 +238,8 @@ def tversky(
     Returns:
         A sparse matrix of top-k Tversky similarities in the specified format.
     """
-    stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
+    stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
+        shrink, shrink_type, 'tversky', cosine=False, denominator=True)
     return _s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
@@ -270,12 +280,13 @@ def jaccard(
     Compute Jaccard similarity (intersection over union).
 
     Args:
-        matrix1: Input sparse matrix.
+        matrix1: Input sparse matrix; values finite and > 0.
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value that prevents instability when normalizations are small.
+        shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
+            A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
-        threshold: Minimum similarity value to retain.
+        threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -288,7 +299,8 @@ def jaccard(
     Returns:
         A sparse matrix of top-k Jaccard similarities in the specified format.
     """
-    stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
+    stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
+        shrink, shrink_type, 'jaccard', cosine=False, denominator=True)
     return _s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
@@ -329,12 +341,13 @@ def dice(
     Compute Dice similarity (harmonic mean of overlap and size).
 
     Args:
-        matrix1: Input sparse matrix.
+        matrix1: Input sparse matrix; values finite and > 0.
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value that prevents instability when normalizations are small.
+        shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
+            A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
-        threshold: Minimum similarity value to retain.
+        threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -347,7 +360,8 @@ def dice(
     Returns:
         A sparse matrix of top-k Dice similarities in the specified format.
     """
-    stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
+    stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
+        shrink, shrink_type, 'dice', cosine=False, denominator=True)
     return _s_plus(
         matrix1, matrix2=matrix2,
         l1=1,
@@ -389,13 +403,14 @@ def p3alpha(
     Compute P3alpha similarity using a normalized 3-step random walk.
 
     Args:
-        matrix1: Input sparse matrix.
+        matrix1: Input sparse matrix; values finite and > 0.
         matrix2: Optional second matrix. If None, uses matrix1.T.
-        alpha: Exponent for transition probabilities to control popularity effect.
+        alpha: Exponent for transition probabilities to control popularity effect (> 0).
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value that prevents instability when normalizations are small.
+        shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
+            A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
-        threshold: Minimum similarity value to retain.
+        threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -408,6 +423,8 @@ def p3alpha(
     Returns:
         A sparse matrix of top-k P3alpha similarities in the specified format.
     """
+    if not (np.isfinite(alpha) and alpha > 0):  # 0 makes every probability 1, < 0 inverts them
+        raise ValueError(f'alpha must be finite and > 0, got {alpha}')
     if matrix2 is None:
         matrix2 = matrix1.T
     if binary:  # before the normalization, which the kernel's binary mode would erase
@@ -416,7 +433,8 @@ def p3alpha(
     matrix1.data = np.power(matrix1.data, alpha)
     matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
     matrix2.data = np.power(matrix2.data, alpha)
-    stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
+    stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
+        shrink, shrink_type, 'p3alpha', cosine=False, denominator=False)
     return _s_plus(
         matrix1=matrix1, matrix2=matrix2,
         k=k,
@@ -456,14 +474,15 @@ def rp3beta(
     Compute RP3beta similarity: P3alpha with popularity penalization.
 
     Args:
-        matrix1: Input sparse matrix.
+        matrix1: Input sparse matrix; values finite and > 0.
         matrix2: Optional second matrix. If None, uses matrix1.T.
-        alpha: Exponent for transition probabilities.
-        beta: Exponent to penalize popularity based on column sums.
+        alpha: Exponent for transition probabilities (> 0).
+        beta: Exponent to penalize popularity based on column sums (>= 0).
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value that prevents instability when normalizations are small.
+        shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
+            A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
-        threshold: Minimum similarity value to retain.
+        threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -476,6 +495,8 @@ def rp3beta(
     Returns:
         A sparse matrix of top-k RP3beta similarities in the specified format.
     """
+    if not (np.isfinite(alpha) and alpha > 0):  # 0 makes every probability 1, < 0 inverts them
+        raise ValueError(f'alpha must be finite and > 0, got {alpha}')
     if matrix2 is None:
         matrix2 = matrix1.T
     if binary:  # before the normalization, which the kernel's binary mode would erase
@@ -485,7 +506,8 @@ def rp3beta(
     matrix1.data = np.power(matrix1.data, alpha)
     matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
     matrix2.data = np.power(matrix2.data, alpha)
-    stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
+    stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
+        shrink, shrink_type, 'rp3beta', cosine=False, denominator=True)
     return _s_plus(
         matrix1=matrix1, matrix2=matrix2,
         weight_depop_matrix2=pop_m2,
@@ -538,7 +560,7 @@ def s_plus(
     Combines Tversky and Cosine normalizations with RP3Beta-style depopularization, fully controlled by tunable weights
 
     Args:
-        matrix1: Input sparse matrix.
+        matrix1: Input sparse matrix; values finite and > 0.
         matrix2: Optional second matrix. If None, uses matrix1.T.
         l1: Tversky normalization strength.
         l2: Cosine normalization strength.
@@ -547,16 +569,19 @@ def s_plus(
         t2: Tversky beta for matrix2.
         c1: Cosine exponent coefficient for matrix1.
         c2: Cosine exponent coefficient for matrix2.
-        pop1: Popularity weights for matrix1. 'none', 'sum', or custom array.
-        pop2: Popularity weights for matrix2. 'none', 'sum', or custom array.
+        pop1: Popularity weights for matrix1. 'none', 'sum', or custom array (finite, >= 0;
+            > 0 on rows/columns with entries).
+        pop2: Popularity weights for matrix2. 'none', 'sum', or custom array (finite, >= 0;
+            > 0 on rows/columns with entries).
         alpha: Power applied to the raw similarity value before normalizations (also without
             them); must be > 0.
-        beta1: Popularity penalization coefficient for matrix1 items.
-        beta2: Popularity penalization coefficient for matrix2 items.
+        beta1: Popularity penalization coefficient for matrix1 items (>= 0).
+        beta2: Popularity penalization coefficient for matrix2 items (>= 0).
         k: Number of top-k items per row to keep.
-        shrink: Shrinkage value that prevents instability when normalizations are small.
+        shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
+            A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
-        threshold: Minimum similarity value to retain.
+        threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
@@ -569,7 +594,8 @@ def s_plus(
     Returns:
         A sparse matrix of top-k s_plus similarities in the specified format.
     """
-    stabilized_shrink, bayesian_shrink, additive_shrink = __get_shrink_values__(shrink, shrink_type)
+    stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
+        shrink, shrink_type, 's_plus', cosine=l2 != 0, denominator=l1 != 0 or l2 != 0 or l3 != 0)
     return _s_plus(
         matrix1, matrix2=matrix2,
         l1=l1, l2=l2, l3=l3,
@@ -596,26 +622,21 @@ def s_plus(
     )
 
 
-def __get_shrink_values__(shrink: float, shrink_type: str) -> tuple[float, float, float]:
+def _shrink_values(shrink: float, shrink_type: str, name: str, cosine: bool,
+                   denominator: bool) -> tuple[float, float, float]:
     """
-    Convert shrink parameter to specific shrink type values.
-
-    Args:
-        shrink: Shrinkage value to apply.
-        shrink_type: Type of shrinkage ('stabilized', 'bayesian', or 'additive').
-
-    Returns:
-        Tuple of (stabilized_shrink, bayesian_shrink, additive_shrink).
+    (stabilized, bayesian, additive) shrink for a similarity. Rejects a shrink
+    that would do nothing: additive is added to the cosine norms only, and
+    stabilized without a normalization term divides every score by the same
+    constant (ranking unchanged).
     """
-    stabilized_shrink = 0.0
-    bayesian_shrink = 0.0
-    additive_shrink = 0.0
-    if shrink_type == 'stabilized':
-        stabilized_shrink = shrink
-    elif shrink_type == 'bayesian':
-        bayesian_shrink = shrink
-    elif shrink_type == 'additive':
-        additive_shrink = shrink
-    else:
+    if shrink_type not in ('stabilized', 'bayesian', 'additive'):
         raise ValueError("shrink_type must be one of 'stabilized', 'bayesian', or 'additive'")
-    return stabilized_shrink, bayesian_shrink, additive_shrink
+    if not (np.isfinite(shrink) and shrink >= 0):
+        raise ValueError(f'shrink must be finite and >= 0, got {shrink}')
+    if shrink != 0 and shrink_type == 'additive' and not cosine:
+        raise ValueError(f"{name}: additive shrink only applies to a cosine term; use 'stabilized' or 'bayesian'")
+    if shrink != 0 and shrink_type == 'stabilized' and not denominator:
+        raise ValueError(f"{name}: stabilized shrink without a normalization only rescales the scores "
+                         "(same ranking); use 'bayesian'")
+    return tuple(shrink if shrink_type == t else 0.0 for t in ('stabilized', 'bayesian', 'additive'))
