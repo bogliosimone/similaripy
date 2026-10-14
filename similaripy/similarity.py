@@ -1,5 +1,5 @@
 from ._s_plus import s_plus as _s_plus
-from .normalization import normalize as _normalize
+from .normalization import binarize as _binarize, normalize as _normalize
 import numpy as np
 
 from typing import Optional, Union, Literal
@@ -410,6 +410,8 @@ def p3alpha(
     """
     if matrix2 is None:
         matrix2 = matrix1.T
+    if binary:  # before the normalization, which the kernel's binary mode would erase
+        matrix1, matrix2 = _binarize(matrix1), _binarize(matrix2)
     matrix1 = _normalize(matrix1, norm='l1', axis=1, inplace=False)
     matrix1.data = np.power(matrix1.data, alpha)
     matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
@@ -422,7 +424,6 @@ def p3alpha(
         bayesian_shrink=bayesian_shrink,
         additive_shrink=additive_shrink,
         threshold=threshold,
-        binary=binary,
         target_rows=target_rows,
         target_cols=target_cols,
         filter_cols=filter_cols,
@@ -477,7 +478,9 @@ def rp3beta(
     """
     if matrix2 is None:
         matrix2 = matrix1.T
-    pop_m2 = np.asarray(matrix2.sum(axis=0)).ravel()
+    if binary:  # before the normalization, which the kernel's binary mode would erase
+        matrix1, matrix2 = _binarize(matrix1), _binarize(matrix2)
+    pop_m2 = np.asarray(matrix2.sum(axis=0)).ravel()  # item degree when binary
     matrix1 = _normalize(matrix1, norm='l1', axis=1, inplace=False)
     matrix1.data = np.power(matrix1.data, alpha)
     matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
@@ -493,7 +496,6 @@ def rp3beta(
         bayesian_shrink=bayesian_shrink,
         additive_shrink=additive_shrink,
         threshold=threshold,
-        binary=binary,
         target_rows=target_rows,
         target_cols=target_cols,
         filter_cols=filter_cols,
