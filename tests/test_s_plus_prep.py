@@ -117,6 +117,29 @@ def test_no_blocking_matches_blocked():
     _same(sim.cosine(m.T, block_size=None, **kw), sim.cosine(m.T, block_size=16, **kw))
 
 
+@pytest.mark.parametrize('order', ['popularity', 'original'])
+@pytest.mark.parametrize('block_size', [None, 8, 64])
+def test_tie_rule_independent_of_blocking(order, block_size, monkeypatch):
+    # F4: binary dot scores are small integers, so ties at the k-th place are
+    # everywhere; the kept columns must not depend on block size or push order.
+    # Ties go to the more popular column (m2 column count), then the lower id;
+    # with the 'original' column order, to the lower id.
+    from similaripy import _s_plus
+    monkeypatch.setattr(_s_plus, '_COLUMN_ORDER', order)
+    m = _m(60, 300)
+    k = 10
+    b = sim.normalization.binarize(m)
+    xy = (b.T @ b).toarray()
+    pop = np.diff(b.tocsc().indptr) if order == 'popularity' else np.zeros(m.shape[1])
+    out = sim.dot_product(m.T, k=k, binary=True, block_size=block_size, verbose=False).tocsr()
+    for row in range(xy.shape[0]):
+        cols = np.flatnonzero(xy[row])
+        best = cols[np.lexsort((cols, -pop[cols], -xy[row, cols]))][:k]
+        got = out.indices[out.indptr[row]:out.indptr[row + 1]]
+        got = got[out.data[out.indptr[row]:out.indptr[row + 1]] != 0]
+        assert sorted(got.tolist()) == sorted(best.tolist()), row
+
+
 def test_coo_blocked_keeps_zero_score_column():
     # Column 5 is the most popular (permuted to 0) and scores exactly 0.0 for row 0.
     # The un-permute treated (col 0, val 0.0) as padding and left it at column 0.

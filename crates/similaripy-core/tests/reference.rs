@@ -340,8 +340,16 @@ fn rejects_selection_wider_than_m2() {
     assert!(compute(&inp, 1, 0, out, &|| {}).is_err());
 }
 
-/// Top-`n` of `m1 · m2` (dot product, every column kept), each row sorted by column.
-fn all_scores(m1: &Csr, m2: &Csr, m: usize, n: usize, r: usize, block: usize) -> Vec<(i32, u32)> {
+/// Top-`k` of `m1 · m2` (dot product), each row sorted by column.
+fn top_scores(
+    m1: &Csr,
+    m2: &Csr,
+    m: usize,
+    n: usize,
+    r: usize,
+    k: usize,
+    block: usize,
+) -> Vec<(i32, u32)> {
     let targets: Vec<i32> = (0..r as i32).collect();
     let inp = Inputs {
         m1: CsrView::new("m1", &m1.indptr, &m1.indices, &m1.data, m).unwrap(),
@@ -352,19 +360,19 @@ fn all_scores(m1: &Csr, m2: &Csr, m: usize, n: usize, r: usize, block: usize) ->
         filter: None,
         target_cols: None,
     };
-    let (mut rows, mut cols, mut vals) = (vec![0; r * n], vec![-1; r * n], vec![0.0; r * n]);
+    let (mut rows, mut cols, mut vals) = (vec![0; r * k], vec![-1; r * k], vec![0.0; r * k]);
     let out = Output {
         rows: &mut rows,
         cols: &mut cols,
         values: &mut vals,
     };
-    compute(&inp, n, block, out, &|| {}).unwrap();
+    compute(&inp, k, block, out, &|| {}).unwrap();
     let mut got: Vec<(i32, u32)> = cols
         .iter()
         .zip(&vals)
         .map(|(&c, &v)| (c, v.to_bits()))
         .collect();
-    for row in got.chunks_mut(n) {
+    for row in got.chunks_mut(k) {
         row.sort_unstable();
     }
     got
@@ -385,8 +393,28 @@ proptest! {
         let (a, b) = (to_csr(&m1), to_csr(&m2));
         let m = m2.len();
         prop_assert_eq!(
-            all_scores(&a, &b, m, n, m1.len(), block),
-            all_scores(&a, &b, m, n, m1.len(), 0)
+            top_scores(&a, &b, m, n, m1.len(), n, block),
+            top_scores(&a, &b, m, n, m1.len(), n, 0)
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 1000 }))]
+    // Small integers make ties common; with k < n the tie rule (lower column
+    // wins) decides which tied columns stay, so blocked == single-block only
+    // if the result is independent of the order columns reach the heap (F4).
+    #[test]
+    fn blocked_matches_single_block_with_ties(
+        (m1, m2, n, k, block) in (1usize..6, 1usize..8, 2usize..40).prop_flat_map(|(r, m, n)| {
+            (dense(r, m), dense(m, n), Just(n), 1..n, 1..n)
+        })
+    ) {
+        let (a, b) = (to_csr(&m1), to_csr(&m2));
+        let m = m2.len();
+        prop_assert_eq!(
+            top_scores(&a, &b, m, n, m1.len(), k, block),
+            top_scores(&a, &b, m, n, m1.len(), k, 0)
         );
     }
 }
