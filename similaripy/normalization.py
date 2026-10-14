@@ -111,7 +111,8 @@ def binarize(
     inplace: bool = False,
 ) -> sps.csr_array:
     """
-    Set every non-zero entry to 1.0 and drop explicit zeros (set semantics).
+    Set every non-zero entry to 1.0 (set semantics): duplicates are summed
+    first, then explicit zeros dropped.
 
     Same values as `binary=True` in the similarity functions, as a separate
     step: binarize only one of the two matrices, or binarize before another
@@ -125,6 +126,7 @@ def binarize(
         Binarized CSR matrix.
     """
     X = _prepare_csr(X, 1, inplace)
+    X.sum_duplicates()
     X.eliminate_zeros()
     X.data[:] = 1
     return X

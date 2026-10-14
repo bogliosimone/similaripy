@@ -113,6 +113,17 @@ def test_bm25():
     print("✅ bm25 correctness passed")
 
 
+def test_binarize_sums_duplicates():
+    # Entry (0, 1) stored twice, (1, 2) as +1 and -1: summed first, so one 1.0 and a dropped zero
+    X = sp.csr_array((np.array([1, 1, 1, -1, 2], dtype=np.float32), np.array([1, 1, 2, 2, 0]),
+                      np.array([0, 2, 4, 5])), shape=(3, 3))
+    B = norm.binarize(X)
+    np.testing.assert_array_equal(B.toarray(), [[0, 1, 0], [0, 0, 0], [1, 0, 0]])
+    import similaripy as sim
+    np.testing.assert_array_equal(sim.dot_product(B, k=3, verbose=False).toarray(),
+                                  sim.dot_product(X, k=3, binary=True, verbose=False).toarray())
+
+
 if __name__ == "__main__":
         test_binarize()
         test_normalize_l1()

@@ -643,6 +643,17 @@ def test_s_plus_rejects_non_positive_alpha(alpha):
     with pytest.raises(ValueError, match='alpha'):
         sim.s_plus(generate_random_matrix(), alpha=alpha, verbose=VERBOSE)
 
+@pytest.mark.parametrize('name', ['p3alpha', 'rp3beta'])
+def test_binary_keeps_random_walk_normalization(name):
+    # F2: binary=True was applied after the l1 normalization and erased it
+    from similaripy.normalization import binarize
+    m = generate_random_matrix(80, 30, density=0.1).tocsr()
+    f = getattr(sim, name)
+    out = f(m, k=10, binary=True, verbose=VERBOSE)
+    np.testing.assert_allclose(out.toarray(), f(binarize(m), k=10, verbose=VERBOSE).toarray(), rtol=1e-6)
+    assert not np.allclose(out.toarray(), sim.dot_product(m, k=10, binary=True, verbose=VERBOSE).toarray())
+
+
 
 if __name__ == "__main__":
     test_similarity_topk()
