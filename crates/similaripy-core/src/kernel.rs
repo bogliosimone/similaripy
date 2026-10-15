@@ -257,7 +257,33 @@ fn validate(inp: &Inputs, k: usize) -> Result<usize, Error> {
     Ok(n_slots)
 }
 
+/// Scoring modes for `Params::score`, chosen once per drain (`Params::mode`) so
+/// the per-column weight tests drop out of the common workloads. A `u8`: enum
+/// const generics aren't stable.
+/// Raw `xy_pow`: no denominator term, no shrink (dot product).
+const DOT: u8 = 0;
+/// `l2` only, stabilized shrink allowed (cosine, asymmetric cosine).
+const COSINE: u8 = 1;
+/// Any weights: the general formula, and the reference the others match bit for bit.
+const FULL: u8 = 2;
+
 impl Params {
+    /// `DOT` without any term or shrink, `COSINE` with `l2` and neither `l1`,
+    /// `l3` nor a bayesian shrink, `FULL` otherwise. A bayesian shrink is `FULL`
+    /// on purpose: in the small `COSINE` loop LLVM if-converts its test and runs
+    /// the second fdiv on every column, even with the shrink at 0;
+    /// in `DOT` it would cost plain dot a branch per column.
+    fn mode(&self) -> u8 {
+        if !self.normalizes() {
+            DOT
+        } else if self.l1 == 0.0 && self.l3 == 0.0 && self.bayesian_shrink == 0.0 && self.l2 != 0.0
+        {
+            COSINE
+        } else {
+            FULL
+        }
+    }
+
     fn normalizes(&self) -> bool {
         self.l1 != 0.0
             || self.l2 != 0.0
@@ -273,9 +299,29 @@ impl Params {
     /// # Safety
     /// `row` and `col` are in range of every norm pair whose weight is non-zero.
     #[inline(always)]
-    /// `POW` must equal `a1 != 1.0` (see `Scratch::drain`).
-    unsafe fn score<const POW: bool>(&self, n: &Norms, row: usize, col: usize, xy: f32) -> f32 {
+    /// `POW` must equal `a1 != 1.0` (see `Scratch::drain`), `MODE` must be
+    /// `self.mode()` or `FULL`. `DOT` and `COSINE` give the same bits as `FULL`:
+    /// they only skip terms that are +0.0 (which flips a -0.0 den to +0.0, both
+    /// take den == 0).
+    unsafe fn score<const POW: bool, const MODE: u8>(
+        &self,
+        n: &Norms,
+        row: usize,
+        col: usize,
+        xy: f32,
+    ) -> f32 {
         let xy_pow = if POW { xy.powf(self.a1) } else { xy };
+        if MODE == DOT {
+            return xy_pow;
+        }
+        if MODE == COSINE {
+            // SAFETY: caller contract, checked in `validate`.
+            let cs =
+                self.l2 * unsafe { n.x_cosine.get_unchecked(row) * n.y_cosine.get_unchecked(col) };
+            let den = cs + self.stabilized_shrink;
+            // den == 0 with l2 != 0: 0, as FULL.
+            return if den != 0.0 { xy_pow / den } else { 0.0 };
+        }
         if !self.normalizes() {
             return xy_pow;
         }
@@ -503,24 +549,36 @@ impl Scratch {
     ///
     /// # Safety
     /// `t` passed `validate`; every touched column + `offset` is a valid output column.
-    #[inline]
+    // Out of line on purpose: inlined into the row functions, the drain loops ran
+    // out of registers and reloaded the norm pointers from the stack per column.
+    // One call per drain is noise.
+    #[inline(never)]
     unsafe fn drain(&mut self, inp: &Inputs, t: usize, offset: usize) {
         // Branch once per drain: inside the loop LLVM speculates `powf` (a pure
-        // intrinsic) and calls it for every column even when a1 == 1.
+        // intrinsic) and calls it for every column even when a1 == 1. The mode
+        // takes the weight tests out of the loop for dot and cosine.
         // SAFETY: caller contract, forwarded.
         unsafe {
-            if inp.params.a1 != 1.0 {
-                self.drain_impl::<true>(inp, t, offset)
-            } else {
-                self.drain_impl::<false>(inp, t, offset)
+            match (inp.params.a1 != 1.0, inp.params.mode()) {
+                (true, DOT) => self.drain_impl::<true, DOT>(inp, t, offset),
+                (true, COSINE) => self.drain_impl::<true, COSINE>(inp, t, offset),
+                (true, _) => self.drain_impl::<true, FULL>(inp, t, offset),
+                (false, DOT) => self.drain_impl::<false, DOT>(inp, t, offset),
+                (false, COSINE) => self.drain_impl::<false, COSINE>(inp, t, offset),
+                (false, _) => self.drain_impl::<false, FULL>(inp, t, offset),
             }
         }
     }
 
     /// # Safety
-    /// As `drain`.
+    /// As `drain`; `MODE` = `inp.params.mode()`.
     #[inline(always)]
-    unsafe fn drain_impl<const POW: bool>(&mut self, inp: &Inputs, t: usize, offset: usize) {
+    unsafe fn drain_impl<const POW: bool, const MODE: u8>(
+        &mut self,
+        inp: &Inputs,
+        t: usize,
+        offset: usize,
+    ) {
         let p = &inp.params;
         for &local in &self.touched {
             // SAFETY: touched columns are < sums.len().
@@ -535,7 +593,7 @@ impl Scratch {
             };
             if keep {
                 // SAFETY: t and col in range of the active norms (validate).
-                let val = unsafe { p.score::<POW>(&inp.norms, t, col, xy) };
+                let val = unsafe { p.score::<POW, MODE>(&inp.norms, t, col, xy) };
                 if val >= p.threshold {
                     self.topk.push(col_i, val);
                 }
@@ -685,5 +743,72 @@ mod tests {
         }
         assert_eq!(touched, [1, 3, 2, 1]);
         assert_eq!(sums, [0.0, 5.0, 1.0, 1.0]);
+    }
+
+    /// `score` in `p.mode()` vs `FULL`, as bits.
+    fn mode_and_full_bits<const POW: bool>(p: &Params, n: &Norms, xy: f32) -> (u32, u32) {
+        // SAFETY: row 0 and col 0 exist in every norm slice.
+        unsafe {
+            let m = match p.mode() {
+                DOT => p.score::<POW, DOT>(n, 0, 0, xy),
+                COSINE => p.score::<POW, COSINE>(n, 0, 0, xy),
+                _ => p.score::<POW, FULL>(n, 0, 0, xy),
+            };
+            (m.to_bits(), p.score::<POW, FULL>(n, 0, 0, xy).to_bits())
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
+        // Bit-identical output across modes (R2): the mode only skips +0.0 terms.
+        #[test]
+        fn score_mode_matches_full_bitwise(
+            w in proptest::array::uniform5(prop_oneof![Just(0.0f32), Just(-0.0f32), 0.1f32..2.0]),
+            t in proptest::array::uniform2(0.0f32..1.0),
+            pow in any::<bool>(),
+            norms in proptest::array::uniform6(prop_oneof![Just(0.0f32), 0.1f32..3.0]),
+            xy in prop_oneof![Just(0.0f32), -5.0f32..5.0],
+        ) {
+            // Not under Miri: it adds random error to powf (and random NaN bits),
+            // so two equal calls can differ there. Natively powf is deterministic.
+            let pow = pow && !cfg!(miri);
+            let p = Params {
+                a1: if pow { 0.5 } else { 1.0 },
+                l1: w[0], l2: w[1], l3: w[2], t1: t[0], t2: t[1],
+                stabilized_shrink: w[3], bayesian_shrink: w[4],
+                threshold: 0.0,
+            };
+            let v: Vec<[f32; 1]> = norms.iter().map(|&x| [x]).collect();
+            let n = Norms {
+                x_tversky: &v[0], y_tversky: &v[1], x_cosine: &v[2],
+                y_cosine: &v[3], x_depop: &v[4], y_depop: &v[5],
+            };
+            let (m, f) = if pow {
+                mode_and_full_bits::<true>(&p, &n, xy)
+            } else {
+                mode_and_full_bits::<false>(&p, &n, xy)
+            };
+            prop_assert_eq!(m, f, "mode {} xy {}", p.mode(), xy);
+        }
+    }
+
+    #[test]
+    fn mode_per_similarity() {
+        let p = |l1: f32, l2: f32, l3: f32, ss: f32, bs: f32| Params {
+            l1,
+            l2,
+            l3,
+            stabilized_shrink: ss,
+            bayesian_shrink: bs,
+            ..Params::default()
+        };
+        assert_eq!(p(0.0, 0.0, 0.0, 0.0, 0.0).mode(), DOT); // dot product
+        assert_eq!(p(0.0, 1.0, 0.0, 0.0, 0.0).mode(), COSINE); // cosine, asymmetric cosine
+        assert_eq!(p(0.0, 1.0, 0.0, 2.0, 0.0).mode(), COSINE); // + stabilized shrink
+        assert_eq!(p(0.0, 1.0, 0.0, 0.0, 2.0).mode(), FULL); // + bayesian shrink
+        assert_eq!(p(0.0, 0.0, 1.0, 0.0, 0.0).mode(), FULL); // rp3beta
+        assert_eq!(p(1.0, 0.0, 0.0, 0.0, 0.0).mode(), FULL); // tversky, jaccard, dice
+        assert_eq!(p(0.0, 0.0, 0.0, 0.0, 2.0).mode(), FULL); // dot + bayesian: FULL on purpose
+        assert_eq!(p(-0.0, 1.0, -0.0, 0.0, 0.0).mode(), COSINE); // -0.0 weights = 0, as FULL's tests
     }
 }
