@@ -277,20 +277,24 @@ python tests/benchmarks/run_benchmarks.py --dataset movielens --output-dir my_re
 
 ## Codegen-sensitive hot loops (Rust core)
 
-Three speedups in `crates/similaripy-core/src/kernel.rs` depend on what LLVM emits, and no unit test can see them:
+These speedups in `crates/similaripy-core/src/kernel.rs` and `topk.rs` depend on what LLVM emits, and no unit test can see them (the output stays the same either way):
 
 - `lower_bound` must stay **branchy**. LLVM likes to turn it into a branchless `csel`/`cmov` loop, which serializes cache misses once the data no longer fits in cache. An empty `asm!` barrier prevents that today. With the per-row block cursor, it only finds where a block ends inside the rest of an m2 row.
 - `accumulate` must keep `sums` and the `touched` cursor in registers. As a `&mut self` method, LLVM reloaded them from the stack on every element.
 - `accumulate`'s first-touch push must stay **branchless**: always write the slot, then `n += (old == 0.0)`. On Yambda ~39% of elements are first touches, so a branch there is mispredicted all the time; replacing it cut kernel time by ~20% on Yambda 50M. Check for `cinc` (aarch64) / `cmpeqss` + `and` + `add` (x86_64) and no branch on the old sum.
+- The heap's sift-down (`PeekMut` drop) must stay **out of line** (a `bl`/`call` in every drain copy). When a change got it inlined into the drain loops, no run showed a gain and some were up to ~8% slower (likely register pressure in the hottest loop); replacements are only ~4% of scored columns, so the call is cheap.
+- `drain` branches once per drain on `a1 != 1.0` (`POW`) and on the scoring mode (`DOT` / `COSINE` / `FULL`), so the loop has no `powf` call and no per-column weight tests for dot and cosine. Inside the loop LLVM speculates `powf` and calls it on every column; a bayesian-shrink test in the small `COSINE` loop gets if-converted into a second `fdiv` on every column, which is why any bayesian shrink goes to `FULL`. Check: no `bl powf` in the a1 == 1 copies, one `fdiv`/`divss` in the cosine copy.
+- `Scratch::drain` is `#[inline(never)]` and its loop is a free function over slices and locals (`drain_impl`), like `accumulate`: inlined into the row functions, or as a `&mut self` method, LLVM reloaded the `sums` pointer, the row's norm and the heap's length/root on every column. The row's norm terms (`RowTerms`) and the lowest acceptable score (`TopK::floor`) live in registers. A cosine column rejected below the floor is ~18 instructions with 3 loads (touched index, sum, column norm); check that no load of `sums`' pointer or of the heap precedes the reject compare.
+- `TopK::push` rejects below the root with one compare (`!(score >= root)`: `fcmp; b.lt` / `ucomiss; jb`); only an equal score takes the column tie test.
 
-The first two only show on Yambda 500M (ML-32M and Yambda 50M mostly fit in cache); the first-touch branch shows most on Yambda 50M. When you upgrade rustc or edit these loops, rerun Yambda 50M and the 500M comparison on an idle machine against the previous build (a `git worktree` of the last good commit, its own venv), alternating the two processes:
+The first two only show on Yambda 500M (ML-32M and Yambda 50M mostly fit in cache); the first-touch branch and the drain shape show at both Yambda sizes. When you upgrade rustc or edit these loops, rerun Yambda 50M and the 500M comparison on an idle machine against the previous build (a `git worktree` of the last good commit, its own venv), alternating the two processes:
 
 ```bash
 python run_benchmarks.py --dataset yambda --version 500m --similarities dot_product cosine \
     --rounds 1 --warmup 0
 ```
 
-When the Rust kernel became slower than cpp at 500M, the cause was `lower_bound` and the `accumulate` register reloads (+13..16% before the fix, −7..−11% after). The block cursor (each m2 row read once, front to back, per output row) took it to −13..−17%.
+When the Rust kernel became slower than cpp at 500M, the cause was `lower_bound` and the `accumulate` register reloads (+13..16% before the fix, −7..−11% after). The block cursor (each m2 row read once, front to back, per output row) took it to −13..−17%. The scoring modes and the drain over locals took a further −13..−18% (cosine) and −9..−12% (dot) of 500M kernel time; the one-compare root reject measured as noise.
 
 ## Profiling the kernel (macOS)
 
