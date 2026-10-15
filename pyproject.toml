@@ -30,7 +30,7 @@ classifiers = [
   "Programming Language :: Rust",
 ]
 dependencies = [
-    "numpy>=1.22.4",
+    "numpy>=1.23.2",
     "scipy>=1.12.0",
 ]
 
@@ -41,7 +41,7 @@ repository = "https://github.com/bogliosimone/similaripy.git"
 changelog = "https://github.com/bogliosimone/similaripy/releases"
 
 [build-system]
-requires = ["maturin>=1.9,<2"]
+requires = ["maturin>=1.10,<2"]
 build-backend = "maturin"
 
 [tool.maturin]

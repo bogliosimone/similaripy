@@ -62,5 +62,5 @@ The easiest way to achieve this is to install them via Anaconda.
 | Package                         | Version        |
 | --------------------------------|:--------------:|
 | python                          |   >= 3.11      |
-| numpy                           |   >= 1.22.4    |
+| numpy                           |   >= 1.23.2    |
 | scipy                           |   >= 1.12.0    |
