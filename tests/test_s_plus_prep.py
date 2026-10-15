@@ -333,6 +333,20 @@ def test_duplicate_and_unsorted_target_rows(fmt):
     _assert_canonical(out.tocsr())
 
 
+@pytest.mark.parametrize('fmt', ['csr', 'coo'])
+def test_underflowed_product_dropped(fmt):
+    # 1e-30 * 1e-30 underflows to 0.0 in f32: the column was pushed again on its next
+    # hit and came back twice, once as an explicit 0.0, in an output flagged canonical.
+    m1 = sp.csr_array(np.array([[1e-30, 1.0]], dtype=np.float32))
+    m2 = sp.csr_array(np.array([[1e-30, 0, 0], [1.0, 0, 0]], dtype=np.float32))
+    out = sim.s_plus(m1, m2, k=5, format_output=fmt, verbose=False).tocsr()
+    np.testing.assert_array_equal(out.indices, [0])
+    np.testing.assert_array_equal(out.data, [1.0])
+    _assert_canonical(out)
+    # an underflow alone leaves the row empty
+    assert sim.cosine(sp.csr_array(np.array([[1e-30], [1e-30]], dtype=np.float32)), verbose=False).nnz == 0
+
+
 def test_k_larger_than_columns():
     m = _m(60, 40)
     _same(sim.cosine(m, k=1000, verbose=False), sim.cosine(m, k=60, verbose=False))  # 60 output cols
