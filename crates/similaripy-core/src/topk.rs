@@ -3,10 +3,13 @@
 //! single-block and any candidate order give the same rows). A min-heap whose
 //! root is the worst kept entry: lowest score, then highest column.
 //!
-//! Scores must not be NaN or -0.0 (the heap's `total_cmp` and the push's float compares
-//! would disagree), and each column with a non-zero score is pushed at most once
-//! per row. A 0.0 score is never a result: `drain_into` drops it (an underflowed
-//! product re-pushes its column with 0.0, see `kernel::accumulate`).
+//! Scores must not be NaN, and each column with a non-zero score is pushed at most
+//! once per row. A 0.0 score is never a result: `drain_into` drops it (a sum that
+//! cancels on signed input, or an underflowed product, re-pushes its column with
+//! 0.0, see `kernel::accumulate`). -0.0 (a negative score that underflows, signed
+//! input) is harmless although the heap's `total_cmp` orders it below 0.0 and the
+//! push's float compares do not: like a 0.0 it can only take a free slot or
+//! replace a +-0.0 root, never a positive score, and `drain_into` drops both.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -96,8 +99,9 @@ impl TopK {
     ) -> usize {
         // The heap's own buffer, sorted in place and handed back empty: no allocation.
         let mut kept = std::mem::take(&mut self.heap).into_vec();
-        // Per kept entry, not per candidate: a 0.0 can only come from an f32
-        // underflow under D6, and it is the duplicate of a column kept above it.
+        // Per kept entry, not per candidate: a +-0.0 is a cancelled sum (signed
+        // input) or an f32 underflow, never evidence, and may duplicate a column
+        // kept above it.
         kept.retain(|Reverse(e)| e.score != 0.0);
         if let Some(map) = col_map {
             for Reverse(e) in &mut kept {

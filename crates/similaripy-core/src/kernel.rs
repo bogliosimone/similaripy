@@ -377,9 +377,9 @@ impl Params {
         }
         // den != 0 first: the hot path stays the 0.7.0 one. den == 0 means either
         // no denominator term (only bayesian shrink: the raw xy_pow) or terms
-        // summing to 0: 0. The Python layer keeps every weight >= 0 and the input
-        // > 0, so with terms den is > 0 there (bar f32 underflow); the guard stays
-        // for direct core callers.
+        // summing to 0: 0. The Python layer keeps every weight >= 0 and, on any
+        // input sign, den > 0 (tversky rule, D45), bar f32 underflow; the guard
+        // stays for direct core callers.
         let den = tv + cs + dp + self.stabilized_shrink;
         let mut val = if den != 0.0 {
             xy_pow / den
