@@ -51,6 +51,7 @@ struct Case {
     m2: Vec<Vec<f32>>,
     norms: [Vec<f32>; 6],
     params: [f32; 8], // a1 l1 l2 l3 t1 t2 stabilized bayesian
+    threshold: f32,
     filter: Option<Vec<Vec<f32>>>,
     target: Option<Vec<Vec<f32>>>,
     k: usize,
@@ -86,13 +87,27 @@ fn case() -> impl Strategy<Value = Case> {
             prop::collection::vec(0..r, 1..=2 * r),
             any::<bool>(),
             prop_oneof![Just(0usize), 1..=n],
+            prop_oneof![Just(0.0f32), Just(0.5), Just(1.0)],
         )
             .prop_map(
-                |(m1, m2, norms, p, filter, target, k, targets, unsorted_m2, block_size)| Case {
+                |(
+                    m1,
+                    m2,
+                    norms,
+                    p,
+                    filter,
+                    target,
+                    k,
+                    targets,
+                    unsorted_m2,
+                    block_size,
+                    threshold,
+                )| Case {
                     m1,
                     m2,
                     norms,
                     params: [p.0, p.1, p.2, p.3, p.4, p.5, p.6, p.7],
+                    threshold,
                     filter,
                     target,
                     k,
@@ -185,7 +200,7 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
             t2,
             stabilized_shrink,
             bayesian_shrink,
-            threshold: 0.0,
+            threshold: c.threshold,
         },
         filter: pattern(&filter, n),
         target_cols: pattern(&target, n),
@@ -214,8 +229,13 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
             let filtered = c.filter.as_ref().is_some_and(|f| f[t][col] != 0.0);
             let untargeted = c.target.as_ref().is_some_and(|g| g[t][col] == 0.0);
             let (score, tol) = ref_score(c, t, col, xy);
-            if touched && !filtered && !untargeted && score >= 0.0 {
-                eligible.push((col, score, tol)); // threshold 0
+            let threshold = f64::from(c.threshold);
+            if touched && !filtered && !untargeted {
+                // f32 vs f64: within tolerance of the threshold either side is right.
+                prop_assume!(!close(score, threshold, tol));
+                if score >= threshold {
+                    eligible.push((col, score, tol));
+                }
             }
         }
         let expected = k.min(eligible.len());

@@ -267,9 +267,10 @@ struct RowTerms {
     depop: f32,
 }
 
-/// Scoring modes for `Params::score`, chosen once per drain (`Params::mode`) so
-/// the per-column weight tests drop out of the common workloads. A `u8`: enum
-/// const generics aren't stable.
+// Scoring modes for `Params::score`, chosen once per drain (`Params::mode`) so
+// the per-column weight tests drop out of the common workloads. A `u8`: enum
+// const generics aren't stable.
+
 /// Raw `xy_pow`: no denominator term, no shrink (dot product).
 const DOT: u8 = 0;
 /// `l2` only, stabilized shrink allowed (cosine, asymmetric cosine).
@@ -821,7 +822,7 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
-        // Bit-identical output across modes (R2): the mode only skips +0.0 terms.
+        // Bit-identical output across modes: the mode only skips +0.0 terms.
         #[test]
         fn score_mode_matches_full_bitwise(
             w in proptest::array::uniform5(prop_oneof![Just(0.0f32), Just(-0.0f32), 0.1f32..2.0]),
