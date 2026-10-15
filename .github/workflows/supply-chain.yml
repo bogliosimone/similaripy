@@ -1,0 +1,34 @@
+# cargo-deny (deny.toml): RustSec advisories, licenses, banned crates, sources.
+# Weekly too: a new advisory can land with no change on our side
+# (schedules run from the default branch's copy of this file).
+
+name: Supply chain
+
+on:
+  push:
+    branches: [ "master", "v1/main" ]
+    paths: &deny-paths
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/*/Cargo.toml"
+      - "deny.toml"
+      - ".github/workflows/supply-chain.yml"
+  pull_request:
+    paths: *deny-paths
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - uses: EmbarkStudios/cargo-deny-action@v2

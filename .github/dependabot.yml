@@ -1,4 +1,5 @@
-# Open a PR when a GitHub Action used in the workflows has a new release
+# Monthly PRs for new GitHub Action releases and Rust crate versions.
+# Not the Rust toolchain: rust-toolchain.toml stays a manual, benchmarked bump.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -7,4 +8,14 @@ updates:
       interval: "monthly"
     groups:
       github-actions:
+        patterns: ["*"]
+
+  # A PyO3 / numpy / rayon bump can change the kernel's machine code: check the
+  # "Codegen-sensitive hot loops" in tests/benchmarks/README.md before merging.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      cargo:
         patterns: ["*"]
