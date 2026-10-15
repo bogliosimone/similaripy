@@ -39,6 +39,7 @@ from run_benchmarks import (
 
 
 DATASET = ('synthetic', '10k')
+FORMAT_OUTPUT = 'csr'  # --format-output
 
 # Default smoke set: catches big (>20%) regressions; the rest via --cases all
 SMOKE_CASES = ['dot_product', 'cosine', 'cosine_k1000', 'cosine_filter_matrix', 'cosine_block2048']
@@ -96,7 +97,7 @@ def build_cases(X):
 
 def time_call(func, X, kwargs, num_threads):
     """One serial call: (total seconds, {prep, kernel, output} seconds, output); prep = the rest."""
-    kw = {'k': 100, 'verbose': False, 'num_threads': num_threads, **kwargs}
+    kw = {'k': 100, 'verbose': False, 'num_threads': num_threads, 'format_output': FORMAT_OUTPUT, **kwargs}
     start = time.perf_counter()
     out = func(X, **kw)
     total = time.perf_counter() - start
@@ -124,7 +125,7 @@ def measure(func, X, kwargs, num_threads, reps):
 
 def measure_concurrent(X, reps, concurrent):
     """Median wall time of two cosine calls (num_threads=2 each), concurrent or serial."""
-    kw = {'k': 100, 'verbose': False, 'num_threads': 2}
+    kw = {'k': 100, 'verbose': False, 'num_threads': 2, 'format_output': FORMAT_OUTPUT}
     times = []
     with ThreadPoolExecutor(max_workers=2) as pool:
         for _ in range(reps):
@@ -159,7 +160,11 @@ def main():
     parser.add_argument('--tag', type=str, default=None, help='Report filename tag')
     parser.add_argument('--note', type=str, default=None, help='Note attached to the report')
     parser.add_argument('--output-dir', type=str, default='bench_results')
+    parser.add_argument('--format-output', default='csr', choices=['csr', 'coo'],
+                        help='Output format passed to every call (default: csr)')
     args = parser.parse_args()
+    global FORMAT_OUTPUT
+    FORMAT_OUTPUT = args.format_output
 
     X = make_urm().T.tocsr()  # items x users, as in benchmark_similarity
     assert X.indices.dtype == np.int32
@@ -200,6 +205,7 @@ def main():
         'threshold': 0,
         'num_threads': args.threads,
         'block_size': 0,
+        'format_output': args.format_output,
         'rounds': args.rounds,
         'warmup': args.warmup,
         'note': args.note,

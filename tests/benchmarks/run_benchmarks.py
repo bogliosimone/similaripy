@@ -200,6 +200,7 @@ def run_benchmarks(config, verbose=True):
                 'num_threads': config['num_threads'],
                 'block_size': config['block_size'],
                 'column_order': config['column_order'],
+                'format_output': config['format_output'],
             }
 
         def run_once(sim_type):
@@ -420,7 +421,8 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
             "threshold": config['threshold'],
             "num_threads": config['num_threads'],
             "block_size": format_block_size(config['block_size']),
-            "column_order": config['column_order'] or "default",
+            "column_order": config.get('column_order') or "default",
+            "format_output": config['format_output'],
             "rounds": config['rounds'],
             "warmup": config['warmup'],
             "rss": bool(config.get('rss')),
@@ -494,6 +496,7 @@ def build_config(args):
         'num_threads': args.threads,
         'block_size': parse_block_size(args.block_size),
         'column_order': args.column_order,
+        'format_output': args.format_output,
         'rounds': args.rounds,
         'warmup': args.warmup,
         'rss': args.rss,
@@ -516,6 +519,7 @@ def print_config_header(config):
     print(f"Parameters: k={config['k']}, shrink={config['shrink']}, threshold={config['threshold']}")
     print(f"Threads: {config['num_threads'] if config['num_threads'] > 0 else 'auto'}")
     print(f"Block size: {format_block_size(config['block_size'])}")
+    print(f"Output format: {config['format_output']}")
     print(f"Rounds: {config['rounds']} (+{config['warmup']} warmup)")
     if config.get('note'):
         print(f"Note: {config['note']}")
@@ -565,6 +569,9 @@ Examples:
                         help='Block size: 0=auto, none=disabled, or int>0 (default: 0)')
     parser.add_argument('--column-order', default=None, choices=['popularity', 'original'],
                         help="Kernel column order (private switch; default: the library's, popularity)")
+    parser.add_argument('--format-output', default='csr', choices=['csr', 'coo'],
+                        help='Output format passed to every call (default: csr); set it so builds '
+                             'with different library defaults time the same output')
     parser.add_argument('--event-type', type=str, default='multi_event',
                         choices=['likes', 'listens', 'multi_event'],
                         help='Yambda event type (default: multi_event)')

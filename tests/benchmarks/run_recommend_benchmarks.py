@@ -4,8 +4,10 @@ Recommendation-step benchmark: user x item scores from a precomputed item model.
 The item-item benchmarks (run_benchmarks.py) have no realistic matrix-mode
 filter: their output is items x items. The recommendation step is where one
 lives: scores = dot_product(URM, S) with filter_cols=URM ("don't recommend
-items the user has already seen"), the per-request work of a server. S is a
-cosine item model (k=--model-k), built once and not timed.
+items the user has already seen"), as one library batch call over all users
+(not a server's per-request path, D38). S is a cosine item model
+(k=--model-k), built once and not timed. S and the scores use
+--format-output (default csr).
 
 Cases, interleaved per round (ABAB): 'recommend' (no filter) and
 'recommend_filter_seen' (filter_cols=URM). Prints median total / prep /
@@ -29,10 +31,10 @@ from dataset_loaders import load_URM
 PHASES = ('total', 'prep', 'kernel', 'output')
 
 
-def run_once(URM, S, k, num_threads, filter_seen):
+def run_once(URM, S, k, num_threads, filter_seen, format_output):
     kw = {'filter_cols': URM} if filter_seen else {}
     start = time.perf_counter()
-    sim.dot_product(URM, S, k=k, num_threads=num_threads, verbose=False, **kw)
+    sim.dot_product(URM, S, k=k, num_threads=num_threads, verbose=False, format_output=format_output, **kw)
     total = time.perf_counter() - start
     t = sim._s_plus._last_timings
     return {'total': total, 'prep': total - t['kernel'] - t['output'], **t}
@@ -47,19 +49,21 @@ def main():
     parser.add_argument('--threads', type=int, default=0)
     parser.add_argument('--rounds', type=int, default=5)
     parser.add_argument('--warmup', type=int, default=1)
+    parser.add_argument('--format-output', default='csr', choices=['csr', 'coo'],
+                        help='Output format of S and of the timed call (default: csr)')
     parser.add_argument('--json', type=str, default=None, help='Write medians to this JSON file')
     args = parser.parse_args()
 
     URM, _ = load_URM(args.dataset, version=args.version, verbose=False)
     URM = URM.tocsr()
-    S = sim.cosine(URM.T, k=args.model_k, verbose=False)
+    S = sim.cosine(URM.T, k=args.model_k, verbose=False, format_output=args.format_output)
     print(f"URM {URM.shape} nnz {URM.nnz:,}; S nnz {S.nnz:,}")
 
     cases = {'recommend': False, 'recommend_filter_seen': True}
     times = {c: [] for c in cases}
     for r in range(args.warmup + args.rounds):
         for case, filter_seen in cases.items():
-            t = run_once(URM, S, args.k, args.threads, filter_seen)
+            t = run_once(URM, S, args.k, args.threads, filter_seen, args.format_output)
             label = 'warmup' if r < args.warmup else f"round {r - args.warmup + 1}/{args.rounds}"
             print(f"[{label}] {case:<22} " + '  '.join(f"{p} {t[p]:.3f}s" for p in PHASES))
             if r >= args.warmup:
