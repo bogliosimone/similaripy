@@ -17,5 +17,8 @@ updates:
     schedule:
       interval: "monthly"
     groups:
+      # Own PR: bindings bumps get the codegen check (and often source changes)
+      bindings:
+        patterns: ["pyo3*", "numpy"]
       cargo:
         patterns: ["*"]

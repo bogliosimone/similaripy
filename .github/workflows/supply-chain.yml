@@ -1,6 +1,7 @@
 # cargo-deny (deny.toml): RustSec advisories, licenses, banned crates, sources.
 # Weekly too: a new advisory can land with no change on our side
-# (schedules run from the default branch's copy of this file).
+# (schedules run from the default branch's copy of this file). A new advisory
+# also fails unrelated PRs until it's fixed or ignored in deny.toml.
 
 name: Supply chain
 
@@ -12,6 +13,7 @@ on:
       - "Cargo.lock"
       - "crates/*/Cargo.toml"
       - "deny.toml"
+      - "rust-toolchain.toml"
       - ".github/workflows/supply-chain.yml"
   pull_request:
     paths: *deny-paths
