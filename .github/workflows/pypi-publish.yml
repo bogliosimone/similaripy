@@ -39,6 +39,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install the pinned toolchain
+        # macOS/Windows build on the host: explicit, so a runner image with a
+        # half-installed pin (rustup: "detected conflict: bin/cargo-clippy") is
+        # cleaned up and retried once instead of failing inside the build. Linux
+        # builds in the manylinux container, which installs rustup itself.
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          rustup toolchain install || {
+            rustup toolchain uninstall "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+            rustup toolchain install
+          }
+
       - name: Build and test wheels
         uses: pypa/cibuildwheel@v4.3.1
         env:
