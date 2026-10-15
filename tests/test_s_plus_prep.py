@@ -173,8 +173,9 @@ def _signed_m(seed=0):
 
 
 @pytest.mark.parametrize('name, kwargs, match', [
-    ('cosine', {'shrink': 5, 'shrink_type': 'bayesian'}, 'bayesian_shrink is not supported on signed'),
-    ('dot_product', {'shrink': 5, 'shrink_type': 'bayesian'}, 'bayesian_shrink is not supported on signed'),
+    ('cosine', {'shrink': 5, 'shrink_type': 'bayesian'}, "shrink_type='bayesian'.*not supported on signed"),
+    ('dot_product', {'shrink': 5, 'shrink_type': 'bayesian'}, "shrink_type='bayesian'.*not supported on signed"),
+    ('s_plus', {'l1': 1, 'l2': 0, 't1': 0.2, 't2': 0.2}, 'denominator <= 0 on some pairs of signed input'),
     ('s_plus', {'alpha': 2}, r'a1 \(alpha\) must be 1 on signed'),
     ('s_plus', {'alpha': 0.5}, r'a1 \(alpha\) must be 1 on signed'),
     ('tversky', {'alpha': 0.2, 'beta': 0.2}, 'denominator <= 0 on some pairs of signed input'),
@@ -208,6 +209,18 @@ def test_tversky_denominator_rule(alpha, beta, data, ok):
     else:
         with pytest.raises(ValueError, match=r't1, t2 \(tversky alpha, beta\)'):
             sim.tversky(m, **kw)
+
+
+def test_tversky_rule_exempts_one_valued_data():
+    # 0/1 data without binary=True: den >= |X & Y| as in binary mode (review finding)
+    m = _m(60, 40)
+    m.data[:] = 1
+    for alpha, beta in ((2, 0), (3, 0.05)):
+        _same(sim.tversky(m, alpha=alpha, beta=beta, k=5, verbose=False),
+              sim.tversky(m, alpha=alpha, beta=beta, k=5, binary=True, verbose=False))
+    m.data[0] = 2  # weighted again
+    with pytest.raises(ValueError, match='denominator <= 0'):
+        sim.tversky(m, alpha=3, beta=0.05, verbose=False)
 
 
 def test_weighted_tversky_rule_closes_negative_denominator():

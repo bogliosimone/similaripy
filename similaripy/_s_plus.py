@@ -161,27 +161,38 @@ def _check_used_weights(name: str, weights, used: np.ndarray) -> None:
 
 # ---- Prep helpers (numpy, D19) ----
 
-def _check_signed_rules(signed: bool, binary: bool, a1, l1, t1, t2, bayesian_shrink) -> None:
+def _check_signed_rules(signed: bool, binary: bool, a1, l1, t1, t2, bayesian_shrink,
+                        m1_data, m2_data) -> None:
     """
     Parameters that would be wrong on signed input (D45), plus the tversky
     denominator rule, which also binds on non-negative weighted input.
     """
     if signed and bayesian_shrink != 0:
-        raise ValueError('bayesian_shrink is not supported on signed input (values < 0): '
-                         'xy / (xy + shrink) flips the sign of negative scores')
+        raise ValueError("bayesian shrink (shrink_type='bayesian', s_plus bayesian_shrink) is not "
+                         'supported on signed input (values < 0): xy / (xy + shrink) flips the sign '
+                         'of negative scores')
     if signed and a1 != 1:
         raise ValueError(f'a1 (alpha) must be 1 on signed input (values < 0), got {a1}: '
                          'a power of a negative score is NaN or turns it positive')
     # den = t1 |x|^2 + t2 |y|^2 + c xy (c = 1 - t1 - t2), |xy| <= |x| |y|: > 0 on
     # every pair iff c = 0 or 4 t1 t2 > c^2. The worst pair has xy = |x||y| for
     # c < 0 (any weighted input) and xy = -|x||y| for c > 0 (signed input only).
-    # Binary: den >= |X & Y| > 0 always.
+    # Binary, or every value in both matrices the same (0/1 data passed without
+    # binary=True): den >= v^2 |X & Y| > 0 always. Only the tversky term is checked:
+    # l2/l3/stabilized shrink terms may keep den > 0, but not on every pair.
     c = 1 - t1 - t2
-    if l1 != 0 and not binary and c != 0 and (c < 0 or signed) and not 4 * t1 * t2 > c * c:
+    if (l1 != 0 and not binary and c != 0 and (c < 0 or signed) and not 4 * t1 * t2 > c * c
+            and not _one_value(m1_data, m2_data)):
         raise ValueError(
             f't1, t2 (tversky alpha, beta) = ({t1}, {t2}) give a denominator <= 0 on some pairs'
             f'{" of signed input (values < 0)" if c > 0 else ""}: need t1 + t2 = 1 or '
             f'4 t1 t2 > (1 - t1 - t2)^2')
+
+
+def _one_value(*arrays) -> bool:
+    """Every entry of the (non-empty) arrays equal to the same value."""
+    vals = {v for a in arrays if a.size for v in (a.min(), a.max())}
+    return len(vals) == 1
 
 
 def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
@@ -399,7 +410,7 @@ def s_plus(
             a negative block_size, more than 2^31 - 1 non-zeros in an input, input
             values not finite in float32, a1 != 1 or bayesian_shrink on signed input
             (values < 0, not binary), or l1 != 0 with t1, t2 whose tversky
-            denominator can be <= 0 (see `_check_signed_rules`).
+            term can be <= 0 on weighted input (see `_check_signed_rules`).
     """
     if matrix2 is None:
         matrix2 = matrix1.T
@@ -493,7 +504,7 @@ def _s_plus(
         return np.ones(m.nnz, dtype=np.float32) if binary else data
     m1_data, m2_data = values('matrix1', m1), values('matrix2', m2)
     signed = not binary and bool((m1_data < 0).any() or (m2_data < 0).any())
-    _check_signed_rules(signed, binary, a1, l1, t1, t2, bayesian_shrink)
+    _check_signed_rules(signed, binary, a1, l1, t1, t2, bayesian_shrink, m1_data, m2_data)
 
     # Block size: 0 = auto, None = disabled (0 for the kernel), int > 0 = explicit
     if block_size is None:
