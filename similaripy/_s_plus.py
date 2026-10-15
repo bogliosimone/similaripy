@@ -161,6 +161,29 @@ def _check_used_weights(name: str, weights, used: np.ndarray) -> None:
 
 # ---- Prep helpers (numpy, D19) ----
 
+def _check_signed_rules(signed: bool, binary: bool, a1, l1, t1, t2, bayesian_shrink) -> None:
+    """
+    Parameters that would be wrong on signed input (D45), plus the tversky
+    denominator rule, which also binds on non-negative weighted input.
+    """
+    if signed and bayesian_shrink != 0:
+        raise ValueError('bayesian_shrink is not supported on signed input (values < 0): '
+                         'xy / (xy + shrink) flips the sign of negative scores')
+    if signed and a1 != 1:
+        raise ValueError(f'a1 (alpha) must be 1 on signed input (values < 0), got {a1}: '
+                         'a power of a negative score is NaN or turns it positive')
+    # den = t1 |x|^2 + t2 |y|^2 + c xy (c = 1 - t1 - t2), |xy| <= |x| |y|: > 0 on
+    # every pair iff c = 0 or 4 t1 t2 > c^2. The worst pair has xy = |x||y| for
+    # c < 0 (any weighted input) and xy = -|x||y| for c > 0 (signed input only).
+    # Binary: den >= |X & Y| > 0 always.
+    c = 1 - t1 - t2
+    if l1 != 0 and not binary and c != 0 and (c < 0 or signed) and not 4 * t1 * t2 > c * c:
+        raise ValueError(
+            f't1, t2 (tversky alpha, beta) = ({t1}, {t2}) give a denominator <= 0 on some pairs'
+            f'{" of signed input (values < 0)" if c > 0 else ""}: need t1 + t2 = 1 or '
+            f'4 t1 t2 > (1 - t1 - t2)^2')
+
+
 def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
     """
     CSR with summed duplicates and no explicit zeros, without touching the
@@ -234,17 +257,19 @@ def _depop_weights(weight_spec, sums, p: float, n: int) -> np.ndarray:
     return np.power(sums(), p, dtype=np.float32)
 
 
-def _column_selector(cols):
+def _column_selector(cols, num_threads: int):
     """
     (mode, indptr, indices) for filter_cols/target_cols.
 
-    Matrix mode: sorted int32 CSR pattern built on a copy (0.7.0 sorted and
-    eliminated zeros on the caller's matrix).
+    Matrix mode: the canonical pattern (`_canonical_csr`, never the caller's
+    matrix changed; 0.7.0 sorted and eliminated zeros in place), so an entry is
+    selected iff its summed value is non-zero, the same rule as the inputs:
+    COO and non-canonical CSR agree on cancelling duplicates (D45). A matrix
+    whose entries all cancel selects nothing (as explicit zeros only); an
+    empty one is no selector.
     """
     if sp.issparse(cols) and cols.data.shape[0] != 0:
-        cols = cols.tocsr(copy=True)
-        cols.eliminate_zeros()
-        cols.sort_indices()
+        cols = _canonical_csr(cols, num_threads)
         return MODE_MATRIX, cols.indptr.astype(np.int32, copy=False), cols.indices.astype(np.int32, copy=False)
     if isinstance(cols, (list, np.ndarray)) and len(cols) != 0:
         return MODE_ARRAY, _EMPTY_I32, _EMPTY_I32
@@ -329,13 +354,16 @@ def s_plus(
     with configurable weights and supports various normalization strategies.
 
     Args:
-        matrix1: First sparse matrix (typically item-user interactions).
+        matrix1: First sparse matrix (typically item-user interactions); values finite
+            in float32, negative values allowed (signed input, D45: negative and 0.0
+            scores are never results).
         matrix2: Optional second matrix. If None, uses matrix1.T (self-similarity).
         weight_depop_matrix1: Depopularization weights for matrix1: 'none', 'sum', or custom array.
         weight_depop_matrix2: Depopularization weights for matrix2: 'none', 'sum', or custom array.
         p1: Power for depopularization weights on matrix1.
         p2: Power for depopularization weights on matrix2.
-        a1: Power applied to dot product values (with or without normalization); must be > 0.
+        a1: Power applied to dot product values (with or without normalization); must be > 0,
+            and 1 on signed input.
         l1: Weight for Tversky similarity term.
         l2: Weight for Cosine similarity term.
         l3: Weight for Depopularization term.
@@ -345,7 +373,7 @@ def s_plus(
         c2: Cosine power exponent for matrix2.
         k: Number of top similar items to keep per row.
         stabilized_shrink: Stabilized shrinkage parameter.
-        bayesian_shrink: Bayesian shrinkage parameter.
+        bayesian_shrink: Bayesian shrinkage parameter; 0 on signed input.
         additive_shrink: Additive shrinkage for cosine normalization.
         threshold: Minimum similarity threshold.
         binary: If True, treat all non-zero values as 1.0 (set theory).
@@ -368,7 +396,10 @@ def s_plus(
 
     Raises:
         ValueError: invalid shapes or parameters (see `validate_s_plus_inputs`),
-            a negative block_size, or more than 2^31 - 1 non-zeros in an input.
+            a negative block_size, more than 2^31 - 1 non-zeros in an input, input
+            values not finite in float32, a1 != 1 or bayesian_shrink on signed input
+            (values < 0, not binary), or l1 != 0 with t1, t2 whose tversky
+            denominator can be <= 0 (see `_check_signed_rules`).
     """
     if matrix2 is None:
         matrix2 = matrix1.T
@@ -384,13 +415,12 @@ def s_plus(
         format_output=format_output
     )
 
-    # Every weight >= 0 and the input positive (checked in `_s_plus`): every
-    # product and sum is then > 0 (bar f32 underflow, whose 0.0 scores the kernel
-    # drops; D6), and so is every denominator except tversky's on weighted
-    # input: t1 (x - xy) + t2 (y - xy) + xy can go negative when xy > x and
-    # t1 + t2 > 1, and the threshold then drops the pair (as in 0.7.0).
-    # Negative values would flip signs or make NaN (a negative base to a
-    # fractional power); alpha <= 0 would flatten or invert the ranking.
+    # Every weight >= 0: the norms (sums of x^2), popularities (sums of |x|) and
+    # cosine and depop terms are then >= 0 on any finite input, and tversky's
+    # denominator is kept > 0 by its rule in `_s_plus` (`_check_signed_rules`,
+    # with the rules for signed input, D45). Negative weights would flip signs or
+    # make NaN (a negative base to a fractional power); alpha <= 0 would flatten
+    # or invert the ranking.
     for name, value in (('l1', l1), ('l2', l2), ('l3', l3), ('t1 (tversky alpha)', t1),
                         ('t2 (tversky beta)', t2), ('c1', c1), ('c2', c2), ('p1 (beta1)', p1),
                         ('p2 (beta2, rp3beta beta)', p2), ('threshold', threshold),
@@ -448,12 +478,22 @@ def _s_plus(
 ):
     m1 = _canonical_csr(matrix1, num_threads)
     m2 = _canonical_csr(matrix2, num_threads)
-    # D6 enforced: positive values only (zeros are gone already). Signed data
-    # is a follow-up; until then a clear error beats wrong top-K rows.
-    for name, m in (('matrix1', m1), ('matrix2', m2)):
-        if not np.all((m.data > 0) & (m.data < np.inf)):
-            raise ValueError(f'{name} values must be finite and > 0 (signed data is not supported)')
     n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]
+
+    # Kernel inputs: float32 values (all ones in binary mode), int32 indices.
+    # Finite is checked on the float32 values in both modes (1e39 is inf there,
+    # and binary must not turn NaN/inf into 1.0). Signed input (D45) is fine:
+    # negative and cancelled (0.0) scores are never results. `signed` is read
+    # from the values the kernel sees, so binary input is never signed.
+    def values(name, m):
+        with np.errstate(over='ignore'):  # raised below
+            data = m.data.astype(np.float32, copy=False)
+        if not np.isfinite(data).all():
+            raise ValueError(f'{name} values must be finite (in float32)')
+        return np.ones(m.nnz, dtype=np.float32) if binary else data
+    m1_data, m2_data = values('matrix1', m1), values('matrix2', m2)
+    signed = not binary and bool((m1_data < 0).any() or (m2_data < 0).any())
+    _check_signed_rules(signed, binary, a1, l1, t1, t2, bayesian_shrink)
 
     # Block size: 0 = auto, None = disabled (0 for the kernel), int > 0 = explicit
     if block_size is None:
@@ -462,10 +502,6 @@ def _s_plus(
         block_size = DEFAULT_BLOCK_SIZE
     use_blocking = block_size > 0 and n_output_cols > block_size
 
-    # Kernel inputs: float32 values (all ones in binary mode), int32 indices
-    def values(m):
-        return np.ones(m.nnz, dtype=np.float32) if binary else m.data.astype(np.float32, copy=False)
-    m1_data, m2_data = values(m1), values(m2)
     m1_indices = m1.indices.astype(np.int32, copy=False)
     m1_indptr = m1.indptr.astype(np.int32, copy=False)
     m2_indices = m2.indices.astype(np.int32, copy=False)
@@ -485,13 +521,15 @@ def _s_plus(
         _check_used_weights('weight_depop_matrix1 (pop1)', weight_depop_matrix1, np.diff(m1_indptr) > 0)
         _check_used_weights('weight_depop_matrix2 (pop2)', weight_depop_matrix2,
                             np.bincount(m2_indices, minlength=n_output_cols) > 0)
-        Xdepop = _depop_weights(weight_depop_matrix1, lambda: _row_sums(m1_data, m1_indptr),
+        # 'sum' popularity = sum of |x| (identical on non-negative input)
+        Xdepop = _depop_weights(weight_depop_matrix1, lambda: _row_sums(np.abs(m1_data), m1_indptr),
                                 np.float32(p1), n_output_rows)
-        Ydepop = _depop_weights(weight_depop_matrix2, lambda: _col_sums(m2_data, m2_indices, n_output_cols),
+        Ydepop = _depop_weights(weight_depop_matrix2,
+                                lambda: _col_sums(np.abs(m2_data), m2_indices, n_output_cols),
                                 np.float32(p2), n_output_cols)
 
-    filter_mode, filter_indptr, filter_indices = _column_selector(filter_cols)
-    target_mode, target_indptr, target_indices = _column_selector(target_cols)
+    filter_mode, filter_indptr, filter_indices = _column_selector(filter_cols, num_threads)
+    target_mode, target_indptr, target_indices = _column_selector(target_cols, num_threads)
 
     # Array selectors: drop the columns from m2 here, the kernel then treats them as NONE
     if filter_mode == MODE_ARRAY or target_mode == MODE_ARRAY:
@@ -554,7 +592,7 @@ def _s_plus(
     # Rows come back exact (no padding), sorted by column, in target order
     # (ascending, unique), so both formats wrap the kernel's arrays without a
     # copy. Canonical as well: no duplicates and no zeros (the kernel drops 0.0
-    # scores, which under D6 only an f32 underflow produces).
+    # scores: cancelled sums on signed input, or an f32 underflow).
     if bar is not None:
         bar.set_description(f'Building {format_output} matrix')
     shape = (n_output_rows, n_output_cols)

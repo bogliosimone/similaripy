@@ -86,7 +86,7 @@ def test_trailing_empty_rows():
 def test_progress_bar_closed_on_prep_error(capfd, monkeypatch):
     from similaripy import _s_plus
 
-    def boom(cols):
+    def boom(cols, num_threads):
         raise RuntimeError('prep failed')
     monkeypatch.setattr(_s_plus, '_column_selector', boom)
     with pytest.raises(RuntimeError, match='prep failed'):
@@ -150,19 +150,125 @@ def test_tie_rule_independent_of_blocking(order, block_size, monkeypatch):
         assert sorted(got.tolist()) == sorted(best.tolist()), row
 
 
-@pytest.mark.parametrize('bad', [-1.0, np.nan, np.inf])
+@pytest.mark.parametrize('bad', [np.nan, np.inf, 1e39])  # 1e39: finite in f64, inf in f32
 @pytest.mark.parametrize('side', ['matrix1', 'matrix2'])
-def test_rejects_non_positive_values(bad, side):
-    # D6 enforced: signed or non-finite input would break the top-K (NaN, cancelled
-    # sums scoring 0.0); rejected until signed data has its own design.
-    m = _m(60, 40)
+@pytest.mark.parametrize('binary', [False, True])
+def test_rejects_non_finite_values(bad, side, binary):
+    # Checked on the f32 values in both modes: binary must not turn NaN/inf into 1.0.
+    m = _m(60, 40).astype(np.float64)
     bad_m = m.copy()
     bad_m.data[3] = bad
     m1, m2 = (bad_m, m.T) if side == 'matrix1' else (m, bad_m.T)
-    with pytest.raises(ValueError, match=f'{side} values must be finite and > 0'):
-        sim.dot_product(m1, m2, k=5, verbose=False)
-    with pytest.raises(ValueError, match='finite and > 0'):
-        sim.p3alpha(bad_m, k=5, verbose=False)  # checked after the wrapper's normalization
+    with pytest.raises(ValueError, match=f'{side} values must be finite'):
+        sim.dot_product(m1, m2, k=5, binary=binary, verbose=False)
+    if bad != 1e39:  # the l1 normalization divides 1e39 back into range
+        with pytest.raises(ValueError, match='values must be finite'):
+            sim.p3alpha(bad_m, k=5, verbose=False)  # checked after the wrapper's normalization
+
+
+def _signed_m(seed=0):
+    m = _m(60, 40, seed)
+    m.data[::3] *= -1
+    return m
+
+
+@pytest.mark.parametrize('name, kwargs, match', [
+    ('cosine', {'shrink': 5, 'shrink_type': 'bayesian'}, 'bayesian_shrink is not supported on signed'),
+    ('dot_product', {'shrink': 5, 'shrink_type': 'bayesian'}, 'bayesian_shrink is not supported on signed'),
+    ('s_plus', {'alpha': 2}, r'a1 \(alpha\) must be 1 on signed'),
+    ('s_plus', {'alpha': 0.5}, r'a1 \(alpha\) must be 1 on signed'),
+    ('tversky', {'alpha': 0.2, 'beta': 0.2}, 'denominator <= 0 on some pairs of signed input'),
+])
+def test_signed_rejections(name, kwargs, match):
+    f = getattr(sim, name)
+    with pytest.raises(ValueError, match=match):
+        f(_signed_m(), k=5, verbose=False, **kwargs)
+    # binary input is never signed: the same parameters run, as on the binarized matrix
+    m = _signed_m()
+    ones = sp.csr_array((np.ones(m.nnz, dtype=np.float32), m.indices, m.indptr), shape=m.shape)
+    _same(f(m, k=5, binary=True, verbose=False, **kwargs), f(ones, k=5, verbose=False, **kwargs))
+
+
+@pytest.mark.parametrize('alpha, beta, data, ok', [
+    # weighted non-negative: c = 1 - alpha - beta < 0 needs 4 alpha beta > c^2, c >= 0 is always safe
+    (1, 1, 'weighted', True), (0.5, 0.5, 'weighted', True), (1, 0, 'weighted', True),
+    (0.5, 0.1, 'weighted', True), (0.2, 0.2, 'weighted', True), (3, 0.05, 'weighted', False),
+    # signed: c > 0 needs it too
+    (1, 1, 'signed', True), (0.5, 0.5, 'signed', True), (1, 0, 'signed', True),
+    (0.5, 0.1, 'signed', True), (0.2, 0.2, 'signed', False), (3, 0.05, 'signed', False),
+    # binary: den >= |X & Y|, always safe
+    (0.2, 0.2, 'binary', True), (3, 0.05, 'binary', True),
+])
+def test_tversky_denominator_rule(alpha, beta, data, ok):
+    m = _signed_m() if data == 'signed' else _m(60, 40)
+    kw = {'alpha': alpha, 'beta': beta, 'k': 5, 'binary': data == 'binary', 'verbose': False}
+    if ok:
+        sim.tversky(m, **kw)
+        sim.s_plus(m, l1=1, l2=0, t1=alpha, t2=beta, k=5, binary=data == 'binary', verbose=False)
+    else:
+        with pytest.raises(ValueError, match=r't1, t2 \(tversky alpha, beta\)'):
+            sim.tversky(m, **kw)
+
+
+def test_weighted_tversky_rule_closes_negative_denominator():
+    # (3, 0.05) on non-negative data: den = 3 (x - xy) + 0.05 (y - xy) + xy < 0 for a
+    # pair with xy > x (0.7.0 dropped it by the threshold); now a ValueError.
+    m = sp.csr_array(np.array([[1, 0], [10, 10]], dtype=np.float32))
+    x, y, xy = 1.0, 200.0, 10.0
+    assert 3 * (x - xy) + 0.05 * (y - xy) + xy < 0
+    with pytest.raises(ValueError, match='denominator <= 0'):
+        sim.tversky(m, alpha=3, beta=0.05, verbose=False)
+
+
+def test_signed_depop_sum_uses_abs():
+    # pop 'sum' = sum of |x|: on |m| (same pattern) the denominators are the same
+    m = _signed_m()
+    kw = {'l1': 0, 'l2': 0, 'l3': 1, 'pop1': 'sum', 'pop2': 'sum', 'beta1': 0.5, 'beta2': 0.5,
+          'k': 60, 'verbose': False}
+    a = abs(m)
+    xy, xy_abs = (m @ m.T).toarray(), (a @ a.T).toarray()
+    den = np.divide(xy_abs, sim.s_plus(a, **kw).toarray(), out=np.zeros_like(xy_abs),
+                    where=xy_abs != 0)  # pop1 pop2 per pair, from the non-negative run
+    got = sim.s_plus(m, **kw).toarray()
+    expected = np.divide(xy, den, out=np.zeros_like(xy), where=den != 0)
+    expected[expected <= 0] = 0
+    np.testing.assert_allclose(got, expected, rtol=1e-5, atol=1e-7)
+
+
+def _cancelling_selector(fmt):
+    """60 x 60 selector: (0, 5) as +1/-1 duplicates (cancels), (0, 7) and (1, 3) kept, (2, 9) a stored 0."""
+    rows, cols, vals = [0, 0, 0, 1, 2], [5, 7, 5, 3, 9], np.array([1, 1, -1, 1, 0], dtype=np.float32)
+    if fmt == 'coo':
+        return sp.coo_array((vals, (rows, cols)), shape=(60, 60))
+    order = np.argsort(rows, kind='stable')
+    indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=60))])
+    return sp.csr_array((vals[order], np.array(cols)[order], indptr), shape=(60, 60))
+
+
+@pytest.mark.parametrize('fmt', ['csr', 'coo'])
+@pytest.mark.parametrize('selector', ['filter_cols', 'target_cols'])
+def test_selector_matrix_uses_summed_values(fmt, selector):
+    # D45: an entry is selected iff its summed value is non-zero, in every format
+    m = _m(60, 40)
+    sel = _cancelling_selector(fmt)
+    before = sel.copy()
+    clean = sp.csr_array((np.ones(2, dtype=np.float32), ([0, 1], [7, 3])), shape=(60, 60))
+    kw = {'k': 60, 'verbose': False}
+    _same(sim.cosine(m, **{selector: sel}, **kw), sim.cosine(m, **{selector: clean}, **kw))
+    np.testing.assert_array_equal(sel.data, before.data)  # caller's matrix untouched
+
+
+@pytest.mark.parametrize('fmt', ['csr', 'coo'])
+def test_selector_matrix_all_cancelled_selects_nothing(fmt):
+    m = _m(60, 40)
+    sel = _cancelling_selector(fmt)
+    sel = sel.tocoo()
+    keep = (sel.row == 0) & (sel.col == 5)
+    sel = sp.coo_array((sel.data[keep], (sel.row[keep], sel.col[keep])), shape=sel.shape)
+    sel = sel if fmt == 'coo' else sp.csr_array((sel.data, sel.col, [0, 2] + [2] * 59), shape=sel.shape)
+    kw = {'k': 10, 'verbose': False}
+    _same(sim.cosine(m, filter_cols=sel, **kw), sim.cosine(m, **kw))
+    assert sim.cosine(m, target_cols=sel, **kw).nnz == 0
 
 
 _BAD_PARAMS = [
