@@ -294,6 +294,8 @@ python run_benchmarks.py --dataset yambda --version 500m --similarities dot_prod
     --rounds 1 --warmup 0
 ```
 
+One exception: a rustc point release (`1.x.y`) whose kernel and top-K disassembly is identical to the previous compiler's, on aarch64 and x86_64, once addresses and mangled-name hashes are masked, runs the same instructions. Record that check instead of timing.
+
 When the Rust kernel became slower than cpp at 500M, the cause was `lower_bound` and the `accumulate` register reloads (+13..16% before the fix, −7..−11% after). The block cursor (each m2 row read once, front to back, per output row) took it to −13..−17%. The scoring modes and the drain over locals took a further −13..−18% (cosine) and −9..−12% (dot) of 500M kernel time; the one-compare root reject measured as noise.
 
 ## Profiling the kernel (macOS)
