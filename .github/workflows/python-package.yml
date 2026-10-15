@@ -64,6 +64,7 @@ jobs:
     # The dependency floors in pyproject.toml, on the oldest Python: lowest-direct
     # takes the lowest numpy/scipy allowed. No --only-binary on purpose: a floor
     # with no wheel for this Python should fail here, not resolve higher.
+    # The build backend (maturin) is not covered: uv builds with the latest.
     name: Minimum versions (Python 3.11)
     runs-on: ubuntu-latest
 
@@ -100,8 +101,14 @@ jobs:
     - uses: actions/checkout@v7
 
     - name: Install the pinned toolchain
-      # Runner images ship rustup; no args = install what rust-toolchain.toml says
-      run: rustup toolchain install
+      # Runner images ship rustup; no args = install what rust-toolchain.toml says.
+      # One retry after cleaning up a half-installed pin, as in the other jobs
+      shell: bash
+      run: |
+        rustup toolchain install || {
+          rustup toolchain uninstall "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install
+        }
 
     - name: Check formatting
       run: cargo fmt --check
