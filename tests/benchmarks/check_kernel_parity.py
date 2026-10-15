@@ -113,6 +113,7 @@ def scoring_cases():
         ('cosine_additive', sim.cosine, {'shrink': 10, 'shrink_type': 'additive'}),
         ('cosine_threshold', sim.cosine, {'threshold': 0.2}),
         ('p3alpha', sim.p3alpha, {'alpha': 0.8}),
+        ('rp3beta_alpha_beta', sim.rp3beta, {'alpha': 0.8, 'beta': 0.6}),
         ('splus', sim.s_plus, {'l3': 0.5, 'alpha': 0.9, 'beta1': 0.3, 'beta2': 0.4,
                                'pop1': 'sum', 'pop2': 'sum'}),
     ]

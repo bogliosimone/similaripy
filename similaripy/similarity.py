@@ -27,7 +27,9 @@ def dot_product(
     Compute dot product similarity between rows of matrix1 and columns of matrix2.
 
     Args:
-        matrix1: Input sparse matrix (e.g., user-item or item-user); values finite and > 0.
+        matrix1: Input sparse matrix (e.g., user-item or item-user): values finite,
+            negative ones allowed (signed input: only positive scores are kept;
+            shrink_type='bayesian' raises).
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
@@ -87,7 +89,9 @@ def cosine(
     Compute cosine similarity between sparse vectors.
 
     Args:
-        matrix1: Input sparse matrix; values finite and > 0.
+        matrix1: Input sparse matrix: values finite,
+            negative ones allowed (signed input: only positive scores are kept;
+            shrink_type='bayesian' raises).
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
@@ -149,7 +153,9 @@ def asymmetric_cosine(
     Compute asymmetric cosine similarity.
 
     Args:
-        matrix1: Input sparse matrix (e.g., user-item or item-user); values finite and > 0.
+        matrix1: Input sparse matrix (e.g., user-item or item-user): values finite,
+            negative ones allowed (signed input: only positive scores are kept;
+            shrink_type='bayesian' raises).
         matrix2: Optional second matrix. If None, uses matrix1.T.
         alpha: Controls asymmetry in cosine weighting, in [0, 1].
                `alpha=1` weighs only matrix1; `alpha=0.5` is symmetric.
@@ -217,10 +223,14 @@ def tversky(
     Compute Tversky similarity between sparse vectors.
 
     Args:
-        matrix1: Input sparse matrix; values finite and > 0.
+        matrix1: Input sparse matrix: values finite,
+            negative ones allowed (signed input: only positive scores are kept;
+            shrink_type='bayesian' raises).
         matrix2: Optional second matrix. If None, uses matrix1.T.
         alpha: Tversky weight for elements unique to matrix1 (>= 0).
-        beta: Tversky weight for elements unique to matrix2 (>= 0).
+        beta: Tversky weight for elements unique to matrix2 (>= 0). Unless binary, alpha + beta = 1
+            or 4 alpha beta > (1 - alpha - beta)^2 is needed when alpha + beta > 1, and also when
+            alpha + beta < 1 on signed input (else ValueError: the denominator can be <= 0).
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
             A shrink_type that would do nothing for this similarity raises ValueError.
@@ -280,7 +290,9 @@ def jaccard(
     Compute Jaccard similarity (intersection over union).
 
     Args:
-        matrix1: Input sparse matrix; values finite and > 0.
+        matrix1: Input sparse matrix: values finite,
+            negative ones allowed (signed input: only positive scores are kept;
+            shrink_type='bayesian' raises).
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
@@ -341,7 +353,9 @@ def dice(
     Compute Dice similarity (harmonic mean of overlap and size).
 
     Args:
-        matrix1: Input sparse matrix; values finite and > 0.
+        matrix1: Input sparse matrix: values finite,
+            negative ones allowed (signed input: only positive scores are kept;
+            shrink_type='bayesian' raises).
         matrix2: Optional second matrix. If None, uses matrix1.T.
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
@@ -560,21 +574,26 @@ def s_plus(
     Combines Tversky and Cosine normalizations with RP3Beta-style depopularization, fully controlled by tunable weights
 
     Args:
-        matrix1: Input sparse matrix; values finite and > 0.
+        matrix1: Input sparse matrix: values finite,
+            negative ones allowed (signed input: only positive scores are kept;
+            shrink_type='bayesian' raises).
         matrix2: Optional second matrix. If None, uses matrix1.T.
         l1: Tversky normalization strength.
         l2: Cosine normalization strength.
         l3: Popularity penalization strength.
         t1: Tversky alpha for matrix1.
-        t2: Tversky beta for matrix2.
+        t2: Tversky beta for matrix2. With l1 != 0 and not binary, t1 + t2 = 1 or
+            4 t1 t2 > (1 - t1 - t2)^2 is needed when t1 + t2 > 1, and also when t1 + t2 < 1 on
+            signed input (else ValueError: the denominator can be <= 0).
         c1: Cosine exponent coefficient for matrix1.
         c2: Cosine exponent coefficient for matrix2.
-        pop1: Popularity weights for matrix1. 'none', 'sum', or custom array (finite, >= 0;
-            > 0 on rows/columns with entries).
-        pop2: Popularity weights for matrix2. 'none', 'sum', or custom array (finite, >= 0;
-            > 0 on rows/columns with entries).
+        pop1: Popularity weights for matrix1. 'none', 'sum' (sum of |x|), or custom
+            array (finite, >= 0; > 0 on rows/columns with entries).
+        pop2: Popularity weights for matrix2. 'none', 'sum' (sum of |x|), or custom
+            array (finite, >= 0; > 0 on rows/columns with entries).
         alpha: Power applied to the raw similarity value before normalizations (also without
-            them); must be > 0.
+            them); must be > 0, and 1 on signed input (a power of a negative score is NaN or
+            positive).
         beta1: Popularity penalization coefficient for matrix1 items (>= 0).
         beta2: Popularity penalization coefficient for matrix2 items (>= 0).
         k: Number of top-k items per row to keep.

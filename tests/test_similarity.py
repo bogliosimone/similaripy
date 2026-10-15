@@ -662,6 +662,96 @@ def test_binary_keeps_random_walk_normalization(name):
     assert not np.allclose(out.toarray(), sim.dot_product(m, k=10, binary=True, verbose=VERBOSE).toarray())
 
 
+# ---- Signed input (D45): only positive scores >= threshold are results ----
+
+def _signed_matrix(seed=0, integer=True):
+    """60 x 40, ~15% dense, values in -3..3 (exact f32 dot products) or standard normal."""
+    rng = np.random.default_rng(seed)
+    m = sp.random_array((60, 40), density=0.15, format='csr', dtype=np.float32, rng=rng)
+    m.data = (rng.integers(-3, 4, m.nnz) if integer else rng.standard_normal(m.nnz)).astype(np.float32)
+    m.eliminate_zeros()
+    return m
+
+
+def _dense_scores(m, name, kw):
+    """Every pair's score in float64, from the formulas (m @ m.T, rows of m)."""
+    A = m.toarray().astype(np.float64)
+    xy = A @ A.T
+    sq = (A ** 2).sum(axis=1)
+    h = kw.get('shrink', 0.0)
+    additive = h if kw.get('shrink_type') == 'additive' else 0.0
+    stabilized = h if kw.get('shrink_type', 'stabilized') == 'stabilized' else 0.0
+    if name == 'dot_product':
+        return xy
+    t = {'jaccard': (1, 1), 'dice': (0.5, 0.5)}.get(name, (kw.get('alpha'), kw.get('beta')))
+    if name == 's_plus':
+        pop = np.abs(A).sum(axis=1)
+        den = (kw['l1'] * (kw['t1'] * (sq[:, None] - xy) + kw['t2'] * (sq[None, :] - xy) + xy)
+               + kw['l2'] * np.outer(sq ** 0.5, sq ** 0.5)
+               + kw['l3'] * np.outer(pop ** kw['beta1'], pop ** kw['beta2']))
+    elif name in ('cosine', 'asymmetric_cosine'):
+        c1 = kw.get('alpha', 0.5)
+        den = np.outer((sq + additive) ** c1, (sq + additive) ** (1 - c1))
+    else:  # tversky family
+        den = t[0] * (sq[:, None] - xy) + t[1] * (sq[None, :] - xy) + xy
+    den = den + stabilized
+    return np.divide(xy, den, out=np.zeros_like(xy), where=xy != 0)
+
+
+def _check_signed(out, scores, k, threshold):
+    out = out.tocsr()
+    for i in range(scores.shape[0]):
+        cols = out.indices[out.indptr[i]:out.indptr[i + 1]]
+        vals = out.data[out.indptr[i]:out.indptr[i + 1]]
+        assert len(np.unique(cols)) == len(cols), i
+        assert (vals > 0).all() and (vals >= threshold).all(), i  # no 0.0, no negatives
+        best = np.sort(scores[i][(scores[i] > 0) & (scores[i] >= threshold)])[::-1]
+        assert len(vals) == min(k, len(best)), i
+        np.testing.assert_allclose(vals, scores[i, cols], rtol=1e-4, err_msg=str(i))
+        np.testing.assert_allclose(np.sort(vals)[::-1], best[:len(vals)], rtol=1e-4, err_msg=str(i))
+
+
+_SIGNED_CASES = [
+    ('dot_product', {}),
+    ('cosine', {}),
+    ('cosine', {'shrink': 2}),
+    ('cosine', {'shrink': 2, 'shrink_type': 'additive'}),
+    ('asymmetric_cosine', {'alpha': 0.2}),
+    ('jaccard', {}),
+    ('dice', {}),
+    ('tversky', {'alpha': 0.3, 'beta': 0.7}),
+    ('tversky', {'alpha': 0.8, 'beta': 0.6}),
+    ('s_plus', {'l1': 0.5, 'l2': 0.5, 'l3': 1, 't1': 1, 't2': 1, 'pop1': 'sum', 'pop2': 'sum',
+                'beta1': 0.3, 'beta2': 0.4}),
+]
+
+
+@pytest.mark.parametrize('name, kw', _SIGNED_CASES)
+@pytest.mark.parametrize('block_size', [None, 8])
+@pytest.mark.parametrize('k, threshold', [(5, 0.0), (60, 0.0), (60, 0.25)])  # 0.25: exact in f32 and f64
+def test_signed_input_matches_dense_reference(name, kw, block_size, k, threshold):
+    m = _signed_matrix()
+    scores = _dense_scores(m, name, kw)
+    A = m.toarray()
+    assert (scores < 0).any() and ((np.abs(A) @ np.abs(A).T > 0) & (A @ A.T == 0)).any()  # cancelled pairs
+    out = getattr(sim, name)(m, k=k, threshold=threshold, block_size=block_size, verbose=VERBOSE, **kw)
+    _check_signed(out, scores, k, threshold)
+
+
+@pytest.mark.parametrize('name, kw', _SIGNED_CASES)
+def test_signed_float_input_matches_dense_reference(name, kw):
+    m = _signed_matrix(seed=1, integer=False)
+    out = getattr(sim, name)(m, k=5, verbose=VERBOSE, **kw)
+    _check_signed(out, _dense_scores(m, name, kw), 5, 0.0)
+
+
+def test_signed_row_with_only_negative_scores_is_empty():
+    m = sp.csr_array(np.array([[1, -1], [-1, 1], [1, 1]], dtype=np.float32))
+    out = sim.dot_product(m, -m.T, k=3, verbose=VERBOSE)
+    # row 0 . -row 0 = -2, row 0 . -row 1 = 2, row 0 . -row 2 = 0 (cancelled): only column 1
+    np.testing.assert_array_equal(out.toarray(), [[0, 2, 0], [2, 0, 0], [0, 0, 0]])
+
+
 
 if __name__ == "__main__":
     test_similarity_topk()
