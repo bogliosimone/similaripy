@@ -139,6 +139,9 @@ Core benchmarking functions:
 --threshold THRESHOLD  Minimum threshold (default: 0)
 --threads THREADS      Number of threads, 0=auto (default: 0)
 --block-size SIZE      Block size: 0=auto, none=disabled, or int>0 (default: 0)
+--format-output FMT    Output format csr/coo passed to every call (default: csr; also in
+                        run_small_benchmarks.py / run_recommend_benchmarks.py). Builds whose
+                        library default differs (0.7.0: coo) time the same output.
 --rounds ROUNDS        Number of timed rounds per config (default: 1)
 --warmup N             Untimed warm-up rounds before the timed ones (default: 1)
 --tag TAG              Report filename tag (default: similaripy version)
