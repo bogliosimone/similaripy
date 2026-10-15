@@ -14,7 +14,7 @@ SimilariPy provides a suite of similarity functions for sparse matrixes, all imp
 | `tversky(alpha=1.0, beta=1.0)` | Tversky similarity, a generalization of Jaccard and Dice. |
 | `p3alpha(alpha=1.0)` | Graph-based similarity computed as normalized matrix multiplication with `alpha` exponentiation. |
 | `rp3beta(alpha=1.0, beta=1.0)` | P3alpha variant that penalizes popular items with a `beta` exponent. |
-| `s_plus(l1=0.5, l2=0.5, l3=0.0, t1=1.0, t2=1.0, c1=0.5, c2=0.5, alpha=1, pop1='none', pop2='none', beta1=0.0, beta2=0.0)` | Hybrid similarity model that combines Tversky and Cosine normalizations with RP3Beta-style depopularization, controlled by tunable weights. The `pop1` and `pop2` parameters define item popularity weights and may be provided as custom arrays of arbitrary values, or initialized with built-in options: `'sum'`: use the sum of interactions per item; `'none'`: disable popularity weighting  *(default: `'none'`)* |
+| `s_plus(l1=0.5, l2=0.5, l3=0.0, t1=1.0, t2=1.0, c1=0.5, c2=0.5, alpha=1, pop1='none', pop2='none', beta1=0.0, beta2=0.0)` | Hybrid similarity model that combines Tversky and Cosine normalizations with RP3Beta-style depopularization, controlled by tunable weights. The `pop1` and `pop2` parameters define item popularity weights and may be provided as custom arrays of arbitrary values, or initialized with built-in options: `'sum'`: use the sum of `|x|` per item (the interaction count on binary input); `'none'`: disable popularity weighting  *(default: `'none'`)* |
 
 ## Common Parameters
 
@@ -62,6 +62,21 @@ $s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i (x_i^2 + h)} \cdot \sqrt{\sum_i (y_i^2 +
 - Adds shrinkage directly into the cosine denominator norms.
 - **`h`** acts as the shrinkage strength.
 - `shrink_type = 'additive'`
+
+## Signed Input
+
+Negative values are accepted (see [Signed Input](guide.md#signed-input)); only
+positive scores are results. Per function:
+
+| Function | On signed input |
+|----------|-----------------|
+| `dot_product`, `cosine`, `asymmetric_cosine` | Accepted. `shrink_type='bayesian'` raises: `xy / (xy + h)` would flip the sign of negative scores. |
+| `jaccard`, `dice`, `tversky` | Accepted; the norms are sums of `x²`. `tversky` needs `alpha + beta = 1` or `4·alpha·beta > (1 - alpha - beta)²` (the denominator then stays `> 0` on every pair); on any weighted input this binds when `alpha + beta > 1`, on signed input also when `alpha + beta < 1`. Bayesian shrink raises. |
+| `p3alpha`, `rp3beta` | Accepted, as an extension (a signed walk): rows are l1-normalized by the sum of `|x|`, so likes and dislikes share the walk's budget, and the power keeps the sign, `sign(p)·|p|^alpha`. RP3β's popularity is the column sum of `|x|`. Bayesian shrink raises. |
+| `s_plus` | Accepted with `alpha = 1` (another power of a negative score is NaN or positive) and no bayesian shrink; the `t1`/`t2` rule above applies when `l1 != 0`; `pop='sum'` is the sum of `|x|`. |
+
+With `binary=True` the input is never signed (every non-zero is `1`), so none
+of these restrictions apply.
 
 ## Notes
 

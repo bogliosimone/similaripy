@@ -72,6 +72,61 @@ Tips:
 - You can use `bm25plus`, `tfidf`, or `normalize` for different pre-processing strategies.
 - All operations are multithreaded and scale with available CPU cores.
 
+## Signed Input
+
+Input values can be negative, e.g. mean-centered ratings (adjusted cosine) or
+explicit dislikes. A score is evidence of similarity: only **positive** scores
+(`>= threshold`) are results; negative scores and scores that cancel to exactly
+`0` are dropped, so a row with only negative scores comes back empty.
+
+```python
+import numpy as np
+
+# Adjusted cosine: center each user's ratings, then item-item cosine
+urm = urm.tocsr(copy=True)
+counts = np.diff(urm.indptr)
+means = np.divide(urm.sum(axis=1), counts, out=np.zeros(urm.shape[0]), where=counts > 0)
+urm.data -= np.repeat(means, counts)
+similarity_matrix = sim.cosine(urm.T, k=50, threshold=1e-6)
+```
+
+- **Dissimilar items** are not returned. To rank them, negate `matrix2`:
+  `sim.cosine(m, -m.T)` keeps the most negative scores, as positives.
+- **`threshold > 0`** is a good idea on float data: sums that should cancel can
+  leave a tiny float32 residue (e.g. `1e-8`) instead of an exact `0`.
+- **Selectors:** `filter_cols` / `target_cols` matrices select the non-zero
+  entries. Pass the raw (or binarized) interaction matrix, not a mean-centered
+  one: a rating equal to the user's mean centers to `0` and would not be
+  filtered.
+- **Range:** values must be finite in float32 (`|x| < 3.4e38`). Sums that
+  overflow float32 give `inf` (kept) or NaN (`inf - inf`, dropped) scores:
+  rescale very large values first.
+- What each function accepts on signed input is listed in
+  [Similarities](similarity.md#signed-input) and
+  [Normalizations](normalization.md#signed-input).
+
+### Migration notes
+
+Earlier v1 builds rejected any value that was not finite and `> 0`. Now:
+
+- Negative values are accepted wherever the result stays meaningful;
+  where it would be wrong a `ValueError` says why (bayesian shrink, `alpha != 1`
+  in `s_plus` on signed input; `tfidf`, `bm25`, `bm25plus` on negative values).
+  With `inplace=True` those three canonicalize a CSR caller's matrix before
+  raising, as they do for any input.
+- `tversky` / `s_plus` (`l1 != 0`, not binary) reject `alpha`/`beta` pairs whose
+  denominator can be `<= 0`: when `alpha + beta > 1` on any weighted input (e.g.
+  `(3, 0.05)`, which 0.7.0 silently dropped pairs for), and when
+  `alpha + beta < 1` on signed input. No default is affected.
+- `normalize(norm='max')` divides by the largest `|x|`: mixed-sign and
+  all-negative rows change (non-negative rows don't).
+- Popularity `'sum'` in `s_plus` and the `rp3beta` popularity are sums of `|x|`
+  over the summed entries; P3α / RP3β raise signed weights to `alpha` keeping
+  their sign.
+- A `filter_cols` / `target_cols` matrix with duplicate entries that cancel
+  (e.g. `+1` and `-1`) no longer selects that column, in any format.
+- `binary=True` still treats every non-zero (negative too) as `1`.
+
 ## In-depth Introduction
 
 Looking for a full end-to-end example?

@@ -44,6 +44,14 @@ All normalization functions in SimilariPy share the following parameters:
 | `'prob'`   | log((N - df) / df) |
 | `'bm25'`   | BM25-style IDF weighting |
 
+## Signed Input
+
+| Function | On signed input |
+|----------|-----------------|
+| `normalize` | Accepted: `'l1'` divides by the sum of `|x|`, `'l2'` by `sqrt(sum of x²)`, `'max'` by the largest `|x|`; signs are kept. |
+| `binarize` | Accepted: a negative value is an interaction too and becomes `1.0`. |
+| `tfidf`, `bm25`, `bm25plus` | `ValueError`: they need term frequencies (a negative one gives a NaN log or a negative document length). Checked after summing duplicates, so a `+1`/`-1` pair (sum `0`) is just dropped. |
+
 ## Notes
 
 - All normalization functions can operate in-place on **CSR** format to reduce memory overhead.
