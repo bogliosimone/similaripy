@@ -3,7 +3,7 @@
 //! single-block and any candidate order give the same rows). A min-heap whose
 //! root is the worst kept entry: lowest score, then highest column.
 //!
-//! Scores must not be NaN or -0.0 (the heap's `total_cmp` and the push's `>`/`==`
+//! Scores must not be NaN or -0.0 (the heap's `total_cmp` and the push's float compares
 //! would disagree), and each column with a non-zero score is pushed at most once
 //! per row. A 0.0 score is never a result: `drain_into` drops it (an underflowed
 //! product re-pushes its column with 0.0, see `kernel::accumulate`).
@@ -48,11 +48,23 @@ impl TopK {
     }
 
     #[inline]
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // `!(>=)` is the NaN-safe reject, below
     pub fn push(&mut self, col: i32, score: f32) {
         if self.heap.len() < self.k {
             self.heap.push(Reverse(Entry { score, col }));
-        } else if let Some(mut top) = self.heap.peek_mut()
-            && (score > top.0.score || (score == top.0.score && col < top.0.col))
+            return;
+        }
+        let Some(&Reverse(root)) = self.heap.peek() else {
+            return; // k == 0
+        };
+        // Almost every scored column is rejected here: one compare and one
+        // branch. Ties take the second test; `!(>=)` also rejects NaN, which
+        // `score < root` would let through to the tie test.
+        if !(score >= root.score) {
+            return;
+        }
+        if (score > root.score || col < root.col)
+            && let Some(mut top) = self.heap.peek_mut()
         {
             *top = Reverse(Entry { score, col });
         }
@@ -139,6 +151,15 @@ mod tests {
             t.push(c, s);
         }
         assert_eq!(kept(&mut t, 3), vec![(0, 1.0)]);
+    }
+
+    #[test]
+    fn nan_never_replaces_the_root() {
+        // Not produced by drain; guards reuse with other score sources.
+        let mut t = TopK::new(1);
+        t.push(5, 1.0);
+        t.push(0, f32::NAN); // lower column: a `<`-first reject would take the tie path
+        assert_eq!(kept(&mut t, 1), vec![(5, 1.0)]);
     }
 
     proptest! {
