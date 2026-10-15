@@ -70,6 +70,20 @@ impl TopK {
         }
     }
 
+    /// The lowest score `push` can still accept, for a caller that only pushes
+    /// scores `>= threshold`: `threshold` while the heap fills, then the root's
+    /// score (which is `>= threshold`), `+inf` for k == 0. Lets the caller keep
+    /// it in a register and reject without touching the heap; an equal score
+    /// still goes to `push` (the column decides ties).
+    #[inline]
+    pub fn floor(&self, threshold: f32) -> f32 {
+        if self.heap.len() < self.k {
+            threshold
+        } else {
+            self.heap.peek().map_or(f32::INFINITY, |r| r.0.score)
+        }
+    }
+
     /// Writes the kept (col, score) pairs with a non-zero score sorted by column, ids renumbered
     /// through `col_map` if given (a permutation), empties the heap and returns
     /// the count. Slots past it are left untouched. Once per row: the sort is
@@ -160,6 +174,19 @@ mod tests {
         t.push(5, 1.0);
         t.push(0, f32::NAN); // lower column: a `<`-first reject would take the tie path
         assert_eq!(kept(&mut t, 1), vec![(5, 1.0)]);
+    }
+
+    #[test]
+    fn floor_is_threshold_until_full_then_the_root() {
+        let mut t = TopK::new(2);
+        assert_eq!(t.floor(0.5), 0.5);
+        t.push(0, 3.0);
+        assert_eq!(t.floor(0.5), 0.5);
+        t.push(1, 2.0);
+        assert_eq!(t.floor(0.5), 2.0);
+        t.push(2, 4.0); // replaces 2.0
+        assert_eq!(t.floor(0.5), 3.0);
+        assert_eq!(TopK::new(0).floor(0.5), f32::INFINITY);
     }
 
     proptest! {

@@ -257,6 +257,16 @@ fn validate(inp: &Inputs, k: usize) -> Result<usize, Error> {
     Ok(n_slots)
 }
 
+/// Row `t`'s norm terms, read once per drain instead of once per column (the
+/// sums reset in the column loop could alias them, so LLVM reloaded them). Only
+/// the terms whose weight is non-zero are read; the others stay 0 and unused.
+#[derive(Clone, Copy, Default)]
+struct RowTerms {
+    tversky: f32,
+    cosine: f32,
+    depop: f32,
+}
+
 /// Scoring modes for `Params::score`, chosen once per drain (`Params::mode`) so
 /// the per-column weight tests drop out of the common workloads. A `u8`: enum
 /// const generics aren't stable.
@@ -284,6 +294,31 @@ impl Params {
         }
     }
 
+    /// # Safety
+    /// `row` is in range of every norm pair whose weight is non-zero.
+    unsafe fn row_terms(&self, n: &Norms, row: usize) -> RowTerms {
+        // SAFETY: caller contract, checked in `validate`.
+        unsafe {
+            RowTerms {
+                tversky: if self.l1 != 0.0 {
+                    *n.x_tversky.get_unchecked(row)
+                } else {
+                    0.0
+                },
+                cosine: if self.l2 != 0.0 {
+                    *n.x_cosine.get_unchecked(row)
+                } else {
+                    0.0
+                },
+                depop: if self.l3 != 0.0 {
+                    *n.x_depop.get_unchecked(row)
+                } else {
+                    0.0
+                },
+            }
+        }
+    }
+
     fn normalizes(&self) -> bool {
         self.l1 != 0.0
             || self.l2 != 0.0
@@ -297,7 +332,8 @@ impl Params {
     /// without a denominator term scales xy_pow instead of returning 0 (F1).
     ///
     /// # Safety
-    /// `row` and `col` are in range of every norm pair whose weight is non-zero.
+    /// `col` is in range of every norm pair whose weight is non-zero; `x` is
+    /// `row_terms` of the row.
     #[inline(always)]
     /// `POW` must equal `a1 != 1.0` (see `Scratch::drain`), `MODE` must be
     /// `self.mode()` or `FULL`. `DOT` and `COSINE` give the same bits as `FULL`:
@@ -306,7 +342,7 @@ impl Params {
     unsafe fn score<const POW: bool, const MODE: u8>(
         &self,
         n: &Norms,
-        row: usize,
+        x: &RowTerms,
         col: usize,
         xy: f32,
     ) -> f32 {
@@ -316,8 +352,7 @@ impl Params {
         }
         if MODE == COSINE {
             // SAFETY: caller contract, checked in `validate`.
-            let cs =
-                self.l2 * unsafe { n.x_cosine.get_unchecked(row) * n.y_cosine.get_unchecked(col) };
+            let cs = self.l2 * (x.cosine * unsafe { n.y_cosine.get_unchecked(col) });
             let den = cs + self.stabilized_shrink;
             // den == 0 with l2 != 0: 0, as FULL.
             return if den != 0.0 { xy_pow / den } else { 0.0 };
@@ -329,17 +364,14 @@ impl Params {
         // SAFETY: caller contract, checked in `validate`.
         unsafe {
             if self.l1 != 0.0 {
-                let (x, y) = (
-                    *n.x_tversky.get_unchecked(row),
-                    *n.y_tversky.get_unchecked(col),
-                );
-                tv = self.l1 * (self.t1 * (x - xy) + self.t2 * (y - xy) + xy);
+                let y = *n.y_tversky.get_unchecked(col);
+                tv = self.l1 * (self.t1 * (x.tversky - xy) + self.t2 * (y - xy) + xy);
             }
             if self.l2 != 0.0 {
-                cs = self.l2 * (n.x_cosine.get_unchecked(row) * n.y_cosine.get_unchecked(col));
+                cs = self.l2 * (x.cosine * n.y_cosine.get_unchecked(col));
             }
             if self.l3 != 0.0 {
-                dp = self.l3 * (n.x_depop.get_unchecked(row) * n.y_depop.get_unchecked(col));
+                dp = self.l3 * (x.depop * n.y_depop.get_unchecked(col));
             }
         }
         // den != 0 first: the hot path stays the 0.7.0 one. den == 0 means either
@@ -554,52 +586,80 @@ impl Scratch {
     // One call per drain is noise.
     #[inline(never)]
     unsafe fn drain(&mut self, inp: &Inputs, t: usize, offset: usize) {
+        macro_rules! drain_with {
+            ($pow:literal, $mode:ident) => {
+                drain_impl::<$pow, $mode>(
+                    &mut self.sums,
+                    &self.touched,
+                    &mut self.topk,
+                    (&self.filter, &self.target_cols),
+                    inp,
+                    t,
+                    offset,
+                )
+            };
+        }
         // Branch once per drain: inside the loop LLVM speculates `powf` (a pure
         // intrinsic) and calls it for every column even when a1 == 1. The mode
         // takes the weight tests out of the loop for dot and cosine.
         // SAFETY: caller contract, forwarded.
         unsafe {
             match (inp.params.a1 != 1.0, inp.params.mode()) {
-                (true, DOT) => self.drain_impl::<true, DOT>(inp, t, offset),
-                (true, COSINE) => self.drain_impl::<true, COSINE>(inp, t, offset),
-                (true, _) => self.drain_impl::<true, FULL>(inp, t, offset),
-                (false, DOT) => self.drain_impl::<false, DOT>(inp, t, offset),
-                (false, COSINE) => self.drain_impl::<false, COSINE>(inp, t, offset),
-                (false, _) => self.drain_impl::<false, FULL>(inp, t, offset),
-            }
-        }
-    }
-
-    /// # Safety
-    /// As `drain`; `MODE` = `inp.params.mode()`.
-    #[inline(always)]
-    unsafe fn drain_impl<const POW: bool, const MODE: u8>(
-        &mut self,
-        inp: &Inputs,
-        t: usize,
-        offset: usize,
-    ) {
-        let p = &inp.params;
-        for &local in &self.touched {
-            // SAFETY: touched columns are < sums.len().
-            let s = unsafe { self.sums.get_unchecked_mut(local as usize) };
-            let xy = std::mem::take(s);
-            let col = offset + local as usize;
-            let col_i = col as i32;
-            // SAFETY: col < n_cols (caller), row t marked (`mark_selections`).
-            let keep = unsafe {
-                !(inp.filter.is_some() && self.filter.contains(col))
-                    && (inp.target_cols.is_none() || self.target_cols.contains(col))
-            };
-            if keep {
-                // SAFETY: t and col in range of the active norms (validate).
-                let val = unsafe { p.score::<POW, MODE>(&inp.norms, t, col, xy) };
-                if val >= p.threshold {
-                    self.topk.push(col_i, val);
-                }
+                (true, DOT) => drain_with!(true, DOT),
+                (true, COSINE) => drain_with!(true, COSINE),
+                (true, _) => drain_with!(true, FULL),
+                (false, DOT) => drain_with!(false, DOT),
+                (false, COSINE) => drain_with!(false, COSINE),
+                (false, _) => drain_with!(false, FULL),
             }
         }
         self.touched.clear();
+    }
+}
+
+/// `Scratch::drain`'s loop. A free function over slices and locals, like
+/// `accumulate`: as a `&mut self` method LLVM reloaded `sums`' pointer every
+/// column (the reset store might alias `Scratch`), and the top-K reject read
+/// the heap's length, pointer and root from memory. Here the row's norm terms
+/// and the lowest acceptable score (`floor`) stay in registers.
+///
+/// # Safety
+/// As `Scratch::drain`; `MODE` = `inp.params.mode()`, `sel` = (filter,
+/// target_cols) marked for row `t`.
+#[inline(always)]
+unsafe fn drain_impl<const POW: bool, const MODE: u8>(
+    sums: &mut [f32],
+    touched: &[u32],
+    topk: &mut TopK,
+    sel: (&RowMarks, &RowMarks),
+    inp: &Inputs,
+    t: usize,
+    offset: usize,
+) {
+    let p = &inp.params;
+    // SAFETY: t in range of the active norms (validate).
+    let x = unsafe { p.row_terms(&inp.norms, t) };
+    // `val >= floor` is the threshold test while the heap fills and push's
+    // root reject once it is full (the root passed the threshold): same pushes.
+    let mut floor = topk.floor(p.threshold);
+    for &local in touched {
+        // SAFETY: touched columns are < sums.len().
+        let s = unsafe { sums.get_unchecked_mut(local as usize) };
+        let xy = std::mem::take(s);
+        let col = offset + local as usize;
+        // SAFETY: col < n_cols (caller), row t marked (`mark_selections`).
+        let keep = unsafe {
+            !(inp.filter.is_some() && sel.0.contains(col))
+                && (inp.target_cols.is_none() || sel.1.contains(col))
+        };
+        if keep {
+            // SAFETY: col in range of the active norms (validate).
+            let val = unsafe { p.score::<POW, MODE>(&inp.norms, &x, col, xy) };
+            if val >= floor {
+                topk.push(col as i32, val);
+                floor = topk.floor(p.threshold);
+            }
+        }
     }
 }
 
@@ -749,12 +809,13 @@ mod tests {
     fn mode_and_full_bits<const POW: bool>(p: &Params, n: &Norms, xy: f32) -> (u32, u32) {
         // SAFETY: row 0 and col 0 exist in every norm slice.
         unsafe {
+            let x = p.row_terms(n, 0);
             let m = match p.mode() {
-                DOT => p.score::<POW, DOT>(n, 0, 0, xy),
-                COSINE => p.score::<POW, COSINE>(n, 0, 0, xy),
-                _ => p.score::<POW, FULL>(n, 0, 0, xy),
+                DOT => p.score::<POW, DOT>(n, &x, 0, xy),
+                COSINE => p.score::<POW, COSINE>(n, &x, 0, xy),
+                _ => p.score::<POW, FULL>(n, &x, 0, xy),
             };
-            (m.to_bits(), p.score::<POW, FULL>(n, 0, 0, xy).to_bits())
+            (m.to_bits(), p.score::<POW, FULL>(n, &x, 0, xy).to_bits())
         }
     }
 
