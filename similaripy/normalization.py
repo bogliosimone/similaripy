@@ -64,6 +64,15 @@ def _prepare_csr(X: sps.sparray, axis: int, inplace: bool) -> sps.csr_array:
     return X
 
 
+def _check_non_negative(X: sps.csr_array, name: str) -> None:
+    """Term weightings need counts: a negative value would give a NaN log or a
+    negative document length (signed input, D45). Checked on the canonical data,
+    so +1/-1 duplicates sum to 0 and pass."""
+    if (X.data < 0).any():
+        raise ValueError(f'{name} needs non-negative values (term frequencies); '
+                         'signed input (values < 0) is not supported')
+
+
 def _finalize_csr(X: sps.sparray, axis: int) -> sps.csr_array:
     """Undo axis transposition and return final CSR matrix."""
     if axis == 0:
@@ -95,6 +104,10 @@ def normalize(
     """
     Normalize a sparse matrix along rows or columns using L1, L2, or max-norm.
 
+    Signed input is fine: l1 divides by the sum of |x|, l2 by sqrt(sum of x^2),
+    max by the largest |x|. Rows of zeros (empty after canonicalization) stay
+    unchanged.
+
     Args:
         X: Input sparse matrix.
         norm: Normalization method ('l1', 'l2', or 'max').
@@ -117,7 +130,8 @@ def binarize(
 ) -> sps.csr_array:
     """
     Set every non-zero entry to 1.0 (set semantics): duplicates are summed
-    first, then explicit zeros dropped.
+    first, then explicit zeros dropped. A negative value is an interaction
+    too: it becomes 1.0.
 
     Same values as `binary=True` in the similarity functions, as a separate
     step: binarize only one of the two matrices, or binarize before another
@@ -149,7 +163,8 @@ def bm25(
     Apply BM25 normalization to a sparse matrix.
 
     Args:
-        X: Input sparse matrix.
+        X: Input sparse matrix; values >= 0 (term frequencies), checked after
+            summing duplicates (with inplace=True a CSR is canonicalized before the error).
         axis: Normalize rows (1) or columns (0).
         k1: Term saturation parameter.
         b: Length normalization parameter.
@@ -160,9 +175,13 @@ def bm25(
 
     Returns:
         BM25-normalized CSR matrix.
+
+    Raises:
+        ValueError: on a negative value.
     """
     _validate_modes(tf_mode, idf_mode)
     X = _prepare_csr(X, axis, inplace)
+    _check_non_negative(X, 'bm25')
     _core.bm25plus(X.data, X.indices, X.indptr, X.shape, k1, b, 0.0, tf_mode, idf_mode, logbase)
     return _finalize_csr(X, axis)
 
@@ -182,7 +201,8 @@ def bm25plus(
     Apply BM25+ normalization to a sparse matrix.
 
     Args:
-        X: Input sparse matrix.
+        X: Input sparse matrix; values >= 0 (term frequencies), checked after
+            summing duplicates (with inplace=True a CSR is canonicalized before the error).
         axis: Normalize rows (1) or columns (0).
         k1: Term saturation parameter.
         b: Length normalization parameter.
@@ -194,9 +214,13 @@ def bm25plus(
 
     Returns:
         BM25+ normalized CSR matrix.
+
+    Raises:
+        ValueError: on a negative value.
     """
     _validate_modes(tf_mode, idf_mode)
     X = _prepare_csr(X, axis, inplace)
+    _check_non_negative(X, 'bm25plus')
     _core.bm25plus(X.data, X.indices, X.indptr, X.shape, k1, b, delta, tf_mode, idf_mode, logbase)
     return _finalize_csr(X, axis)
 
@@ -213,7 +237,8 @@ def tfidf(
     Apply TF-IDF normalization to a sparse matrix.
 
     Args:
-        X: Input sparse matrix.
+        X: Input sparse matrix; values >= 0 (term frequencies), checked after
+            summing duplicates (with inplace=True a CSR is canonicalized before the error).
         axis: Normalize rows (1) or columns (0).
         logbase: Logarithm base.
         tf_mode: Term frequency mode.
@@ -222,9 +247,13 @@ def tfidf(
 
     Returns:
         TF-IDF normalized CSR matrix.
+
+    Raises:
+        ValueError: on a negative value.
     """
     _validate_modes(tf_mode, idf_mode)
     X = _prepare_csr(X, axis, inplace)
+    _check_non_negative(X, 'tfidf')
     _core.tfidf(X.data, X.indices, X.indptr, X.shape, tf_mode, idf_mode, logbase)
     return _finalize_csr(X, axis)
 

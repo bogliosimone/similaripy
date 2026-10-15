@@ -105,8 +105,9 @@ impl IdfMode {
     }
 }
 
-/// Divides each row by its l1 / l2 / max norm. Empty rows, zero norms and
-/// rows with max <= 0 are left unchanged.
+/// Divides each row by its l1 / l2 / max norm (sum of |x|, sqrt of the sum
+/// of x^2, largest |x|: signed rows keep their signs). Empty rows and zero
+/// norms are left unchanged.
 pub fn normalize_rows<T: Value, I: Copy + Into<i64> + Sync>(
     norm: Norm,
     data: &mut [T],
@@ -117,17 +118,12 @@ pub fn normalize_rows<T: Value, I: Copy + Into<i64> + Sync>(
         let d = match norm {
             Norm::L1 => row.iter().fold(T::ZERO, |s, &x| s + x.abs()),
             Norm::L2 => row.iter().fold(T::ZERO, |s, &x| s + x * x).sqrt(),
-            Norm::Max => match row.split_first() {
-                Some((&first, rest)) => rest.iter().fold(first, |m, &x| if x > m { x } else { m }),
-                None => return,
-            },
+            // max(x) on non-negative rows, bit for bit
+            Norm::Max => row
+                .iter()
+                .fold(T::ZERO, |m, &x| if x.abs() > m { x.abs() } else { m }),
         };
-        // l1/l2: empty row; max: zero division and negative values
-        let skip = match norm {
-            Norm::Max => d <= T::ZERO,
-            _ => d == T::ZERO,
-        };
-        if !skip {
+        if d != T::ZERO {
             row.iter_mut().for_each(|x| *x = *x / d);
         }
     });
@@ -383,5 +379,14 @@ mod tests {
             });
             prop_assert!(seen.into_inner().unwrap().iter().all(|&c| c == 1));
         }
+    }
+
+    #[test]
+    fn max_norm_divides_by_largest_abs() {
+        // rows: mixed signs, all negative, all positive, empty, zeros
+        let mut data = vec![2.0f32, -4.0, 1.0, -1.0, -0.5, 3.0, 6.0, 0.0, 0.0];
+        let indptr = [0i32, 3, 5, 7, 7, 9];
+        normalize_rows(Norm::Max, &mut data, &indptr).unwrap();
+        assert_eq!(data, [0.5, -1.0, 0.25, -1.0, -0.5, 0.5, 1.0, 0.0, 0.0]);
     }
 }
