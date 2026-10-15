@@ -74,6 +74,17 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install the pinned toolchain
+        # As in the wheel jobs: maturin's sdist runs cargo metadata, and rustup's
+        # auto-install of a half-installed pin failed here ("'cargo' is not
+        # installed for the toolchain"); clean up and retry once
+        shell: bash
+        run: |
+          rustup toolchain install || {
+            rustup toolchain uninstall "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+            rustup toolchain install
+          }
+
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
