@@ -551,8 +551,9 @@ impl Scratch {
 /// `touched` header from the stack every element (decisions D14).
 ///
 /// A column whose sum is exactly 0.0 (an underflowed product) is pushed again on
-/// its next hit, as in 0.7.0; drain then scores the duplicate with xy = 0. Kept
-/// for parity; there is at most one write per element, so `reserve` covers it.
+/// its next hit, as in 0.7.0; drain then scores the duplicate with xy = 0 and
+/// `TopK::drain_into` drops that 0.0 from the output. There is at most one write
+/// per element, so `reserve` covers it.
 ///
 /// # Safety
 /// Every `c - offset` is `< sums.len()`.

@@ -385,8 +385,11 @@ def s_plus(
     )
 
     # Every weight >= 0 and the input positive (checked in `_s_plus`): every
-    # product, sum and denominator is then > 0, so no score is exactly 0.0
-    # (D6). Negative values would flip signs or make NaN (a negative base to a
+    # product and sum is then > 0 (bar f32 underflow, whose 0.0 scores the kernel
+    # drops; D6), and so is every denominator except tversky's on weighted
+    # input: t1 (x - xy) + t2 (y - xy) + xy can go negative when xy > x and
+    # t1 + t2 > 1, and the threshold then drops the pair (as in 0.7.0).
+    # Negative values would flip signs or make NaN (a negative base to a
     # fractional power); alpha <= 0 would flatten or invert the ranking.
     for name, value in (('l1', l1), ('l2', l2), ('l3', l3), ('t1 (tversky alpha)', t1),
                         ('t2 (tversky beta)', t2), ('c1', c1), ('c2', c2), ('p1 (beta1)', p1),
@@ -550,8 +553,8 @@ def _s_plus(
 
     # Rows come back exact (no padding), sorted by column, in target order
     # (ascending, unique), so both formats wrap the kernel's arrays without a
-    # copy. Canonical as well: no duplicates, and no zeros under D6 (non-negative
-    # input never sums to exactly 0.0).
+    # copy. Canonical as well: no duplicates and no zeros (the kernel drops 0.0
+    # scores, which under D6 only an f32 underflow produces).
     if bar is not None:
         bar.set_description(f'Building {format_output} matrix')
     shape = (n_output_rows, n_output_cols)

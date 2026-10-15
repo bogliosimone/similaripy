@@ -4,7 +4,9 @@
 //! root is the worst kept entry: lowest score, then highest column.
 //!
 //! Scores must not be NaN or -0.0 (the heap's `total_cmp` and the push's `>`/`==`
-//! would disagree), and each column is pushed at most once per row.
+//! would disagree), and each column with a non-zero score is pushed at most once
+//! per row. A 0.0 score is never a result: `drain_into` drops it (an underflowed
+//! product re-pushes its column with 0.0, see `kernel::accumulate`).
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -56,7 +58,7 @@ impl TopK {
         }
     }
 
-    /// Writes the kept (col, score) pairs sorted by column, ids renumbered
+    /// Writes the kept (col, score) pairs with a non-zero score sorted by column, ids renumbered
     /// through `col_map` if given (a permutation), empties the heap and returns
     /// the count. Slots past it are left untouched. Once per row: the sort is
     /// k log k, outside the scoring loop.
@@ -68,6 +70,9 @@ impl TopK {
     ) -> usize {
         // The heap's own buffer, sorted in place and handed back empty: no allocation.
         let mut kept = std::mem::take(&mut self.heap).into_vec();
+        // Per kept entry, not per candidate: a 0.0 can only come from an f32
+        // underflow under D6, and it is the duplicate of a column kept above it.
+        kept.retain(|Reverse(e)| e.score != 0.0);
         if let Some(map) = col_map {
             for Reverse(e) in &mut kept {
                 e.col = map[e.col as usize];
@@ -124,6 +129,16 @@ mod tests {
         }
         // col 2 ties col 3 at 2.0, comes later, and replaces it: lower column wins
         assert_eq!(kept(&mut t, 2), vec![(1, 3.0), (2, 2.0)]);
+    }
+
+    #[test]
+    fn drops_zero_scores() {
+        // An underflowed product re-pushes its column with 0.0 (kernel::accumulate).
+        let mut t = TopK::new(5);
+        for (c, s) in [(0, 1.0), (0, 0.0), (2, 0.0)] {
+            t.push(c, s);
+        }
+        assert_eq!(kept(&mut t, 3), vec![(0, 1.0)]);
     }
 
     proptest! {
