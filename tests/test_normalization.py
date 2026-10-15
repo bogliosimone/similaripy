@@ -131,3 +131,40 @@ if __name__ == "__main__":
         test_normalize_max()
         test_tfidf()
         test_bm25()
+
+
+# ---- Signed input (D45) ----
+
+def _signed(seed=0):
+    X = generate_random_matrix(seed=seed)
+    X.data[::3] *= -1
+    return X
+
+
+def test_normalize_signed():
+    X = _signed()
+    A = X.toarray().astype(np.float64)
+    for name, d in (('l1', np.abs(A).sum(axis=1)), ('l2', np.sqrt((A ** 2).sum(axis=1))),
+                    ('max', np.abs(A).max(axis=1))):
+        expected = np.divide(A, d[:, None], out=np.zeros_like(A), where=d[:, None] != 0)
+        np.testing.assert_allclose(norm.normalize(X, norm=name).toarray(), expected, rtol=1e-6, err_msg=name)
+    # all-negative row: max divides by its largest |x| (before: left unchanged)
+    neg = sp.csr_array(np.array([[-2.0, -4.0]], dtype=np.float32))
+    np.testing.assert_array_equal(norm.normalize(neg, norm='max').toarray(), [[-0.5, -1.0]])
+
+
+def test_binarize_signed():
+    X = _signed()
+    np.testing.assert_array_equal(norm.binarize(X).toarray(), (X.toarray() != 0).astype(np.float32))
+
+
+def test_term_weightings_reject_negatives():
+    import pytest
+    X = _signed()
+    for f in (norm.tfidf, norm.bm25, norm.bm25plus):
+        with pytest.raises(ValueError, match=f'{f.__name__} needs non-negative values'):
+            f(X)
+    # a +1/-1 duplicate pair sums to 0 (dropped), not a negative value
+    dup = sp.coo_array((np.array([1, -1, 2], dtype=np.float32), ([0, 0, 1], [0, 0, 1])), shape=(2, 2))
+    for f in (norm.tfidf, norm.bm25, norm.bm25plus):
+        assert f(dup).nnz == 1
