@@ -33,8 +33,14 @@ fn to_csr(dense: &[Vec<f32>]) -> Csr {
 }
 
 fn dense(rows: usize, cols: usize) -> impl Strategy<Value = Vec<Vec<f32>>> {
-    // Small integers keep every dot product exact in f32.
-    let cell = prop_oneof![3 => Just(0.0f32), 2 => (1u8..4).prop_map(f32::from)];
+    // Small integers keep every dot product exact in f32; negative ones (signed
+    // input, D45) make sums cancel to exactly 0.0 (re-pushed columns, dropped
+    // zero scores) and give negative scores, never results.
+    let cell = prop_oneof![
+        3 => Just(0.0f32),
+        2 => (1u8..4).prop_map(f32::from),
+        1 => (-3i8..0).prop_map(f32::from),
+    ];
     prop::collection::vec(prop::collection::vec(cell, cols), rows)
 }
 
@@ -127,7 +133,7 @@ fn ref_score(c: &Case, row: usize, col: usize, xy: f64) -> (f64, f64) {
     let n = |i: usize, j: usize| f64::from(c.norms[i][j]);
     let p = xy.powf(a1);
     if l1 == 0.0 && l2 == 0.0 && l3 == 0.0 && ss == 0.0 && bs == 0.0 {
-        return (p, ATOL + RTOL * p);
+        return (p, ATOL + RTOL * p.abs());
     }
     let tv = l1 * (t1 * (n(0, row) - xy) + t2 * (n(1, col) - xy) + xy);
     let cs = l2 * n(2, row) * n(3, col);
@@ -144,8 +150,10 @@ fn ref_score(c: &Case, row: usize, col: usize, xy: f64) -> (f64, f64) {
     if bs != 0.0 {
         v *= p / (p + bs);
     }
-    let terms =
-        l1 * (t1 * (n(0, row) + xy) + t2 * (n(1, col) + xy) + xy) + cs.abs() + dp.abs() + ss;
+    let terms = l1 * (t1 * (n(0, row) + xy.abs()) + t2 * (n(1, col) + xy.abs()) + xy.abs())
+        + cs.abs()
+        + dp.abs()
+        + ss;
     let cond = if den != 0.0 { terms / den.abs() } else { 1.0 };
     (
         v,
@@ -230,10 +238,12 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
             let untargeted = c.target.as_ref().is_some_and(|g| g[t][col] == 0.0);
             let (score, tol) = ref_score(c, t, col, xy);
             let threshold = f64::from(c.threshold);
-            if touched && !filtered && !untargeted {
-                // f32 vs f64: within tolerance of the threshold either side is right.
-                prop_assume!(!close(score, threshold, tol));
-                if score >= threshold {
+            // xy == 0.0 is exact in f32 too (a cancelled sum): score 0, dropped.
+            // NaN (a negative xy ** 0.5) is never a result either.
+            if touched && !filtered && !untargeted && xy != 0.0 {
+                // f32 vs f64: within tolerance of the threshold (or of 0) either side is right.
+                prop_assume!(!close(score, threshold, tol) && !close(score, 0.0, tol));
+                if score > 0.0 && score >= threshold {
                     eligible.push((col, score, tol));
                 }
             }
