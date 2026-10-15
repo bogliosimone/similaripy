@@ -60,6 +60,38 @@ jobs:
         python -m pip install pytest
         pytest
 
+  minimum-versions:
+    # The dependency floors in pyproject.toml, on the oldest Python: lowest-direct
+    # takes the lowest numpy/scipy allowed. No --only-binary on purpose: a floor
+    # with no wheel for this Python should fail here, not resolve higher.
+    name: Minimum versions (Python 3.11)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v7
+      with:
+        python-version: "3.11"
+
+    - name: Install the pinned toolchain
+      shell: bash
+      run: |
+        rustup toolchain install || {
+          rustup toolchain uninstall "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install
+        }
+
+    - name: Install the package with the lowest allowed dependencies
+      run: |
+        python -m pip install uv
+        uv pip install --system --resolution lowest-direct . "pytest>=8"
+        python -c "import numpy, scipy; print('numpy', numpy.__version__, 'scipy', scipy.__version__)"
+
+    - name: Run tests
+      run: pytest
+
   rust:
     name: Rust core (fmt, clippy, test)
     runs-on: ubuntu-latest
