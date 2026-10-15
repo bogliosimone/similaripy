@@ -417,7 +417,10 @@ def p3alpha(
     Compute P3alpha similarity using a normalized 3-step random walk.
 
     Args:
-        matrix1: Input sparse matrix; values finite and > 0.
+        matrix1: Input sparse matrix: values finite, negative ones allowed (signed input,
+            an extension: rows are l1-normalized by the sum of |x|, so likes and dislikes
+            share the walk's budget, and the power keeps the sign, sign(p) |p|^alpha; only
+            positive scores are kept; shrink_type='bayesian' raises).
         matrix2: Optional second matrix. If None, uses matrix1.T.
         alpha: Exponent for transition probabilities to control popularity effect (> 0).
         k: Number of top-k items per row to keep.
@@ -444,9 +447,9 @@ def p3alpha(
     if binary:  # before the normalization, which the kernel's binary mode would erase
         matrix1, matrix2 = _binarize(matrix1), _binarize(matrix2)
     matrix1 = _normalize(matrix1, norm='l1', axis=1, inplace=False)
-    matrix1.data = np.power(matrix1.data, alpha)
+    matrix1.data = _signed_power(matrix1.data, alpha)
     matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
-    matrix2.data = np.power(matrix2.data, alpha)
+    matrix2.data = _signed_power(matrix2.data, alpha)
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, 'p3alpha', cosine=False, denominator=False)
     return _s_plus(
@@ -488,10 +491,11 @@ def rp3beta(
     Compute RP3beta similarity: P3alpha with popularity penalization.
 
     Args:
-        matrix1: Input sparse matrix; values finite and > 0.
+        matrix1: Input sparse matrix: values finite, negative ones allowed (signed input,
+            an extension as in `p3alpha`; popularity is the column sum of |x|).
         matrix2: Optional second matrix. If None, uses matrix1.T.
         alpha: Exponent for transition probabilities (> 0).
-        beta: Exponent to penalize popularity based on column sums (>= 0).
+        beta: Exponent to penalize popularity based on matrix2's column sums of |x| (>= 0).
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
             A shrink_type that would do nothing for this similarity raises ValueError.
@@ -515,11 +519,11 @@ def rp3beta(
         matrix2 = matrix1.T
     if binary:  # before the normalization, which the kernel's binary mode would erase
         matrix1, matrix2 = _binarize(matrix1), _binarize(matrix2)
-    pop_m2 = np.asarray(matrix2.sum(axis=0)).ravel()  # item degree when binary
+    pop_m2 = _abs_col_sums(matrix2)  # item degree when binary
     matrix1 = _normalize(matrix1, norm='l1', axis=1, inplace=False)
-    matrix1.data = np.power(matrix1.data, alpha)
+    matrix1.data = _signed_power(matrix1.data, alpha)
     matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
-    matrix2.data = np.power(matrix2.data, alpha)
+    matrix2.data = _signed_power(matrix2.data, alpha)
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, 'rp3beta', cosine=False, denominator=True)
     return _s_plus(
@@ -639,6 +643,22 @@ def s_plus(
         num_threads=num_threads,
         block_size=block_size,
     )
+
+
+def _signed_power(x: np.ndarray, alpha: float) -> np.ndarray:
+    """sign(x) |x|^alpha: x^alpha bit for bit on x > 0; on signed input (D45) a negative
+    transition weight keeps its sign (np.power would give NaN for a fractional alpha)."""
+    return np.copysign(np.abs(x) ** alpha, x)
+
+
+def _abs_col_sums(m: sparray) -> np.ndarray:
+    """
+    Column sums of |x| over the summed entries, as in the canonical matrix the
+    kernel sees: duplicates (3, -1) count 2, not 4. scipy's abs() sums duplicates
+    first, in place, hence the copy. m keeps its format: converting to CSR first
+    would reorder the float additions and change the sums on non-negative input.
+    """
+    return np.asarray(abs(m.copy()).sum(axis=0)).ravel()
 
 
 def _shrink_values(shrink: float, shrink_type: str, name: str, cosine: bool,

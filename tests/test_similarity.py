@@ -745,6 +745,56 @@ def test_signed_float_input_matches_dense_reference(name, kw):
     _check_signed(out, _dense_scores(m, name, kw), 5, 0.0)
 
 
+def _dense_random_walk(m, alpha, beta=None):
+    """P3alpha / RP3beta in float64: l1 rows by sum |x|, sign-preserving power, pop = sum |x|."""
+    def walk(M):
+        M = M / np.maximum(np.abs(M).sum(axis=1, keepdims=True), 1e-300)
+        return np.sign(M) * np.abs(M) ** alpha
+    A = m.toarray().astype(np.float64)
+    s = walk(A) @ walk(A.T)
+    if beta is not None:
+        s = s / np.abs(A).sum(axis=1)[None, :] ** beta
+    return s
+
+
+@pytest.mark.parametrize('name, beta', [('p3alpha', None), ('rp3beta', 0.6)])
+@pytest.mark.parametrize('block_size', [None, 8])
+@pytest.mark.parametrize('k', [5, 60])
+@pytest.mark.parametrize('integer', [True, False])
+def test_signed_random_walk_matches_dense_reference(name, beta, block_size, k, integer):
+    # threshold 1e-4: well below the scores (~1e-2), above f32 residues of cancelled sums
+    m = _signed_matrix(integer=integer)
+    scores = _dense_random_walk(m, 0.8, beta)
+    assert (scores < -1e-4).any()
+    kw = {} if beta is None else {'beta': beta}
+    out = getattr(sim, name)(m, alpha=0.8, k=k, threshold=1e-4, block_size=block_size,
+                             verbose=VERBOSE, **kw)
+    _check_signed(out, scores, k, 1e-4)
+
+
+@pytest.mark.parametrize('fmt', ['coo', 'csr'])
+def test_rp3beta_popularity_on_summed_duplicates(fmt):
+    # (3, -1) duplicates are one entry of 2 (pop 2), not |3| + |-1| = 4
+    m = _signed_matrix()
+    coo = m.tocoo()
+    i = np.flatnonzero(coo.data > 0)[0]
+    rows = np.append(coo.row, coo.row[i])
+    cols = np.append(coo.col, coo.col[i])
+    vals = np.append(coo.data, np.float32(-1))
+    vals[i] += 1  # the pair sums to the original value
+    if fmt == 'coo':
+        dup = sp.coo_array((vals, (rows, cols)), shape=m.shape)
+    else:  # non-canonical CSR: rows grouped, the duplicate last in its row
+        order = np.argsort(rows, kind='stable')
+        rows, cols, vals = rows[order], cols[order], vals[order]
+        indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=m.shape[0]))])
+        dup = sp.csr_array((vals, cols, indptr), shape=m.shape)
+    before = dup.data.copy()  # dup shares vals' buffer
+    np.testing.assert_array_equal(sim.rp3beta(dup, beta=0.6, verbose=VERBOSE).toarray(),
+                                  sim.rp3beta(m, beta=0.6, verbose=VERBOSE).toarray())
+    np.testing.assert_array_equal(dup.data, before)  # scipy's abs() sums duplicates in place
+
+
 def test_signed_row_with_only_negative_scores_is_empty():
     m = sp.csr_array(np.array([[1, -1], [-1, 1], [1, 1]], dtype=np.float32))
     out = sim.dot_product(m, -m.T, k=3, verbose=VERBOSE)
