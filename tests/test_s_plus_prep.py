@@ -7,7 +7,7 @@ import similaripy as sim
 
 
 def _m(rows=60, cols=40, seed=0):
-    return sp.random_array((rows, cols), density=0.2, format='csr', dtype=np.float32, rng=seed)
+    return sp.random_array((rows, cols), density=0.2, format='csr', dtype=np.float32, random_state=np.random.default_rng(seed))
 
 
 def _same(a, b):
@@ -70,7 +70,7 @@ def test_output_dtypes(format_output, index_dtype):
     m.indices, m.indptr = m.indices.astype(index_dtype), m.indptr.astype(index_dtype)
     out = sim.cosine(m, k=10, verbose=False, format_output=format_output, filter_cols=[1, 2])
     assert out.format == format_output and out.data.dtype == np.float32
-    idx = (out.indices,) if format_output == 'csr' else out.coords
+    idx = (out.indices,) if format_output == 'csr' else (out.row, out.col)
     assert all(i.dtype == np.int32 for i in idx)
 
 
@@ -384,7 +384,7 @@ def test_coo_output_fed_back(monkeypatch):
     # Feeding an output back (chained calls) must equal feeding its CSR form,
     # and skip the canonicalization: the output is canonical already.
     from similaripy import _core
-    m = sp.random_array((200, 60), density=0.01, format='csr', dtype=np.float32, rng=0)
+    m = sp.random_array((200, 60), density=0.01, format='csr', dtype=np.float32, random_state=np.random.default_rng(0))
     s = sim.cosine(m.T, k=20, format_output='coo', verbose=False)  # rows shorter than k
     ref = sim.dot_product(m, s.tocsr(), k=10, verbose=False)
 
@@ -423,7 +423,7 @@ def test_output_exact_and_canonical(order, block_size, monkeypatch):
     # formats; blocked, permuted and unblocked give the same arrays exactly.
     from similaripy import _s_plus
     monkeypatch.setattr(_s_plus, '_COLUMN_ORDER', order)
-    m = sp.random_array((300, 60), density=0.03, format='csr', dtype=np.float32, rng=2)
+    m = sp.random_array((300, 60), density=0.03, format='csr', dtype=np.float32, random_state=np.random.default_rng(2))
     m = sp.csr_array(m.multiply((np.arange(60) != 5).astype(np.float32)))  # column 5 empty:
     m.eliminate_zeros()                                                     # output row 5 empty
     kw = {'k': 15, 'verbose': False}
