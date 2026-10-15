@@ -14,7 +14,7 @@ doctest = false
 
 [dependencies]
 similaripy-core = { path = "../similaripy-core" }
-numpy = "0.29"
+numpy = "0.30"
 # No extension-module feature: maturin sets PYO3_BUILD_EXTENSION_MODULE.
-pyo3 = "0.29"
+pyo3 = "0.30"
 rayon = "1.12"
