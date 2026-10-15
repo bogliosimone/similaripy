@@ -795,6 +795,23 @@ def test_rp3beta_popularity_on_summed_duplicates(fmt):
     np.testing.assert_array_equal(dup.data, before)  # scipy's abs() sums duplicates in place
 
 
+@pytest.mark.parametrize('fmt', ['coo', 'csc'])
+def test_rp3beta_popularity_non_negative_same_additions(fmt):
+    # R1: non-negative input keeps m.sum(axis=0) bit for bit, also on shuffled COO
+    # and unsorted CSC, where summing duplicates first reorders the additions
+    rng = np.random.default_rng(3)
+    n = 20000
+    rows, cols = rng.integers(0, 50, n), rng.integers(0, 40, n)
+    vals = rng.random(n).astype(np.float32)
+    m = sp.coo_array((vals, (rows, cols)), shape=(50, 40))
+    if fmt == 'csc':  # unsorted, with duplicates: each column's entries in random order
+        order = np.lexsort((rng.random(n), cols))
+        indptr = np.concatenate([[0], np.cumsum(np.bincount(cols, minlength=40))])
+        m = sp.csc_array((vals[order], rows[order], indptr), shape=(50, 40))
+    from similaripy.similarity import _abs_col_sums
+    np.testing.assert_array_equal(_abs_col_sums(m), np.asarray(m.sum(axis=0)).ravel())
+
+
 def test_signed_row_with_only_negative_scores_is_empty():
     m = sp.csr_array(np.array([[1, -1], [-1, 1], [1, 1]], dtype=np.float32))
     out = sim.dot_product(m, -m.T, k=3, verbose=VERBOSE)

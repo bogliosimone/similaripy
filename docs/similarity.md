@@ -71,8 +71,8 @@ positive scores are results. Per function:
 | Function | On signed input |
 |----------|-----------------|
 | `dot_product`, `cosine`, `asymmetric_cosine` | Accepted. `shrink_type='bayesian'` raises: `xy / (xy + h)` would flip the sign of negative scores. |
-| `jaccard`, `dice`, `tversky` | Accepted; the norms are sums of `x²`. `tversky` needs `alpha + beta = 1` or `4·alpha·beta > (1 - alpha - beta)²` (the denominator then stays `> 0` on every pair); on any weighted input this binds when `alpha + beta > 1`, on signed input also when `alpha + beta < 1`. Bayesian shrink raises. |
-| `p3alpha`, `rp3beta` | Accepted, as an extension (a signed walk): rows are l1-normalized by the sum of `|x|`, so likes and dislikes share the walk's budget, and the power keeps the sign, `sign(p)·|p|^alpha`. RP3β's popularity is the column sum of `|x|`. Bayesian shrink raises. |
+| `jaccard`, `dice`, `tversky` | Accepted; the norms are sums of `x²`. `tversky` needs `alpha + beta = 1` or `4·alpha·beta > (1 - alpha - beta)²` (the denominator then stays `> 0` on every pair); on weighted input this binds when `alpha + beta > 1`, on signed input also when `alpha + beta < 1` (binary and 0/1 data are exempt; in `s_plus` only the tversky term is checked). Bayesian shrink raises. |
+| `p3alpha`, `rp3beta` | Accepted, as an extension (a signed walk): rows are l1-normalized by the sum of `|x|`, so likes and dislikes share the walk's budget, and the power keeps the sign, `sign(p)·|p|^alpha`. RP3β's popularity is the column sum of `|x|`. Bayesian shrink raises, so `p3alpha` takes no shrink on signed input. |
 | `s_plus` | Accepted with `alpha = 1` (another power of a negative score is NaN or positive) and no bayesian shrink; the `t1`/`t2` rule above applies when `l1 != 0`; `pop='sum'` is the sum of `|x|`. |
 
 With `binary=True` the input is never signed (every non-zero is `1`), so none

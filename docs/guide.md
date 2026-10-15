@@ -83,9 +83,10 @@ explicit dislikes. A score is evidence of similarity: only **positive** scores
 import numpy as np
 
 # Adjusted cosine: center each user's ratings, then item-item cosine
-urm = urm.tocsr(copy=True)
+urm = sps.csr_array(urm, dtype=np.float32)  # a copy; integer ratings can't be centered in place
 counts = np.diff(urm.indptr)
-means = np.divide(urm.sum(axis=1), counts, out=np.zeros(urm.shape[0]), where=counts > 0)
+sums = np.ravel(urm.sum(axis=1))
+means = np.divide(sums, counts, out=np.zeros(urm.shape[0]), where=counts > 0)
 urm.data -= np.repeat(means, counts)
 similarity_matrix = sim.cosine(urm.T, k=50, threshold=1e-6)
 ```
@@ -117,7 +118,8 @@ Earlier v1 builds rejected any value that was not finite and `> 0`. Now:
 - `tversky` / `s_plus` (`l1 != 0`, not binary) reject `alpha`/`beta` pairs whose
   denominator can be `<= 0`: when `alpha + beta > 1` on any weighted input (e.g.
   `(3, 0.05)`, which 0.7.0 silently dropped pairs for), and when
-  `alpha + beta < 1` on signed input. No default is affected.
+  `alpha + beta < 1` on signed input. No default is affected, nor binary or
+  0/1 data.
 - `normalize(norm='max')` divides by the largest `|x|`: mixed-sign and
   all-negative rows change (non-negative rows don't).
 - Popularity `'sum'` in `s_plus` and the `rp3beta` popularity are sums of `|x|`

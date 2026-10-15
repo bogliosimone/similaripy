@@ -228,9 +228,10 @@ def tversky(
             shrink_type='bayesian' raises).
         matrix2: Optional second matrix. If None, uses matrix1.T.
         alpha: Tversky weight for elements unique to matrix1 (>= 0).
-        beta: Tversky weight for elements unique to matrix2 (>= 0). Unless binary, alpha + beta = 1
-            or 4 alpha beta > (1 - alpha - beta)^2 is needed when alpha + beta > 1, and also when
-            alpha + beta < 1 on signed input (else ValueError: the denominator can be <= 0).
+        beta: Tversky weight for elements unique to matrix2 (>= 0). Unless binary (or every value
+            the same, e.g. 0/1 data), alpha + beta = 1 or 4 alpha beta > (1 - alpha - beta)^2 is
+            needed when alpha + beta > 1, and also when alpha + beta < 1 on signed input (else
+            ValueError: the denominator can be <= 0).
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
             A shrink_type that would do nothing for this similarity raises ValueError.
@@ -586,9 +587,10 @@ def s_plus(
         l2: Cosine normalization strength.
         l3: Popularity penalization strength.
         t1: Tversky alpha for matrix1.
-        t2: Tversky beta for matrix2. With l1 != 0 and not binary, t1 + t2 = 1 or
-            4 t1 t2 > (1 - t1 - t2)^2 is needed when t1 + t2 > 1, and also when t1 + t2 < 1 on
-            signed input (else ValueError: the denominator can be <= 0).
+        t2: Tversky beta for matrix2. With l1 != 0, unless binary (or every value the same),
+            t1 + t2 = 1 or 4 t1 t2 > (1 - t1 - t2)^2 is needed when t1 + t2 > 1, and also when
+            t1 + t2 < 1 on signed input (else ValueError: the tversky term can be <= 0; the
+            other terms are not counted).
         c1: Cosine exponent coefficient for matrix1.
         c2: Cosine exponent coefficient for matrix2.
         pop1: Popularity weights for matrix1. 'none', 'sum' (sum of |x|), or custom
@@ -654,10 +656,13 @@ def _signed_power(x: np.ndarray, alpha: float) -> np.ndarray:
 def _abs_col_sums(m: sparray) -> np.ndarray:
     """
     Column sums of |x| over the summed entries, as in the canonical matrix the
-    kernel sees: duplicates (3, -1) count 2, not 4. scipy's abs() sums duplicates
-    first, in place, hence the copy. m keeps its format: converting to CSR first
-    would reorder the float additions and change the sums on non-negative input.
+    kernel sees: duplicates (3, -1) count 2, not 4. Non-negative input keeps the
+    plain m.sum(axis=0), its exact float additions: summing duplicates first
+    (what scipy's abs() does, in place, hence the copy) sorts COO and unsorted
+    CSC entries and moves popularities by an ulp.
     """
+    if not (m.tocoo(copy=False).data < 0).any():
+        return np.asarray(m.sum(axis=0)).ravel()
     return np.asarray(abs(m.copy()).sum(axis=0)).ravel()
 
 
