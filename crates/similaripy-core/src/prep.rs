@@ -2,6 +2,7 @@
 //! kernel's column renumbering + per-row sort.
 
 use crate::Error;
+use crate::csr::check_indptr;
 
 /// Entries per sequential leaf; rows of ~100 entries sort in L1.
 const LEAF_NNZ: usize = 1 << 16;
@@ -19,11 +20,9 @@ pub fn remap_sort_rows(
     forward: &[i32],
 ) -> Result<(), Error> {
     let bad = |m: &str| Err(Error::InvalidInput(format!("remap_sort_rows: {m}")));
-    if indptr.first() != Some(&0) || indptr.windows(2).any(|w| w[0] > w[1]) {
-        return bad("indptr not monotone from 0");
-    }
-    if *indptr.last().unwrap() as usize != indices.len() || data.len() != indices.len() {
-        return bad("indptr[-1], len(indices) and len(data) differ");
+    check_indptr("remap_sort_rows", indptr, indices.len())?;
+    if data.len() != indices.len() {
+        return bad("len(data) != len(indices)");
     }
     if !forward.is_empty()
         && indices
@@ -67,11 +66,9 @@ fn canonicalize_with_leaf(
     leaf: usize,
 ) -> Result<Vec<i32>, Error> {
     let bad = |m: &str| Err(Error::InvalidInput(format!("canonicalize_rows: {m}")));
-    if indptr.first() != Some(&0) || indptr.windows(2).any(|w| w[0] > w[1]) {
-        return bad("indptr not monotone from 0");
-    }
-    if *indptr.last().unwrap() as usize != indices.len() || data.len() != indices.len() {
-        return bad("indptr[-1], len(indices) and len(data) differ");
+    check_indptr("canonicalize_rows", indptr, indices.len())?;
+    if data.len() != indices.len() {
+        return bad("len(data) != len(indices)");
     }
     if indices.iter().any(|&c| c < 0) {
         return bad("negative column index");

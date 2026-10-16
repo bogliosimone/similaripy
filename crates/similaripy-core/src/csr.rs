@@ -6,12 +6,9 @@
 
 use crate::Error;
 
-fn check_structure(
-    name: &'static str,
-    indptr: &[i32],
-    indices: &[i32],
-    n_cols: usize,
-) -> Result<(), Error> {
+/// `indptr` starts at 0, never decreases and ends at `nnz`, so every row span
+/// lies in `0..=nnz`. Shared with the prep functions.
+pub(crate) fn check_indptr(name: &str, indptr: &[i32], nnz: usize) -> Result<(), Error> {
     let bad = |msg: &str| Err(Error::InvalidInput(format!("{name}: {msg}")));
     if indptr.is_empty() {
         return bad("indptr is empty");
@@ -22,13 +19,39 @@ fn check_structure(
     if indptr.windows(2).any(|w| w[0] > w[1]) {
         return bad("indptr is not monotone");
     }
-    if indptr[indptr.len() - 1] as usize != indices.len() {
+    if indptr[indptr.len() - 1] as usize != nnz {
         return bad("indptr[-1] != len(indices)");
     }
+    Ok(())
+}
+
+fn check_structure(
+    name: &'static str,
+    indptr: &[i32],
+    indices: &[i32],
+    n_cols: usize,
+) -> Result<(), Error> {
+    let bad = |msg: &str| Err(Error::InvalidInput(format!("{name}: {msg}")));
+    check_indptr(name, indptr, indices.len())?;
     if indices.iter().any(|&c| c < 0 || c as usize >= n_cols) {
         return bad("column index out of range");
     }
     Ok(())
+}
+
+/// Start and end of row `r`.
+///
+/// # Safety
+/// `r + 1 < indptr.len()`.
+#[inline(always)]
+unsafe fn row_span(indptr: &[i32], r: usize) -> (usize, usize) {
+    // SAFETY: caller contract.
+    unsafe {
+        (
+            *indptr.get_unchecked(r) as usize,
+            *indptr.get_unchecked(r + 1) as usize,
+        )
+    }
 }
 
 fn rows_sorted(indptr: &[i32], indices: &[i32]) -> bool {
@@ -100,12 +123,7 @@ impl<'a> CsrView<'a> {
     #[inline(always)]
     pub unsafe fn row_span_unchecked(&self, r: usize) -> (usize, usize) {
         // SAFETY: r + 1 < len(indptr).
-        unsafe {
-            (
-                *self.indptr.get_unchecked(r) as usize,
-                *self.indptr.get_unchecked(r + 1) as usize,
-            )
-        }
+        unsafe { row_span(self.indptr, r) }
     }
 
     /// Column indices and values at positions `start..end`.
@@ -169,9 +187,53 @@ impl<'a> CsrPattern<'a> {
     pub unsafe fn row_unchecked(&self, r: usize) -> &'a [i32] {
         // SAFETY: same invariant as `CsrView::row_unchecked`.
         unsafe {
-            let start = *self.indptr.get_unchecked(r) as usize;
-            let end = *self.indptr.get_unchecked(r + 1) as usize;
+            let (start, end) = row_span(self.indptr, r);
             self.indices.get_unchecked(start..end)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// (indptr, indices, data, expected message)
+    type Case = (&'static [i32], &'static [i32], &'static [f32], &'static str);
+
+    #[test]
+    fn rejects_bad_structure() {
+        // 3 columns.
+        let cases: &[Case] = &[
+            (&[], &[], &[], "indptr is empty"),
+            (&[1, 1], &[0], &[1.0], "indptr[0] != 0"),
+            (&[0, 2, 1], &[0, 1], &[1.0, 1.0], "indptr is not monotone"),
+            (&[0, 1], &[0, 1], &[1.0, 1.0], "indptr[-1] != len(indices)"),
+            (&[0, 1], &[3], &[1.0], "column index out of range"),
+            (&[0, 1], &[-1], &[1.0], "column index out of range"),
+            (&[0, 1], &[0], &[], "len(data) != len(indices)"),
+        ];
+        for &(indptr, indices, data, msg) in cases {
+            let err = CsrView::new("m", indptr, indices, data, 3).err();
+            assert_eq!(err, Some(Error::InvalidInput(format!("m: {msg}"))));
+        }
+        let err = CsrPattern::new("sel", &[0, 2], &[2, 0], 3).err();
+        let msg = "sel: indices not sorted within rows";
+        assert_eq!(err, Some(Error::InvalidInput(msg.into())));
+    }
+
+    #[test]
+    fn accepts_valid_structure() {
+        // Unsorted rows and empty rows are fine for a view.
+        let v = CsrView::new("m", &[0, 2, 2, 3], &[2, 0, 1], &[1.0, 2.0, 3.0], 3).unwrap();
+        assert!(!v.indices_sorted());
+        // SAFETY: rows 0..3 exist.
+        unsafe {
+            assert_eq!(v.row_unchecked(0), (&[2, 0][..], &[1.0, 2.0][..]));
+            assert_eq!(v.row_unchecked(1).0.len(), 0);
+            assert_eq!(v.row_unchecked(2), (&[1][..], &[3.0][..]));
+        }
+        let p = CsrPattern::new("sel", &[0, 2], &[0, 2], 3).unwrap();
+        // SAFETY: row 0 exists.
+        assert_eq!(unsafe { p.row_unchecked(0) }, &[0, 2]);
     }
 }
