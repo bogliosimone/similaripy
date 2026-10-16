@@ -667,7 +667,7 @@ def test_binary_keeps_random_walk_normalization(name):
 def _signed_matrix(seed=0, integer=True):
     """60 x 40, ~15% dense, values in -3..3 (exact f32 dot products) or standard normal."""
     rng = np.random.default_rng(seed)
-    m = sp.random_array((60, 40), density=0.15, format='csr', dtype=np.float32, random_state=rng)
+    m = sp.random_array((60, 40), density=0.15, format='csr', dtype=np.float32, rng=rng)
     m.data = (rng.integers(-3, 4, m.nnz) if integer else rng.standard_normal(m.nnz)).astype(np.float32)
     m.eliminate_zeros()
     return m
