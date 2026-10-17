@@ -53,6 +53,10 @@ impl TopK {
     #[inline]
     #[allow(clippy::neg_cmp_op_on_partial_ord)] // `!(>=)` is the NaN-safe reject, below
     pub fn push(&mut self, col: i32, score: f32) {
+        // The kernel's drain never pushes NaN (`val >= floor` is false for it);
+        // this guards other callers, where a NaN pushed while the heap fills
+        // would rank above +inf. Debug builds only.
+        debug_assert!(!score.is_nan(), "TopK::push: NaN score");
         if self.heap.len() < self.k {
             self.heap.push(Reverse(Entry { score, col }));
             return;
@@ -172,6 +176,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "NaN score")]
+    fn nan_push_asserts_in_debug() {
+        TopK::new(1).push(0, f32::NAN);
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))] // debug builds stop at the assert above
     fn nan_never_replaces_the_root() {
         // Not produced by drain; guards reuse with other score sources.
         let mut t = TopK::new(1);

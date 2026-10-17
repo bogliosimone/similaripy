@@ -88,6 +88,8 @@ pub fn compute<F: Fn() + Sync>(
     block_size: usize,
     on_row: &F,
 ) -> Result<Output, Error> {
+    // At most one result per column: a larger k would only pad the output.
+    let k = k.min(inp.m2.n_cols());
     let n_slots = validate(inp, k)?;
     let counts = vec![0; inp.targets.len()];
     if n_slots == 0 {
@@ -100,8 +102,9 @@ pub fn compute<F: Fn() + Sync>(
     }
     let n_cols = inp.m2.n_cols();
     let blocked = block_size > 0 && n_cols > block_size;
-    // The blocked path binary-searches m2 rows. 0.7.0 silently gives wrong
-    // results here; the Step 2 prep will always sort instead.
+    // The blocked path finds each block's end in an m2 row by binary search, so
+    // unsorted rows would give wrong results silently. The Python prep sorts
+    // them; this catches direct callers.
     if blocked && !inp.m2.indices_sorted() {
         return Err(Error::InvalidInput(
             "m2: indices not sorted within rows (needed for column blocking)".into(),
