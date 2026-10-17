@@ -450,8 +450,6 @@ def s_plus(
     if target_rows is not None:
         target_rows = np.unique(_ids('target_rows', target_rows, matrix1.shape[0])).astype(np.int32)
 
-    k = min(k, matrix2.shape[1])  # do not allocate unnecessary space
-
     targets = np.arange(matrix1.shape[0], dtype=np.int32) if target_rows is None else target_rows
     n_targets = len(targets)
 

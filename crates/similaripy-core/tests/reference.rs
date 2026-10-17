@@ -352,6 +352,17 @@ fn rejects_selection_wider_than_m2() {
     assert!(compute(&inp, 1, 0, &|| {}).is_err());
 }
 
+#[test]
+fn k_above_n_cols_gives_the_same_rows() {
+    let (m1, m2) = (
+        to_csr(&[vec![1.0, 2.0]]),
+        to_csr(&[vec![1.0, 0.0, 3.0], vec![0.5, 1.0, 0.0]]),
+    );
+    let want = top_scores(&m1, &m2, 2, 3, 1, 3, 0, None);
+    assert_eq!(top_scores(&m1, &m2, 2, 3, 1, 1000, 0, None), want);
+    assert_eq!(want.0, vec![3]);
+}
+
 /// Top-`k` of `m1 · m2` (dot product): per-row counts and the packed
 /// (col, score bits) entries, exactly as the kernel returns them.
 #[allow(clippy::too_many_arguments)]
