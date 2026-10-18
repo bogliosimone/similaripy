@@ -1,10 +1,10 @@
-//! In-place CSR normalizations (l1, l2, max, TF-IDF, BM25+), the same formulas
-//! as the 0.7.0 Cython code. Generic over f32/f64 data and i32/i64 indices,
-//! since `similaripy.normalization` keeps the input dtypes.
+//! In-place CSR normalizations (l1, l2, max, TF-IDF, BM25+). Generic over
+//! f32/f64 data and i32/i64 indices, since `similaripy.normalization` keeps the
+//! input dtypes.
 //!
-//! Float math follows the C code it replaces: per-row sums in the data type,
-//! `log` and the BM25 terms in f64, rounded back where Cython stores a
-//! `floating`. Parity is within rtol 1e-5, not bitwise (C++ is `-ffast-math`).
+//! Float math: per-row sums in the data type, `log` and the BM25 terms in f64,
+//! rounded back to the data type. Matches similaripy 0.7.0 within rtol 1e-5
+//! (`tests/benchmarks/check_normalization_parity.py`), not bitwise.
 
 use std::ops::{Add, Div, Mul, Sub};
 
@@ -175,7 +175,7 @@ pub fn bm25plus<T: Value, I: Copy + Into<i64> + Sync>(
         return Ok(());
     }
     let (idf_, doc_len) = idf_and_doc_len(data, indices, indptr, n_cols, idf_mode, lb, true);
-    // Serial f32/f64 sum in row order, as Cython: a parallel sum would round differently.
+    // Serial sum in row order, in the data type: one fixed rounding, O(rows).
     let avg = doc_len.iter().fold(T::ZERO, |s, &x| s + x) / T::narrow(n_docs as f64);
     let (k1, b, delta) = (T::narrow(k1), T::narrow(b), T::narrow(delta));
     par_rows(&mut data[lo..hi], indptr, &|r, start, row: &mut [T]| {
@@ -191,7 +191,7 @@ pub fn bm25plus<T: Value, I: Copy + Into<i64> + Sync>(
 
 /// Per-column IDF (0 for unused columns) and, if asked, per-row document length.
 /// Serial: the count is a column histogram over all rows (O(nnz) increments).
-/// Counts are integers: Cython's `floating` counter stops at 2^24 in f32.
+/// Counts are integers: an f32 counter would stop at 2^24.
 fn idf_and_doc_len<T: Value, I: Copy + Into<i64>>(
     data: &[T],
     indices: &[I],
@@ -258,7 +258,7 @@ fn idf<T: Value>(df: T, n_docs: T, mode: IdfMode, lb: T) -> T {
     })
 }
 
-/// `log(logbase)` rounded to the data type, as Cython's `floating log_logbase`.
+/// `log(logbase)` rounded to the data type, like every stored value.
 fn log_logbase<T: Value>(logbase: f64) -> T {
     T::narrow(T::narrow(logbase).wide().ln())
 }
@@ -268,7 +268,9 @@ fn ix<I: Into<i64>>(i: I) -> usize {
 }
 
 /// indptr: non-empty, non-negative, monotone, last entry within `data_len`.
-/// Returns the data range the rows cover.
+/// Returns the data range the rows cover. Looser than `csr::check_indptr`
+/// (`indptr[0]` may be > 0, entries may follow the last row): scipy's rules,
+/// since this works in place on the caller's arrays.
 fn check_indptr<I: Copy + Into<i64>>(
     indptr: &[I],
     data_len: usize,
@@ -312,7 +314,9 @@ fn check_indices<I: Copy + Into<i64>>(
 
 /// Runs `f(row, start, row_data)` for every row, in parallel. `data` covers
 /// entries `indptr[0]..indptr[last]`; `start` is the row's absolute offset.
-/// Splits by entries, not rows, so popularity-ordered rows still balance (D9).
+/// Splits by entries, not rows, so popularity-ordered rows still balance. Same
+/// split as `prep::par_leaves`, kept separate: generic over the index type and
+/// one data slice (prep's is i32 with two).
 fn par_rows<T, I, F>(data: &mut [T], indptr: &[I], f: &F)
 where
     T: Send,
