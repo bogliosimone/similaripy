@@ -638,3 +638,10 @@ def test_product_form_extreme_values(name, scale):
     m = _m(60, 40, seed=4)
     _same(getattr(sim, name)(m * np.float32(scale), k=10, verbose=False),
           getattr(sim, name)(m, k=10, verbose=False))
+
+
+def test_signed_power_alpha_one_same_bits():
+    # p3alpha / rp3beta skip the power at alpha == 1: same bits as computing it
+    from similaripy.similarity import _signed_power
+    x = np.array([0.3, -0.0, 0.0, -2.5, 1e-40, 3e38, -1e-45], dtype=np.float32)
+    assert _signed_power(x, 1).tobytes() == np.copysign(np.abs(x) ** 1.0, x).tobytes()
