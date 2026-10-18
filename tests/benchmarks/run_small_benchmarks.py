@@ -56,7 +56,7 @@ def make_urm(n_users=10_000, n_items=10_000, nnz=1_000_000, zipf_a=0.8, seed=42)
     ratings = rng.integers(1, 6, size=nnz).astype(np.float32)
     urm = sp.csr_array((ratings, (users, items)), shape=(n_users, n_items))
     urm.sum_duplicates()
-    # int32 indices: 0.7.0 array-mode filter_cols/target_cols crash on int64 (separate fix)
+    # int32 indices: 0.7.0 array-mode filter_cols/target_cols crash on int64
     urm.indices = urm.indices.astype(np.int32)
     urm.indptr = urm.indptr.astype(np.int32)
     return urm
