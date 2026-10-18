@@ -3,12 +3,24 @@
 //! timer started by the first finished row. No ticker thread: the worker that
 //! finishes a row after the refresh interval redraws (D25).
 
+use std::cell::Cell;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 use pyo3::prelude::*;
+
+/// Rows a worker counts locally before adding them to the shared counter: one
+/// shared atomic add and clock read per batch instead of per row (~+8% total
+/// time on 2M tiny rows when per row). `close` sets the final count anyway.
+const BATCH: usize = 64;
+
+thread_local! {
+    /// (bar this worker last ticked, rows not yet added to it). Switching bars
+    /// (global pool shared by concurrent calls) drops the pending rows: display only.
+    static PENDING: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
 
 struct Line {
     desc: String,
@@ -84,12 +96,24 @@ impl ProgressBar {
 impl ProgressBar {
     /// Called by the workers after each finished row.
     pub fn tick(&self) {
-        self.count.fetch_add(1, Ordering::Relaxed);
         if self.start.get().is_none() {
+            self.count.fetch_add(1, Ordering::Relaxed);
             let _ = self.start.set(Instant::now());
             self.last_draw_ms.store(self.now_ms(), Ordering::Relaxed);
             return;
         }
+        let id = self as *const Self as usize;
+        let ready = PENDING.with(|p| {
+            let (bar, n) = p.get();
+            let n = if bar == id { n + 1 } else { 1 };
+            let ready = if n == BATCH { n } else { 0 };
+            p.set((id, n - ready));
+            ready
+        });
+        if ready == 0 {
+            return;
+        }
+        self.count.fetch_add(ready, Ordering::Relaxed);
         if !self.due() {
             return;
         }
@@ -121,7 +145,9 @@ impl ProgressBar {
     }
 
     fn render(&self, line: &mut Line) {
-        let (cur, total) = (self.count.load(Ordering::Relaxed), self.total);
+        // min: rows pending for a dropped bar at the same address can overshoot.
+        let total = self.total;
+        let cur = self.count.load(Ordering::Relaxed).min(total);
         let elapsed = self.elapsed();
         let rate = if elapsed > 0.0 {
             cur as f64 / elapsed
