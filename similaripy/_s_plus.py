@@ -49,7 +49,7 @@ def get_num_threads() -> int:
     return _core.get_num_threads()
 
 
-def validate_s_plus_inputs(
+def _validate_inputs(
     matrix1: sp.sparray,
     matrix2: sp.sparray,
     weight_depop_matrix1: Union[str, np.ndarray],
@@ -57,20 +57,18 @@ def validate_s_plus_inputs(
     k: int,
     filter_cols: Optional[Union[List, np.ndarray, sp.sparray]],
     target_cols: Optional[Union[List, np.ndarray, sp.sparray]],
-    format_output: str
+    format_output: str,
+    weights: dict,
+    a1: float,
+    num_threads: int,
+    block_size: Optional[int],
 ) -> None:
     """
-    Validate input parameters for s_plus function.
+    Validate the `s_plus` arguments that don't need the data; the rules on the
+    canonical values (finite in float32, signed input, used depop weights) are
+    checked in `_s_plus`.
 
-    Args:
-        matrix1: First input matrix.
-        matrix2: Second input matrix.
-        weight_depop_matrix1: Depopularization weights for matrix1.
-        weight_depop_matrix2: Depopularization weights for matrix2.
-        k: Number of top items to keep.
-        filter_cols: Columns to filter out.
-        target_cols: Columns to target.
-        format_output: Output format ('coo' or 'csr').
+    `weights`: name -> value of every scalar that must be finite and >= 0.
 
     Raises:
         TypeError: If matrix1 or matrix2 are not sparse matrices.
@@ -111,6 +109,27 @@ def validate_s_plus_inputs(
     # Check format_output
     if format_output not in ('coo', 'csr'):
         raise ValueError(f"format_output must be 'coo' or 'csr', got '{format_output}'")
+
+    # Every weight >= 0: the norms (sums of x^2), popularities (sums of |x|) and
+    # cosine and depop terms are then >= 0 on any finite input, and tversky's
+    # denominator is kept > 0 by its rule in `_s_plus` (`_check_signed_rules`,
+    # with the rules for signed input, D45). Negative weights would flip signs or
+    # make NaN (a negative base to a fractional power); alpha <= 0 would flatten
+    # or invert the ranking.
+    for name, value in weights.items():
+        _check_scalar(name, value)
+    _check_scalar('a1 (alpha)', a1, strict=True)
+
+    if block_size is not None and not (_is_int(block_size) and block_size >= 0):
+        raise ValueError(f'block_size must be None (no blocking), 0 (auto) or > 0, got {block_size!r}')
+    if not (_is_int(num_threads) and num_threads >= 0):
+        raise ValueError(f'num_threads must be an integer >= 0, got {num_threads!r}')
+
+    # Input indices and indptrs are int32: fail loudly instead of wrapping. The
+    # output may pass 2^31 results (D42, see `_MAX_INT32_NNZ`).
+    int32_max = np.iinfo(np.int32).max
+    if matrix1.nnz > int32_max or matrix2.nnz > int32_max:
+        raise ValueError(f"input matrices must have at most {int32_max} non-zeros")
 
 
 def _is_int(x) -> bool:
@@ -406,7 +425,7 @@ def s_plus(
         sorted by column, canonical (`has_canonical_format`).
 
     Raises:
-        ValueError: invalid shapes or parameters (see `validate_s_plus_inputs`),
+        ValueError: invalid shapes or parameters (see `_validate_inputs`),
             a negative block_size, more than 2^31 - 1 non-zeros in an input, input
             values not finite in float32, a1 != 1 or bayesian_shrink on signed input
             (values < 0, not binary), or l1 != 0 with t1, t2 whose tversky
@@ -415,7 +434,7 @@ def s_plus(
     if matrix2 is None:
         matrix2 = matrix1.T
 
-    validate_s_plus_inputs(
+    _validate_inputs(
         matrix1=matrix1,
         matrix2=matrix2,
         weight_depop_matrix1=weight_depop_matrix1,
@@ -423,27 +442,15 @@ def s_plus(
         k=k,
         filter_cols=filter_cols,
         target_cols=target_cols,
-        format_output=format_output
+        format_output=format_output,
+        weights={'l1': l1, 'l2': l2, 'l3': l3, 't1 (tversky alpha)': t1, 't2 (tversky beta)': t2,
+                 'c1': c1, 'c2': c2, 'p1 (beta1)': p1, 'p2 (beta2, rp3beta beta)': p2,
+                 'threshold': threshold, 'stabilized_shrink': stabilized_shrink,
+                 'bayesian_shrink': bayesian_shrink, 'additive_shrink': additive_shrink},
+        a1=a1,
+        num_threads=num_threads,
+        block_size=block_size,
     )
-
-    # Every weight >= 0: the norms (sums of x^2), popularities (sums of |x|) and
-    # cosine and depop terms are then >= 0 on any finite input, and tversky's
-    # denominator is kept > 0 by its rule in `_s_plus` (`_check_signed_rules`,
-    # with the rules for signed input, D45). Negative weights would flip signs or
-    # make NaN (a negative base to a fractional power); alpha <= 0 would flatten
-    # or invert the ranking.
-    for name, value in (('l1', l1), ('l2', l2), ('l3', l3), ('t1 (tversky alpha)', t1),
-                        ('t2 (tversky beta)', t2), ('c1', c1), ('c2', c2), ('p1 (beta1)', p1),
-                        ('p2 (beta2, rp3beta beta)', p2), ('threshold', threshold),
-                        ('stabilized_shrink', stabilized_shrink), ('bayesian_shrink', bayesian_shrink),
-                        ('additive_shrink', additive_shrink)):
-        _check_scalar(name, value)
-    _check_scalar('a1 (alpha)', a1, strict=True)
-
-    if block_size is not None and not (_is_int(block_size) and block_size >= 0):
-        raise ValueError(f'block_size must be None (no blocking), 0 (auto) or > 0, got {block_size!r}')
-    if not (_is_int(num_threads) and num_threads >= 0):
-        raise ValueError(f'num_threads must be an integer >= 0, got {num_threads!r}')
 
     # Sorted, unique: output rows come out in row order (CSR straight from the
     # counts), and a duplicate target would duplicate its row's entries.
@@ -452,12 +459,6 @@ def s_plus(
 
     targets = np.arange(matrix1.shape[0], dtype=np.int32) if target_rows is None else target_rows
     n_targets = len(targets)
-
-    # Input indices and indptrs are int32: fail loudly instead of wrapping. The
-    # output may pass 2^31 results (D42, see `_MAX_INT32_NNZ`).
-    int32_max = np.iinfo(np.int32).max
-    if matrix1.nnz > int32_max or matrix2.nnz > int32_max:
-        raise ValueError(f"input matrices must have at most {int32_max} non-zeros")
 
     bar = None
     if verbose:
