@@ -1,5 +1,5 @@
 """
-R2 parity check: this install's top-k outputs vs a reference install's.
+Parity check vs a previous version: this install's top-k outputs vs a reference install's.
 
 Two steps, any two installs (e.g. 0.7.0 from PyPI vs this checkout, or two
 commits): `--dump` saves the outputs under the reference, `--compare` recomputes
@@ -8,12 +8,16 @@ them here and checks, row by row, as (col, score) sets:
   - a column may be in only one side only if its score is within tolerance of
     that row's k-th score or of the threshold (near-tie). These one-sided
     entries are counted and reported; anything else fails.
+Each case also reports `exact` (data, indices and indptr identical byte for
+byte, dtypes included) and `overlap` (shared entries / reference entries).
+`--exact` makes any bit difference a failure (for changes that claim exactness).
+Run this script's version under both installs: the case lists must match.
 
 Usage (from the repo root; the same options on both steps):
     # 0.7.0 reference (the last Cython release), outside the project env
     uv run --isolated --no-project --python 3.14 --with similaripy==0.7.0 --with pandas --with datasets \
         python tests/benchmarks/check_kernel_parity.py --dump ref.npz
-    python tests/benchmarks/check_kernel_parity.py --compare ref.npz
+    python tests/benchmarks/check_kernel_parity.py --compare ref.npz [--exact]
 
     Options: --block-size 1024 (synthetic, blocked path, 10 blocks);
     --dataset movielens --version 32m (dump ~0.3 GB).
@@ -40,15 +44,16 @@ def close(a, b):
 
 
 def compare(a, b, k, threshold=0.0):
-    """Compare two top-k CSR outputs. Returns (n_one_sided, list of failure messages)."""
+    """Compare two top-k CSR outputs. Returns (n_one_sided, n_shared, list of failure messages)."""
     a, b = a.tocsr(), b.tocsr()
     a.sort_indices()
     b.sort_indices()
-    one_sided, failures = 0, []
+    one_sided, shared, failures = 0, 0, []
     for r in range(a.shape[0]):
         ac, av = a.indices[a.indptr[r]:a.indptr[r + 1]], a.data[a.indptr[r]:a.indptr[r + 1]]
         bc, bv = b.indices[b.indptr[r]:b.indptr[r + 1]], b.data[b.indptr[r]:b.indptr[r + 1]]
         _, ia, ib = np.intersect1d(ac, bc, assume_unique=True, return_indices=True)
+        shared += ia.size
         bad = ~close(bv[ib], av[ia])
         if bad.any():
             j = np.flatnonzero(bad)[0]
@@ -64,7 +69,15 @@ def compare(a, b, k, threshold=0.0):
                     failures.append(f"row {r}: col only on one side with score {s!r} (k-th {kth})")
         if len(failures) >= 10:
             break
-    return one_sided, failures
+    return one_sided, shared, failures
+
+
+def identical(ref_arrays, m):
+    """The dumped arrays and m's CSR arrays, byte for byte (dtypes too; bytes also catch -0.0 vs 0.0).
+
+    Kernel output rows are sorted by column, so the raw arrays are canonical."""
+    return all(x.dtype == y.dtype and x.shape == y.shape and x.tobytes() == y.tobytes()
+               for x, y in zip(ref_arrays, (m.data, m.indices, m.indptr)))
 
 
 def save_outputs(path, outputs, meta):
@@ -80,23 +93,31 @@ def save_outputs(path, outputs, meta):
 
 
 def load_outputs(path, meta):
-    """The .npz of `save_outputs`, checked against this run's options; name -> CSR getter."""
+    """The .npz of `save_outputs`, checked against this run's options; name -> (data, indices, indptr, shape)."""
     ref = np.load(path)
     saved = json.loads(str(ref['meta']))
     if saved != meta:
         sys.exit(f"{path} was dumped with {saved}, this run is {meta}")
-    return lambda name: sp.csr_array((ref[f'{name}.data'], ref[f'{name}.indices'], ref[f'{name}.indptr']),
-                                     shape=tuple(ref[f'{name}.shape']))
+    return lambda name: tuple(ref[f'{name}.{a}'] for a in ('data', 'indices', 'indptr', 'shape'))
 
 
 def case_kwargs(kwargs, block_size):
     return dict(k=100, verbose=False, format_output='csr', block_size=block_size) | kwargs
 
 
-def check_case(name, ref, new, kw):
-    one_sided, failures = compare(ref, new, min(kw['k'], new.shape[0]), kw.get('threshold', 0.0))
+def check_case(name, ref_arrays, new, kw, exact=False):
+    new = new.tocsr()
+    # Raw dumped arrays: rebuilding a scipy CSR may narrow the index dtypes
+    same = identical(ref_arrays, new)  # before compare(): it sorts indices in place
+    *arrays, shape = ref_arrays
+    ref = sp.csr_array(tuple(arrays), shape=tuple(shape))
+    one_sided, shared, failures = compare(ref, new, min(kw['k'], new.shape[0]), kw.get('threshold', 0.0))
+    if exact and not same:
+        failures.append('not bit-identical (--exact)')
+    overlap = shared / ref.nnz if ref.nnz else 1.0
     status = 'OK' if not failures else 'FAIL'
-    print(f"{name:<28} {status}  nnz={ref.nnz:<10} one_sided={one_sided}")
+    print(f"{name:<28} {status}  exact={'yes' if same else 'no ':<3}  overlap={overlap:.6f}  "
+          f"nnz={ref.nnz:<10} one_sided={one_sided}")
     for f in failures:
         print(f"    {f}")
     return not failures
@@ -109,11 +130,17 @@ def scoring_cases():
         ('dice_shrink', sim.dice, {'shrink': 5}),
         ('tversky', sim.tversky, {'alpha': 0.3, 'beta': 0.7}),
         ('asymmetric_cosine', sim.asymmetric_cosine, {'alpha': 0.2}),
+        ('asym_bayesian', sim.asymmetric_cosine, {'alpha': 0.2, 'shrink': 10, 'shrink_type': 'bayesian'}),
+        ('dot_bayesian', sim.dot_product, {'shrink': 10, 'shrink_type': 'bayesian'}),
         ('cosine_bayesian', sim.cosine, {'shrink': 10, 'shrink_type': 'bayesian'}),
+        ('cosine_stabilized', sim.cosine, {'shrink': 10, 'shrink_type': 'stabilized'}),
         ('cosine_additive', sim.cosine, {'shrink': 10, 'shrink_type': 'additive'}),
         ('cosine_threshold', sim.cosine, {'threshold': 0.2}),
         ('p3alpha', sim.p3alpha, {'alpha': 0.8}),
+        ('p3alpha_bayesian', sim.p3alpha, {'alpha': 0.8, 'shrink': 10, 'shrink_type': 'bayesian'}),
         ('rp3beta_alpha_beta', sim.rp3beta, {'alpha': 0.8, 'beta': 0.6}),
+        ('rp3beta_stabilized', sim.rp3beta, {'alpha': 0.8, 'beta': 0.6, 'shrink': 10, 'shrink_type': 'stabilized'}),
+        ('rp3beta_bayesian', sim.rp3beta, {'alpha': 0.8, 'beta': 0.6, 'shrink': 10, 'shrink_type': 'bayesian'}),
         ('splus', sim.s_plus, {'l3': 0.5, 'alpha': 0.9, 'beta1': 0.3, 'beta2': 0.4,
                                'pop1': 'sum', 'pop2': 'sum'}),
     ]
@@ -129,6 +156,7 @@ def main():
     p.add_argument('--similarities', nargs='+', default=['dot_product', 'cosine', 'rp3beta'])
     p.add_argument('--k', type=int, default=100)
     p.add_argument('--block-size', type=int, default=0, help='0 = auto (262144)')
+    p.add_argument('--exact', action='store_true', help='--compare: fail on any bit difference')
     args = p.parse_args()
 
     if args.dataset == 'synthetic':
@@ -139,7 +167,7 @@ def main():
         X = URM.T
         cases = [(s, getattr(sim, s), {'k': args.k}) for s in args.similarities]
 
-    meta = {k: v for k, v in vars(args).items() if k not in ('dump', 'compare')}
+    meta = {k: v for k, v in vars(args).items() if k not in ('dump', 'compare', 'exact')}
     if args.dump:
         save_outputs(args.dump, {name: func(X, **case_kwargs(kw, args.block_size)) for name, func, kw in cases}, meta)
         return
@@ -147,7 +175,7 @@ def main():
     ok = True
     for name, func, kw in cases:
         kw = case_kwargs(kw, args.block_size)
-        ok &= check_case(name, ref(name), func(X, **kw), kw)
+        ok &= check_case(name, ref(name), func(X, **kw), kw, args.exact)
     print('PASS' if ok else 'FAIL')
     sys.exit(0 if ok else 1)
 
