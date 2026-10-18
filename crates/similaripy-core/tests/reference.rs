@@ -352,6 +352,113 @@ fn rejects_selection_wider_than_m2() {
     assert!(compute(&inp, 1, 0, &|| {}).is_err());
 }
 
+// Every `validate` error but the slot-count overflow: these guard the unchecked
+// row accesses for direct core callers (the Python layer never builds such
+// inputs). The overflow can't happen on 64-bit: `compute` clamps k to n_cols
+// first, so len(targets) * k < 2^62; it guards 32-bit targets.
+#[test]
+fn rejects_each_invalid_input() {
+    // m1: 2 x 2, m2: 2 x 3 with sorted rows.
+    let (i1, c1, d1) = ([0, 1, 2], [0, 1], [1.0, 1.0]);
+    let (i2, c2, d2) = ([0, 2, 3], [0, 2, 1], [1.0, 1.0, 1.0]);
+    let one_row = ([0, 0], []);
+    let m1 = CsrView::new("m1", &i1, &c1, &d1, 2).unwrap();
+    let m1_wide = CsrView::new("m1", &i1, &c1, &d1, 3).unwrap();
+    let m2 = CsrView::new("m2", &i2, &c2, &d2, 3).unwrap();
+    let short_sel = CsrPattern::new("filter", &one_row.0, &one_row.1, 3).unwrap();
+    let base = Inputs {
+        m1,
+        m2,
+        targets: &[0, 1],
+        norms: Norms::default(),
+        params: Params::default(),
+        filter: None,
+        target_cols: None,
+        col_map: None,
+    };
+    let err = |inp: Inputs, k: usize| compute(&inp, k, 0, &|| {}).err().unwrap().to_string();
+    assert!(compute(&base, 2, 0, &|| {}).is_ok());
+    let cases: [(Inputs, usize, &str); 6] = [
+        (
+            Inputs {
+                m1: m1_wide,
+                ..base
+            },
+            2,
+            "m1 columns != m2 rows",
+        ),
+        (
+            Inputs {
+                targets: &[-1],
+                ..base
+            },
+            2,
+            "negative target row",
+        ),
+        (
+            Inputs {
+                targets: &[2],
+                ..base
+            },
+            2,
+            "target row out of range",
+        ),
+        (
+            Inputs {
+                col_map: Some(&[0, 1]),
+                ..base
+            },
+            2,
+            "col_map length",
+        ),
+        (
+            Inputs {
+                params: Params {
+                    l2: 1.0,
+                    ..Params::default()
+                },
+                ..base
+            },
+            2,
+            "cosine norms too short",
+        ),
+        (
+            Inputs {
+                filter: Some(short_sel),
+                ..base
+            },
+            2,
+            "fewer rows than targets need",
+        ),
+    ];
+    for (inp, k, msg) in cases {
+        let e = err(inp, k);
+        assert!(e.contains(msg), "{e:?} should contain {msg:?}");
+    }
+}
+
+// Blocking finds each block's end by binary search in an m2 row: unsorted rows
+// are rejected when blocked, accepted when not.
+#[test]
+fn rejects_unsorted_m2_only_when_blocked() {
+    let (i1, c1, d1) = ([0, 2], [0, 1], [1.0, 2.0]);
+    let (i2, c2, d2) = ([0, 2, 3], [2, 0, 1], [1.0, 3.0, 1.0]);
+    let inp = Inputs {
+        m1: CsrView::new("m1", &i1, &c1, &d1, 2).unwrap(),
+        m2: CsrView::new("m2", &i2, &c2, &d2, 3).unwrap(),
+        targets: &[0],
+        norms: Norms::default(),
+        params: Params::default(),
+        filter: None,
+        target_cols: None,
+        col_map: None,
+    };
+    let e = compute(&inp, 3, 1, &|| {}).err().unwrap().to_string();
+    assert!(e.contains("indices not sorted within rows"), "{e:?}");
+    let out = compute(&inp, 3, 0, &|| {}).unwrap();
+    assert_eq!((out.cols, out.values), (vec![0, 1, 2], vec![3.0, 2.0, 1.0]));
+}
+
 #[test]
 fn k_above_n_cols_gives_the_same_rows() {
     let (m1, m2) = (
