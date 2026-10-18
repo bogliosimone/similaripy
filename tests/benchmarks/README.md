@@ -126,6 +126,8 @@ Core benchmarking functions:
 
 `dot_product`, `cosine`, `asymmetric_cosine`, `jaccard`, `dice`, `tversky`, `p3alpha`, `rp3beta`, `splus`
 
+Variants with fixed parameters (`benchmark.py`, placeholder values: shrink 10, alpha 0.8, beta 0.6), for the shrink types and alpha/beta the harness options don't cover; the harness's `--shrink` doesn't apply to them, and each result's `params` in the JSON shows what really ran: `cosine_bayesian`, `cosine_stabilized`, `dot_product_bayesian`, `p3alpha_tuned`, `p3alpha_bayesian`, `rp3beta_tuned`, `rp3beta_stabilized`, `rp3beta_bayesian`
+
 ## CLI Options
 
 ```
@@ -309,11 +311,17 @@ Per-phase shares (accumulate, drain/score, top-K, row setup) come from `/usr/bin
 
 `sample` slows the run by ~25–35%, so take seconds from an unsampled run. For work counts that hold on every CPU (elements accumulated, first touches, heap replacements, root rejections), a throwaway patch with per-worker counters is more reliable than shares; don't time that build. To check x86_64 codegen from a Mac: `rustup target add x86_64-unknown-linux-gnu`, then `cargo rustc -p similaripy-core --release --lib --target x86_64-unknown-linux-gnu -- --emit asm` (no linker needed; LTO into the extension can still change inlining).
 
-## 0.7.0 reference (Cython)
+## Parity vs a previous version
 
-Cython was removed in 1.0 development; two references remain:
+`check_kernel_parity.py` and `check_normalization_parity.py` compare this install's outputs with a reference install's, in two steps: `--dump` under the reference, `--compare` here (usage in their docstrings). Run the current script under both installs (the case lists must match), and by path: `python -c` from the repo root imports the checkout instead.
 
-- **Outputs (parity):** `check_kernel_parity.py` and `check_normalization_parity.py` run in two steps: `--dump` under the reference install, `--compare` here (usage in their docstrings). The quick reference is the 0.7.0 wheel from PyPI (`uv run --isolated --no-project --with similaripy==0.7.0 ...`). Run the scripts by path: `python -c` from the repo root imports the checkout instead.
-- **Bit-level and timing:** commit `608cc06` (local tag `v1-cython-ref`; from a fresh clone: `git fetch origin pull/29/head`), the last commit with both kernels in one process (`--kernel cpp rust`, interleaved ABAB). Build it in a `git worktree` with its own venv (`make install-dev`, needs Homebrew GCC on macOS).
+`check_kernel_parity.py --compare` checks each case within tolerance (rtol 1e-5; a column on only one side passes only at a near-tie with the row's k-th score or the threshold) and always reports:
 
-The PyPI wheel was compiled by a different GCC (CI runner, `-O3 -ffast-math`), so some scores differ by 1 float32 ulp from the local build the Rust core was matched against. Parity still passes, but near-ties at the k-th score become one-sided entries: ML-32M rp3beta has ~627k (7%) against PyPI and 0 against the tag build; synthetic p3alpha/rp3beta 2/26. For a bit-level check, dump from the tag build.
+- `exact`: data, indices and indptr identical byte for byte. Same version + same machine must give `exact=yes`; `--exact` makes any bit difference a failure, for changes that claim exactness. For a change expected to move bits (e.g. a different float order), the tolerance check plus the dense float64 reference in `tests/test_similarity.py` is the quality check.
+- `overlap`: shared entries / reference entries (top-k overlap with the previous version), reported without a threshold: tie-heavy data moves entries at the k-th score with 1-ulp changes.
+
+References:
+
+- **0.7.0 (the last Cython release), from PyPI:** `uv run --isolated --no-project --with similaripy==0.7.0 ...`. Expected differences: `dot_bayesian` and `p3alpha_bayesian` differ by design (in 0.7.0 a bayesian shrink with no other normalization returned an empty output; fixed in 1.0). The PyPI wheel was compiled by a different GCC (CI runner, `-O3 -ffast-math`), so some scores differ by 1 float32 ulp from the local build the Rust core was matched against: near-ties at the k-th score become one-sided entries (ML-32M rp3beta: ~627k, 7%, against PyPI, 0 against the tag build below; synthetic p3alpha/rp3beta 2/26).
+- **A commit:** dump from a `git worktree` with its own venv (`make install-dev`).
+- **Timing history:** commit `608cc06` (local tag `v1-cython-ref`; from a fresh clone: `git fetch origin pull/29/head`), the last commit with both kernels in one process (`--kernel cpp rust`, interleaved ABAB). Needs Homebrew GCC on macOS.

@@ -5,7 +5,7 @@ The item-item benchmarks (run_benchmarks.py) have no realistic matrix-mode
 filter: their output is items x items. The recommendation step is where one
 lives: scores = dot_product(URM, S) with filter_cols=URM ("don't recommend
 items the user has already seen"), as one library batch call over all users
-(not a server's per-request path, D38). S is a cosine item model
+(not a server's per-request path). S is a cosine item model
 (k=--model-k), built once and not timed. S and the scores use
 --format-output (default csr).
 
