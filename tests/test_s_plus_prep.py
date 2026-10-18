@@ -155,6 +155,26 @@ def test_negative_block_size():
         sim.cosine(_m(), k=5, block_size=-1, verbose=False)
 
 
+def _csr_bytes(m):
+    m = m.tocsr()
+    return [(a.dtype, a.tobytes()) for a in (m.data, m.indices, m.indptr)]
+
+
+@pytest.mark.parametrize('kwargs', [{}, {'shrink': 3}, {'shrink': 3, 'shrink_type': 'bayesian'},
+                                    {'alpha': 0.7, 'beta': 0.4, 'shrink': 0.5}])
+@pytest.mark.parametrize('block_size', [None, 8])
+def test_depop_as_cosine_same_bits(kwargs, block_size, monkeypatch):
+    # rp3beta (depop only) through the cosine slots: COSINE mode, FULL's bits
+    from similaripy import _s_plus
+    d = _m(80, 50, seed=3).toarray()
+    d[5], d[:, 7] = 0, 0  # an empty row and column
+    m = sp.csr_array(d)
+    kw = dict(k=20, verbose=False, block_size=block_size, **kwargs)
+    swapped = sim.rp3beta(m, **kw)
+    monkeypatch.setattr(_s_plus, '_depop_as_cosine', lambda l1, l2, l3, norms: (l2, l3, norms))
+    assert _csr_bytes(swapped) == _csr_bytes(sim.rp3beta(m, **kw))
+
+
 @pytest.mark.parametrize('order', ['popularity', 'original'])
 @pytest.mark.parametrize('block_size', [None, 8, 64])
 def test_tie_rule_independent_of_blocking(order, block_size, monkeypatch):

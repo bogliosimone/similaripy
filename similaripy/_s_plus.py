@@ -495,6 +495,7 @@ def _s_plus(
 
     norms = _norms(m1_arrays, m2_arrays, n_output_cols, l1, l2, l3, c1, c2, additive_shrink,
                    weight_depop_matrix1, weight_depop_matrix2, p1, p2)
+    l2, l3, norms = _depop_as_cosine(l1, l2, l3, norms)
     filt, targ, m2_arrays = _selectors(filter_cols, target_cols, m2_arrays, n_output_cols, num_threads)
     m2_arrays, norms, filt, targ, back_perm = _popularity_layout(
         m2_arrays, norms, filt, targ, n_output_cols, num_threads)
@@ -570,6 +571,19 @@ def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
         Ydepop = _depop_weights(weight_depop_matrix2, lambda: _col_sums(np.abs(m2_data), m2_indices, n_cols),
                                 np.float32(p2), n_cols)
     return [Xtversky, Ytversky, Xcosine, Ycosine, Xdepop, Ydepop]
+
+
+def _depop_as_cosine(l1, l2, l3, norms):
+    """
+    Depop-only weights (rp3beta) through the cosine slots: the kernel's COSINE
+    mode instead of FULL, same bits. Both compute the term as `l * (x * y)`,
+    and FULL's den `0 + 0 + dp + shrink` adds only zeros to it (`score` in
+    kernel.rs); den == 0 gives 0 in both. A bayesian shrink stays FULL.
+    """
+    if l1 == 0 and l2 == 0 and l3 != 0:
+        Xt, Yt, _, _, Xd, Yd = norms
+        return l3, 0, [Xt, Yt, Xd, Yd, _EMPTY_F32, _EMPTY_F32]
+    return l2, l3, norms
 
 
 def _selectors(filter_cols, target_cols, m2_arrays, n_cols, num_threads):

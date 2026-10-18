@@ -861,6 +861,44 @@ mod tests {
         }
     }
 
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
+        // `_depop_as_cosine` (Python prep): depop-only weights moved to the cosine
+        // slots score, in their mode, as FULL with the depop slots.
+        #[test]
+        fn depop_in_cosine_slot_matches_full_bitwise(
+            w in 0.1f32..2.0,
+            shrink in proptest::array::uniform2(prop_oneof![Just(0.0f32), 0.1f32..2.0]),
+            pow in any::<bool>(),
+            xd in prop_oneof![Just(0.0f32), 0.1f32..3.0],
+            yd in prop_oneof![Just(0.0f32), 0.1f32..3.0],
+            xy in prop_oneof![Just(0.0f32), -5.0f32..5.0],
+        ) {
+            let pow = pow && !cfg!(miri); // see score_mode_matches_full_bitwise
+            let p = |l2: f32, l3: f32| Params {
+                a1: if pow { 0.5 } else { 1.0 },
+                l2, l3,
+                stabilized_shrink: shrink[0], bayesian_shrink: shrink[1],
+                ..Params::default()
+            };
+            let (e, x, y) = ([0.0f32], [xd], [yd]);
+            let depop = Norms {
+                x_tversky: &e, y_tversky: &e, x_cosine: &e, y_cosine: &e, x_depop: &x, y_depop: &y,
+            };
+            let cosine = Norms {
+                x_tversky: &e, y_tversky: &e, x_cosine: &x, y_cosine: &y, x_depop: &e, y_depop: &e,
+            };
+            let (full, swapped) = if pow {
+                (mode_and_full_bits::<true>(&p(0.0, w), &depop, xy).1,
+                 mode_and_full_bits::<true>(&p(w, 0.0), &cosine, xy).0)
+            } else {
+                (mode_and_full_bits::<false>(&p(0.0, w), &depop, xy).1,
+                 mode_and_full_bits::<false>(&p(w, 0.0), &cosine, xy).0)
+            };
+            prop_assert_eq!(swapped, full, "mode {} xy {}", p(w, 0.0).mode(), xy);
+        }
+    }
+
     #[test]
     fn mode_per_similarity() {
         let p = |l1: f32, l2: f32, l3: f32, ss: f32, bs: f32| Params {
