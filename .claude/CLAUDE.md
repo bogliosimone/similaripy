@@ -25,7 +25,8 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
   - [kernel.rs](crates/similaripy-core/src/kernel.rs) - S-Plus kernel (single-block and blocked paths, rayon)
   - [normalize.rs](crates/similaripy-core/src/normalize.rs) - Normalizations, in place over CSR data
   - [csr.rs](crates/similaripy-core/src/csr.rs), [topk.rs](crates/similaripy-core/src/topk.rs) - CSR views, top-K heap
-- **Bindings** ([crates/similaripy-py](crates/similaripy-py)): PyO3 module `similaripy._core`, thread pools, progress bar
+- **Bindings** ([crates/similaripy-py](crates/similaripy-py)): PyO3 module `similaripy._core`
+  - [lib.rs](crates/similaripy-py/src/lib.rs) - kernel + prep bindings, thread pools; [normalize.rs](crates/similaripy-py/src/normalize.rs) - dtype dispatch; [progress.rs](crates/similaripy-py/src/progress.rs) - progress bar
 
 **Config:**
 - [pyproject.toml](pyproject.toml) - Dependencies, build config (`[tool.maturin]`)
@@ -41,7 +42,17 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
 - **Top-K filtering** with efficient heap structures (pre-allocated), **Lazy normalization** (only when needed)
 - **In-place operations** for zero-copy modifications
 
-**Reference:** See [kernel.rs](crates/similaripy-core/src/kernel.rs) for implementation patterns, and the codegen-sensitive loops in [tests/benchmarks/README.md](tests/benchmarks/README.md).
+**Reference:** See [kernel.rs](crates/similaripy-core/src/kernel.rs) for implementation patterns, and in [tests/benchmarks/README.md](tests/benchmarks/README.md) the sections "Codegen-sensitive hot loops" (what a change must not break) and "Profiling the kernel (macOS)" (per-phase shares with `sample`).
+
+**Perf tiers:** the hot path (`accumulate`, drain/score, `TopK`, `lower_bound`) gets a perf assessment on every change; prep, output build and cold core code are correctness first, perf second.
+
+### Reproducibility contract
+- **Same version + same machine → identical results, bit for bit**, run to run, whatever `num_threads` or `block_size`. Different versions or platforms may differ by float rounding.
+- New code keeps the **addition order within an output row fixed by the data**, never by thread timing: no atomic float adds, no "first finished, first combined". Intra-row parallelism only by column blocks or fixed chunks combined in a fixed order.
+- **Exact check on every core change:** `check_kernel_parity.py --dump` under the base and under the head, then compare the arrays byte for byte. An unexpected difference is a bug until explained; an expected one (a precision-for-speed trade) needs a tolerance check against an f64 reference + top-k overlap with the previous version, and a changelog line.
+
+### Index widths
+- Inputs and ids are **int32** (each input's nnz ≤ int32 max, output column ids int32). Only output counts and offsets are 64-bit: past 2^31 results the CSR output gets int64 indptr and indices.
 
 ---
 
@@ -71,7 +82,12 @@ cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && ca
 make benchmark-similarity-small
 ```
 
-**Test files:** [tests/test_similarity.py](tests/test_similarity.py), [tests/test_normalization.py](tests/test_normalization.py)
+**Test files:**
+- [tests/test_similarity.py](tests/test_similarity.py) - every similarity × shrink type against one dense float64 reference (`_dense_scores`), selectors, signed input
+- [tests/test_s_plus_prep.py](tests/test_s_plus_prep.py) - validation, canonicalization, layout, output build, regressions
+- [tests/test_normalization.py](tests/test_normalization.py), [tests/test_progress_bar.py](tests/test_progress_bar.py)
+- [tests/test_free_threading.py](tests/test_free_threading.py) - concurrent calls, identical bits across threads and blocking
+- [crates/similaripy-core/tests/reference.rs](crates/similaripy-core/tests/reference.rs) - kernel proptest vs an f64 reference, `validate` errors; unit tests in each module
 
 ---
 
@@ -103,7 +119,7 @@ make benchmark-similarity-small
 
 ### Sparse Matrices
 - All functions expect **CSR format** (converted automatically)
-- **Always call `eliminate_zeros()`** in the init phase to maintain sparsity and avoid binary flag issues
+- Inputs are canonicalized before use (summed duplicates, no explicit zeros: `_canonical_csr` in `_s_plus.py`, `_prepare_csr` in `normalization.py`); never mutate the caller's matrices
 
 ### Rust Development
 - `uv run` (e.g. `make test-dev`) rebuilds the extension after `.rs` edits (`[tool.uv] cache-keys`)
@@ -111,7 +127,7 @@ make benchmark-similarity-small
 - Release the GIL (`py.detach`) around kernel calls; free-threaded builds (3.14t+) are supported
 - Threads: `num_threads=0` = rayon global pool (`RAYON_NUM_THREADS` to limit), `n` = a pool cached per calling thread
 - Ensure no shared mutable state across rayon workers
-- Parity with 0.7.0 (Cython): `check_kernel_parity.py` / `check_normalization_parity.py` (`--dump` / `--compare`, see [tests/benchmarks/README.md](tests/benchmarks/README.md))
+- 0.7.0 (the last Cython release) is a tolerance reference, not a contract: `check_kernel_parity.py` / `check_normalization_parity.py` (`--dump` / `--compare`, see [tests/benchmarks/README.md](tests/benchmarks/README.md))
 
 ---
 
