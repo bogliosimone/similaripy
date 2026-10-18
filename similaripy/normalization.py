@@ -66,7 +66,7 @@ def _prepare_csr(X: sps.sparray, axis: int, inplace: bool) -> sps.csr_array:
 
 def _check_non_negative(X: sps.csr_array, name: str) -> None:
     """Term weightings need counts: a negative value would give a NaN log or a
-    negative document length (signed input, D45). Checked on the canonical data,
+    negative document length (signed input). Checked on the canonical data,
     so +1/-1 duplicates sum to 0 and pass."""
     if (X.data < 0).any():
         raise ValueError(f'{name} needs non-negative values (term frequencies); '
