@@ -118,12 +118,6 @@ def test_negative_block_size():
         sim.cosine(_m(), k=5, block_size=-1, verbose=False)
 
 
-def test_no_blocking_matches_blocked():
-    m = _m(60, 300)
-    kw = {'k': 20, 'verbose': False}
-    _same(sim.cosine(m.T, block_size=None, **kw), sim.cosine(m.T, block_size=16, **kw))
-
-
 @pytest.mark.parametrize('order', ['popularity', 'original'])
 @pytest.mark.parametrize('block_size', [None, 8, 64])
 def test_tie_rule_independent_of_blocking(order, block_size, monkeypatch):
@@ -215,9 +209,6 @@ def test_tversky_rule_exempts_one_valued_data():
     for alpha, beta in ((2, 0), (3, 0.05)):
         _same(sim.tversky(m, alpha=alpha, beta=beta, k=5, verbose=False),
               sim.tversky(m, alpha=alpha, beta=beta, k=5, binary=True, verbose=False))
-    m.data[0] = 2  # weighted again
-    with pytest.raises(ValueError, match='denominator <= 0'):
-        sim.tversky(m, alpha=3, beta=0.05, verbose=False)
 
 
 def test_weighted_tversky_rule_closes_negative_denominator():
@@ -298,6 +289,16 @@ _BAD_PARAMS = [
     ('p3alpha', {'shrink': 5, 'shrink_type': 'stabilized'}, 'only rescales'),
     ('jaccard', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
     ('rp3beta', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
+    ('dot_product', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
+    ('tversky', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
+    ('dice', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
+    ('p3alpha', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
+    ('dot_product', {'k': True}, 'k must be'),
+    ('dot_product', {'format_output': 'dense'}, 'format_output'),
+    ('dot_product', {'filter_cols': {3}}, 'filter_cols must be'),
+    ('dot_product', {'target_cols': sp.csr_array(np.eye(5, dtype=np.float32))}, 'target_cols shape'),
+    ('dot_product', {'matrix2': np.ones((60, 60))}, 'matrix2 must be a sparse'),
+    ('dot_product', {'matrix2': _m(40, 60)}, 'Incompatible matrix shapes'),
     ('asymmetric_cosine', {'alpha': 1.5}, 'alpha must be in'),
     ('tversky', {'alpha': -0.5}, 'tversky alpha'),
     ('p3alpha', {'alpha': 0}, 'alpha must be finite and > 0'),
@@ -317,6 +318,11 @@ _BAD_PARAMS = [
 def test_rejects_bad_parameters(name, kwargs, match):
     with pytest.raises((ValueError, TypeError), match=match):
         getattr(sim, name)(_m(60, 60), verbose=False, **kwargs)
+
+
+def test_rejects_dense_matrix1():
+    with pytest.raises(TypeError, match='matrix1 must be a sparse'):
+        sim.dot_product(np.ones((5, 5)), _m(5, 5), verbose=False)
 
 
 def test_zero_weight_on_empty_columns_accepted():

@@ -3,8 +3,6 @@ import pytest
 import numpy as np
 import scipy.sparse as sp
 
-VERBOSE = False
-
 
 def generate_random_matrix(n_rows=100, n_cols=50, density=0.05, seed=42):
     rng = np.random.default_rng(seed)
@@ -111,41 +109,29 @@ def test_similarity_matches_dense_reference(name, kw, shrink_type, k, block_size
     if shrink_type is not None:
         kw = {**kw, 'shrink': 2.0, 'shrink_type': shrink_type}
     m = generate_random_matrix(400, 300, density=0.03)
-    out = getattr(sim, name)(m, k=k, block_size=block_size, verbose=VERBOSE, **kw)
+    out = getattr(sim, name)(m, k=k, block_size=block_size, verbose=False, **kw)
     _check_scores(out, _dense_scores(m, name, kw), k)
 
 
 def test_output_format():
     m = generate_random_matrix(1000, 800, density=0.025)
-    sim_csr = sim.cosine(m, format_output='csr', k=50, verbose=VERBOSE)
-    sim_coo = sim.cosine(m, format_output='coo', k=50, verbose=VERBOSE)
+    sim_csr = sim.cosine(m, format_output='csr', k=50, verbose=False)
+    sim_coo = sim.cosine(m, format_output='coo', k=50, verbose=False)
     assert isinstance(sim_csr, sp.csr_array) and sim_csr.nnz > 0
     assert isinstance(sim_coo, sp.coo_array) and sim_coo.nnz > 0
 
 
 def test_example_code():
-    import similaripy as sim
-    import scipy.sparse as sps
-
-   # Create a random User-Rating Matrix (URM)
-    urm = sps.random_array((1000, 2000), density=0.025)
-
-    # Normalize the URM using BM25
+    # The README example: item-item cosine on a BM25-weighted URM, then
+    # recommendations for 3 users without the items they have seen
+    urm = sp.random_array((1000, 2000), density=0.025, rng=0)
     urm = sim.normalization.bm25(urm)
-
-    # Train an item-item cosine similarity model
     similarity_matrix = sim.cosine(urm.T, k=50)
-
-    # Compute recommendations for user 1, 14, 8 
-    # filtering out already-seen items
-    recommendations = sim.dot_product(
-        urm,
-        similarity_matrix.T,
-        k=100,
-        target_rows=[1, 14, 8],
-        filter_cols=urm
-    )
-    print('✅ Test README.md sample code passed')
+    recommendations = sim.dot_product(urm, similarity_matrix.T, k=100, target_rows=[1, 14, 8],
+                                      filter_cols=urm).tocsr()
+    assert similarity_matrix.shape == (2000, 2000)
+    assert set(np.flatnonzero(np.diff(recommendations.indptr))) == {1, 8, 14}
+    assert recommendations.multiply(urm.tocsr() != 0).nnz == 0
 
 
 # ---- Row and column selectors vs the dense reference ----
@@ -158,7 +144,7 @@ def _selector_case():
 
 def test_target_rows():
     m, rows, scores = _selector_case()
-    out = sim.cosine(m, k=10, target_rows=rows.tolist(), verbose=VERBOSE).tocsr()
+    out = sim.cosine(m, k=10, target_rows=rows.tolist(), verbose=False).tocsr()
     others = np.setdiff1d(np.arange(400), rows)
     assert np.diff(out.indptr)[others].sum() == 0
     _check_scores(out[np.sort(rows)], scores[np.sort(rows)], 10)
@@ -171,7 +157,7 @@ def test_column_selector_array(selector):
     keep[cols] = True
     if selector == 'filter_cols':
         keep = ~keep
-    out = sim.cosine(m, k=10, verbose=VERBOSE, **{selector: cols.tolist()})
+    out = sim.cosine(m, k=10, verbose=False, **{selector: cols.tolist()})
     _check_scores(out, np.where(keep[None, :], scores, 0.0), 10)
 
 
@@ -180,7 +166,7 @@ def test_filter_cols_matrix():
     rng = np.random.default_rng(42)
     urm = sp.random_array((100, 200), density=0.05, format='csr', dtype=np.float32, random_state=rng)
     item_similarity = sp.random_array((200, 200), density=1, format='csr', dtype=np.float32, random_state=rng)
-    out = sim.dot_product(urm, item_similarity, k=50, filter_cols=urm, verbose=VERBOSE)
+    out = sim.dot_product(urm, item_similarity, k=50, filter_cols=urm, verbose=False)
     scores = urm.toarray().astype(np.float64) @ item_similarity.toarray().astype(np.float64)
     scores[urm.toarray() != 0] = 0.0
     _check_scores(out, scores, 50)
@@ -190,14 +176,14 @@ def test_s_plus_alpha_without_normalization():
     # Regression: alpha was ignored when no normalization term was active
     m = generate_random_matrix(80, 30, density=0.1).tocsr()
     xy = (m @ m.T).toarray()
-    out = sim.s_plus(m, l1=0, l2=0, l3=0, alpha=2, k=m.shape[0], verbose=VERBOSE)
+    out = sim.s_plus(m, l1=0, l2=0, l3=0, alpha=2, k=m.shape[0], verbose=False)
     np.testing.assert_allclose(out.toarray(), xy ** 2, rtol=1e-5)
 
 
 @pytest.mark.parametrize('alpha', [0, -1, float('nan')])
 def test_s_plus_rejects_non_positive_alpha(alpha):
     with pytest.raises(ValueError, match='alpha'):
-        sim.s_plus(generate_random_matrix(), alpha=alpha, verbose=VERBOSE)
+        sim.s_plus(generate_random_matrix(), alpha=alpha, verbose=False)
 
 @pytest.mark.parametrize('name', ['p3alpha', 'rp3beta'])
 def test_binary_keeps_random_walk_normalization(name):
@@ -205,9 +191,9 @@ def test_binary_keeps_random_walk_normalization(name):
     from similaripy.normalization import binarize
     m = generate_random_matrix(80, 30, density=0.1).tocsr()
     f = getattr(sim, name)
-    out = f(m, k=10, binary=True, verbose=VERBOSE)
-    np.testing.assert_allclose(out.toarray(), f(binarize(m), k=10, verbose=VERBOSE).toarray(), rtol=1e-6)
-    assert not np.allclose(out.toarray(), sim.dot_product(m, k=10, binary=True, verbose=VERBOSE).toarray())
+    out = f(m, k=10, binary=True, verbose=False)
+    np.testing.assert_allclose(out.toarray(), f(binarize(m), k=10, verbose=False).toarray(), rtol=1e-6)
+    assert not np.allclose(out.toarray(), sim.dot_product(m, k=10, binary=True, verbose=False).toarray())
 
 
 # ---- Signed input: only positive scores >= threshold are results ----
@@ -244,14 +230,14 @@ def test_signed_input_matches_dense_reference(name, kw, block_size, k, threshold
     scores = _dense_scores(m, name, kw)
     A = m.toarray()
     assert (scores < 0).any() and ((np.abs(A) @ np.abs(A).T > 0) & (A @ A.T == 0)).any()  # cancelled pairs
-    out = getattr(sim, name)(m, k=k, threshold=threshold, block_size=block_size, verbose=VERBOSE, **kw)
+    out = getattr(sim, name)(m, k=k, threshold=threshold, block_size=block_size, verbose=False, **kw)
     _check_scores(out, scores, k, threshold)
 
 
 @pytest.mark.parametrize('name, kw', _SIGNED_CASES)
 def test_signed_float_input_matches_dense_reference(name, kw):
     m = _signed_matrix(seed=1, integer=False)
-    out = getattr(sim, name)(m, k=5, verbose=VERBOSE, **kw)
+    out = getattr(sim, name)(m, k=5, verbose=False, **kw)
     _check_scores(out, _dense_scores(m, name, kw), 5, 0.0)
 
 
@@ -266,7 +252,7 @@ def test_signed_random_walk_matches_dense_reference(name, beta, block_size, k, i
     scores = _dense_scores(m, name, kw)
     assert (scores < -1e-4).any()
     out = getattr(sim, name)(m, k=k, threshold=1e-4, block_size=block_size,
-                             verbose=VERBOSE, **kw)
+                             verbose=False, **kw)
     _check_scores(out, scores, k, 1e-4)
 
 
@@ -288,8 +274,8 @@ def test_rp3beta_popularity_on_summed_duplicates(fmt):
         indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=m.shape[0]))])
         dup = sp.csr_array((vals, cols, indptr), shape=m.shape)
     before = dup.data.copy()  # dup shares vals' buffer
-    np.testing.assert_array_equal(sim.rp3beta(dup, beta=0.6, verbose=VERBOSE).toarray(),
-                                  sim.rp3beta(m, beta=0.6, verbose=VERBOSE).toarray())
+    np.testing.assert_array_equal(sim.rp3beta(dup, beta=0.6, verbose=False).toarray(),
+                                  sim.rp3beta(m, beta=0.6, verbose=False).toarray())
     np.testing.assert_array_equal(dup.data, before)  # scipy's abs() sums duplicates in place
 
 
@@ -312,6 +298,6 @@ def test_rp3beta_popularity_non_negative_same_additions(fmt):
 
 def test_signed_row_with_only_negative_scores_is_empty():
     m = sp.csr_array(np.array([[1, -1], [-1, 1], [1, 1]], dtype=np.float32))
-    out = sim.dot_product(m, -m.T, k=3, verbose=VERBOSE)
+    out = sim.dot_product(m, -m.T, k=3, verbose=False)
     # row 0 . -row 0 = -2, row 0 . -row 1 = 2, row 0 . -row 2 = 0 (cancelled): only column 1
     np.testing.assert_array_equal(out.toarray(), [[0, 2, 0], [2, 0, 0], [0, 0, 0]])
