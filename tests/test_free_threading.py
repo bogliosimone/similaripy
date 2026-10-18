@@ -85,14 +85,18 @@ for x in (sim.normalize(m, norm='l2'), sim.tfidf(m), sim.bm25(m), sim.bm25plus(m
 """
 
 
-def test_normalization_identical_across_threads():
-    # Normalizations run on the global pool, sized once per process: one child per size
+def test_normalization_identical_across_threads(tmp_path):
+    # Normalizations run on the global pool, sized once per process: one child per size.
+    # cwd outside the repo: `python -c` puts the cwd first on sys.path, and the source
+    # tree's `similaripy/` (no compiled _core) would shadow the installed package.
     import os
     import subprocess
 
     def run(n):
         env = {**os.environ, 'RAYON_NUM_THREADS': str(n)}
-        return subprocess.run([sys.executable, '-c', _NORMALIZE_SCRIPT], env=env, check=True,
-                              capture_output=True, text=True).stdout
+        r = subprocess.run([sys.executable, '-c', _NORMALIZE_SCRIPT], env=env, cwd=tmp_path,
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return r.stdout
 
     assert run(1) == run(4)
