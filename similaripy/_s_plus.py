@@ -41,11 +41,6 @@ _EMPTY_F32 = np.empty(0, dtype=np.float32)
 _EMPTY_I32 = np.empty(0, dtype=np.int32)
 
 
-def get_num_threads() -> int:
-    """Threads used with `num_threads=0` (rayon global pool, `RAYON_NUM_THREADS`)."""
-    return _core.get_num_threads()
-
-
 def _validate_inputs(
     matrix1: sp.sparray,
     matrix2: sp.sparray,
@@ -303,16 +298,16 @@ def _column_selector(cols, num_threads: int):
 
 def _array_keep_mask(filter_cols, target_cols, n_cols: int) -> np.ndarray:
     """
-    Mask of the columns kept by array-mode selectors: the target array (or all columns)
-    minus the filter array (ids validated in range). Only called when at
-    least one selector is an array; a matrix selector here counts as "all".
+    Mask of the columns kept by array-mode selectors: the target array (or all
+    columns) minus the filter array (ids validated in range). Each argument is
+    the selector's array, or None when it isn't in array mode.
     """
-    if isinstance(target_cols, (list, np.ndarray)) and len(target_cols) != 0:
+    if target_cols is None:
+        mask = np.ones(n_cols, dtype=bool)
+    else:
         mask = np.zeros(n_cols, dtype=bool)
         mask[np.asarray(target_cols)] = True
-    else:
-        mask = np.ones(n_cols, dtype=bool)
-    if isinstance(filter_cols, (list, np.ndarray)) and len(filter_cols) != 0:
+    if filter_cols is not None:
         mask[np.asarray(filter_cols)] = False
     return mask
 
@@ -584,7 +579,8 @@ def _selectors(filter_cols, target_cols, m2_arrays, n_cols, num_threads):
     filt = _column_selector(filter_cols, num_threads)
     targ = _column_selector(target_cols, num_threads)
     if filt[0] == MODE_ARRAY or targ[0] == MODE_ARRAY:
-        keep = _array_keep_mask(filter_cols, target_cols, n_cols)
+        keep = _array_keep_mask(filter_cols if filt[0] == MODE_ARRAY else None,
+                                target_cols if targ[0] == MODE_ARRAY else None, n_cols)
         m2_arrays = _keep_columns(*m2_arrays, keep)
     return filt, targ, m2_arrays
 

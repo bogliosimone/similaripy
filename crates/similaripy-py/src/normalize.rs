@@ -102,10 +102,6 @@ fn dispatch(
     }
 }
 
-fn mode<M>(parsed: Result<M, Error>) -> PyResult<M> {
-    parsed.map_err(to_py)
-}
-
 /// In-place l1 / l2 / max row normalization.
 #[pyfunction]
 pub fn normalize(
@@ -139,8 +135,8 @@ pub fn tfidf(
     logbase: f64,
 ) -> PyResult<()> {
     let op = Op::Tfidf(
-        mode(TfMode::parse(tf_mode))?,
-        mode(IdfMode::parse(idf_mode))?,
+        TfMode::parse(tf_mode).map_err(to_py)?,
+        IdfMode::parse(idf_mode).map_err(to_py)?,
         logbase,
     );
     dispatch(py, data, indices, indptr, shape, op)
@@ -166,8 +162,8 @@ pub fn bm25plus(
         k1,
         b,
         delta,
-        tf: mode(TfMode::parse(tf_mode))?,
-        idf: mode(IdfMode::parse(idf_mode))?,
+        tf: TfMode::parse(tf_mode).map_err(to_py)?,
+        idf: IdfMode::parse(idf_mode).map_err(to_py)?,
         logbase,
     };
     dispatch(py, data, indices, indptr, shape, op)
