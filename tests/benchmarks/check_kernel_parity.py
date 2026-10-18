@@ -4,13 +4,16 @@ Parity check vs a previous version: this install's top-k outputs vs a reference 
 Two steps, any two installs (e.g. 0.7.0 from PyPI vs this checkout, or two
 commits): `--dump` saves the outputs under the reference, `--compare` recomputes
 them here and checks, row by row, as (col, score) sets:
-  - scores of shared columns match with rtol=1e-5, atol=1e-7;
+  - scores of shared columns match with rtol=1e-5 (`--rtol`), atol=1e-7;
   - a column may be in only one side only if its score is within tolerance of
     that row's k-th score or of the threshold (near-tie). These one-sided
     entries are counted and reported; anything else fails.
 Each case also reports `exact` (data, indices and indptr identical byte for
 byte, dtypes included) and `overlap` (shared entries / reference entries).
 `--exact` makes any bit difference a failure (for changes that claim exactness).
+A change of summation order (e.g. scores computed from pre-scaled inputs) moves
+float32 sums over long rows by ~sqrt(n) eps: judge it with `--rtol 1e-4` plus a
+float64 reference.
 Run this script's version under both installs: the case lists must match.
 
 Usage (from the repo root; the same options on both steps):
@@ -20,7 +23,8 @@ Usage (from the repo root; the same options on both steps):
     python tests/benchmarks/check_kernel_parity.py --compare ref.npz [--exact]
 
     Options: --block-size 1024 (synthetic, blocked path, 10 blocks);
-    --dataset movielens --version 32m (dump ~0.3 GB).
+    --dataset movielens --version 32m (dump ~0.3 GB); --similarities takes the
+    benchmark harness names (e.g. rp3beta_stabilized, fixed parameters).
     Timing references are commits, not dumps: tag `v1-cython-ref` (both
     kernels in one process, `--kernel cpp rust`).
 """
@@ -33,6 +37,7 @@ import numpy as np
 import scipy.sparse as sp
 
 import similaripy as sim
+from benchmark import _get_similarity_function
 from dataset_loaders import load_URM
 from run_small_benchmarks import build_cases, make_urm
 
@@ -57,7 +62,8 @@ def compare(a, b, k, threshold=0.0):
         bad = ~close(bv[ib], av[ia])
         if bad.any():
             j = np.flatnonzero(bad)[0]
-            failures.append(f"row {r} col {ac[ia[j]]}: ref {av[ia[j]]!r} vs new {bv[ib[j]]!r}")
+            failures.append(f"row {r} col {ac[ia[j]]}: ref {av[ia[j]]!r} vs new {bv[ib[j]]!r} "
+                            f"(rel {abs(bv[ib[j]] / av[ia[j]] - 1):.1e})")
         # k-th score of each side (only meaningful when the row is full)
         kth = [v.min() for v in (av, bv) if v.size == k]
         for cols, vals, idx in ((ac, av, ia), (bc, bv, ib)):
@@ -67,8 +73,7 @@ def compare(a, b, k, threshold=0.0):
                     one_sided += 1
                 else:
                     failures.append(f"row {r}: col only on one side with score {s!r} (k-th {kth})")
-        if len(failures) >= 10:
-            break
+    # every row is counted (overlap, one-sided); the report shows the first failures
     return one_sided, shared, failures
 
 
@@ -111,15 +116,17 @@ def check_case(name, ref_arrays, new, kw, exact=False):
     same = identical(ref_arrays, new)  # before compare(): it sorts indices in place
     *arrays, shape = ref_arrays
     ref = sp.csr_array(tuple(arrays), shape=tuple(shape))
-    one_sided, shared, failures = compare(ref, new, min(kw['k'], new.shape[0]), kw.get('threshold', 0.0))
+    one_sided, shared, failures = compare(ref, new, min(kw['k'], new.shape[1]), kw.get('threshold', 0.0))
     if exact and not same:
         failures.append('not bit-identical (--exact)')
     overlap = shared / ref.nnz if ref.nnz else 1.0
     status = 'OK' if not failures else 'FAIL'
     print(f"{name:<28} {status}  exact={'yes' if same else 'no ':<3}  overlap={overlap:.6f}  "
           f"nnz={ref.nnz:<10} one_sided={one_sided}")
-    for f in failures:
+    for f in failures[:10]:
         print(f"    {f}")
+    if len(failures) > 10:
+        print(f"    ... {len(failures) - 10} more")
     return not failures
 
 
@@ -147,6 +154,7 @@ def scoring_cases():
 
 
 def main():
+    global RTOL
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument('--dump', metavar='NPZ', help="save this install's outputs (run under the reference)")
@@ -157,7 +165,9 @@ def main():
     p.add_argument('--k', type=int, default=100)
     p.add_argument('--block-size', type=int, default=0, help='0 = auto (262144)')
     p.add_argument('--exact', action='store_true', help='--compare: fail on any bit difference')
+    p.add_argument('--rtol', type=float, default=RTOL, help=f'--compare: score tolerance (default {RTOL})')
     args = p.parse_args()
+    RTOL = args.rtol
 
     if args.dataset == 'synthetic':
         X = make_urm().T.tocsr()
@@ -165,9 +175,11 @@ def main():
     else:
         URM, _ = load_URM(args.dataset, version=args.version)
         X = URM.T
-        cases = [(s, getattr(sim, s), {'k': args.k}) for s in args.similarities]
+        cases = [(s, _get_similarity_function(s), {'k': args.k}) for s in args.similarities]
 
-    meta = {k: v for k, v in vars(args).items() if k not in ('dump', 'compare', 'exact')}
+    meta = {k: v for k, v in vars(args).items() if k not in ('dump', 'compare', 'exact', 'rtol')}
+    # harness variants: their fixed parameters come from the running checkout's benchmark.py
+    meta['fixed'] = {name: func.fixed for name, func, _ in cases if hasattr(func, 'fixed')}
     if args.dump:
         save_outputs(args.dump, {name: func(X, **case_kwargs(kw, args.block_size)) for name, func, kw in cases}, meta)
         return
