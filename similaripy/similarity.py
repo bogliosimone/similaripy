@@ -657,7 +657,10 @@ def s_plus(
 
 def _signed_power(x: np.ndarray, alpha: float) -> np.ndarray:
     """sign(x) |x|^alpha: x^alpha bit for bit on x > 0; on signed input a negative
-    transition weight keeps its sign (np.power would give NaN for a fractional alpha)."""
+    transition weight keeps its sign (np.power would give NaN for a fractional alpha).
+    alpha == 1 returns x itself (the same bits, -0.0 included), saving the copies."""
+    if alpha == 1:
+        return x
     return np.copysign(np.abs(x) ** alpha, x)
 
 
