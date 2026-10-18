@@ -46,6 +46,53 @@ def test_concurrent_calls_match_serial():
     jobs = [name for name in calls for _ in range(ROUNDS)] * 2
     with ThreadPoolExecutor(N_THREADS) as pool:
         for name, got in pool.map(run, jobs):
-            np.testing.assert_allclose(got, expected[name], rtol=1e-5, err_msg=name)
+            np.testing.assert_array_equal(got, expected[name], err_msg=name)  # same machine: same bits
     # inputs are not modified by non-inplace calls
     np.testing.assert_array_equal(m.toarray(), _matrix().toarray())
+
+
+def _non_canonical_coo():
+    """Shuffled COO with duplicates, past the 2^16-entry leaf size: canonicalized in parallel."""
+    rng = np.random.default_rng(7)
+    n = 150_000
+    rows, cols = rng.integers(0, 2000, n), rng.integers(0, 500, n)
+    return sp.coo_array((rng.random(n).astype(np.float32), (rows, cols)), shape=(2000, 500))
+
+
+def _bits(x):
+    x = x.tocsr()
+    return x.data.tobytes(), x.indices.tobytes(), x.indptr.tobytes()
+
+
+@pytest.mark.parametrize('name', ['dot_product', 'cosine', 'rp3beta', 's_plus'])
+def test_similarity_identical_across_threads_and_blocking(name):
+    # Same version, same machine: the result never depends on thread count or blocking
+    m = _non_canonical_coo()
+    f = getattr(sim, name)
+    runs = [_bits(f(m, k=50, verbose=False, num_threads=n, block_size=bs))
+            for n in (1, 4, 0) for bs in (None, 64)]
+    assert all(r == runs[0] for r in runs[1:])
+
+
+_NORMALIZE_SCRIPT = """
+import hashlib, numpy as np, scipy.sparse as sp, similaripy as sim
+rng = np.random.default_rng(7)
+n = 150_000
+m = sp.coo_array((rng.random(n).astype(np.float32),
+                  (rng.integers(0, 2000, n), rng.integers(0, 500, n))), shape=(2000, 500)).tocsr()
+for x in (sim.normalize(m, norm='l2'), sim.tfidf(m), sim.bm25(m), sim.bm25plus(m)):
+    print(hashlib.sha256(x.data.tobytes() + x.indices.tobytes() + x.indptr.tobytes()).hexdigest())
+"""
+
+
+def test_normalization_identical_across_threads():
+    # Normalizations run on the global pool, sized once per process: one child per size
+    import os
+    import subprocess
+
+    def run(n):
+        env = {**os.environ, 'RAYON_NUM_THREADS': str(n)}
+        return subprocess.run([sys.executable, '-c', _NORMALIZE_SCRIPT], env=env, check=True,
+                              capture_output=True, text=True).stdout
+
+    assert run(1) == run(4)
