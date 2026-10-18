@@ -2,360 +2,126 @@ import similaripy as sim
 import pytest
 import numpy as np
 import scipy.sparse as sp
-from similaripy.normalization import normalize
 
 VERBOSE = False
 
-def check_sum(x):
-    # function used for testing the library
-    # sum of each row, next square of each value, next sum the values
-    # since we use topk, we can't check on the other axis
-    aux = np.asarray(x.sum(axis=1)).ravel()
-    aux = np.power(aux, 2)
-    return np.sum(aux)
-
-
-def check_full(x1, x2, rtol=0.001):
-    # this function could be used only if we don't use topk
-    # bescause we could have same value for different indices in a row
-    # so one method could chose one indice and one another 
-    x1 = x1.tocsr()
-    x2 = x2.tocsr()
-    for i in range(x1.shape[0]):
-        indices = x1.indices[x1.indptr[i]:x1.indptr[i+1]]
-        for i in range(indices.shape[0]):
-            r = i
-            c = indices[i]
-            np.testing.assert_allclose(x1[r,c], x2[r,c], rtol=rtol, err_msg='error test_full')
-    return 0
-
-
-def py_dot(m, k):
-
-    s = m @ m.T
-    return top_k(s, k)
-
-
-def py_cosine(m, k, h=0, shrink_mode='stabilized'):
-    if shrink_mode == 'additive':
-        additive_h = h
-    else:
-        additive_h = 0
-
-    m2 = m.copy()
-    m2.data = np.power(m2.data,2)
-
-    # normalization terms
-    X = np.power((np.asarray(m2.sum(axis=1)).ravel()) + additive_h, 0.5)
-
-    m_aux = (m @ m.T).tocsr()
-    r, c, v = [], [], []
-    for idx1 in range(0,m.shape[0]):
-        for idx2 in range(m_aux.indptr[idx1], m_aux.indptr[idx1+1]):
-            row = idx1
-            col = m_aux.indices[idx2]
-            val = m_aux.data[idx2]
-            r.append(row)
-            c.append(col)
-            if shrink_mode == 'stabilized':
-                v.append(val/ (X[row] * X[col] + h))
-            elif shrink_mode == 'bayesian':
-                v.append(val / (X[row] * X[col]) * (val / (val + h)))
-            elif shrink_mode == 'additive':
-                v.append(val / (X[row] * X[col]))
-    s = sp.csr_array((v,(r,c)),shape=(m.shape[0],m.shape[0]))
-    return top_k(s, k)
-
-
-def py_asy_cosine(m, alpha, k):
-    m2 = m.copy()
-    m2.data = np.power(m2.data,2)
-    X = np.power(np.asarray(m2.sum(axis=1)).ravel(),alpha)
-    Y = np.power(np.asarray(m2.sum(axis=1)).ravel(),1-alpha)
-    m_aux = (m @ m.T).tocsr()
-    r, c, v = [], [], []
-    for idx1 in range(0,m.shape[0]):
-        for idx2 in range(m_aux.indptr[idx1], m_aux.indptr[idx1+1]):
-            row = idx1
-            col = m_aux.indices[idx2]
-            val = m_aux.data[idx2]
-            r.append(row)
-            c.append(col)
-            v.append(val/ (X[row] * Y[col]))
-    s = sp.csr_array((v,(r,c)),shape=(m.shape[0],m.shape[0]))
-    return top_k(s, k)
-
-
-def py_jaccard(m, k):
-    X = np.asarray(m.power(2).sum(axis=1)).ravel()
-    m_aux = (m @ m.T).tocsr()
-    r, c, v = [], [], []
-    for idx1 in range(0,m.shape[0]):
-        for idx2 in range(m_aux.indptr[idx1], m_aux.indptr[idx1+1]):
-            row = idx1
-            col = m_aux.indices[idx2]
-            val = m_aux.data[idx2]
-            r.append(row)
-            c.append(col)
-            v.append(val/ (X[row] + X[col] - val))
-    s = sp.csr_array((v,(r,c)),shape=(m.shape[0],m.shape[0]))
-    return top_k(s, k)
-
-
-def py_dice(m, k):
-    X = np.asarray(m.power(2).sum(axis=1)).ravel()
-    m_aux = (m @ m.T).tocsr()
-    r, c, v = [], [], []
-    for idx1 in range(0,m.shape[0]):
-        for idx2 in range(m_aux.indptr[idx1], m_aux.indptr[idx1+1]):
-            row = idx1
-            col = m_aux.indices[idx2]
-            val = m_aux.data[idx2]
-            r.append(row)
-            c.append(col)
-            v.append(2*val/ (X[row] + X[col]))
-    s = sp.csr_array((v,(r,c)),shape=(m.shape[0],m.shape[0]))
-    return top_k(s, k)
-
-
-def py_tversky(m, alpha, beta, k):
-    X = np.asarray(m.power(2).sum(axis=1)).ravel()
-    m_aux = (m @ m.T).tocsr()
-    r, c, v = [], [], []
-    for idx1 in range(0,m.shape[0]):
-        for idx2 in range(m_aux.indptr[idx1], m_aux.indptr[idx1+1]):
-            row = idx1
-            col = m_aux.indices[idx2]
-            val = m_aux.data[idx2]
-            r.append(row)
-            c.append(col)
-            v.append(val/ (alpha*(X[row]-val) + beta*(X[col]-val) + val))
-    s = sp.csr_array((v,(r,c)),shape=(m.shape[0],m.shape[0]))
-    return top_k(s, k)
-
-
-def py_p3alpha(m, alpha, k):
-    m2 = m.copy().T
-    m1 = normalize(m, axis=1, norm='l1')
-    m2 = normalize(m2, axis=1, norm='l1')
-    m1.data = np.power(m1.data, alpha)
-    m2.data = np.power(m2.data, alpha)
-    m_aux =  m1 @ m2
-    return top_k(m_aux, k)
-
-
-def py_rp3beta(m, alpha, beta, k):
-    pop = np.power(np.asarray(m.sum(axis=1)).ravel(), beta)
-    pop_inv = np.divide(1, pop, out=np.zeros_like(pop), where=pop!=0)
-    m2 = m.copy().T
-    m1 = normalize(m, axis=1, norm='l1')
-    m2 = normalize(m2, axis=1, norm='l1')
-    m1.data = np.power(m1.data, alpha)
-    m2.data = np.power(m2.data, alpha)
-    m_aux = m1 @ m2
-    m_aux = col_scale(m_aux, pop_inv)
-    return top_k(m_aux, k)
-
-
-def py_s_plus(m, k,
-              l1=0.5, l2=0.5, l3=0.0,
-              t1=1.0, t2=1.0,
-              c1=0.5, c2=0.5,
-              alpha=1.0,
-              beta1=0.0, beta2=0.0,
-              pop1='none', pop2='none'
-              ):
-    m_aux = (m @ m.T).tocsr()
-
-    # squared norms
-    sq = m.copy()
-    sq.data **= 2
-    Xtversky = np.asarray(sq.sum(axis=1)).ravel()
-    Ytversky = Xtversky.copy()
-
-    # cosine exponents
-    Xcosine = np.power(Xtversky, c1)
-    Ycosine = np.power(Ytversky, c2)
-
-    # popularity (sum)
-    if pop1 == 'sum':
-        Xdepop = np.power(np.asarray(m.sum(axis=1)).ravel(), beta1)
-    else:
-        Xdepop = np.ones(m.shape[0])
-    if pop2 == 'sum':
-        Ydepop = np.power(np.asarray(m.sum(axis=1)).ravel(), beta2)
-    else:
-        Ydepop = np.ones(m.shape[0])
-    
-    r, c, v = [], [], []
-    for i in range(m_aux.shape[0]):
-        for j in range(m_aux.indptr[i], m_aux.indptr[i+1]):
-            row = i
-            col = m_aux.indices[j]
-            xy = m_aux.data[j]
-
-            valTversky = l1 * (t1 * (Xtversky[row] - xy) + t2 * (Ytversky[col] - xy) + xy) if l1 != 0 else 0
-            valCosine  = l2 * (Xcosine[row] * Ycosine[col]) if l2 != 0 else 0
-            valDepop   = l3 * (Xdepop[row] * Ydepop[col]) if l3 != 0 else 0
-
-            denom = valTversky + valCosine + valDepop
-            if alpha != 1.0:
-                xy = np.power(xy, alpha)
-            val = xy / denom if denom > 0 else 0
-            r.append(row)
-            c.append(col)
-            v.append(val)
-
-    s = sp.csr_array((v, (r, c)), shape=(m.shape[0], m.shape[0]))
-    return top_k(s, k)
-
-
-def top_k(X, k):
-    X = X.tocsr()
-    r, c, d = [], [], []
-    for i in range(X.shape[0]):
-        data = X.data[X.indptr[i]:X.indptr[i+1]]
-        topk = min(k, data.shape[0])
-        indices = X.indices[X.indptr[i]:X.indptr[i+1]]
-        topk_idx = np.argpartition(data, -topk)[-topk:]
-        data = data[topk_idx]
-        indices = indices[topk_idx]
-        r += np.full(topk, i).tolist()
-        c += indices.tolist()
-        d += data.tolist()
-    return sp.csr_array((d, (r, c)), shape=X.shape)
-
-
-def col_scale(X, array_scale):
-    X = X.tocsr()
-    X.data *= array_scale.take(X.indices, mode='clip')
-    return X
-
-
-def check_similarity(m, k, rtol=0.0001, full=False):
-    # similaripy
-    dot = sim.dot_product(m, k=k, verbose=VERBOSE)
-    cosine = sim.cosine(m, k=k, verbose=VERBOSE)
-    asy_cosine = sim.asymmetric_cosine(m, alpha=0.2, k=k, verbose=VERBOSE)
-    jaccard = sim.jaccard(m, k=k, verbose=VERBOSE)
-    dice = sim.dice(m, k=k, verbose=VERBOSE)
-    tversky = sim.tversky(m, alpha=0.8, beta=0.4, k=k, verbose=VERBOSE)
-    p3alpha = sim.p3alpha(m, alpha=0.8, k=k, verbose=VERBOSE)
-    rp3beta = sim.rp3beta(m, alpha=0.8, beta= 0.4, k=k, verbose=VERBOSE)
-    splus = sim.s_plus(m, l1=0.5, l2=0.5, l3=1, t1=1, t2=1, c1=0.5, c2=0.5, 
-                       alpha=1, beta1=0, beta2=0, pop1='none',pop2='sum', k=k, verbose=VERBOSE)
-
-    # python
-    dot2 = py_dot(m, k)
-    cosine2 = py_cosine(m, k).tocsr()
-    asy_cosine2 = py_asy_cosine(m, 0.2, k=k)
-    jaccard2 = py_jaccard(m, k)
-    dice2 = py_dice(m, k)
-    tversky2 = py_tversky(m, alpha=0.8, beta=0.4, k=k)
-    p3alpha2 = py_p3alpha(m, alpha=0.8, k=k)
-    rp3beta2 = py_rp3beta(m, alpha=0.8, beta=0.4, k=k)
-    splus2 = py_s_plus(m, l1=0.5, l2=0.5, l3=1, t1=1, t2=1, c1=0.5, c2=0.5, 
-                       alpha=1, beta1=0, beta2=0, pop1='none',pop2='sum', k=k)
-
-    # test
-    np.testing.assert_allclose(check_sum(dot), check_sum(dot2), rtol=rtol, err_msg='dot error')
-    np.testing.assert_allclose(check_sum(cosine), check_sum(cosine2), rtol=rtol, err_msg='cosine error')
-    np.testing.assert_allclose(check_sum(asy_cosine), check_sum(asy_cosine2), rtol=rtol, err_msg='asy_cosine error')
-    np.testing.assert_allclose(check_sum(jaccard), check_sum(jaccard2), rtol=rtol, err_msg='jaccard error')
-    np.testing.assert_allclose(check_sum(dice), check_sum(dice2), rtol=rtol, err_msg='dice error')
-    np.testing.assert_allclose(check_sum(tversky), check_sum(tversky2), rtol=rtol, err_msg='tversky error')
-    np.testing.assert_allclose(check_sum(p3alpha), check_sum(p3alpha2), rtol=rtol, err_msg='p3alpha error')
-    np.testing.assert_allclose(check_sum(rp3beta), check_sum(rp3beta2), rtol=rtol, err_msg='rp3beta error')
-    np.testing.assert_allclose(check_sum(splus), check_sum(splus2), rtol=rtol, err_msg='splus error')
-
-    # test full rows
-    if full:
-        np.testing.assert_(check_full(dot, dot2, rtol) == 0, msg='dot error')
-        np.testing.assert_(check_full(cosine, cosine2, rtol) == 0, msg='cosine error')
-        np.testing.assert_(check_full(asy_cosine, asy_cosine2, rtol) == 0, msg='asy_cosine error')
-        np.testing.assert_(check_full(jaccard, jaccard2, rtol) == 0, msg='jaccard error')
-        np.testing.assert_(check_full(dice, dice2, rtol) == 0, msg='dice error')
-        np.testing.assert_(check_full(tversky, tversky2, rtol) == 0, msg='tversky error')
-        np.testing.assert_(check_full(p3alpha, p3alpha2, rtol) == 0, msg='p3alpha error')
-        np.testing.assert_(check_full(rp3beta, rp3beta2, rtol) == 0, msg='rp3beta error')
-        np.testing.assert_(check_full(splus, splus2, rtol) == 0, msg='splus error')
-
-    return
 
 def generate_random_matrix(n_rows=100, n_cols=50, density=0.05, seed=42):
     rng = np.random.default_rng(seed)
     return sp.random_array((n_rows, n_cols), density=density, format='csr', dtype=np.float32, random_state=rng)
 
 
-def test_similarity_topk():
-    rows = 1000
-    cols = 800
-    density = 0.025
-    rtol= 0.0001
-    k = 50
+# ---- Dense float64 reference: every pair's score from the formulas ----
 
-    m = generate_random_matrix(rows, cols, density=density).tocsr()
-    
-    check_similarity(m=m, k=k, rtol=rtol, full=False)
-
-    print('✅ All similarity topk tests passed')
+def _dense_random_walk(A, alpha):
+    """P3alpha walk scores: l1 rows by sum |x|, sign-preserving power, both sides."""
+    def walk(M):
+        M = M / np.maximum(np.abs(M).sum(axis=1, keepdims=True), 1e-300)
+        return np.sign(M) * np.abs(M) ** alpha
+    return walk(A) @ walk(A.T)
 
 
-def test_similarity_full():
-    rows = 400
-    cols = 50
-    density = 0.025
-    rtol= 0.0001
-    k = cols
+def _dense_scores(m, name, kw):
+    """Scores of `getattr(sim, name)(m, **kw)` for every pair (m @ m.T, rows of m), in float64."""
+    A = m.toarray().astype(np.float64)
+    h = kw.get('shrink', 0.0)
+    shrink_type = kw.get('shrink_type', 'stabilized')
+    stabilized, bayesian, additive = (h if shrink_type == t else 0.0
+                                      for t in ('stabilized', 'bayesian', 'additive'))
+    sq = (A ** 2).sum(axis=1)
+    pop = np.abs(A).sum(axis=1)
+    if name in ('p3alpha', 'rp3beta'):
+        xy = _dense_random_walk(A, kw.get('alpha', 1.0))
+        den = pop[None, :] ** kw.get('beta', 0.5) if name == 'rp3beta' else None
+    else:
+        xy = A @ A.T
+        if name == 'dot_product':
+            den = None
+        elif name in ('cosine', 'asymmetric_cosine'):
+            c1 = kw.get('alpha', 0.5)
+            den = np.outer((sq + additive) ** c1, (sq + additive) ** (1 - c1))
+        elif name == 's_plus':
+            xy = xy ** kw.get('alpha', 1.0)
+            l1, l2, l3 = kw.get('l1', 0.5), kw.get('l2', 0.5), kw.get('l3', 0.0)
+            raw = A @ A.T
+            p1 = pop ** kw.get('beta1', 0.0) if kw.get('pop1') == 'sum' else np.ones_like(pop)
+            p2 = pop ** kw.get('beta2', 0.0) if kw.get('pop2') == 'sum' else np.ones_like(pop)
+            den = (l1 * (kw.get('t1', 1.0) * (sq[:, None] - raw) + kw.get('t2', 1.0) * (sq[None, :] - raw) + raw)
+                   + l2 * np.outer((sq + additive) ** kw.get('c1', 0.5), (sq + additive) ** kw.get('c2', 0.5))
+                   + l3 * np.outer(p1, p2))
+            if l1 == l2 == l3 == 0:
+                den = None
+        else:  # tversky family
+            t = {'jaccard': (1, 1), 'dice': (0.5, 0.5)}.get(name, (kw.get('alpha'), kw.get('beta')))
+            den = t[0] * (sq[:, None] - xy) + t[1] * (sq[None, :] - xy) + xy
+    if den is not None:
+        xy_pow = xy
+        xy = np.divide(xy, den + stabilized, out=np.zeros_like(xy), where=xy != 0)
+    else:
+        xy_pow = xy
+    if bayesian:
+        xy = xy * np.divide(xy_pow, xy_pow + bayesian, out=np.zeros_like(xy), where=xy_pow != 0)
+    return xy
 
-    m = generate_random_matrix(rows, cols, density=density).tocsr()
-    
-    check_similarity(m=m, k=k, rtol=rtol, full=True)
 
-    print('✅ All similarity full row tests passed')
+def _check_scores(out, scores, k, threshold=0.0):
+    """Each row of `out` holds the min(k, #candidates) best positive scores >= threshold,
+    at the right columns: compares values, so any choice among tied columns passes."""
+    out = out.tocsr()
+    for i in range(scores.shape[0]):
+        cols = out.indices[out.indptr[i]:out.indptr[i + 1]]
+        vals = out.data[out.indptr[i]:out.indptr[i + 1]]
+        assert len(np.unique(cols)) == len(cols), i
+        assert (vals > 0).all() and (vals >= threshold).all(), i  # no 0.0, no negatives
+        best = np.sort(scores[i][(scores[i] > 0) & (scores[i] >= threshold)])[::-1]
+        assert len(vals) == min(k, len(best)), i
+        np.testing.assert_allclose(vals, scores[i, cols], rtol=1e-4, err_msg=str(i))
+        np.testing.assert_allclose(np.sort(vals)[::-1], best[:len(vals)], rtol=1e-4, err_msg=str(i))
 
 
-def test_shrink_types():
-    rows = 400
-    cols = 50
-    density = 0.025
-    rtol= 0.0001
-    k = cols
-    m = generate_random_matrix(rows, cols, density=density).tocsr()
-    
-    for mode in ('stabilized', 'bayesian', 'additive'):
-        # similaripy
-        cosine = sim.cosine(m, k=k, shrink=10, shrink_type=mode, verbose=VERBOSE)
-        # python
-        cosine2 = py_cosine(m, k, h=10, shrink_mode=mode).tocsr()
+# ---- Every similarity x shrink type vs the dense reference ----
 
-        np.testing.assert_allclose(check_sum(cosine), check_sum(cosine2), rtol=rtol, err_msg=f'Mismatch for shrink_type={mode}')
-        np.testing.assert_(check_full(cosine, cosine2, rtol) == 0, msg=f'Mismatch for shrink_type={mode}')
+_CASES = [
+    ('dot_product', {}),
+    ('cosine', {}),
+    ('asymmetric_cosine', {'alpha': 0.2}),
+    ('jaccard', {}),
+    ('dice', {}),
+    ('tversky', {'alpha': 0.8, 'beta': 0.4}),
+    ('p3alpha', {'alpha': 0.8}),
+    ('rp3beta', {'alpha': 0.8, 'beta': 0.4}),
+    ('s_plus', {'l1': 0.5, 'l2': 0.5, 'l3': 1, 't1': 1, 't2': 1, 'c1': 0.3, 'c2': 0.6,
+                'pop2': 'sum', 'beta2': 0.4, 'alpha': 1.5}),
+]
 
-    print('✅ All shrink tests passed')
+# shrink types that do nothing for a similarity are rejected (tested in test_s_plus_prep)
+_NO_COSINE = {'dot_product', 'tversky', 'jaccard', 'dice', 'p3alpha', 'rp3beta'}
+_NO_DENOMINATOR = {'dot_product', 'p3alpha'}
+
+
+@pytest.mark.parametrize('name, kw', _CASES, ids=[c[0] for c in _CASES])
+@pytest.mark.parametrize('shrink_type', [None, 'stabilized', 'bayesian', 'additive'])
+@pytest.mark.parametrize('k', [10, 400])
+@pytest.mark.parametrize('block_size', [None, 64])
+def test_similarity_matches_dense_reference(name, kw, shrink_type, k, block_size):
+    # Regression (bayesian): without a normalization term it returned an empty matrix
+    if (shrink_type == 'additive' and name in _NO_COSINE) or \
+            (shrink_type == 'stabilized' and name in _NO_DENOMINATOR):
+        pytest.skip('rejected: the shrink would do nothing')
+    if shrink_type is not None:
+        kw = {**kw, 'shrink': 2.0, 'shrink_type': shrink_type}
+    m = generate_random_matrix(400, 300, density=0.03)
+    out = getattr(sim, name)(m, k=k, block_size=block_size, verbose=VERBOSE, **kw)
+    _check_scores(out, _dense_scores(m, name, kw), k)
 
 
 def test_output_format():
-    rows = 1000
-    cols = 800
-    density = 0.025
-    k = 50
-    m = generate_random_matrix(rows, cols, density=density).tocsr()
+    m = generate_random_matrix(1000, 800, density=0.025)
+    sim_csr = sim.cosine(m, format_output='csr', k=50, verbose=VERBOSE)
+    sim_coo = sim.cosine(m, format_output='coo', k=50, verbose=VERBOSE)
+    assert isinstance(sim_csr, sp.csr_array) and sim_csr.nnz > 0
+    assert isinstance(sim_coo, sp.coo_array) and sim_coo.nnz > 0
 
-    # CSR output
-    sim_csr = sim.cosine(m, format_output='csr', k=k, verbose=VERBOSE)
-    assert sp.issparse(sim_csr), "Output is not a sparse matrix"
-    assert isinstance(sim_csr, sp.csr_array), "CSR format not returned"
-
-    # COO output
-    sim_coo = sim.cosine(m, format_output='coo', k=k, verbose=VERBOSE)
-    assert sp.issparse(sim_coo), "Output is not a sparse matrix"
-    assert isinstance(sim_coo, sp.coo_array), "COO format not returned"
-
-    assert sim_csr.nnz > 0, "CSR output is empty"
-    assert sim_coo.nnz > 0, "COO output is empty"
-
-    print("✅ Test output CSR and COO passed")
 
 def test_example_code():
     import similaripy as sim
@@ -382,260 +148,42 @@ def test_example_code():
     print('✅ Test README.md sample code passed')
 
 
+# ---- Row and column selectors vs the dense reference ----
+
+def _selector_case():
+    m = generate_random_matrix(400, 300, density=0.03)
+    ids = np.random.default_rng(42).choice(400, size=60, replace=False)
+    return m, ids, _dense_scores(m, 'cosine', {})
+
+
 def test_target_rows():
-    rows = 1000
-    cols = 800
-    density = 0.025
-    rtol= 0.001
-    k = 50
-
-    # 1. Generate a random matrix
-    m = generate_random_matrix(rows, cols, density=density).tocsr()
-
-    # 2. Select a random subset of rows to use as target rows
-    rng = np.random.default_rng(42)
-    num_target_rows = 100
-    target_rows = rng.choice(rows, size=num_target_rows, replace=False).tolist()
-
-    ## target_rows = [0,2]
-    # 3. Compute cosine similarity with similaripy using target_rows
-    sim_target = sim.cosine(m, k=k, target_rows=target_rows, verbose=VERBOSE)
-
-    # 4. Compute cosine similarity with py_cosine (full computation)
-    cosine_full = py_cosine(m, k).tocsr()
-
-    # 5. Create a matrix with the same shape but only target rows populated
-    # Use a mask to keep only the target rows
-    mask = np.zeros(rows, dtype=bool)
-    mask[target_rows] = True
-    cosine_subset = sp.diags(mask, dtype=np.float32).dot(cosine_full)
-
-    # 6. Use check_sum to verify the two matrices are equal
-    np.testing.assert_allclose(check_sum(sim_target), check_sum(cosine_subset), rtol=rtol,
-                               err_msg='target_rows cosine error')
-
-    print('✅ Test target_rows passed')
+    m, rows, scores = _selector_case()
+    out = sim.cosine(m, k=10, target_rows=rows.tolist(), verbose=VERBOSE).tocsr()
+    others = np.setdiff1d(np.arange(400), rows)
+    assert np.diff(out.indptr)[others].sum() == 0
+    _check_scores(out[np.sort(rows)], scores[np.sort(rows)], 10)
 
 
-def test_filter_cols():
-    rows = 1000
-    cols = 800
-    density = 0.025
-    rtol = 0.001
-    k = 50
-
-    # 1. Generate a random matrix
-    m = generate_random_matrix(rows, cols, density=density).tocsr()
-
-    # 2. Select a random subset of columns to filter out
-    # filter_cols filters the output columns (which are rows in the similarity matrix)
-    rng = np.random.default_rng(42)
-    num_filter_cols = 100
-    filter_cols = rng.choice(rows, size=num_filter_cols, replace=False).tolist()
-    filter_cols = sorted(filter_cols)  # Sort for easier comparison
-
-    # 3. Compute cosine similarity with similaripy using filter_cols
-    sim_filtered = sim.cosine(m, k=k, filter_cols=filter_cols, verbose=VERBOSE)
-
-    # 4. Compute cosine similarity WITHOUT top-k (to simulate pre-filtering)
-    cosine_full_no_topk = py_cosine(m, k=rows).tocsr()  # Get all similarities
-
-    # 5. Zero out the filtered columns BEFORE applying top-k
-    mask = np.ones(rows, dtype=bool)
-    mask[filter_cols] = False
-    col_mask = sp.diags(mask, dtype=np.float32)
-    cosine_filtered_ref = cosine_full_no_topk.dot(col_mask)
-
-    # 6. NOW apply top-k after filtering
-    cosine_filtered_ref = top_k(cosine_filtered_ref, k)
-
-    # 7. Use check_sum to verify the two matrices are equal
-    np.testing.assert_allclose(check_sum(sim_filtered), check_sum(cosine_filtered_ref), rtol=rtol,
-                               err_msg='filter_cols cosine error')
-
-    print('✅ Test filter_cols passed')
-
-
-def test_target_cols():
-    rows = 1000
-    cols = 800
-    density = 0.025
-    rtol = 0.001
-    k = 50
-
-    # 1. Generate a random matrix
-    m = generate_random_matrix(rows, cols, density=density).tocsr()
-
-    # 2. Select a random subset of columns to keep (target_cols includes only these)
-    # target_cols includes the output columns (which are rows in the similarity matrix)
-    rng = np.random.default_rng(42)
-    num_target_cols = 100
-    target_cols = rng.choice(rows, size=num_target_cols, replace=False).tolist()
-
-    # 3. Compute cosine similarity with similaripy using target_cols
-    sim_target = sim.cosine(m, k=k, target_cols=target_cols, verbose=VERBOSE)
-
-    # 4. Compute cosine similarity WITHOUT top-k (to simulate pre-filtering)
-    cosine_full_no_topk = py_cosine(m, k=rows).tocsr()  # Get all similarities
-
-    # 5. Keep only the target columns BEFORE applying top-k
-    mask = np.zeros(rows, dtype=bool)
-    mask[target_cols] = True
-    col_mask = sp.diags(mask, dtype=np.float32)
-    cosine_target_ref = cosine_full_no_topk.dot(col_mask)
-
-    # 6. NOW apply top-k after filtering
-    cosine_target_ref = top_k(cosine_target_ref, k)
-
-    # 7. Use check_sum to verify the two matrices are equal
-    np.testing.assert_allclose(check_sum(sim_target), check_sum(cosine_target_ref), rtol=rtol,
-                               err_msg='target_cols cosine error')
-
-    print('✅ Test target_cols passed')
-
-
-def test_block_size():
-    """Test that both blocked and unblocked paths produce correct results against Python reference."""
-    rows = 1000
-    cols = 800
-    density = 0.025
-    rtol = 0.0001
-    k = 50
-
-    m = generate_random_matrix(rows, cols, density=density).tocsr()
-
-    # Python reference implementations
-    dot_py = py_dot(m, k)
-    cosine_py = py_cosine(m, k)
-    rp3beta_py = py_rp3beta(m, alpha=0.8, beta=0.4, k=k)
-    splus_py = py_s_plus(m, l1=0.5, l2=0.5, l3=1, t1=1, t2=1, c1=0.5, c2=0.5,
-                         alpha=1, beta1=0, beta2=0, pop1='none', pop2='sum', k=k)
-
-    # Test each block_size mode: None (disabled), 0 (auto), and small explicit values
-    for bs, label in [(None, 'disabled'), (0, 'auto'), (64, '64'), (256, '256')]:
-        dot_c = sim.dot_product(m, k=k, block_size=bs, verbose=VERBOSE)
-        cosine_c = sim.cosine(m, k=k, block_size=bs, verbose=VERBOSE)
-        rp3beta_c = sim.rp3beta(m, alpha=0.8, beta=0.4, k=k, block_size=bs, verbose=VERBOSE)
-        splus_c = sim.s_plus(m, l1=0.5, l2=0.5, l3=1, t1=1, t2=1, c1=0.5, c2=0.5,
-                             alpha=1, beta1=0, beta2=0, pop1='none', pop2='sum',
-                             k=k, block_size=bs, verbose=VERBOSE)
-
-        np.testing.assert_allclose(check_sum(dot_c), check_sum(dot_py), rtol=rtol,
-                                   err_msg=f'dot block_size={label} vs python ref')
-        np.testing.assert_allclose(check_sum(cosine_c), check_sum(cosine_py), rtol=rtol,
-                                   err_msg=f'cosine block_size={label} vs python ref')
-        np.testing.assert_allclose(check_sum(rp3beta_c), check_sum(rp3beta_py), rtol=rtol,
-                                   err_msg=f'rp3beta block_size={label} vs python ref')
-        np.testing.assert_allclose(check_sum(splus_c), check_sum(splus_py), rtol=rtol,
-                                   err_msg=f'splus block_size={label} vs python ref')
-
-    print('✅ Test block_size correctness passed')
+@pytest.mark.parametrize('selector', ['filter_cols', 'target_cols'])
+def test_column_selector_array(selector):
+    m, cols, scores = _selector_case()
+    keep = np.zeros(400, dtype=bool)
+    keep[cols] = True
+    if selector == 'filter_cols':
+        keep = ~keep
+    out = sim.cosine(m, k=10, verbose=VERBOSE, **{selector: cols.tolist()})
+    _check_scores(out, np.where(keep[None, :], scores, 0.0), 10)
 
 
 def test_filter_cols_matrix():
-    """Test filter_cols with a sparse matrix (real-world use case: filtering seen items)"""
-    num_users = 100
-    num_items = 200
-    density = 0.05
-    rtol = 0.001
-    k = 200
-
-    # 1. Generate a User-Rating Matrix (URM) - users x items
+    # Real-world case: recommendations (URM @ item similarity) without the items each user has seen
     rng = np.random.default_rng(42)
-    urm = sp.random_array((num_users, num_items), density=density, format='csr', dtype=np.float32, random_state=rng)
-
-    # 2. Generate an item-item similarity matrix
-    # In practice this would be: sim.cosine(urm.T, k=50)
-    # For testing, we'll create a random similarity matrix fully populated
-    item_similarity = sp.random_array((num_items, num_items), density=1, format='csr', dtype=np.float32, random_state=rng)
-
-    # 3. Compute recommendations using filter_cols=urm to filter already-seen items
-    # This is the typical use case: urm @ item_similarity, filtering seen items per user
-    recommendations_filtered = sim.dot_product(
-        urm,
-        item_similarity,
-        k=k,
-        filter_cols=urm,  # Filter out items each user has already seen
-        verbose=VERBOSE
-    )
-
-    # 4. Compute the reference: manual matrix multiplication and filtering
-    # First compute the full recommendations matrix (users x items)
-    recommendations_full = (urm.dot(item_similarity)).tocsr()
-
-    # 5. For each user (row), zero out the items they've already seen
-    recommendations_ref = recommendations_full.copy()
-    recommendations_ref = recommendations_ref.tolil()  # Convert to LIL for efficient row updates
-
-    for user_idx in range(num_users):
-        seen_items = urm.indices[urm.indptr[user_idx]:urm.indptr[user_idx+1]]
-        recommendations_ref[user_idx, seen_items] = 0
-
-    recommendations_ref = recommendations_ref.tocsr()
-
-    # 6. Apply top-k after filtering (commented out to check full matrix)
-    recommendations_ref = top_k(recommendations_ref, k)
-
-    # 7. Verify the two matrices are equal
-    np.testing.assert_allclose(check_sum(recommendations_filtered), check_sum(recommendations_ref), rtol=rtol,
-                               err_msg='filter_cols with matrix (seen items) error')
-
-    # 8. Additional check: verify that for each user, the recommended item indices are the same
-    recommendations_filtered_csr = recommendations_filtered.tocsr()
-    recommendations_filtered_csr.eliminate_zeros()
-    recommendations_ref_csr = recommendations_ref.tocsr()
-    recommendations_ref_csr.eliminate_zeros()
-
-    for user_idx in range(num_users):
-        # Get the indices (item IDs) for this user from both matrices
-        filtered_indices = recommendations_filtered_csr.indices[
-            recommendations_filtered_csr.indptr[user_idx]:recommendations_filtered_csr.indptr[user_idx+1]
-        ]
-        ref_indices = recommendations_ref_csr.indices[
-            recommendations_ref_csr.indptr[user_idx]:recommendations_ref_csr.indptr[user_idx+1]
-        ]
-
-        # Sort indices since order might differ (but should have same items)
-        filtered_indices_sorted = np.sort(filtered_indices)
-        ref_indices_sorted = np.sort(ref_indices)
-
-        # Verify the indices are identical
-        np.testing.assert_array_equal(
-            filtered_indices_sorted,
-            ref_indices_sorted,
-            err_msg=f'Mismatch in recommended items for user {user_idx}'
-        )
-
-    print('✅ Test filter_cols with matrix (seen items) passed')
-
-
-SIMILARITIES = ('dot_product', 'cosine', 'asymmetric_cosine', 'tversky', 'jaccard', 'dice',
-                'p3alpha', 'rp3beta', 's_plus')
-
-
-# shrink types that do nothing for a similarity are rejected (tested in test_s_plus_prep)
-_NO_COSINE = {'dot_product', 'tversky', 'jaccard', 'dice', 'p3alpha', 'rp3beta'}
-_NO_DENOMINATOR = {'dot_product', 'p3alpha'}
-
-
-@pytest.mark.parametrize('name', SIMILARITIES)
-@pytest.mark.parametrize('shrink_type', ['stabilized', 'bayesian', 'additive'])
-def test_every_shrink_type_scores(name, shrink_type):
-    # Regression: bayesian shrink without a normalization term returned an empty matrix
-    if (shrink_type == 'additive' and name in _NO_COSINE) or \
-            (shrink_type == 'stabilized' and name in _NO_DENOMINATOR):
-        pytest.skip('rejected: the shrink would do nothing')
-    m = generate_random_matrix(80, 30, density=0.1).tocsr()
-    out = getattr(sim, name)(m, k=10, shrink=5, shrink_type=shrink_type, verbose=VERBOSE)
-    assert out.nnz > 0
-
-
-def test_dot_product_bayesian_shrink_formula():
-    m = generate_random_matrix(80, 30, density=0.1).tocsr()
-    xy = (m @ m.T).toarray()
-    expected = xy * xy / (xy + 5)
-    out = sim.dot_product(m, k=m.shape[0], shrink=5, shrink_type='bayesian', verbose=VERBOSE)
-    np.testing.assert_allclose(out.toarray(), expected, rtol=1e-5)
+    urm = sp.random_array((100, 200), density=0.05, format='csr', dtype=np.float32, random_state=rng)
+    item_similarity = sp.random_array((200, 200), density=1, format='csr', dtype=np.float32, random_state=rng)
+    out = sim.dot_product(urm, item_similarity, k=50, filter_cols=urm, verbose=VERBOSE)
+    scores = urm.toarray().astype(np.float64) @ item_similarity.toarray().astype(np.float64)
+    scores[urm.toarray() != 0] = 0.0
+    _check_scores(out, scores, 50)
 
 
 def test_s_plus_alpha_without_normalization():
@@ -673,44 +221,6 @@ def _signed_matrix(seed=0, integer=True):
     return m
 
 
-def _dense_scores(m, name, kw):
-    """Every pair's score in float64, from the formulas (m @ m.T, rows of m)."""
-    A = m.toarray().astype(np.float64)
-    xy = A @ A.T
-    sq = (A ** 2).sum(axis=1)
-    h = kw.get('shrink', 0.0)
-    additive = h if kw.get('shrink_type') == 'additive' else 0.0
-    stabilized = h if kw.get('shrink_type', 'stabilized') == 'stabilized' else 0.0
-    if name == 'dot_product':
-        return xy
-    t = {'jaccard': (1, 1), 'dice': (0.5, 0.5)}.get(name, (kw.get('alpha'), kw.get('beta')))
-    if name == 's_plus':
-        pop = np.abs(A).sum(axis=1)
-        den = (kw['l1'] * (kw['t1'] * (sq[:, None] - xy) + kw['t2'] * (sq[None, :] - xy) + xy)
-               + kw['l2'] * np.outer(sq ** 0.5, sq ** 0.5)
-               + kw['l3'] * np.outer(pop ** kw['beta1'], pop ** kw['beta2']))
-    elif name in ('cosine', 'asymmetric_cosine'):
-        c1 = kw.get('alpha', 0.5)
-        den = np.outer((sq + additive) ** c1, (sq + additive) ** (1 - c1))
-    else:  # tversky family
-        den = t[0] * (sq[:, None] - xy) + t[1] * (sq[None, :] - xy) + xy
-    den = den + stabilized
-    return np.divide(xy, den, out=np.zeros_like(xy), where=xy != 0)
-
-
-def _check_signed(out, scores, k, threshold):
-    out = out.tocsr()
-    for i in range(scores.shape[0]):
-        cols = out.indices[out.indptr[i]:out.indptr[i + 1]]
-        vals = out.data[out.indptr[i]:out.indptr[i + 1]]
-        assert len(np.unique(cols)) == len(cols), i
-        assert (vals > 0).all() and (vals >= threshold).all(), i  # no 0.0, no negatives
-        best = np.sort(scores[i][(scores[i] > 0) & (scores[i] >= threshold)])[::-1]
-        assert len(vals) == min(k, len(best)), i
-        np.testing.assert_allclose(vals, scores[i, cols], rtol=1e-4, err_msg=str(i))
-        np.testing.assert_allclose(np.sort(vals)[::-1], best[:len(vals)], rtol=1e-4, err_msg=str(i))
-
-
 _SIGNED_CASES = [
     ('dot_product', {}),
     ('cosine', {}),
@@ -735,26 +245,14 @@ def test_signed_input_matches_dense_reference(name, kw, block_size, k, threshold
     A = m.toarray()
     assert (scores < 0).any() and ((np.abs(A) @ np.abs(A).T > 0) & (A @ A.T == 0)).any()  # cancelled pairs
     out = getattr(sim, name)(m, k=k, threshold=threshold, block_size=block_size, verbose=VERBOSE, **kw)
-    _check_signed(out, scores, k, threshold)
+    _check_scores(out, scores, k, threshold)
 
 
 @pytest.mark.parametrize('name, kw', _SIGNED_CASES)
 def test_signed_float_input_matches_dense_reference(name, kw):
     m = _signed_matrix(seed=1, integer=False)
     out = getattr(sim, name)(m, k=5, verbose=VERBOSE, **kw)
-    _check_signed(out, _dense_scores(m, name, kw), 5, 0.0)
-
-
-def _dense_random_walk(m, alpha, beta=None):
-    """P3alpha / RP3beta in float64: l1 rows by sum |x|, sign-preserving power, pop = sum |x|."""
-    def walk(M):
-        M = M / np.maximum(np.abs(M).sum(axis=1, keepdims=True), 1e-300)
-        return np.sign(M) * np.abs(M) ** alpha
-    A = m.toarray().astype(np.float64)
-    s = walk(A) @ walk(A.T)
-    if beta is not None:
-        s = s / np.abs(A).sum(axis=1)[None, :] ** beta
-    return s
+    _check_scores(out, _dense_scores(m, name, kw), 5, 0.0)
 
 
 @pytest.mark.parametrize('name, beta', [('p3alpha', None), ('rp3beta', 0.6)])
@@ -764,12 +262,12 @@ def _dense_random_walk(m, alpha, beta=None):
 def test_signed_random_walk_matches_dense_reference(name, beta, block_size, k, integer):
     # threshold 1e-4: well below the scores (~1e-2), above f32 residues of cancelled sums
     m = _signed_matrix(integer=integer)
-    scores = _dense_random_walk(m, 0.8, beta)
+    kw = {'alpha': 0.8} if beta is None else {'alpha': 0.8, 'beta': beta}
+    scores = _dense_scores(m, name, kw)
     assert (scores < -1e-4).any()
-    kw = {} if beta is None else {'beta': beta}
-    out = getattr(sim, name)(m, alpha=0.8, k=k, threshold=1e-4, block_size=block_size,
+    out = getattr(sim, name)(m, k=k, threshold=1e-4, block_size=block_size,
                              verbose=VERBOSE, **kw)
-    _check_signed(out, scores, k, 1e-4)
+    _check_scores(out, scores, k, 1e-4)
 
 
 @pytest.mark.parametrize('fmt', ['coo', 'csr'])
@@ -817,17 +315,3 @@ def test_signed_row_with_only_negative_scores_is_empty():
     out = sim.dot_product(m, -m.T, k=3, verbose=VERBOSE)
     # row 0 . -row 0 = -2, row 0 . -row 1 = 2, row 0 . -row 2 = 0 (cancelled): only column 1
     np.testing.assert_array_equal(out.toarray(), [[0, 2, 0], [2, 0, 0], [0, 0, 0]])
-
-
-
-if __name__ == "__main__":
-    test_similarity_topk()
-    test_similarity_full()
-    test_shrink_types()
-    test_output_format()
-    test_example_code()
-    test_target_rows()
-    test_filter_cols()
-    test_target_cols()
-    test_block_size()
-    test_filter_cols_matrix()
