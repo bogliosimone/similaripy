@@ -1,7 +1,7 @@
-//! Progress bar with the same output as the C++ `progress::ProgressBar`
-//! (`progress_bar.h`): stderr, `\r` redraw at most `refresh_hz` times a second,
-//! timer started by the first finished row. No ticker thread: the worker that
-//! finishes a row after the refresh interval redraws (D25).
+//! Progress bar on stderr, same format as similaripy 0.7.0: `\r` redraw at most
+//! `refresh_hz` times a second, timer started by the first finished row. No
+//! ticker thread: the worker that finishes a row after the refresh interval
+//! redraws.
 
 use std::cell::Cell;
 use std::io::Write;
@@ -35,7 +35,7 @@ pub struct ProgressBar {
     interval_ms: u64,
     count: AtomicUsize,
     created: Instant,
-    /// Set by the first finished row (prep time is not counted, as in C++).
+    /// Set by the first finished row (prep time is not counted).
     start: OnceLock<Instant>,
     /// Last redraw, in ms since `created`.
     last_draw_ms: AtomicU64,
@@ -195,7 +195,7 @@ fn draw(line: &mut Line, out: &str, newline: bool) {
     line.last_len = out.len();
 }
 
-/// `MM:SS`, as the C++ bar.
+/// `MM:SS`.
 fn fmt_time(secs: f64) -> String {
     let s = secs as u64;
     format!("{:02}:{:02}", s / 60, s % 60)
