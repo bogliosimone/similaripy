@@ -111,6 +111,3 @@ notebook = [
   "scikit-learn",
   "IProgress"
 ]
-
-[tool.tox]
-requires = ["tox>=4.19"]

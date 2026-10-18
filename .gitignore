@@ -5,9 +5,7 @@
 *.pyc
 *.so
 *.pyd
-*.lock
-*.egg-info/
-build/
+uv.lock
 dist/
 .cache/
 .tox/
@@ -16,7 +14,6 @@ dist/
 # Benchmark Results
 # ============================
 
-.benchmarks/
 bench_results/
 datasets_bench/
 
