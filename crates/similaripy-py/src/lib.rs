@@ -22,7 +22,7 @@ pub(crate) fn to_py(e: Error) -> PyErr {
 }
 
 thread_local! {
-    /// `num_threads = n > 0`: one pool per calling thread, rebuilt when n changes (D20).
+    /// `num_threads = n > 0`: one pool per calling thread, rebuilt when n changes.
     /// Concurrent callers each get their own team, as with OpenMP.
     static POOL: RefCell<Option<(usize, Arc<ThreadPool>)>> = const { RefCell::new(None) };
 }
@@ -58,8 +58,8 @@ fn selection<'a>(
         .map_err(to_py)
 }
 
-/// The C++ kernel's arguments, plus `col_map` (output id of each m2 column;
-/// empty = keep the ids). Returns `(cols, values, counts)`: row `i` of
+/// The kernel inputs as flat arrays (positional for now), plus `col_map`
+/// (output id of each m2 column; empty = keep the ids). Returns `(cols, values, counts)`: row `i` of
 /// `targets` has `counts[i]` results, sorted by column, packed in
 /// `cols`/`values` (numpy arrays over the Rust buffers, no copy). Releases the
 /// GIL. `num_threads = 0` runs on the global rayon pool (concurrent callers
