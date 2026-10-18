@@ -12,7 +12,7 @@ const LEAF_NNZ: usize = 1 << 16;
 /// on the current rayon pool. Already-sorted rows are left as they are.
 ///
 /// Replaces numpy's gather + scipy's single-threaded `sort_indices`: 2.1 s of
-/// the 3.3 s recommendation call on Yambda 50M (S with 93M entries, Step 3).
+/// the 3.3 s recommendation call on Yambda 50M (S with 93M entries).
 pub fn remap_sort_rows(
     indptr: &[i32],
     indices: &mut [i32],
@@ -49,8 +49,8 @@ pub fn remap_sort_rows(
 /// indptr (the first `new_indptr[-1]` entries are the result).
 ///
 /// Replaces scipy's single-threaded COO -> CSR (2.2 s on a 93M-entry COO
-/// item model, Step 3) and fixes CSR inputs with duplicate entries, which
-/// reached the kernel unsummed (wrong norms and binary counts, also in 0.7.0).
+/// item model) and sums duplicate entries of CSR inputs, which would otherwise
+/// reach the kernel unsummed (wrong norms and binary counts).
 pub fn canonicalize_rows(
     indptr: &[i32],
     indices: &mut [i32],
