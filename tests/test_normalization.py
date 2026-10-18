@@ -23,7 +23,6 @@ def test_binarize():
     import similaripy as sim
     np.testing.assert_allclose(sim.jaccard(B, k=10, verbose=False).toarray(),
                                sim.jaccard(X, k=10, binary=True, verbose=False).toarray(), rtol=1e-6)
-    print('✅ binarize correctness passed')
 
 
 def test_normalize_l1():
@@ -36,7 +35,6 @@ def test_normalize_l1():
     expected.data /= np.repeat(row_sums, np.diff(expected.indptr))
 
     np.testing.assert_allclose(X_norm.toarray(), expected.toarray(), rtol=1e-5)
-    print('✅ normalize l1 correctness passed')
 
 
 def test_normalize_l2():
@@ -49,7 +47,6 @@ def test_normalize_l2():
     expected.data /= np.repeat(row_norms, np.diff(expected.indptr))
 
     np.testing.assert_allclose(X_norm.toarray(), expected.toarray(), rtol=1e-5)
-    print('✅ normalize l2 correctness passed')
 
 
 def test_normalize_max():
@@ -62,7 +59,6 @@ def test_normalize_max():
     expected.data /= np.repeat(max_values, np.diff(expected.indptr))
 
     np.testing.assert_allclose(X_norm.toarray(), expected.toarray(), rtol=1e-5)
-    print('✅ normalize max correctness passed')
 
 
 def test_tfidf():
@@ -83,7 +79,6 @@ def test_tfidf():
     tf = tf.tocsr()
 
     np.testing.assert_allclose(X_tfidf.toarray(), tf.toarray(), rtol=1e-4)
-    print("✅ tfidf correctness passed")
 
 
 def test_bm25():
@@ -110,7 +105,6 @@ def test_bm25():
     bm25_ref = sp.csr_array((new_data, (row, col)), shape=tf.shape)
 
     np.testing.assert_allclose(X_bm25.toarray(), bm25_ref.toarray(), rtol=1e-3)
-    print("✅ bm25 correctness passed")
 
 
 def test_binarize_sums_duplicates():
@@ -123,14 +117,6 @@ def test_binarize_sums_duplicates():
     np.testing.assert_array_equal(sim.dot_product(B, k=3, verbose=False).toarray(),
                                   sim.dot_product(X, k=3, binary=True, verbose=False).toarray())
 
-
-if __name__ == "__main__":
-        test_binarize()
-        test_normalize_l1()
-        test_normalize_l2()
-        test_normalize_max()
-        test_tfidf()
-        test_bm25()
 
 
 # ---- Signed input ----
