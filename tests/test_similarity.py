@@ -198,6 +198,21 @@ def test_binary_keeps_random_walk_normalization(name):
 
 # ---- Signed input: only positive scores >= threshold are results ----
 
+def _drop_cancellation_noise(out, scores, eps=1e-6):
+    """
+    Exactly cancelled pairs (reference 0) may come back as float noise (~1e-8):
+    cosine and rp3beta run as a dot product of pre-scaled inputs (`_prescale`),
+    whose rounding doesn't cancel exactly. Drop results below eps whose
+    reference is ~0 too; any other result is left to `_check_scores`.
+    """
+    out = out.tocsr(copy=True)
+    rows = np.repeat(np.arange(out.shape[0]), np.diff(out.indptr))
+    noise = (out.data < eps) & (np.abs(scores[rows, out.indices]) < eps)
+    out.data[noise] = 0
+    out.eliminate_zeros()
+    return out
+
+
 def _signed_matrix(seed=0, integer=True):
     """60 x 40, ~15% dense, values in -3..3 (exact f32 dot products) or standard normal."""
     rng = np.random.default_rng(seed)
@@ -231,6 +246,8 @@ def test_signed_input_matches_dense_reference(name, kw, block_size, k, threshold
     A = m.toarray()
     assert (scores < 0).any() and ((np.abs(A) @ np.abs(A).T > 0) & (A @ A.T == 0)).any()  # cancelled pairs
     out = getattr(sim, name)(m, k=k, threshold=threshold, block_size=block_size, verbose=False, **kw)
+    if name in ('cosine', 'asymmetric_cosine') and (not kw.get('shrink') or kw.get('shrink_type') == 'additive'):
+        out = _drop_cancellation_noise(out, scores)  # product form only (`_product_form`)
     _check_scores(out, scores, k, threshold)
 
 

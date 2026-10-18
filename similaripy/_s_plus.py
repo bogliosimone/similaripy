@@ -276,18 +276,18 @@ def _row_sums(values: np.ndarray, indptr: np.ndarray, dtype=None) -> np.ndarray:
     return out
 
 
-def _col_sums(values: np.ndarray, indices: np.ndarray, n_cols: int) -> np.ndarray:
-    """Per-column sums of a CSR value array (bincount in float64, cast once to float32)."""
-    return np.bincount(indices, weights=values, minlength=n_cols).astype(np.float32, copy=False)
+def _col_sums(values: np.ndarray, indices: np.ndarray, n_cols: int, dtype=np.float32) -> np.ndarray:
+    """Per-column sums of a CSR value array (bincount in float64, cast once to `dtype`)."""
+    return np.bincount(indices, weights=values, minlength=n_cols).astype(dtype, copy=False)
 
 
-def _depop_weights(weight_spec, sums, p: float, n: int) -> np.ndarray:
+def _depop_weights(weight_spec, sums, p: float, n: int, dtype=np.float32) -> np.ndarray:
     """Depopularization weights: custom array ** p, 'none' (ones) or row/col sums ** p."""
     if not isinstance(weight_spec, str):
-        return np.power(np.asarray(weight_spec, dtype=np.float32), p, dtype=np.float32)
+        return np.power(np.asarray(weight_spec, dtype=dtype), p, dtype=dtype)
     if weight_spec == 'none':
-        return np.ones(n, dtype=np.float32)  # 1 ** p == 1
-    return np.power(sums(), p, dtype=np.float32)
+        return np.ones(n, dtype=dtype)  # 1 ** p == 1
+    return np.power(sums(), p, dtype=dtype)
 
 
 def _column_selector(cols, num_threads: int):
@@ -493,9 +493,14 @@ def _s_plus(
     elif block_size == 0:
         block_size = DEFAULT_BLOCK_SIZE
 
-    norms = _norms(m1_arrays, m2_arrays, n_output_cols, l1, l2, l3, c1, c2, additive_shrink,
-                   weight_depop_matrix1, weight_depop_matrix2, p1, p2)
-    l2, l3, norms = _depop_as_cosine(l1, l2, l3, norms)
+    norm_args = (m1_arrays, m2_arrays, n_output_cols, l1, l2, l3, c1, c2, additive_shrink,
+                 weight_depop_matrix1, weight_depop_matrix2, p1, p2)
+    if (_product_form(a1, l1, l2, l3, stabilized_shrink, bayesian_shrink)
+            and _prescale(m1_arrays, m2_arrays, l2 + l3, _norms(*norm_args, dtype=np.float64))):
+        l2, l3, norms = 0, 0, [_EMPTY_F32] * 6  # plain dot of the scaled inputs: DOT mode
+    else:
+        norms = _norms(*norm_args)
+        l2, l3, norms = _depop_as_cosine(l1, l2, l3, norms)
     filt, targ, m2_arrays = _selectors(filter_cols, target_cols, m2_arrays, n_output_cols, num_threads)
     m2_arrays, norms, filt, targ, back_perm = _popularity_layout(
         m2_arrays, norms, filt, targ, n_output_cols, num_threads)
@@ -549,28 +554,66 @@ def _kernel_values(m1, m2, binary, a1, l1, t1, t2, bayesian_shrink):
 
 
 def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
-           weight_depop_matrix1, weight_depop_matrix2, p1, p2):
-    """The normalization terms the weights use (x per m1 row, y per m2 column); the others stay empty."""
+           weight_depop_matrix1, weight_depop_matrix2, p1, p2, dtype=np.float32):
+    """
+    The normalization terms the weights use (x per m1 row, y per m2 column); the
+    others stay empty. float32 for the kernel; float64 for `_prescale`.
+    """
     (m1_data, _, m1_indptr), (m2_data, m2_indices, _) = m1_arrays, m2_arrays
     Xtversky = Ytversky = Xcosine = Ycosine = Xdepop = Ydepop = _EMPTY_F32
     if l1 != 0 or l2 != 0:
-        m1_sq = _row_sums(np.square(m1_data), m1_indptr)
-        m2_sq = _col_sums(np.square(m2_data), m2_indices, n_cols)
+        m1_sq = _row_sums(np.square(m1_data, dtype=dtype), m1_indptr)
+        m2_sq = _col_sums(np.square(m2_data, dtype=dtype), m2_indices, n_cols, dtype)
     if l1 != 0:
         Xtversky, Ytversky = m1_sq, m2_sq
     if l2 != 0:
-        Xcosine = np.power(m1_sq + np.float32(additive_shrink), np.float32(c1), dtype=np.float32)
-        Ycosine = np.power(m2_sq + np.float32(additive_shrink), np.float32(c2), dtype=np.float32)
+        Xcosine = np.power(m1_sq + dtype(additive_shrink), dtype(c1), dtype=dtype)
+        Ycosine = np.power(m2_sq + dtype(additive_shrink), dtype(c2), dtype=dtype)
     if l3 != 0:
         _check_used_weights('weight_depop_matrix1 (pop1)', weight_depop_matrix1, np.diff(m1_indptr) > 0)
         _check_used_weights('weight_depop_matrix2 (pop2)', weight_depop_matrix2,
                             np.bincount(m2_indices, minlength=n_cols) > 0)
         # 'sum' popularity = sum of |x| (identical on non-negative input)
-        Xdepop = _depop_weights(weight_depop_matrix1, lambda: _row_sums(np.abs(m1_data), m1_indptr),
-                                np.float32(p1), len(m1_indptr) - 1)
-        Ydepop = _depop_weights(weight_depop_matrix2, lambda: _col_sums(np.abs(m2_data), m2_indices, n_cols),
-                                np.float32(p2), n_cols)
+        Xdepop = _depop_weights(weight_depop_matrix1, lambda: _row_sums(np.abs(m1_data), m1_indptr, dtype),
+                                dtype(p1), len(m1_indptr) - 1, dtype)
+        Ydepop = _depop_weights(weight_depop_matrix2,
+                                lambda: _col_sums(np.abs(m2_data), m2_indices, n_cols, dtype),
+                                dtype(p2), n_cols, dtype)
     return [Xtversky, Ytversky, Xcosine, Ycosine, Xdepop, Ydepop]
+
+
+def _product_form(a1, l1, l2, l3, stabilized_shrink, bayesian_shrink) -> bool:
+    """
+    The score is xy / (l X[row] Y[col]): one cosine or one depop term (an
+    additive shrink sits inside the norms), no power, no other shrink. Then it
+    is the plain dot product of m1 rows scaled by 1 / (l X) and m2 columns by
+    1 / Y (`_prescale`).
+    """
+    return (a1 == 1 and l1 == 0 and (l2 != 0) != (l3 != 0)
+            and stabilized_shrink == 0 and bayesian_shrink == 0)
+
+
+def _prescale(m1_arrays, m2_arrays, l, norms) -> bool:
+    """
+    For `_product_form`: scales m1 rows by 1 / (l X) and m2 columns by 1 / Y,
+    in place, so the kernel can run DOT. Scales from float64 norms, cast to
+    float32; 0 where a norm is 0 (the kernel scores 0 there too). Returns False,
+    changing nothing, if a scaled value could overflow float32 (largest |value|
+    times largest scale; e.g. 1 / Y overflows): the caller keeps the kernel path.
+    A scaled value may underflow to 0.0: the kernel scores it 0, never a result.
+    """
+    (m1_data, _, m1_indptr), (m2_data, m2_indices, _) = m1_arrays, m2_arrays
+    X, Y = (norms[2], norms[3]) if len(norms[2]) else (norms[4], norms[5])
+    with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+        sx = np.divide(1.0, l * X, out=np.zeros_like(X), where=X != 0).astype(np.float32)
+        sy = np.divide(1.0, Y, out=np.zeros_like(Y), where=Y != 0).astype(np.float32)
+        for data, scales in ((m1_data, sx), (m2_data, sy)):
+            # rounding is monotone: if the largest product is finite, all are
+            if not np.isfinite(max(data.max(initial=0), -data.min(initial=0)) * scales.max(initial=0)):
+                return False
+    m1_data *= np.repeat(sx, np.diff(m1_indptr))
+    m2_data *= sy[m2_indices]
+    return True
 
 
 def _depop_as_cosine(l1, l2, l3, norms):

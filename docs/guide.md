@@ -93,8 +93,11 @@ similarity_matrix = sim.cosine(urm.T, k=50, threshold=1e-6)
 
 - **Dissimilar items** are not returned. To rank them, negate `matrix2`:
   `sim.cosine(m, -m.T)` keeps the most negative scores, as positives.
-- **`threshold > 0`** is a good idea on float data: sums that should cancel can
-  leave a tiny float32 residue (e.g. `1e-8`) instead of an exact `0`.
+- **`threshold > 0`** is a good idea: sums that should cancel can leave a tiny
+  float32 residue (e.g. `1e-8`) instead of an exact `0`. On float data in any
+  similarity; for `cosine`, `asymmetric_cosine` and `rp3beta` also on integer
+  data (they run as a dot product of pre-scaled inputs, whose rounding doesn't
+  cancel exactly).
 - **Selectors:** `filter_cols` / `target_cols` matrices select the non-zero
   entries. Pass the raw (or binarized) interaction matrix, not a mean-centered
   one: a rating equal to the user's mean centers to `0` and would not be
@@ -120,6 +123,9 @@ Earlier v1 builds rejected any value that was not finite and `> 0`. Now:
   `(3, 0.05)`, which 0.7.0 silently dropped pairs for), and when
   `alpha + beta < 1` on signed input. No default is affected, nor binary or
   0/1 data.
+- `cosine`, `asymmetric_cosine` (no shrink or additive) and `rp3beta` (no
+  shrink) can return pairs that cancel exactly as tiny scores (`~1e-8`), even on
+  integer data; a small `threshold` drops them.
 - `normalize(norm='max')` divides by the largest `|x|`: mixed-sign and
   all-negative rows change (non-negative rows don't).
 - Popularity `'sum'` in `s_plus` and the `rp3beta` popularity are sums of `|x|`
