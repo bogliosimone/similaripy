@@ -1,5 +1,5 @@
-//! Top-K similarity kernel: the 0.7.0 algorithm (dense accumulator + list of
-//! touched columns, heap top-K), rows in parallel with rayon.
+//! Top-K similarity kernel: dense accumulator + list of touched columns, heap
+//! top-K; rows in parallel with rayon.
 
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -134,7 +134,7 @@ pub fn compute<F: Fn() + Sync>(
     };
     // `broadcast` + an atomic row counter = OpenMP's `schedule(dynamic, 1)`, one
     // scratch per worker. Rayon's adaptive splitting was +65..86% on ML-32M:
-    // popularity-ordered rows put most of the work in the first few chunks (D9).
+    // popularity-ordered rows put most of the work in the first few chunks.
     let next = AtomicUsize::new(0);
     let shared = SharedOutput::new(&mut out, k);
     rayon::broadcast(|_| {
@@ -165,8 +165,9 @@ fn compact(out: &mut Output, k: usize) {
         }
         end += n;
     }
-    // A shrinking realloc: in place for large blocks on macOS (Step 3c part b
-    // review), so the peak stays the padded size, never padded + packed.
+    // A shrinking realloc: in place for large blocks (checked on macOS: same
+    // pointer, footprint drops), so the peak stays the padded size, never
+    // padded + packed.
     out.cols.truncate(end);
     out.values.truncate(end);
     out.cols.shrink_to_fit();
@@ -233,7 +234,7 @@ fn validate(inp: &Inputs, k: usize) -> Result<usize, Error> {
         return bad("target row out of range");
     }
     let n_cols = m2.n_cols();
-    // Output column ids are i32 (D11).
+    // Output column ids are i32.
     if n_cols > i32::MAX as usize {
         return bad("more than i32::MAX output columns");
     }
@@ -331,18 +332,17 @@ impl Params {
             || self.bayesian_shrink != 0.0
     }
 
-    /// The C++ `computeSimilarity` arithmetic, in the same order, except two 0.7.0
-    /// bugs: `a1` applies without normalization too (F14), and bayesian shrink
-    /// without a denominator term scales xy_pow instead of returning 0 (F1).
+    /// The s_plus score of one column. `a1` applies with or without a
+    /// denominator; with no denominator term the value is `xy_pow`, times the
+    /// bayesian factor if set.
     ///
     /// # Safety
     /// `col` is in range of every norm pair whose weight is non-zero; `x` is
-    /// `row_terms` of the row.
+    /// `row_terms` of the row. `POW` must equal `a1 != 1.0` (see
+    /// `Scratch::drain`), `MODE` must be `self.mode()` or `FULL`. `DOT` and
+    /// `COSINE` give the same bits as `FULL`: they only skip terms that are +0.0
+    /// (which flips a -0.0 den to +0.0, both take den == 0).
     #[inline(always)]
-    /// `POW` must equal `a1 != 1.0` (see `Scratch::drain`), `MODE` must be
-    /// `self.mode()` or `FULL`. `DOT` and `COSINE` give the same bits as `FULL`:
-    /// they only skip terms that are +0.0 (which flips a -0.0 den to +0.0, both
-    /// take den == 0).
     unsafe fn score<const POW: bool, const MODE: u8>(
         &self,
         n: &Norms,
@@ -378,11 +378,12 @@ impl Params {
                 dp = self.l3 * (x.depop * n.y_depop.get_unchecked(col));
             }
         }
-        // den != 0 first: the hot path stays the 0.7.0 one. den == 0 means either
-        // no denominator term (only bayesian shrink: the raw xy_pow) or terms
-        // summing to 0: 0. The Python layer keeps every weight >= 0 and, on any
-        // input sign, den > 0 (tversky rule, D45), bar f32 underflow; the guard
-        // stays for direct core callers.
+        // den != 0 first: the common case. den == 0 means either no denominator
+        // term (only bayesian shrink: the raw xy_pow) or terms summing to 0: 0.
+        // The Python layer keeps every weight >= 0 and, on any input sign,
+        // den > 0 (signed-input tversky rule, `_check_signed_rules` in
+        // `_s_plus.py`), bar f32 underflow; the guard stays for direct core
+        // callers.
         let den = tv + cs + dp + self.stabilized_shrink;
         let mut val = if den != 0.0 {
             xy_pow / den
@@ -405,8 +406,8 @@ impl Params {
 /// One row of a column selection (filter or target_cols) as a bitset over the
 /// output columns, set before the row and cleared after it: one bit test per
 /// candidate instead of a binary search of the selection row, which cost +40%
-/// kernel time with a seen-items filter (ML-32M, Yambda 50M; Step 3). Empty,
-/// and never read, without a selection.
+/// kernel time with a seen-items filter (measured on ML-32M and Yambda 50M).
+/// Empty, and never read, without a selection.
 struct RowMarks {
     bits: Vec<u64>,
 }
@@ -533,7 +534,7 @@ impl Scratch {
         let (u_cols, u_vals) = unsafe { inp.m1.row_unchecked(t) };
         // Per m1 entry, the unread rest of its m2 row. Blocks run in column order
         // and rows are sorted, so each block's span starts at the cursor: no `lo`
-        // search, and each m2 row is read once, front to back (decisions D34).
+        // search, and each m2 row is read once, front to back.
         // Positions fit u32: indptr is i32, so nnz <= i32::MAX (`CsrView::new`).
         self.cursor.clear();
         self.cursor.extend(u_cols.iter().map(|&u| {
@@ -670,12 +671,13 @@ unsafe fn drain_impl<const POW: bool, const MODE: u8>(
 /// Adds `v1 * v2` for each `(c, v2)` into `sums[c - offset]`, recording first
 /// touches. A free function over a slice and a local write cursor so LLVM keeps
 /// the pointers in registers: as a `&mut self` method it reloaded `sums` and the
-/// `touched` header from the stack every element (decisions D14).
+/// `touched` header from the stack every element (see tests/benchmarks/README.md,
+/// "Codegen-sensitive hot loops").
 ///
 /// A column whose sum is exactly 0.0 (an underflowed product) is pushed again on
-/// its next hit, as in 0.7.0; drain then scores the duplicate with xy = 0 and
-/// `TopK::drain_into` drops that 0.0 from the output. There is at most one write
-/// per element, so `reserve` covers it.
+/// its next hit; drain then scores the duplicate with xy = 0 and
+/// `TopK::drain_into` drops that 0.0 from the output. There is at most one
+/// write per element, so `reserve` covers it.
 ///
 /// # Safety
 /// Every `c - offset` is `< sums.len()`.
@@ -700,7 +702,8 @@ unsafe fn accumulate(
             let old = *s; // reuse: the touched store may alias, re-reading costs a load
             // Branchless first touch: always write the slot, keep it only if new.
             // The branch was near-random at Yambda shape (39% first touches,
-            // mispredicted; Step 3c profile); the extra store is sequential.
+            // mispredicted; ~20% of kernel time on Yambda 50M); the extra store is
+            // sequential.
             buf.add(n).write(local as u32);
             n += (old == 0.0) as usize;
             *s = old + v2 * v1;
@@ -713,7 +716,8 @@ unsafe fn accumulate(
 /// First index `i` with `s[i] >= x` (`s` sorted). Branchy on purpose, like
 /// libstdc++ `lower_bound`: `partition_point` compiles branchless (`csel`), which
 /// serializes the probes' cache misses; with a branch the CPU speculates the next
-/// probe's load. Matters once m2 rows miss to DRAM (Yambda 500M, decisions D14).
+/// probe's load. Matters once m2 rows miss to DRAM (Yambda 500M; see
+/// tests/benchmarks/README.md, "Codegen-sensitive hot loops").
 #[inline]
 fn lower_bound(s: &[i32], x: i32) -> usize {
     let (mut lo, mut len) = (0, s.len());
@@ -765,7 +769,7 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
-        // Branchless first touch == the branchy 0.7.0 loop, including sums that
+        // Branchless first touch == the plain branchy loop, including sums that
         // cancel back to exactly 0.0 (signed data, re-pushed on the next hit).
         #[test]
         fn accumulate_matches_branchy_push(

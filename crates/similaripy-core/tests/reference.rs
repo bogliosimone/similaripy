@@ -34,7 +34,7 @@ fn to_csr(dense: &[Vec<f32>]) -> Csr {
 
 fn dense(rows: usize, cols: usize) -> impl Strategy<Value = Vec<Vec<f32>>> {
     // Small integers keep every dot product exact in f32; negative ones (signed
-    // input, D45) make sums cancel to exactly 0.0 (re-pushed columns, dropped
+    // input) make sums cancel to exactly 0.0 (re-pushed columns, dropped
     // zero scores) and give negative scores, never results.
     let cell = prop_oneof![
         3 => Just(0.0f32),
@@ -125,8 +125,8 @@ fn case() -> impl Strategy<Value = Case> {
     })
 }
 
-/// Independent f64 version of the 0.7.0 scoring formula (with the F1/F14 fixes). Returns the score
-/// and its absolute tolerance: the f32 kernel loses about `eps * cond` relative
+/// Independent f64 version of the s_plus scoring formula. Returns the score and
+/// its absolute tolerance: the f32 kernel loses about `eps * cond` relative
 /// accuracy when the denominator terms cancel (cond = sum|terms| / |den|).
 fn ref_score(c: &Case, row: usize, col: usize, xy: f64) -> (f64, f64) {
     let [a1, l1, l2, l3, t1, t2, ss, bs] = c.params.map(f64::from);
@@ -299,7 +299,7 @@ proptest! {
     }
 }
 
-// Output column ids are i32 (D11): wider m2 is rejected before any allocation.
+// Output column ids are i32: wider m2 is rejected before any allocation.
 #[test]
 fn rejects_more_than_i32_max_columns() {
     let (indptr, indices, data) = ([0, 0], [], []);
@@ -447,7 +447,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 1000 }))]
     // Small integers make ties common; with k < n the tie rule (lower column
     // wins) decides which tied columns stay, so blocked == single-block only
-    // if the result is independent of the order columns reach the heap (F4).
+    // if the result is independent of the order columns reach the heap.
     #[test]
     fn blocked_matches_single_block_with_ties(
         (m1, m2, n, k, block) in (1usize..6, 1usize..8, 2usize..40).prop_flat_map(|(r, m, n)| {

@@ -1,5 +1,5 @@
 //! Top-K by score: keeps the k best under (score desc, col asc), so equal
-//! scores resolve to the lower column whatever the push order (F4: blocked,
+//! scores resolve to the lower column whatever the push order (blocked,
 //! single-block and any candidate order give the same rows). A min-heap whose
 //! root is the worst kept entry: lowest score, then highest column.
 //!
@@ -91,10 +91,10 @@ impl TopK {
         }
     }
 
-    /// Writes the kept (col, score) pairs with a non-zero score sorted by column, ids renumbered
-    /// through `col_map` if given (a permutation), empties the heap and returns
-    /// the count. Slots past it are left untouched. Once per row: the sort is
-    /// k log k, outside the scoring loop.
+    /// Writes the kept (col, score) pairs with a non-zero score sorted by
+    /// column, ids renumbered through `col_map` if given (a permutation),
+    /// empties the heap and returns the count. Slots past it are left
+    /// untouched. Once per row: the sort is k log k, outside the scoring loop.
     pub fn drain_into(
         &mut self,
         col_map: Option<&[i32]>,
