@@ -237,16 +237,9 @@ fn canonicalize_rows<'py>(
     Ok(new_indptr.into_pyarray(py))
 }
 
-/// Threads used with `num_threads = 0`: the global rayon pool (`RAYON_NUM_THREADS`).
-#[pyfunction]
-fn get_num_threads() -> usize {
-    rayon::current_num_threads()
-}
-
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
-    m.add_function(wrap_pyfunction!(get_num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(remap_sort_rows, m)?)?;
     m.add_function(wrap_pyfunction!(canonicalize_rows, m)?)?;
     m.add_class::<ProgressBar>()?;

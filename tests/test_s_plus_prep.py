@@ -96,11 +96,6 @@ def test_progress_bar_closed_on_prep_error(capfd, monkeypatch):
     assert capfd.readouterr().err.split('\r')[-1].startswith('Failed:')
 
 
-def test_get_num_threads():
-    from similaripy import _s_plus
-    assert _s_plus.get_num_threads() >= 1
-
-
 @pytest.mark.parametrize('limit, dtype', [(None, np.int32), (100, np.int64)])
 def test_csr_index_dtype_past_int32_nnz(limit, dtype, monkeypatch):
     # Past 2^31 results the CSR gets int64 indptr and indices; tested at a
