@@ -85,6 +85,7 @@ def aggregate_rounds(round_results):
         'density': first['density'],
         'avg_neighbors': first['avg_neighbors'],
         'throughput': first['n_items'] / median_time,
+        'params': first.get('params'),  # None in the small preset
         'rounds': rounds,
         'all_times': all_times,
         'kernel_times': kernel_times,
@@ -459,6 +460,8 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
                 "all_times": [round(t, 4) for t in result["all_times"]],
                 "kernel_times": [round(t, 4) for t in result["kernel_times"]],
             }
+            if result.get("params") is not None:
+                report["results"][key][sim_type]["params"] = result["params"]
             for field in ("rss_base_mb", "rss_peak_mb"):
                 if field in result:
                     report["results"][key][sim_type][field] = round(result[field], 1)
