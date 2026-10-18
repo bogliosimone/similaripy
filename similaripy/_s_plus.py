@@ -489,12 +489,60 @@ def _s_plus(
     m1 = _canonical_csr(matrix1, num_threads)
     m2 = _canonical_csr(matrix2, num_threads)
     n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]
+    m1_data, m2_data = _kernel_values(m1, m2, binary, a1, l1, t1, t2, bayesian_shrink)
+    m1_arrays = (m1_data, m1.indices.astype(np.int32, copy=False), m1.indptr.astype(np.int32, copy=False))
+    m2_arrays = (m2_data, m2.indices.astype(np.int32, copy=False), m2.indptr.astype(np.int32, copy=False))
 
-    # Kernel inputs: float32 values (all ones in binary mode), int32 indices.
-    # Finite is checked on the float32 values in both modes (1e39 is inf there,
-    # and binary must not turn NaN/inf into 1.0). Signed input (D45) is fine:
-    # negative and cancelled (0.0) scores are never results. `signed` is read
-    # from the values the kernel sees, so binary input is never signed.
+    # Block size: 0 = auto, None = disabled (0 for the kernel), int > 0 = explicit
+    if block_size is None:
+        block_size = 0
+    elif block_size == 0:
+        block_size = DEFAULT_BLOCK_SIZE
+    use_blocking = block_size > 0 and n_output_cols > block_size
+
+    norms = _norms(m1_arrays, m2_arrays, n_output_cols, l1, l2, l3, c1, c2, additive_shrink,
+                   weight_depop_matrix1, weight_depop_matrix2, p1, p2)
+    filt, targ, m2_arrays = _selectors(filter_cols, target_cols, m2_arrays, n_output_cols, num_threads)
+    m2_arrays, norms, filt, targ, back_perm = _popularity_layout(
+        m2_arrays, norms, filt, targ, n_output_cols, use_blocking, num_threads)
+
+    if bar is not None:
+        bar.set_description('Computing')
+    kernel_start = time.perf_counter()
+    cols, vals, counts = _core.compute_similarities(
+        targets,
+        *m1_arrays, m1.shape[1],
+        *m2_arrays,
+        *norms,
+        a1, l1, l2, l3, t1, t2,
+        stabilized_shrink, bayesian_shrink, threshold,
+        k, n_output_cols,
+        *filt,
+        *targ,
+        _EMPTY_I32 if back_perm is None else back_perm,
+        num_threads, block_size, bar,
+    )
+    kernel_end = time.perf_counter()
+
+    if bar is not None:
+        bar.set_description(f'Building {format_output} matrix')
+    out = _build_output(cols, vals, counts, targets, (n_output_rows, n_output_cols), format_output)
+    _last_timings.update(kernel=kernel_end - kernel_start, output=time.perf_counter() - kernel_end)
+    return out
+
+
+# ---- `_s_plus` steps. CSR arrays travel as (data, indices, indptr), selectors
+# as (mode, indptr, indices), norms as the kernel's six arrays (x/y tversky,
+# cosine, depop; empty when unused). ----
+
+def _kernel_values(m1, m2, binary, a1, l1, t1, t2, bayesian_shrink):
+    """
+    Kernel values: float32 (all ones in binary mode). Finite is checked on the
+    float32 values in both modes (1e39 is inf there, and binary must not turn
+    NaN/inf into 1.0). Signed input (D45) is fine: negative and cancelled (0.0)
+    scores are never results. `signed` is read from the values the kernel sees,
+    so binary input is never signed.
+    """
     def values(name, m):
         with np.errstate(over='ignore'):  # raised below
             data = m.data.astype(np.float32, copy=False)
@@ -504,24 +552,17 @@ def _s_plus(
     m1_data, m2_data = values('matrix1', m1), values('matrix2', m2)
     signed = not binary and bool((m1_data < 0).any() or (m2_data < 0).any())
     _check_signed_rules(signed, binary, a1, l1, t1, t2, bayesian_shrink, m1_data, m2_data)
+    return m1_data, m2_data
 
-    # Block size: 0 = auto, None = disabled (0 for the kernel), int > 0 = explicit
-    if block_size is None:
-        block_size = 0
-    elif block_size == 0:
-        block_size = DEFAULT_BLOCK_SIZE
-    use_blocking = block_size > 0 and n_output_cols > block_size
 
-    m1_indices = m1.indices.astype(np.int32, copy=False)
-    m1_indptr = m1.indptr.astype(np.int32, copy=False)
-    m2_indices = m2.indices.astype(np.int32, copy=False)
-    m2_indptr = m2.indptr.astype(np.int32, copy=False)
-
-    # Normalization terms, only the ones the weights use
+def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
+           weight_depop_matrix1, weight_depop_matrix2, p1, p2):
+    """The normalization terms the weights use (x per m1 row, y per m2 column); the others stay empty."""
+    (m1_data, _, m1_indptr), (m2_data, m2_indices, _) = m1_arrays, m2_arrays
     Xtversky = Ytversky = Xcosine = Ycosine = Xdepop = Ydepop = _EMPTY_F32
     if l1 != 0 or l2 != 0:
         m1_sq = _row_sums(np.square(m1_data), m1_indptr)
-        m2_sq = _col_sums(np.square(m2_data), m2_indices, n_output_cols)
+        m2_sq = _col_sums(np.square(m2_data), m2_indices, n_cols)
     if l1 != 0:
         Xtversky, Ytversky = m1_sq, m2_sq
     if l2 != 0:
@@ -530,86 +571,78 @@ def _s_plus(
     if l3 != 0:
         _check_used_weights('weight_depop_matrix1 (pop1)', weight_depop_matrix1, np.diff(m1_indptr) > 0)
         _check_used_weights('weight_depop_matrix2 (pop2)', weight_depop_matrix2,
-                            np.bincount(m2_indices, minlength=n_output_cols) > 0)
+                            np.bincount(m2_indices, minlength=n_cols) > 0)
         # 'sum' popularity = sum of |x| (identical on non-negative input)
         Xdepop = _depop_weights(weight_depop_matrix1, lambda: _row_sums(np.abs(m1_data), m1_indptr),
-                                np.float32(p1), n_output_rows)
-        Ydepop = _depop_weights(weight_depop_matrix2,
-                                lambda: _col_sums(np.abs(m2_data), m2_indices, n_output_cols),
-                                np.float32(p2), n_output_cols)
+                                np.float32(p1), len(m1_indptr) - 1)
+        Ydepop = _depop_weights(weight_depop_matrix2, lambda: _col_sums(np.abs(m2_data), m2_indices, n_cols),
+                                np.float32(p2), n_cols)
+    return [Xtversky, Ytversky, Xcosine, Ycosine, Xdepop, Ydepop]
 
-    filter_mode, filter_indptr, filter_indices = _column_selector(filter_cols, num_threads)
-    target_mode, target_indptr, target_indices = _column_selector(target_cols, num_threads)
 
-    # Array selectors: drop the columns from m2 here, the kernel then treats them as NONE
-    if filter_mode == MODE_ARRAY or target_mode == MODE_ARRAY:
-        keep = _array_keep_mask(filter_cols, target_cols, n_output_cols)
-        m2_data, m2_indices, m2_indptr = _keep_columns(m2_data, m2_indices, m2_indptr, keep)
+def _selectors(filter_cols, target_cols, m2_arrays, n_cols, num_threads):
+    """
+    (filter, target) selectors for the kernel. Array selectors drop their
+    columns from m2 here (returned m2), so the kernel treats them as NONE.
+    """
+    filt = _column_selector(filter_cols, num_threads)
+    targ = _column_selector(target_cols, num_threads)
+    if filt[0] == MODE_ARRAY or targ[0] == MODE_ARRAY:
+        keep = _array_keep_mask(filter_cols, target_cols, n_cols)
+        m2_arrays = _keep_columns(*m2_arrays, keep)
+    return filt, targ, m2_arrays
 
-    # Popularity order (default, `_COLUMN_ORDER`): renumber m2 columns by
-    # descending count, on every call, blocked or not. Popular columns share the
-    # first, cache-hot blocks, and the kernel's tie rule (lower column wins) means
-    # the same thing on every path: ties go to the more popular column, then to
-    # the lower original id (stable sort). The kernel writes original ids
-    # (`back_perm`). Blocking also needs sorted m2 rows (binary search).
+
+def _popularity_layout(m2_arrays, norms, filt, targ, n_cols, use_blocking, num_threads):
+    """
+    Popularity order (default, `_COLUMN_ORDER`): renumber m2 columns by
+    descending count, on every call, blocked or not. Popular columns share the
+    first, cache-hot blocks, and the kernel's tie rule (lower column wins) means
+    the same thing on every path: ties go to the more popular column, then to
+    the lower original id (stable sort). The kernel writes original ids
+    (`back_perm`, None when the order is already the identity). Blocking also
+    needs sorted m2 rows (binary search).
+    """
+    m2_data, m2_indices, m2_indptr = m2_arrays
     back_perm = None
     forward = _EMPTY_I32
     if _COLUMN_ORDER == 'popularity':
-        col_nnz = np.bincount(m2_indices, minlength=n_output_cols)
+        col_nnz = np.bincount(m2_indices, minlength=n_cols)
         perm = np.argsort(-col_nnz, kind='stable').astype(np.int32)  # new col -> original col
-        if not np.array_equal(perm, np.arange(n_output_cols, dtype=np.int32)):
+        if not np.array_equal(perm, np.arange(n_cols, dtype=np.int32)):
             back_perm = perm
-            forward = np.empty(n_output_cols, dtype=np.int32)
-            forward[perm] = np.arange(n_output_cols, dtype=np.int32)
-            if l1 != 0:
-                Ytversky = Ytversky[perm]
-            if l2 != 0:
-                Ycosine = Ycosine[perm]
-            if l3 != 0:
-                Ydepop = Ydepop[perm]
-            if filter_mode == MODE_MATRIX and len(filter_indices) > 0:
-                ones = np.ones(len(filter_indices), dtype=np.float32)
-                _, filter_indices = _sorted_rows(ones, filter_indices, filter_indptr, n_output_cols,
-                                                 forward, num_threads)
-            if target_mode == MODE_MATRIX and len(target_indices) > 0:
-                ones = np.ones(len(target_indices), dtype=np.float32)
-                _, target_indices = _sorted_rows(ones, target_indices, target_indptr, n_output_cols,
-                                                 forward, num_threads)
+            forward = np.empty(n_cols, dtype=np.int32)
+            forward[perm] = np.arange(n_cols, dtype=np.int32)
+            norms = [y[perm] if j % 2 == 1 and len(y) else y for j, y in enumerate(norms)]  # y_* only
+            filt, targ = (_renumbered_pattern(sel, n_cols, forward, num_threads) for sel in (filt, targ))
     if use_blocking or back_perm is not None:
         # ponytail: unblocked + permuted sorts too (one Rust pass does both); a
         # remap-only pass would skip the sort if it ever shows in a profile
-        m2_data, m2_indices = _sorted_rows(m2_data, m2_indices, m2_indptr, n_output_cols,
-                                           forward, num_threads)
+        m2_data, m2_indices = _sorted_rows(m2_data, m2_indices, m2_indptr, n_cols, forward, num_threads)
+    return (m2_data, m2_indices, m2_indptr), norms, filt, targ, back_perm
 
-    if bar is not None:
-        bar.set_description('Computing')
-    kernel_start = time.perf_counter()
-    cols, vals, counts = _core.compute_similarities(
-        targets,
-        m1_data, m1_indices, m1_indptr, m1.shape[1],
-        m2_data, m2_indices, m2_indptr,
-        Xtversky, Ytversky, Xcosine, Ycosine, Xdepop, Ydepop,
-        a1, l1, l2, l3, t1, t2,
-        stabilized_shrink, bayesian_shrink, threshold,
-        k, n_output_cols,
-        filter_mode, filter_indptr, filter_indices,
-        target_mode, target_indptr, target_indices,
-        _EMPTY_I32 if back_perm is None else back_perm,
-        num_threads, block_size, bar,
-    )
-    kernel_end = time.perf_counter()
 
-    # Rows come back exact (no padding), sorted by column, in target order
-    # (ascending, unique), so both formats wrap the kernel's arrays without a
-    # copy. Canonical as well: no duplicates and no zeros (the kernel drops 0.0
-    # scores: cancelled sums on signed input, or an f32 underflow).
-    if bar is not None:
-        bar.set_description(f'Building {format_output} matrix')
-    shape = (n_output_rows, n_output_cols)
+def _renumbered_pattern(sel, n_cols, forward, num_threads):
+    """A matrix selector with its columns renumbered by `forward` and rows re-sorted; others unchanged."""
+    mode, indptr, indices = sel
+    if mode != MODE_MATRIX or len(indices) == 0:
+        return sel
+    ones = np.ones(len(indices), dtype=np.float32)
+    _, indices = _sorted_rows(ones, indices, indptr, n_cols, forward, num_threads)
+    return mode, indptr, indices
+
+
+def _build_output(cols, vals, counts, targets, shape, format_output):
+    """
+    Rows come back exact (no padding), sorted by column, in target order
+    (ascending, unique), so both formats wrap the kernel's arrays without a
+    copy. Canonical as well: no duplicates and no zeros (the kernel drops 0.0
+    scores: cancelled sums on signed input, or an f32 underflow).
+    """
     if format_output == 'coo':
         out = sp.coo_array((vals, (np.repeat(targets, counts), cols)), shape=shape)
     else:
-        indptr = np.zeros(n_output_rows + 1, dtype=np.int64)
+        indptr = np.zeros(shape[0] + 1, dtype=np.int64)
         indptr[targets + 1] = counts
         np.cumsum(indptr, out=indptr)
         if indptr[-1] <= _MAX_INT32_NNZ:
@@ -618,5 +651,4 @@ def _s_plus(
             cols = cols.astype(np.int64)
         out = sp.csr_array((vals, cols, indptr), shape=shape)
     out.has_canonical_format = True
-    _last_timings.update(kernel=kernel_end - kernel_start, output=time.perf_counter() - kernel_end)
     return out
