@@ -1,4 +1,5 @@
-"""Prep regressions: 0.7.0 (Cython) bugs fixed by the numpy prep (v1 Step 2a slice 3)."""
+"""s_plus prep: input canonicalization, layout, selectors, output build, and the
+regressions they fixed."""
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -25,7 +26,8 @@ def test_int64_indices_with_array_selector(selector):
 
 def test_unsorted_m2_blocked_identity_permutation():
     # Column j is in the first 40 - j rows: popularity already descending, so
-    # the popularity permutation is the identity and 0.7.0 skipped the sort.
+    # the popularity permutation is the identity: m2 must still be sorted
+    # for blocking (regression: the sort used to be skipped).
     cnt = np.arange(40, 0, -1)
     rows = np.concatenate([np.arange(c) for c in cnt])
     cols = np.concatenate([np.full(c, j) for j, c in enumerate(cnt)])
@@ -101,7 +103,7 @@ def test_get_num_threads():
 
 @pytest.mark.parametrize('limit, dtype', [(None, np.int32), (100, np.int64)])
 def test_csr_index_dtype_past_int32_nnz(limit, dtype, monkeypatch):
-    # D42: past 2^31 results the CSR gets int64 indptr and indices; tested at a
+    # Past 2^31 results the CSR gets int64 indptr and indices; tested at a
     # lowered limit (a real run needs ~26 GB). Same matrix either way.
     from similaripy import _s_plus
     m = _m(60, 40)
@@ -130,7 +132,7 @@ def test_no_blocking_matches_blocked():
 @pytest.mark.parametrize('order', ['popularity', 'original'])
 @pytest.mark.parametrize('block_size', [None, 8, 64])
 def test_tie_rule_independent_of_blocking(order, block_size, monkeypatch):
-    # F4: binary dot scores are small integers, so ties at the k-th place are
+    # Binary dot scores are small integers, so ties at the k-th place are
     # everywhere; the kept columns must not depend on block size or push order.
     # Ties go to the more popular column (m2 column count), then the lower id;
     # with the 'original' column order, to the lower id.
@@ -225,7 +227,7 @@ def test_tversky_rule_exempts_one_valued_data():
 
 def test_weighted_tversky_rule_closes_negative_denominator():
     # (3, 0.05) on non-negative data: den = 3 (x - xy) + 0.05 (y - xy) + xy < 0 for a
-    # pair with xy > x (0.7.0 dropped it by the threshold); now a ValueError.
+    # pair with xy > x (it used to be dropped by the threshold); now a ValueError.
     m = sp.csr_array(np.array([[1, 0], [10, 10]], dtype=np.float32))
     x, y, xy = 1.0, 200.0, 10.0
     assert 3 * (x - xy) + 0.05 * (y - xy) + xy < 0
@@ -261,7 +263,7 @@ def _cancelling_selector(fmt):
 @pytest.mark.parametrize('fmt', ['csr', 'coo'])
 @pytest.mark.parametrize('selector', ['filter_cols', 'target_cols'])
 def test_selector_matrix_uses_summed_values(fmt, selector):
-    # D45: an entry is selected iff its summed value is non-zero, in every format
+    # An entry is selected iff its summed value is non-zero, in every format
     m = _m(60, 40)
     sel = _cancelling_selector(fmt)
     before = sel.copy()
@@ -361,7 +363,7 @@ def _with_duplicates(m, seed=0):
 @pytest.mark.parametrize('binary', [False, True])
 @pytest.mark.parametrize('block_size', [None, 8])
 def test_duplicate_entries_are_summed(fmt, binary, block_size):
-    # 0.7.0 passed CSR duplicates to the kernel unsummed: wrong norms and binary counts.
+    # Regression: CSR duplicates reached the kernel unsummed (wrong norms and binary counts).
     m = _m(60, 40)
     rows, cols, vals = _with_duplicates(m)
     if fmt == 'coo':
@@ -419,7 +421,7 @@ def _assert_canonical(out):
 @pytest.mark.parametrize('order', ['popularity', 'original'])
 @pytest.mark.parametrize('block_size', [None, 8])
 def test_output_exact_and_canonical(order, block_size, monkeypatch):
-    # D37/F5: rows packed (no padding), sorted by column, canonical in both
+    # Rows packed (no padding), sorted by column, canonical in both
     # formats; blocked, permuted and unblocked give the same arrays exactly.
     from similaripy import _s_plus
     monkeypatch.setattr(_s_plus, '_COLUMN_ORDER', order)
@@ -442,7 +444,7 @@ def test_output_exact_and_canonical(order, block_size, monkeypatch):
 
 @pytest.mark.parametrize('fmt', ['csr', 'coo'])
 def test_duplicate_and_unsorted_target_rows(fmt):
-    # F15: a repeated target gave a row with every entry twice (scipy then summed them).
+    # Regression: a repeated target gave a row with every entry twice (scipy then summed them).
     m = _m(60, 40)
     kw = {'k': 5, 'format_output': fmt, 'verbose': False}
     out = sim.cosine(m, target_rows=[30, 3, 1, 3, 30], **kw)
@@ -493,7 +495,7 @@ def _non_canonical(seed=0):
 @pytest.mark.parametrize('name', _SIMILARITIES)
 @pytest.mark.parametrize('binary', [False, True])
 def test_similarity_canonicalizes_input(name, binary):
-    # R6: p3alpha/rp3beta normalize (and take popularity) before s_plus canonicalizes
+    # p3alpha/rp3beta normalize (and take popularity) before s_plus canonicalizes
     dup, clean = _non_canonical()
     f = getattr(sim, name)
     kw = {'k': 10, 'binary': binary, 'verbose': False}
@@ -503,7 +505,7 @@ def test_similarity_canonicalizes_input(name, binary):
 @pytest.mark.parametrize('name, kw', _NORMALIZATIONS)
 @pytest.mark.parametrize('axis', [0, 1])
 def test_normalization_canonicalizes_input(name, kw, axis):
-    # R6: duplicates gave e.g. l2 row norms of 1.414 and negative bm25/tfidf weights
+    # Regression: duplicates gave e.g. l2 row norms of 1.414 and negative bm25/tfidf weights
     from similaripy import normalization
     dup, clean = _non_canonical()
     f = getattr(normalization, name)

@@ -133,7 +133,7 @@ if __name__ == "__main__":
         test_bm25()
 
 
-# ---- Signed input (D45) ----
+# ---- Signed input ----
 
 def _signed(seed=0):
     X = generate_random_matrix(seed=seed)

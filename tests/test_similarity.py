@@ -613,7 +613,7 @@ SIMILARITIES = ('dot_product', 'cosine', 'asymmetric_cosine', 'tversky', 'jaccar
                 'p3alpha', 'rp3beta', 's_plus')
 
 
-# shrink types that do nothing for a similarity are rejected (F9, test_s_plus_prep)
+# shrink types that do nothing for a similarity are rejected (tested in test_s_plus_prep)
 _NO_COSINE = {'dot_product', 'tversky', 'jaccard', 'dice', 'p3alpha', 'rp3beta'}
 _NO_DENOMINATOR = {'dot_product', 'p3alpha'}
 
@@ -621,10 +621,10 @@ _NO_DENOMINATOR = {'dot_product', 'p3alpha'}
 @pytest.mark.parametrize('name', SIMILARITIES)
 @pytest.mark.parametrize('shrink_type', ['stabilized', 'bayesian', 'additive'])
 def test_every_shrink_type_scores(name, shrink_type):
-    # F1: bayesian shrink without a normalization term returned an empty matrix (0.7.0 too)
+    # Regression: bayesian shrink without a normalization term returned an empty matrix
     if (shrink_type == 'additive' and name in _NO_COSINE) or \
             (shrink_type == 'stabilized' and name in _NO_DENOMINATOR):
-        pytest.skip('rejected: the shrink would do nothing (F9)')
+        pytest.skip('rejected: the shrink would do nothing')
     m = generate_random_matrix(80, 30, density=0.1).tocsr()
     out = getattr(sim, name)(m, k=10, shrink=5, shrink_type=shrink_type, verbose=VERBOSE)
     assert out.nnz > 0
@@ -639,7 +639,7 @@ def test_dot_product_bayesian_shrink_formula():
 
 
 def test_s_plus_alpha_without_normalization():
-    # F14: alpha was ignored when no normalization term was active
+    # Regression: alpha was ignored when no normalization term was active
     m = generate_random_matrix(80, 30, density=0.1).tocsr()
     xy = (m @ m.T).toarray()
     out = sim.s_plus(m, l1=0, l2=0, l3=0, alpha=2, k=m.shape[0], verbose=VERBOSE)
@@ -653,7 +653,7 @@ def test_s_plus_rejects_non_positive_alpha(alpha):
 
 @pytest.mark.parametrize('name', ['p3alpha', 'rp3beta'])
 def test_binary_keeps_random_walk_normalization(name):
-    # F2: binary=True was applied after the l1 normalization and erased it
+    # Regression: binary=True was applied after the l1 normalization and erased it
     from similaripy.normalization import binarize
     m = generate_random_matrix(80, 30, density=0.1).tocsr()
     f = getattr(sim, name)
@@ -662,7 +662,7 @@ def test_binary_keeps_random_walk_normalization(name):
     assert not np.allclose(out.toarray(), sim.dot_product(m, k=10, binary=True, verbose=VERBOSE).toarray())
 
 
-# ---- Signed input (D45): only positive scores >= threshold are results ----
+# ---- Signed input: only positive scores >= threshold are results ----
 
 def _signed_matrix(seed=0, integer=True):
     """60 x 40, ~15% dense, values in -3..3 (exact f32 dot products) or standard normal."""
@@ -797,7 +797,7 @@ def test_rp3beta_popularity_on_summed_duplicates(fmt):
 
 @pytest.mark.parametrize('fmt', ['coo', 'csc'])
 def test_rp3beta_popularity_non_negative_same_additions(fmt):
-    # R1: non-negative input keeps m.sum(axis=0) bit for bit, also on shuffled COO
+    # Determinism detector: non-negative input keeps m.sum(axis=0) bit for bit, also on shuffled COO
     # and unsorted CSC, where summing duplicates first reorders the additions
     rng = np.random.default_rng(3)
     n = 20000
