@@ -160,7 +160,8 @@ def _csr_bytes(m):
     return [(a.dtype, a.tobytes()) for a in (m.data, m.indices, m.indptr)]
 
 
-@pytest.mark.parametrize('kwargs', [{}, {'shrink': 3}, {'shrink': 3, 'shrink_type': 'bayesian'},
+# without shrink rp3beta takes `_product_form` instead
+@pytest.mark.parametrize('kwargs', [{'shrink': 3}, {'shrink': 3, 'shrink_type': 'bayesian'},
                                     {'alpha': 0.7, 'beta': 0.4, 'shrink': 0.5}])
 @pytest.mark.parametrize('block_size', [None, 8])
 def test_depop_as_cosine_same_bits(kwargs, block_size, monkeypatch):
@@ -523,7 +524,7 @@ def test_underflowed_product_dropped(fmt):
     np.testing.assert_array_equal(out.data, [1.0])
     _assert_canonical(out)
     # an underflow alone leaves the row empty
-    assert sim.cosine(sp.csr_array(np.array([[1e-30], [1e-30]], dtype=np.float32)), verbose=False).nnz == 0
+    assert sim.dot_product(sp.csr_array(np.array([[1e-30], [1e-30]], dtype=np.float32)), verbose=False).nnz == 0
 
 
 def test_k_larger_than_columns():
@@ -575,3 +576,65 @@ def test_normalization_canonicalizes_input(name, kw, axis):
     f(dup, inplace=True, **kw)
     if axis == 1 or name == 'binarize':  # a CSR caller's matrix is canonicalized in place
         assert dup.has_canonical_format and (dup.data != 0).all()
+
+
+@pytest.mark.parametrize('args, expected', [
+    ((1, 0, 1, 0, 0, 0), True),     # cosine, asymmetric cosine (additive shrink inside the norms)
+    ((1, 0, 0, 1, 0, 0), True),     # rp3beta
+    ((0.9, 0, 1, 0, 0, 0), False),  # s_plus alpha: (x s)^a1 != x^a1 s
+    ((1, 1, 1, 0, 0, 0), False),    # tversky term
+    ((1, 0, 1, 1, 0, 0), False),    # cosine + depop
+    ((1, 0, 0, 0, 0, 0), False),    # dot product: nothing to scale
+    ((1, 0, 1, 0, 2, 0), False),    # stabilized shrink
+    ((1, 0, 0, 1, 0, 2), False),    # bayesian shrink
+])
+def test_product_form(args, expected):
+    from similaripy import _s_plus
+    assert _s_plus._product_form(*args) is expected
+
+
+def test_prescale_in_place_zero_norm_gives_zero():
+    from similaripy import _s_plus
+    m = _m(4, 3, seed=1)
+    d1, d2 = m.data.copy(), m.data.copy()
+    E = np.empty(0)
+    X, Y = np.array([2.0, 0.0, 4.0, 1.0]), np.array([0.0, 0.5, 1.0])
+    assert _s_plus._prescale((d1, m.indices, m.indptr), (d2, m.indices, m.indptr), 2, [E, E, X, Y, E, E])
+    rows = np.repeat(np.arange(4), np.diff(m.indptr))
+    np.testing.assert_allclose(d1, m.data / np.where(X == 0, np.inf, 2 * X)[rows], rtol=1e-6)
+    np.testing.assert_allclose(d2, m.data / np.where(Y == 0, np.inf, Y)[m.indices], rtol=1e-6)
+    assert not d1[rows == 1].any() and not d2[m.indices == 0].any()
+
+
+def test_prescale_overflow_changes_nothing():
+    # a product past float32's max: refused before touching the values
+    from similaripy import _s_plus
+    m = _m(4, 3, seed=1)
+    m.data[0] = 1e30
+    d1, d2 = m.data.copy(), m.data.copy()
+    E, ones = np.empty(0), np.ones(4)
+    norms = [E, E, ones, np.full(3, 1e-10), E, E]  # 1 / Y = 1e10: 1e30 * 1e10 overflows
+    assert not _s_plus._prescale((d1, m.indices, m.indptr), (d2, m.indices, m.indptr), 1, norms)
+    assert d1.tobytes() == m.data.tobytes() and d2.tobytes() == m.data.tobytes()
+
+
+def test_prescale_overflow_falls_back(monkeypatch):
+    # pop ~ 1e-30, beta 2: 1 / pop^2 overflows float32 -> the kernel path, same bits
+    from similaripy import _s_plus
+    m = _m(60, 40, seed=2) * np.float32(1e-30)
+    kw = dict(k=10, beta=2.0, verbose=False)
+    prescale, results = _s_plus._prescale, []
+    monkeypatch.setattr(_s_plus, '_prescale', lambda *a: results.append(prescale(*a)) or results[-1])
+    out = sim.rp3beta(m, **kw)
+    assert results == [False]  # the fallback was taken
+    monkeypatch.setattr(_s_plus, '_product_form', lambda *a: False)
+    assert _csr_bytes(out) == _csr_bytes(sim.rp3beta(m, **kw))
+
+
+@pytest.mark.parametrize('scale', [1e19, 1e-25])  # float32 norms overflow / underflow
+@pytest.mark.parametrize('name', ['cosine', 'asymmetric_cosine'])
+def test_product_form_extreme_values(name, scale):
+    # float64 scales: real scores where float32 norms would give none (accepted, D51)
+    m = _m(60, 40, seed=4)
+    _same(getattr(sim, name)(m * np.float32(scale), k=10, verbose=False),
+          getattr(sim, name)(m, k=10, verbose=False))

@@ -287,7 +287,10 @@ impl Params {
     /// `l3` nor a bayesian shrink, `FULL` otherwise. A bayesian shrink is `FULL`
     /// on purpose: in the small `COSINE` loop LLVM if-converts its test and runs
     /// the second fdiv on every column, even with the shrink at 0;
-    /// in `DOT` it would cost plain dot a branch per column.
+    /// in `DOT` it would cost plain dot a branch per column. The Python prep
+    /// sends cosine and rp3beta without shrink here as `DOT` (pre-scaled inputs,
+    /// `_product_form`) and depop-only weights through the cosine slots
+    /// (`_depop_as_cosine`).
     fn mode(&self) -> u8 {
         if !self.normalizes() {
             DOT
