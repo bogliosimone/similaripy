@@ -166,7 +166,8 @@ def benchmark_similarity(
         - 'throughput': items processed per second
         - 'similarity_type': type of similarity computed
         - 'k': k parameter used
-        - 'shrink': shrink parameter used
+        - 'shrink': shrink parameter passed by the harness
+        - 'params': shrink and kwargs the call really ran with
         - 'threshold': threshold parameter used
 
     Examples
@@ -235,6 +236,8 @@ def benchmark_similarity(
 
     results = {
         'similarity_matrix': similarity_matrix,
+        # The shrink and kwargs the call really ran with (fixed entries override the harness's)
+        'params': {'shrink': shrink, **similarity_kwargs, **getattr(similarity_func, 'fixed', {})},
         'computation_time': computation_time,
         'kernel_time': timings['kernel'],
         'prep_time': computation_time - timings['kernel'] - timings['output'],
@@ -310,6 +313,21 @@ def peak_rss(func):
     return out, base / 2**20, (peak - base) / 2**20
 
 
+def _fixed(func, **fixed):
+    """Entry with fixed kwargs that drops the harness's shrink=.
+
+    functools.partial won't do: the call's shrink=0 would override the fixed
+    shrink and silently run plain cosine. A kwarg in both raises TypeError."""
+    def call(X, shrink=0, **kwargs):
+        return func(X, **kwargs, **fixed)
+    call.fixed = fixed
+    return call
+
+
+# Placeholder values for the tuned variants, to be replaced by real tuned ones
+SHRINK, ALPHA, BETA = 10, 0.8, 0.6
+
+
 def _get_similarity_function(similarity_type):
     """Get similarity function from similaripy."""
     similarity_map = {
@@ -323,6 +341,14 @@ def _get_similarity_function(similarity_type):
         'p3alpha': sim.p3alpha,
         'rp3beta': sim.rp3beta,
         'splus': sim.s_plus,
+        'cosine_bayesian': _fixed(sim.cosine, shrink=SHRINK, shrink_type='bayesian'),
+        'cosine_stabilized': _fixed(sim.cosine, shrink=SHRINK, shrink_type='stabilized'),
+        'dot_product_bayesian': _fixed(sim.dot_product, shrink=SHRINK, shrink_type='bayesian'),
+        'p3alpha_tuned': _fixed(sim.p3alpha, alpha=ALPHA),
+        'p3alpha_bayesian': _fixed(sim.p3alpha, alpha=ALPHA, shrink=SHRINK, shrink_type='bayesian'),
+        'rp3beta_tuned': _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA),
+        'rp3beta_stabilized': _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA, shrink=SHRINK, shrink_type='stabilized'),
+        'rp3beta_bayesian': _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA, shrink=SHRINK, shrink_type='bayesian'),
     }
 
     if similarity_type not in similarity_map:
