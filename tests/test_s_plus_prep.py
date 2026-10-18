@@ -55,6 +55,43 @@ def test_inputs_not_mutated():
         np.testing.assert_array_equal(arr, before)
 
 
+def _input_formats():
+    """One square matrix in each input form `_canonical_csr` handles."""
+    m = _m(40, 40, seed=6)
+    zeros = m.copy()
+    zeros.data[::5] = 0
+    wide = m.astype(np.float64)
+    wide.indices, wide.indptr = wide.indices.astype(np.int64), wide.indptr.astype(np.int64)
+    unsorted = m.tocoo()
+    order = np.random.default_rng(0).permutation(unsorted.nnz)
+    unsorted = sp.coo_array((unsorted.data[order], (unsorted.row[order], unsorted.col[order])), shape=m.shape)
+    return {'csr': m, 'csr_zeros': zeros, 'csr_f64_int64': wide, 'csc': m.tocsc(),
+            'coo_canonical': m.tocoo(), 'coo_unsorted': unsorted}
+
+
+def _arrays(m):
+    return [m.data, m.row, m.col] if m.format == 'coo' else [m.data, m.indices, m.indptr]
+
+
+@pytest.mark.parametrize('fmt', list(_input_formats()))
+@pytest.mark.parametrize('name', ['dot_product', 'cosine', 'rp3beta'])
+def test_inputs_not_mutated_any_format(name, fmt):
+    # prep copies each input once, then works in place (`_canonical_csr`): the
+    # caller's arrays never change, also as matrix2 (sorted in place) and when
+    # the same object is both inputs
+    m = _input_formats()[fmt]
+    before = [a.copy() for a in _arrays(m)]
+    f = getattr(sim, name)
+    ref = f(m, m.T.tocsr(), k=5, verbose=False)
+    for kw in ({}, {'block_size': 8}):
+        f(m, k=5, verbose=False, **kw)
+        out = f(m, m, k=5, verbose=False, **kw)  # matrix2 = the caller's own (square) matrix
+        _same(out, f(m, m.copy(), k=5, verbose=False, **kw))
+    _same(f(m, k=5, verbose=False), ref)
+    for a, b in zip(_arrays(m), before):
+        assert a.dtype == b.dtype and a.tobytes() == b.tobytes()
+
+
 def test_binary_ignores_explicit_zeros():
     m = _m()
     clean = m.copy()

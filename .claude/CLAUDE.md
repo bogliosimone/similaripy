@@ -120,10 +120,11 @@ make benchmark-similarity-small
 ### Sparse Matrices
 - All functions expect **CSR format** (converted automatically)
 - Inputs are canonicalized before use (summed duplicates, no explicit zeros: `_canonical_csr` in `_s_plus.py`, `_prepare_csr` in `normalization.py`); never mutate the caller's matrices
+- **Prep owns its data:** `_canonical_csr` always copies each input once (CSR, float32, int32, sorted, summed, no zeros); every later prep step assumes that form and may change the arrays in place. Prefer one copy over aliasing tricks in prep (cold code: clarity first)
 
 ### Rust Development
 - `uv run` (e.g. `make test-dev`) rebuilds the extension after `.rs` edits (`[tool.uv] cache-keys`)
-- The Python prep guarantees the kernel's invariants (int32, sorted m2 when blocking, no explicit zeros); the core still validates once per call, the hot loops don't
+- The Python prep guarantees the kernel's invariants (int32, sorted rows, no explicit zeros); the core still validates once per call, the hot loops don't
 - Release the GIL (`py.detach`) around kernel calls; free-threaded builds (3.14t+) are supported
 - Threads: `num_threads=0` = rayon global pool (`RAYON_NUM_THREADS` to limit), `n` = a pool cached per calling thread
 - Ensure no shared mutable state across rayon workers

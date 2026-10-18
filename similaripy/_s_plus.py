@@ -209,15 +209,19 @@ def _one_value(*arrays) -> bool:
 
 def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
     """
-    CSR with summed duplicates and no explicit zeros, without touching the
-    caller's matrix.
+    The call's own canonical copy of `matrix`: CSR, float32 values, int32
+    indices, rows sorted, duplicates summed, no explicit zeros. Always a copy:
+    the caller's matrix never changes, and every later prep step assumes this
+    form and may change the arrays in place.
 
     Explicit zeros are wrong in binary mode (they would become 1.0), and
-    unsummed duplicates give wrong norms and binary counts. Canonical CSR
-    passes through (copied only when it has zeros), and so does a canonical COO
-    (indptr from the rows); other COO and non-canonical CSR go through the Rust
-    canonicalization, which replaces scipy's single-threaded COO -> CSR (2.2 s
-    on a 93M-entry COO item model).
+    unsummed duplicates give wrong norms and binary counts. Zeros are dropped
+    on the original values, before the float32 cast (a float64 value below
+    float32's range still becomes 0.0, as before the cast moved here).
+    Canonical CSR and canonical COO (indptr from the rows) are copied as they
+    are; other COO and non-canonical CSR go through the Rust canonicalization,
+    which replaces scipy's single-threaded COO -> CSR (2.2 s on a 93M-entry COO
+    item model).
     """
     if matrix.format == 'coo' and matrix.has_canonical_format:
         # Row-major, sorted, summed (e.g. our own COO output, fed back): only
@@ -234,15 +238,23 @@ def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
         indptr = np.zeros(matrix.shape[0] + 1, dtype=np.int32)
         np.cumsum(np.bincount(rows, minlength=matrix.shape[0]), out=indptr[1:])
     else:
-        matrix = matrix.tocsr()
-        if matrix.has_canonical_format:
-            if (matrix.data == 0).any():
-                matrix = matrix.copy()
-                matrix.eliminate_zeros()
-            return matrix
-        indptr, cols, data = matrix.indptr.astype(np.int32), matrix.indices, matrix.data
+        csr = matrix.tocsr()
+        if csr.has_canonical_format:
+            if csr is matrix:  # tocsr() of another format is already a new matrix
+                csr = csr.copy()
+            if (csr.data == 0).any():
+                csr.eliminate_zeros()
+            with np.errstate(over='ignore'):  # inf: reported by the finite check (`_kernel_values`)
+                data = csr.data.astype(np.float32, copy=False)
+            out = sp.csr_array((data, csr.indices.astype(np.int32, copy=False),
+                                csr.indptr.astype(np.int32, copy=False)), shape=csr.shape)
+            out.has_canonical_format = True
+            return out
+        indptr, cols, data = csr.indptr.astype(np.int32), csr.indices, csr.data
     # private copies: canonicalized in place
-    indices, data = cols.astype(np.int32), data.astype(np.float32)
+    indices = cols.astype(np.int32)
+    with np.errstate(over='ignore'):
+        data = data.astype(np.float32)
     indptr = _core.canonicalize_rows(indptr, indices, data, num_threads)
     nnz = indptr[-1]
     out = sp.csr_array((data[:nnz], indices[:nnz], indptr), shape=matrix.shape)
@@ -282,15 +294,15 @@ def _column_selector(cols, num_threads: int):
     """
     (mode, indptr, indices) for filter_cols/target_cols.
 
-    Matrix mode: the canonical pattern (`_canonical_csr`, never the caller's
-    matrix changed), so an entry is selected iff its summed value is non-zero,
+    Matrix mode: the canonical pattern only (`_canonical_csr`; the values are
+    needed to canonicalize, then dropped), so an entry is selected iff its summed value is non-zero,
     the same rule as the inputs: COO and non-canonical CSR agree on cancelling
     duplicates (signed input). A matrix whose entries all cancel selects
     nothing (as explicit zeros only); an empty one is no selector.
     """
     if sp.issparse(cols) and cols.data.shape[0] != 0:
         cols = _canonical_csr(cols, num_threads)
-        return MODE_MATRIX, cols.indptr.astype(np.int32, copy=False), cols.indices.astype(np.int32, copy=False)
+        return MODE_MATRIX, cols.indptr, cols.indices
     if isinstance(cols, (list, np.ndarray)) and len(cols) != 0:
         return MODE_ARRAY, _EMPTY_I32, _EMPTY_I32
     return MODE_NONE, _EMPTY_I32, _EMPTY_I32
@@ -322,18 +334,9 @@ def _keep_columns(data, indices, indptr, keep_mask):
     return data[sel], indices[sel], new_indptr
 
 
-def _sorted_rows(data, indices, indptr, n_cols, forward, num_threads):
-    """
-    Rows renumbered by `forward` (empty = keep) and sorted by column id, in Rust,
-    in parallel; copies first, so the caller's arrays never change. Without a
-    renumbering, sorted rows are returned as they are.
-    """
-    if len(forward) == 0 and sp.csr_array((data, indices, indptr), shape=(len(indptr) - 1, n_cols),
-                                          copy=False).has_sorted_indices:
-        return data, indices
-    data, indices = data.copy(), indices.copy()
+def _sorted_rows(data, indices, indptr, forward, num_threads):
+    """Columns renumbered by `forward` and rows re-sorted by column id, in place, in Rust, in parallel."""
     _core.remap_sort_rows(indptr, indices, data, forward, num_threads)
-    return data, indices
 
 
 # ---- Entry point ----
@@ -481,21 +484,20 @@ def _s_plus(
     m2 = _canonical_csr(matrix2, num_threads)
     n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]
     m1_data, m2_data = _kernel_values(m1, m2, binary, a1, l1, t1, t2, bayesian_shrink)
-    m1_arrays = (m1_data, m1.indices.astype(np.int32, copy=False), m1.indptr.astype(np.int32, copy=False))
-    m2_arrays = (m2_data, m2.indices.astype(np.int32, copy=False), m2.indptr.astype(np.int32, copy=False))
+    m1_arrays = (m1_data, m1.indices, m1.indptr)
+    m2_arrays = (m2_data, m2.indices, m2.indptr)
 
     # Block size: 0 = auto, None = disabled (0 for the kernel), int > 0 = explicit
     if block_size is None:
         block_size = 0
     elif block_size == 0:
         block_size = DEFAULT_BLOCK_SIZE
-    use_blocking = block_size > 0 and n_output_cols > block_size
 
     norms = _norms(m1_arrays, m2_arrays, n_output_cols, l1, l2, l3, c1, c2, additive_shrink,
                    weight_depop_matrix1, weight_depop_matrix2, p1, p2)
     filt, targ, m2_arrays = _selectors(filter_cols, target_cols, m2_arrays, n_output_cols, num_threads)
     m2_arrays, norms, filt, targ, back_perm = _popularity_layout(
-        m2_arrays, norms, filt, targ, n_output_cols, use_blocking, num_threads)
+        m2_arrays, norms, filt, targ, n_output_cols, num_threads)
 
     if bar is not None:
         bar.set_description('Computing')
@@ -535,8 +537,7 @@ def _kernel_values(m1, m2, binary, a1, l1, t1, t2, bayesian_shrink):
     so binary input is never signed.
     """
     def values(name, m):
-        with np.errstate(over='ignore'):  # raised below
-            data = m.data.astype(np.float32, copy=False)
+        data = m.data  # float32 since `_canonical_csr`
         if not np.isfinite(data).all():
             raise ValueError(f'{name} values must be finite (in float32)')
         return np.ones(m.nnz, dtype=np.float32) if binary else data
@@ -585,15 +586,15 @@ def _selectors(filter_cols, target_cols, m2_arrays, n_cols, num_threads):
     return filt, targ, m2_arrays
 
 
-def _popularity_layout(m2_arrays, norms, filt, targ, n_cols, use_blocking, num_threads):
+def _popularity_layout(m2_arrays, norms, filt, targ, n_cols, num_threads):
     """
     Popularity order (default, `_COLUMN_ORDER`): renumber m2 columns by
     descending count, on every call, blocked or not. Popular columns share the
     first, cache-hot blocks, and the kernel's tie rule (lower column wins) means
     the same thing on every path: ties go to the more popular column, then to
     the lower original id (stable sort). The kernel writes original ids
-    (`back_perm`, None when the order is already the identity). Blocking also
-    needs sorted m2 rows (binary search).
+    (`back_perm`, None when the order is already the identity). Blocking needs
+    sorted m2 rows (binary search): canonical m2 is, and a renumbering re-sorts.
     """
     m2_data, m2_indices, m2_indptr = m2_arrays
     back_perm = None
@@ -606,22 +607,19 @@ def _popularity_layout(m2_arrays, norms, filt, targ, n_cols, use_blocking, num_t
             forward = np.empty(n_cols, dtype=np.int32)
             forward[perm] = np.arange(n_cols, dtype=np.int32)
             norms = [y[perm] if j % 2 == 1 and len(y) else y for j, y in enumerate(norms)]  # y_* only
-            filt, targ = (_renumbered_pattern(sel, n_cols, forward, num_threads) for sel in (filt, targ))
-    if use_blocking or back_perm is not None:
-        # ponytail: unblocked + permuted sorts too (one Rust pass does both); a
-        # remap-only pass would skip the sort if it ever shows in a profile
-        m2_data, m2_indices = _sorted_rows(m2_data, m2_indices, m2_indptr, n_cols, forward, num_threads)
+            filt, targ = (_renumbered_pattern(sel, forward, num_threads) for sel in (filt, targ))
+            # ponytail: unblocked calls re-sort too (one Rust pass does both); a
+            # remap-only pass would skip the sort if it ever shows in a profile
+            _sorted_rows(m2_data, m2_indices, m2_indptr, forward, num_threads)
     return (m2_data, m2_indices, m2_indptr), norms, filt, targ, back_perm
 
 
-def _renumbered_pattern(sel, n_cols, forward, num_threads):
-    """A matrix selector with its columns renumbered by `forward` and rows re-sorted; others unchanged."""
+def _renumbered_pattern(sel, forward, num_threads):
+    """A matrix selector with its columns renumbered by `forward` and rows re-sorted (in place); others unchanged."""
     mode, indptr, indices = sel
-    if mode != MODE_MATRIX or len(indices) == 0:
-        return sel
-    ones = np.ones(len(indices), dtype=np.float32)
-    _, indices = _sorted_rows(ones, indices, indptr, n_cols, forward, num_threads)
-    return mode, indptr, indices
+    if mode == MODE_MATRIX and len(indices) != 0:
+        _sorted_rows(np.ones(len(indices), dtype=np.float32), indices, indptr, forward, num_threads)
+    return sel
 
 
 def _build_output(cols, vals, counts, targets, shape, format_output):
