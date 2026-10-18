@@ -1,9 +1,5 @@
 """
-    s_plus on the Rust kernel: numpy prep, kernel call, output build (D19).
-
-    Same results as 0.7.0's Cython `s_plus`, minus its bugs:
-    never mutates the caller's matrices, always sorts m2 when blocking,
-    accepts int64-indexed inputs, closes the progress bar on errors.
+    s_plus on the Rust kernel: numpy prep, kernel call, output build.
 """
 
 import time
@@ -14,7 +10,7 @@ import scipy.sparse as sp
 
 from . import _core
 
-# Accumulator block in float32 entries (~1 MB), as 0.7.0 (`s_plus.h`).
+# Accumulator block in float32 entries (~1 MB).
 DEFAULT_BLOCK_SIZE = 262144
 
 PROGRESS_BAR_REFRESH_RATE = 3  # Hz
@@ -26,9 +22,10 @@ MODE_ARRAY = 1   # list/array, pre-filtered here: the kernel treats it as NONE
 MODE_MATRIX = 2  # sparse matrix, per-row check in the kernel
 
 # Wall time (s) of the last call's kernel (scoring, top-K, per-row un-permute
-# + sort, compaction) and output build (matrix wrap); the harness takes prep as total - kernel - output, so it includes
-# the wrappers' normalization. Racy under concurrent calls: read it only after
-# serial calls.
+# + sort, compaction) and output build (matrix wrap). Read by the benchmark
+# harness (tests/benchmarks/benchmark.py), which takes prep as total - kernel -
+# output, so prep includes the wrappers' normalization. Racy under concurrent
+# calls: read it only after serial calls.
 _last_timings = {'kernel': 0.0, 'output': 0.0}
 
 # Kernel column order: 'popularity' (default, see `_s_plus`) or 'original'
@@ -37,7 +34,7 @@ _last_timings = {'kernel': 0.0, 'output': 0.0}
 _COLUMN_ORDER = 'popularity'
 
 # Largest output nnz with an int32 CSR indptr; past it indptr and indices
-# are int64 (D42). A module constant so tests can lower it.
+# are int64. A module constant so tests can lower it.
 _MAX_INT32_NNZ = np.iinfo(np.int32).max
 
 _EMPTY_F32 = np.empty(0, dtype=np.float32)
@@ -113,7 +110,7 @@ def _validate_inputs(
     # Every weight >= 0: the norms (sums of x^2), popularities (sums of |x|) and
     # cosine and depop terms are then >= 0 on any finite input, and tversky's
     # denominator is kept > 0 by its rule in `_s_plus` (`_check_signed_rules`,
-    # with the rules for signed input, D45). Negative weights would flip signs or
+    # with the rules for signed input). Negative weights would flip signs or
     # make NaN (a negative base to a fractional power); alpha <= 0 would flatten
     # or invert the ranking.
     for name, value in weights.items():
@@ -126,7 +123,7 @@ def _validate_inputs(
         raise ValueError(f'num_threads must be an integer >= 0, got {num_threads!r}')
 
     # Input indices and indptrs are int32: fail loudly instead of wrapping. The
-    # output may pass 2^31 results (D42, see `_MAX_INT32_NNZ`).
+    # output may pass 2^31 results (see `_MAX_INT32_NNZ`).
     int32_max = np.iinfo(np.int32).max
     if matrix1.nnz > int32_max or matrix2.nnz > int32_max:
         raise ValueError(f"input matrices must have at most {int32_max} non-zeros")
@@ -178,13 +175,14 @@ def _check_used_weights(name: str, weights, used: np.ndarray) -> None:
         raise ValueError(f'{name} weights must be > 0 on every row/column with entries')
 
 
-# ---- Prep helpers (numpy, D19) ----
+# ---- Prep helpers (numpy) ----
 
 def _check_signed_rules(signed: bool, binary: bool, a1, l1, t1, t2, bayesian_shrink,
                         m1_data, m2_data) -> None:
     """
-    Parameters that would be wrong on signed input (D45), plus the tversky
-    denominator rule, which also binds on non-negative weighted input.
+    Parameters that would be wrong on signed input (docs/guide.md, "Signed
+    Input"), plus the tversky denominator rule, which also binds on
+    non-negative weighted input.
     """
     if signed and bayesian_shrink != 0:
         raise ValueError("bayesian shrink (shrink_type='bayesian', s_plus bayesian_shrink) is not "
@@ -220,12 +218,11 @@ def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
     caller's matrix.
 
     Explicit zeros are wrong in binary mode (they would become 1.0), and
-    unsummed duplicates give wrong norms and binary counts (a bug in 0.7.0
-    for CSR input). Canonical CSR passes through (copied only when it has
-    zeros), and so does a canonical COO (indptr from the rows); other COO and
-    non-canonical CSR go through the Rust canonicalization,
-    which replaces scipy's single-threaded COO -> CSR (2.2 s on a 93M-entry
-    COO item model).
+    unsummed duplicates give wrong norms and binary counts. Canonical CSR
+    passes through (copied only when it has zeros), and so does a canonical COO
+    (indptr from the rows); other COO and non-canonical CSR go through the Rust
+    canonicalization, which replaces scipy's single-threaded COO -> CSR (2.2 s
+    on a 93M-entry COO item model).
     """
     if matrix.format == 'coo' and matrix.has_canonical_format:
         # Row-major, sorted, summed (e.g. our own COO output, fed back): only
@@ -261,11 +258,10 @@ def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
 def _row_sums(values: np.ndarray, indptr: np.ndarray, dtype=None) -> np.ndarray:
     """
     Per-row sums of a CSR value array, in the values' dtype unless `dtype` is
-    given; same summation order as 0.7.0.
+    given; summed sequentially per row (reduceat).
 
-    The trailing 0 lets `reduceat` take start == nnz (trailing empty rows,
-    an IndexError in 0.7.0); reduceat returns values[start] for empty rows,
-    hence the reset.
+    The trailing 0 lets `reduceat` take start == nnz (trailing empty rows);
+    reduceat returns values[start] for empty rows, hence the reset.
     """
     starts = indptr[:-1]
     out = np.add.reduceat(np.append(values, values.dtype.type(0)), starts, dtype=dtype)
@@ -292,11 +288,10 @@ def _column_selector(cols, num_threads: int):
     (mode, indptr, indices) for filter_cols/target_cols.
 
     Matrix mode: the canonical pattern (`_canonical_csr`, never the caller's
-    matrix changed; 0.7.0 sorted and eliminated zeros in place), so an entry is
-    selected iff its summed value is non-zero, the same rule as the inputs:
-    COO and non-canonical CSR agree on cancelling duplicates (D45). A matrix
-    whose entries all cancel selects nothing (as explicit zeros only); an
-    empty one is no selector.
+    matrix changed), so an entry is selected iff its summed value is non-zero,
+    the same rule as the inputs: COO and non-canonical CSR agree on cancelling
+    duplicates (signed input). A matrix whose entries all cancel selects
+    nothing (as explicit zeros only); an empty one is no selector.
     """
     if sp.issparse(cols) and cols.data.shape[0] != 0:
         cols = _canonical_csr(cols, num_threads)
@@ -324,8 +319,8 @@ def _array_keep_mask(filter_cols, target_cols, n_cols: int) -> np.ndarray:
 
 def _keep_columns(data, indices, indptr, keep_mask):
     """Drops the entries whose column is not in `keep_mask`; column ids and order unchanged."""
-    # ponytail: slower than 0.7.0's Cython loop (two boolean gathers); a Rust
-    # pass is the upgrade, tracked for the non-hot-path polish
+    # ponytail: two boolean gathers over nnz; a Rust pass is the upgrade if a
+    # profile shows it
     sel = keep_mask[indices]
     new_indptr = np.zeros(len(indptr), dtype=np.int32)
     np.cumsum(_row_sums(sel, indptr, dtype=np.int32), out=new_indptr[1:])
@@ -385,8 +380,8 @@ def s_plus(
 
     Args:
         matrix1: First sparse matrix (typically item-user interactions); values finite
-            in float32, negative values allowed (signed input, D45: negative and 0.0
-            scores are never results).
+            in float32, negative values allowed (signed input: negative and 0.0
+            scores are never results; docs/guide.md, "Signed Input").
         matrix2: Optional second matrix. If None, uses matrix1.T (self-similarity).
         weight_depop_matrix1: Depopularization weights for matrix1: 'none', 'sum', or custom array.
         weight_depop_matrix2: Depopularization weights for matrix2: 'none', 'sum', or custom array.
@@ -412,7 +407,8 @@ def s_plus(
         target_cols: Columns to include in results (only compute these).
         verbose: Show progress bar during computation.
         format_output: Output matrix format: 'csr' or 'coo'.
-        num_threads: Number of threads (0 = rayon global pool, all cores or `RAYON_NUM_THREADS`).
+        num_threads: Number of threads (0 = all cores on the shared rayon pool, or
+            `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation. Controls the trade-off
             between cache efficiency and multi-pass overhead.
             0 = auto (DEFAULT_BLOCK_SIZE entries, ~1 MB).
@@ -539,7 +535,7 @@ def _kernel_values(m1, m2, binary, a1, l1, t1, t2, bayesian_shrink):
     """
     Kernel values: float32 (all ones in binary mode). Finite is checked on the
     float32 values in both modes (1e39 is inf there, and binary must not turn
-    NaN/inf into 1.0). Signed input (D45) is fine: negative and cancelled (0.0)
+    NaN/inf into 1.0). Signed input is fine: negative and cancelled (0.0)
     scores are never results. `signed` is read from the values the kernel sees,
     so binary input is never signed.
     """

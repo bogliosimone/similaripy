@@ -6,7 +6,6 @@ from typing import Optional, Union, Literal
 from scipy.sparse import sparray
 
 
-
 def dot_product(
     matrix1: sparray,
     matrix2: Optional[sparray] = None,
@@ -42,7 +41,8 @@ def dot_product(
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
-        num_threads: Number of threads to use (0 means all available cores).
+        num_threads: Number of threads (0 = all cores on the shared rayon pool, or
+            `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
@@ -104,7 +104,8 @@ def cosine(
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
-        num_threads: Number of threads to use (0 = all available cores).
+        num_threads: Number of threads (0 = all cores on the shared rayon pool, or
+            `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
@@ -170,7 +171,8 @@ def asymmetric_cosine(
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
-        num_threads: Number of threads to use (0 = all available cores).
+        num_threads: Number of threads (0 = all cores on the shared rayon pool, or
+            `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
@@ -243,7 +245,8 @@ def tversky(
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
-        num_threads: Number of threads to use (0 = all available cores).
+        num_threads: Number of threads (0 = all cores on the shared rayon pool, or
+            `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
@@ -306,7 +309,8 @@ def jaccard(
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
-        num_threads: Number of threads to use (0 = all available cores).
+        num_threads: Number of threads (0 = all cores on the shared rayon pool, or
+            `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
@@ -369,7 +373,8 @@ def dice(
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
-        num_threads: Number of threads to use (0 = all available cores).
+        num_threads: Number of threads (0 = all cores on the shared rayon pool, or
+            `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
@@ -435,7 +440,8 @@ def p3alpha(
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
-        num_threads: Number of threads to use (0 = all available cores).
+        num_threads: Number of threads (0 = all cores on the shared rayon pool, or
+            `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
@@ -508,7 +514,8 @@ def rp3beta(
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
-        num_threads: Number of threads to use (0 = all available cores).
+        num_threads: Number of threads (0 = all cores on the shared rayon pool, or
+            `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
@@ -613,7 +620,8 @@ def s_plus(
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
-        num_threads: Number of threads to use (0 = all available cores).
+        num_threads: Number of threads (0 = all cores on the shared rayon pool, or
+            `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
 
     Returns:
@@ -648,7 +656,7 @@ def s_plus(
 
 
 def _signed_power(x: np.ndarray, alpha: float) -> np.ndarray:
-    """sign(x) |x|^alpha: x^alpha bit for bit on x > 0; on signed input (D45) a negative
+    """sign(x) |x|^alpha: x^alpha bit for bit on x > 0; on signed input a negative
     transition weight keeps its sign (np.power would give NaN for a fractional alpha)."""
     return np.copysign(np.abs(x) ** alpha, x)
 
