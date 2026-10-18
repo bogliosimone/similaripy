@@ -46,7 +46,7 @@ benchmark-similarity-large:
 
 .PHONY: clean
 clean:
-	rm -rf build/ dist/ *.egg-info
+	rm -rf dist/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	rm -f similaripy/_core*.so similaripy/_core*.pyd
 
