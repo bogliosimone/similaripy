@@ -606,49 +606,40 @@ def test_product_form(args, expected):
 
 
 def test_prescale_in_place_zero_norm_gives_zero():
+    # a 0 norm only on an empty row/column: scale 0 there
     from similaripy import _s_plus
-    m = _m(4, 3, seed=1)
+    m = sp.csr_array(np.array([[1, 0, 2], [0, 0, 0], [3, 0, 4], [0, 0, 5]], dtype=np.float32))
     d1, d2 = m.data.copy(), m.data.copy()
-    X, Y = np.array([2.0, 0.0, 4.0, 1.0]), np.array([0.0, 0.5, 1.0])
+    X, Y = np.array([2, 0, 4, 1], dtype=np.float32), np.array([0.5, 0, 2], dtype=np.float32)
     norms = _s_plus.Norms(x_cosine=X, y_cosine=Y)
-    assert _s_plus._prescale((d1, m.indices, m.indptr), (d2, m.indices, m.indptr), 2, norms)
+    _s_plus._prescale((d1, m.indices, m.indptr), (d2, m.indices, m.indptr), 2, norms)
     rows = np.repeat(np.arange(4), np.diff(m.indptr))
-    np.testing.assert_allclose(d1, m.data / np.where(X == 0, np.inf, 2 * X)[rows], rtol=1e-6)
-    np.testing.assert_allclose(d2, m.data / np.where(Y == 0, np.inf, Y)[m.indices], rtol=1e-6)
-    assert not d1[rows == 1].any() and not d2[m.indices == 0].any()
+    np.testing.assert_allclose(d1, m.data / (2 * X)[rows], rtol=1e-6)
+    np.testing.assert_allclose(d2, m.data / Y[m.indices], rtol=1e-6)
 
 
-def test_prescale_overflow_changes_nothing():
-    # a product past float32's max: refused before touching the values
+def test_prescale_scaled_overflow_raises():
+    # 1 / Y = 1e10 times 1e30 overflows float32
     from similaripy import _s_plus
     m = _m(4, 3, seed=1)
     m.data[0] = 1e30
-    d1, d2 = m.data.copy(), m.data.copy()
-    norms = _s_plus.Norms(x_cosine=np.ones(4), y_cosine=np.full(3, 1e-10))  # 1 / Y = 1e10: 1e30 * 1e10 overflows
-    assert not _s_plus._prescale((d1, m.indices, m.indptr), (d2, m.indices, m.indptr), 1, norms)
-    assert d1.tobytes() == m.data.tobytes() and d2.tobytes() == m.data.tobytes()
+    norms = _s_plus.Norms(x_cosine=np.ones(4, dtype=np.float32), y_cosine=np.full(3, 1e-10, dtype=np.float32))
+    with pytest.raises(ValueError, match='out of float32 range'):
+        _s_plus._prescale((m.data.copy(), m.indices, m.indptr), (m.data.copy(), m.indices, m.indptr), 1, norms)
 
 
-def test_prescale_overflow_falls_back(monkeypatch):
-    # pop ~ 1e-30, beta 2: 1 / pop^2 overflows float32 -> the kernel path, same bits
-    from similaripy import _s_plus
-    m = _m(60, 40, seed=2) * np.float32(1e-30)
-    kw = dict(k=10, beta=2.0, verbose=False)
-    prescale, results = _s_plus._prescale, []
-    monkeypatch.setattr(_s_plus, '_prescale', lambda *a: results.append(prescale(*a)) or results[-1])
-    out = sim.rp3beta(m, **kw)
-    assert results == [False]  # the fallback was taken
-    monkeypatch.setattr(_s_plus, '_product_form', lambda *a: False)
-    assert _csr_bytes(out) == _csr_bytes(sim.rp3beta(m, **kw))
-
-
-@pytest.mark.parametrize('scale', [1e19, 1e-25])  # float32 norms overflow / underflow
-@pytest.mark.parametrize('name', ['cosine', 'asymmetric_cosine'])
-def test_product_form_extreme_values(name, scale):
-    # float64 scales: real scores where float32 norms would give none (accepted, D51)
+@pytest.mark.parametrize('name, scale, kw', [
+    ('cosine', 1e19, {}),  # sums of squares overflow
+    ('cosine', 1e-30, {}),  # sums of squares underflow
+    ('asymmetric_cosine', 1e-25, {}),
+    ('rp3beta', 1e-30, {'beta': 2.0}),  # pop^2 underflows
+])
+@pytest.mark.filterwarnings('ignore:overflow')  # the norm sums, before the raise
+def test_product_form_out_of_range_raises(name, scale, kw):
+    # float32 norms (as the kernel paths): out of range raises instead of empty rows
     m = _m(60, 40, seed=4)
-    _same(getattr(sim, name)(m * np.float32(scale), k=10, verbose=False),
-          getattr(sim, name)(m, k=10, verbose=False))
+    with pytest.raises(ValueError, match='out of float32 range'):
+        getattr(sim, name)(m * np.float32(scale), k=10, verbose=False, **kw)
 
 
 def test_signed_power_alpha_one_same_bits():
