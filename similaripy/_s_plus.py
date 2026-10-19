@@ -57,6 +57,19 @@ class Params(NamedTuple):
     threshold: float
 
 
+class NormParams(NamedTuple):
+    """The prep-only `s_plus` arguments: norms (`_norms`) and data rules
+    (`_check_data`); depop1/depop2 = weight_depop_matrix1/2."""
+    c1: float
+    c2: float
+    p1: float
+    p2: float
+    additive_shrink: float
+    depop1: Union[str, np.ndarray]
+    depop2: Union[str, np.ndarray]
+    binary: bool
+
+
 class Norms(NamedTuple):
     """The kernel's normalization terms (kernel.rs `Norms`): x per m1 row, y
     per m2 column, float32; None when the weights don't use them."""
@@ -190,8 +203,7 @@ def _check_used_weights(name: str, weights, used: np.ndarray) -> None:
         raise ValueError(f'{name} weights must be > 0 on every row/column with entries')
 
 
-def _check_data(m1, m2, binary, a1, l1, l3, t1, t2, bayesian_shrink,
-                weight_depop_matrix1, weight_depop_matrix2) -> None:
+def _check_data(m1, m2, params: Params, norm_params: NormParams) -> None:
     """
     The rules on the canonical values (`_canonical_csr`): finite in float32 in
     both modes (1e39 is inf there, and binary must not turn NaN/inf into 1.0),
@@ -200,14 +212,17 @@ def _check_data(m1, m2, binary, a1, l1, l3, t1, t2, bayesian_shrink,
     `signed` is read from the values the kernel sees, so binary input is never
     signed.
     """
+    a1, l1, l3, t1, t2, bayesian_shrink = (params.a1, params.l1, params.l3, params.t1, params.t2,
+                                           params.bayesian_shrink)
+    binary = norm_params.binary
     for name, m in (('matrix1', m1), ('matrix2', m2)):
         if not np.isfinite(m.data).all():
             raise ValueError(f'{name} values must be finite (in float32)')
     signed = not binary and bool((m1.data < 0).any() or (m2.data < 0).any())
     _check_score_rules(signed, binary, a1, l1, t1, t2, bayesian_shrink, m1.data, m2.data)
     if l3 != 0:
-        _check_used_weights('weight_depop_matrix1 (pop1)', weight_depop_matrix1, np.diff(m1.indptr) > 0)
-        _check_used_weights('weight_depop_matrix2 (pop2)', weight_depop_matrix2,
+        _check_used_weights('weight_depop_matrix1 (pop1)', norm_params.depop1, np.diff(m1.indptr) > 0)
+        _check_used_weights('weight_depop_matrix2 (pop2)', norm_params.depop2,
                             np.bincount(m2.indices, minlength=m2.shape[1]) > 0)
 
 
@@ -487,8 +502,8 @@ def s_plus(
     try:
         res = _s_plus(
             bar, matrix1, matrix2, targets, k,
-            weight_depop_matrix1, weight_depop_matrix2, p1, p2, a1, l1, l2, l3, t1, t2, c1, c2,
-            stabilized_shrink, bayesian_shrink, additive_shrink, threshold, binary,
+            Params(a1, l1, l2, l3, t1, t2, stabilized_shrink, bayesian_shrink, threshold),
+            NormParams(c1, c2, p1, p2, additive_shrink, weight_depop_matrix1, weight_depop_matrix2, binary),
             filter_cols, target_cols, format_output, num_threads, block_size, prepare,
         )
     except BaseException:
@@ -501,31 +516,28 @@ def s_plus(
 
 
 def _s_plus(
-    bar, matrix1, matrix2, targets, k,
-    weight_depop_matrix1, weight_depop_matrix2, p1, p2, a1, l1, l2, l3, t1, t2, c1, c2,
-    stabilized_shrink, bayesian_shrink, additive_shrink, threshold, binary,
+    bar, matrix1, matrix2, targets, k, params: Params, norm_params: NormParams,
     filter_cols, target_cols, format_output, num_threads, block_size, prepare,
 ):
     m1 = _canonical_csr(matrix1, np.float32, num_threads)
     m2 = _canonical_csr(matrix2, np.float32, num_threads)
     if prepare is not None and (w := prepare(m1, m2)) is not None:
-        weight_depop_matrix2 = w
+        norm_params = norm_params._replace(depop2=w)
     n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]
-    _check_data(m1, m2, binary, a1, l1, l3, t1, t2, bayesian_shrink,
-                weight_depop_matrix1, weight_depop_matrix2)
-    m1_data, m2_data = (np.ones(m.nnz, dtype=np.float32) if binary else m.data for m in (m1, m2))
+    _check_data(m1, m2, params, norm_params)
+    m1_data, m2_data = (np.ones(m.nnz, dtype=np.float32) if norm_params.binary else m.data
+                        for m in (m1, m2))
     m1_arrays = Csr(m1_data, m1.indices, m1.indptr, m1.shape[1])
     m2_arrays = Csr(m2_data, m2.indices, m2.indptr, n_output_cols)
 
     if block_size == 0:  # auto; None (no blocking) and int > 0 go as they are
         block_size = DEFAULT_BLOCK_SIZE
 
-    norms = _norms(m1_arrays, m2_arrays, n_output_cols, l1, l2, l3, c1, c2, additive_shrink,
-                   weight_depop_matrix1, weight_depop_matrix2, p1, p2)
-    l2, l3, norms = _depop_as_cosine(l1, l2, l3, norms)
-    if _product_form(a1, l1, l2, l3, stabilized_shrink, bayesian_shrink):
-        _prescale(m1_arrays, m2_arrays, l2, norms)
-        l2, norms = 0, Norms()  # plain dot of the scaled inputs: DOT mode
+    norms = _norms(m1_arrays, m2_arrays, n_output_cols, params, norm_params)
+    params, norms = _depop_as_cosine(params, norms)
+    if _product_form(params):
+        _prescale(m1_arrays, m2_arrays, params.l2, norms)
+        params, norms = params._replace(l2=0), Norms()  # plain dot of the scaled inputs: DOT mode
     filt, targ, m2_arrays = _selectors(filter_cols, target_cols, m2_arrays, n_output_cols, num_threads)
     m2_arrays, norms, filt, targ, new_to_old = _popularity_layout(
         m2_arrays, norms, filt, targ, n_output_cols, num_threads)
@@ -535,7 +547,7 @@ def _s_plus(
     kernel_start = time.perf_counter()
     cols, vals, counts = _core.compute_similarities(
         targets=targets, m1=m1_arrays, m2=m2_arrays, norms=norms,
-        params=Params(a1, l1, l2, l3, t1, t2, stabilized_shrink, bayesian_shrink, threshold),
+        params=params,
         k=k, filter=filt, target=targ, col_map=new_to_old,
         num_threads=num_threads, block_size=block_size, progress=bar,
     )
@@ -551,12 +563,15 @@ def _s_plus(
 # ---- `_s_plus` steps. CSR arrays travel as `Csr`, matrix selectors as
 # (indptr, indices) or None, norms as `Norms`. ----
 
-def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
-           weight_depop_matrix1, weight_depop_matrix2, p1, p2):
+def _norms(m1_arrays, m2_arrays, n_cols, params: Params, norm_params: NormParams):
     """
     The normalization terms the weights use (x per m1 row, y per m2 column); the
     others stay None. float32, for the kernel and `_prescale` alike.
     """
+    l1, l2, l3 = params.l1, params.l2, params.l3
+    c1, c2, p1, p2 = norm_params.c1, norm_params.c2, norm_params.p1, norm_params.p2
+    additive_shrink = norm_params.additive_shrink
+    weight_depop_matrix1, weight_depop_matrix2 = norm_params.depop1, norm_params.depop2
     m1_data, m1_indptr, m2_data, m2_indices = m1_arrays.data, m1_arrays.indptr, m2_arrays.data, m2_arrays.indices
     norms = Norms()
     if l1 != 0 or l2 != 0:
@@ -578,15 +593,15 @@ def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
     return norms
 
 
-def _product_form(a1, l1, l2, l3, stabilized_shrink, bayesian_shrink) -> bool:
+def _product_form(p: Params) -> bool:
     """
     The score is xy / (l X[row] Y[col]): one cosine or one depop term (an
     additive shrink sits inside the norms), no power, no other shrink. Then it
     is the plain dot product of m1 rows scaled by 1 / (l X) and m2 columns by
     1 / Y (`_prescale`).
     """
-    return (a1 == 1 and l1 == 0 and (l2 != 0) != (l3 != 0)
-            and stabilized_shrink == 0 and bayesian_shrink == 0)
+    return (p.a1 == 1 and p.l1 == 0 and (p.l2 != 0) != (p.l3 != 0)
+            and p.stabilized_shrink == 0 and p.bayesian_shrink == 0)
 
 
 def _prescale(m1_arrays, m2_arrays, l, norms) -> None:
@@ -618,17 +633,17 @@ def _prescale(m1_arrays, m2_arrays, l, norms) -> None:
                          'scaled value underflows or overflows): rescale the input')
 
 
-def _depop_as_cosine(l1, l2, l3, norms):
+def _depop_as_cosine(params: Params, norms):
     """
     Depop-only weights (rp3beta) through the cosine slots: the kernel's COSINE
     mode instead of FULL, same bits. Both compute the term as `l * (x * y)`,
     and FULL's den `0 + 0 + dp + shrink` adds only zeros to it (`score` in
     kernel.rs); den == 0 gives 0 in both. A bayesian shrink stays FULL.
     """
-    if l1 == 0 and l2 == 0 and l3 != 0:
-        return l3, 0, norms._replace(x_cosine=norms.x_depop, y_cosine=norms.y_depop,
-                                     x_depop=None, y_depop=None)
-    return l2, l3, norms
+    if params.l1 == 0 and params.l2 == 0 and params.l3 != 0:
+        return params._replace(l2=params.l3, l3=0), norms._replace(
+            x_cosine=norms.x_depop, y_cosine=norms.y_depop, x_depop=None, y_depop=None)
+    return params, norms
 
 
 def _selectors(filter_cols, target_cols, m2_arrays, n_cols, num_threads):
