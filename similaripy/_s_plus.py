@@ -32,18 +32,17 @@ _COLUMN_ORDER = 'popularity'
 # are int64. A module constant so tests can lower it.
 _MAX_INT32_NNZ = np.iinfo(np.int32).max
 
-_EMPTY_F32 = np.empty(0, dtype=np.float32)
 
 
 class Norms(NamedTuple):
     """The kernel's normalization terms (kernel.rs `Norms`): x per m1 row, y
-    per m2 column, float32; empty when the weights don't use them."""
-    x_tversky: np.ndarray = _EMPTY_F32
-    y_tversky: np.ndarray = _EMPTY_F32
-    x_cosine: np.ndarray = _EMPTY_F32
-    y_cosine: np.ndarray = _EMPTY_F32
-    x_depop: np.ndarray = _EMPTY_F32
-    y_depop: np.ndarray = _EMPTY_F32
+    per m2 column, float32; None when the weights don't use them."""
+    x_tversky: Optional[np.ndarray] = None
+    y_tversky: Optional[np.ndarray] = None
+    x_cosine: Optional[np.ndarray] = None
+    y_cosine: Optional[np.ndarray] = None
+    x_depop: Optional[np.ndarray] = None
+    y_depop: Optional[np.ndarray] = None
 
 
 def _check_args(
@@ -540,7 +539,7 @@ def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
            weight_depop_matrix1, weight_depop_matrix2, p1, p2):
     """
     The normalization terms the weights use (x per m1 row, y per m2 column); the
-    others stay empty. float32, for the kernel and `_prescale` alike.
+    others stay None. float32, for the kernel and `_prescale` alike.
     """
     (m1_data, _, m1_indptr), (m2_data, m2_indices, _) = m1_arrays, m2_arrays
     norms = Norms()
@@ -612,7 +611,7 @@ def _depop_as_cosine(l1, l2, l3, norms):
     """
     if l1 == 0 and l2 == 0 and l3 != 0:
         return l3, 0, norms._replace(x_cosine=norms.x_depop, y_cosine=norms.y_depop,
-                                     x_depop=_EMPTY_F32, y_depop=_EMPTY_F32)
+                                     x_depop=None, y_depop=None)
     return l2, l3, norms
 
 
@@ -666,8 +665,8 @@ def _popularity_layout(m2_arrays, norms, filt, targ, n_cols, num_threads):
 
 
 def _permuted(y, new_to_old):
-    """A per-column norm in the new column order (empty: unused, unchanged)."""
-    return y[new_to_old] if len(y) else y
+    """A per-column norm in the new column order (None: unused)."""
+    return None if y is None else y[new_to_old]
 
 
 def _build_output(cols, vals, counts, targets, shape, format_output):

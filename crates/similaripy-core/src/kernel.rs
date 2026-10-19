@@ -9,16 +9,42 @@ use crate::csr::{CsrPattern, CsrView};
 use crate::topk::TopK;
 
 /// Per-row (`x_*`, indexed by target row) and per-column (`y_*`, indexed by
-/// output column) normalization terms. A pair is only read when its weight
-/// in `Params` is non-zero, and may be empty otherwise.
+/// output column) normalization terms. A pair is needed when its weight in
+/// `Params` is non-zero, and ignored otherwise (None: unused).
 #[derive(Clone, Copy, Default)]
 pub struct Norms<'a> {
-    pub x_tversky: &'a [f32],
-    pub y_tversky: &'a [f32],
-    pub x_cosine: &'a [f32],
-    pub y_cosine: &'a [f32],
-    pub x_depop: &'a [f32],
-    pub y_depop: &'a [f32],
+    pub x_tversky: Option<&'a [f32]>,
+    pub y_tversky: Option<&'a [f32]>,
+    pub x_cosine: Option<&'a [f32]>,
+    pub y_cosine: Option<&'a [f32]>,
+    pub x_depop: Option<&'a [f32]>,
+    pub y_depop: Option<&'a [f32]>,
+}
+
+/// `Norms` resolved once, before the row loop (`Inputs::resolved`): plain
+/// slices, empty when unused, so the hot loop reads no `Option`.
+#[derive(Clone, Copy)]
+struct NormSlices<'a> {
+    x_tversky: &'a [f32],
+    y_tversky: &'a [f32],
+    x_cosine: &'a [f32],
+    y_cosine: &'a [f32],
+    x_depop: &'a [f32],
+    y_depop: &'a [f32],
+}
+
+impl<'a> Norms<'a> {
+    fn resolved(&self) -> NormSlices<'a> {
+        let s = |x: Option<&'a [f32]>| x.unwrap_or(&[]);
+        NormSlices {
+            x_tversky: s(self.x_tversky),
+            y_tversky: s(self.y_tversky),
+            x_cosine: s(self.x_cosine),
+            y_cosine: s(self.y_cosine),
+            x_depop: s(self.x_depop),
+            y_depop: s(self.y_depop),
+        }
+    }
 }
 
 /// Scoring weights, same meaning as the `s_plus` arguments.
@@ -55,11 +81,11 @@ impl Default for Params {
 /// Everything the kernel reads. `m1` rows are targets, `m1` columns index
 /// `m2` rows, `m2` columns are the output columns.
 #[derive(Clone, Copy)]
-pub struct Inputs<'a> {
+pub struct Inputs<'a, N = Norms<'a>> {
     pub m1: CsrView<'a>,
     pub m2: CsrView<'a>,
     pub targets: &'a [i32],
-    pub norms: Norms<'a>,
+    pub norms: N,
     pub params: Params,
     /// Per-row columns to exclude.
     pub filter: Option<CsrPattern<'a>>,
@@ -69,6 +95,24 @@ pub struct Inputs<'a> {
     /// permutation of `0..m2.n_cols()` (m2 columns renumbered by the caller), or
     /// `None` to keep the ids.
     pub col_map: Option<&'a [i32]>,
+}
+
+/// `Inputs` as the kernel reads them: norms resolved (`NormSlices`).
+type Ready<'a> = Inputs<'a, NormSlices<'a>>;
+
+impl<'a> Inputs<'a> {
+    fn resolved(&self) -> Ready<'a> {
+        Inputs {
+            m1: self.m1,
+            m2: self.m2,
+            targets: self.targets,
+            norms: self.norms.resolved(),
+            params: self.params,
+            filter: self.filter,
+            target_cols: self.target_cols,
+            col_map: self.col_map,
+        }
+    }
 }
 
 /// The results, rows in `targets` order: row `i` has `counts[i]` entries,
@@ -100,6 +144,7 @@ pub fn compute<F: Fn() + Sync>(
             counts,
         });
     }
+    let inp = &inp.resolved();
     let n_cols = inp.m2.n_cols();
     let blocked = block_size > 0 && n_cols > block_size;
     // The blocked path finds each block's end in an m2 row by binary search, so
@@ -246,7 +291,13 @@ fn validate(inp: &Inputs, k: usize) -> Result<usize, Error> {
         (p.l2, n.x_cosine, n.y_cosine, "cosine"),
         (p.l3, n.x_depop, n.y_depop, "depop"),
     ] {
-        if w != 0.0 && (x.len() < rows_needed || y.len() < n_cols) {
+        if w == 0.0 {
+            continue;
+        }
+        let (Some(x), Some(y)) = (x, y) else {
+            return Err(Error::InvalidInput(format!("{name} norms missing")));
+        };
+        if x.len() < rows_needed || y.len() < n_cols {
             return Err(Error::InvalidInput(format!("{name} norms too short")));
         }
     }
@@ -304,7 +355,7 @@ impl Params {
 
     /// # Safety
     /// `row` is in range of every norm pair whose weight is non-zero.
-    unsafe fn row_terms(&self, n: &Norms, row: usize) -> RowTerms {
+    unsafe fn row_terms(&self, n: &NormSlices, row: usize) -> RowTerms {
         // SAFETY: caller contract, checked in `validate`.
         unsafe {
             RowTerms {
@@ -348,7 +399,7 @@ impl Params {
     #[inline(always)]
     unsafe fn score<const POW: bool, const MODE: u8>(
         &self,
-        n: &Norms,
+        n: &NormSlices,
         x: &RowTerms,
         col: usize,
         xy: f32,
@@ -464,7 +515,7 @@ struct Scratch {
 }
 
 impl Scratch {
-    fn new(acc_len: usize, k: usize, inp: &Inputs) -> Self {
+    fn new(acc_len: usize, k: usize, inp: &Ready) -> Self {
         let n_cols = inp.m2.n_cols();
         Self {
             sums: vec![0.0; acc_len],
@@ -480,7 +531,7 @@ impl Scratch {
     ///
     /// # Safety
     /// `t` passed `validate`, and `self` was built for `inp`.
-    unsafe fn mark_selections(&mut self, inp: &Inputs, t: usize, on: bool) {
+    unsafe fn mark_selections(&mut self, inp: &Ready, t: usize, on: bool) {
         // SAFETY: t < rows of each selection (validate), marks sized for them (new).
         unsafe {
             if let Some(f) = &inp.filter {
@@ -499,7 +550,7 @@ impl Scratch {
     /// `t` passed `validate`, and `self.sums.len() == m2.n_cols()`.
     unsafe fn single_block_row(
         &mut self,
-        inp: &Inputs,
+        inp: &Ready,
         t: usize,
         cols: &mut [i32],
         values: &mut [f32],
@@ -526,7 +577,7 @@ impl Scratch {
     /// `t` passed `validate`, `self.sums.len() == block`, and m2 rows are sorted.
     unsafe fn blocked_row(
         &mut self,
-        inp: &Inputs,
+        inp: &Ready,
         t: usize,
         block: usize,
         cols: &mut [i32],
@@ -593,7 +644,7 @@ impl Scratch {
     // out of registers and reloaded the norm pointers from the stack per column.
     // One call per drain is noise.
     #[inline(never)]
-    unsafe fn drain(&mut self, inp: &Inputs, t: usize, offset: usize) {
+    unsafe fn drain(&mut self, inp: &Ready, t: usize, offset: usize) {
         macro_rules! drain_with {
             ($pow:literal, $mode:ident) => {
                 drain_impl::<$pow, $mode>(
@@ -640,7 +691,7 @@ unsafe fn drain_impl<const POW: bool, const MODE: u8>(
     touched: &[u32],
     topk: &mut TopK,
     sel: (&RowMarks, &RowMarks),
-    inp: &Inputs,
+    inp: &Ready,
     t: usize,
     offset: usize,
 ) {
@@ -817,7 +868,7 @@ mod tests {
     }
 
     /// `score` in `p.mode()` vs `FULL`, as bits.
-    fn mode_and_full_bits<const POW: bool>(p: &Params, n: &Norms, xy: f32) -> (u32, u32) {
+    fn mode_and_full_bits<const POW: bool>(p: &Params, n: &NormSlices, xy: f32) -> (u32, u32) {
         // SAFETY: row 0 and col 0 exist in every norm slice.
         unsafe {
             let x = p.row_terms(n, 0);
@@ -851,7 +902,7 @@ mod tests {
                 threshold: 0.0,
             };
             let v: Vec<[f32; 1]> = norms.iter().map(|&x| [x]).collect();
-            let n = Norms {
+            let n = NormSlices {
                 x_tversky: &v[0], y_tversky: &v[1], x_cosine: &v[2],
                 y_cosine: &v[3], x_depop: &v[4], y_depop: &v[5],
             };
@@ -885,10 +936,10 @@ mod tests {
                 ..Params::default()
             };
             let (e, x, y) = ([0.0f32], [xd], [yd]);
-            let depop = Norms {
+            let depop = NormSlices {
                 x_tversky: &e, y_tversky: &e, x_cosine: &e, y_cosine: &e, x_depop: &x, y_depop: &y,
             };
-            let cosine = Norms {
+            let cosine = NormSlices {
                 x_tversky: &e, y_tversky: &e, x_cosine: &x, y_cosine: &y, x_depop: &e, y_depop: &e,
             };
             let (full, swapped) = if pow {

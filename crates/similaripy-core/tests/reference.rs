@@ -192,12 +192,12 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
         m2: CsrView::new("m2", &m2.indptr, &m2.indices, &m2.data, n).unwrap(),
         targets: &targets,
         norms: Norms {
-            x_tversky: &c.norms[0],
-            y_tversky: &c.norms[1],
-            x_cosine: &c.norms[2],
-            y_cosine: &c.norms[3],
-            x_depop: &c.norms[4],
-            y_depop: &c.norms[5],
+            x_tversky: Some(&c.norms[0]),
+            y_tversky: Some(&c.norms[1]),
+            x_cosine: Some(&c.norms[2]),
+            y_cosine: Some(&c.norms[3]),
+            x_depop: Some(&c.norms[4]),
+            y_depop: Some(&c.norms[5]),
         },
         params: Params {
             a1,
@@ -303,19 +303,11 @@ proptest! {
 #[test]
 fn rejects_more_than_i32_max_columns() {
     let (indptr, indices, data) = ([0, 0], [], []);
-    let empty: [f32; 0] = [];
     let inp = Inputs {
         m1: CsrView::new("m1", &indptr, &indices, &data, 1).unwrap(),
         m2: CsrView::new("m2", &indptr, &indices, &data, i32::MAX as usize + 1).unwrap(),
         targets: &[0],
-        norms: Norms {
-            x_tversky: &empty,
-            y_tversky: &empty,
-            x_cosine: &empty,
-            y_cosine: &empty,
-            x_depop: &empty,
-            y_depop: &empty,
-        },
+        norms: Norms::default(),
         params: Params {
             a1: 1.0,
             l1: 0.0,
@@ -378,7 +370,7 @@ fn rejects_each_invalid_input() {
     };
     let err = |inp: Inputs, k: usize| compute(&inp, k, 0, &|| {}).err().unwrap().to_string();
     assert!(compute(&base, 2, 0, &|| {}).is_ok());
-    let cases: [(Inputs, usize, &str); 6] = [
+    let cases: [(Inputs, usize, &str); 8] = [
         (
             Inputs {
                 m1: m1_wide,
@@ -413,6 +405,37 @@ fn rejects_each_invalid_input() {
         ),
         (
             Inputs {
+                params: Params {
+                    l2: 1.0,
+                    ..Params::default()
+                },
+                ..base
+            },
+            2,
+            "cosine norms missing",
+        ),
+        (
+            Inputs {
+                norms: Norms {
+                    x_cosine: Some(&[1.0, 1.0]),
+                    ..Norms::default()
+                },
+                params: Params {
+                    l2: 1.0,
+                    ..Params::default()
+                },
+                ..base
+            },
+            2,
+            "cosine norms missing",
+        ),
+        (
+            Inputs {
+                norms: Norms {
+                    x_cosine: Some(&[1.0, 1.0]),
+                    y_cosine: Some(&[1.0, 1.0]), // 3 columns
+                    ..Norms::default()
+                },
                 params: Params {
                     l2: 1.0,
                     ..Params::default()
