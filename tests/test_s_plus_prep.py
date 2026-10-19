@@ -172,7 +172,7 @@ def test_depop_as_cosine_same_bits(kwargs, block_size, monkeypatch):
     m = sp.csr_array(d)
     kw = dict(k=20, verbose=False, block_size=block_size, **kwargs)
     swapped = sim.rp3beta(m, **kw)
-    monkeypatch.setattr(_s_plus, '_depop_as_cosine', lambda l1, l2, l3, norms: (l2, l3, norms))
+    monkeypatch.setattr(_s_plus, '_depop_as_cosine', lambda params, norms: (params, norms))
     assert _csr_bytes(swapped) == _csr_bytes(sim.rp3beta(m, **kw))
 
 
@@ -601,7 +601,8 @@ def test_normalization_canonicalizes_input(name, kw, axis):
 ])
 def test_product_form(args, expected):
     from similaripy import _s_plus
-    assert _s_plus._product_form(*args) is expected
+    a1, l1, l2, l3, stabilized, bayesian = args
+    assert _s_plus._product_form(_s_plus.Params(a1, l1, l2, l3, 1, 1, stabilized, bayesian, 0)) is expected
 
 
 def test_prescale_in_place_zero_norm_gives_zero():
