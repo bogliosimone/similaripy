@@ -215,21 +215,13 @@ def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
     form and may change the arrays in place.
 
     Explicit zeros are wrong in binary mode (they would become 1.0), and
-    unsummed duplicates give wrong norms and binary counts. Zeros are dropped
-    on the original values, before the float32 cast (a float64 value below
-    float32's range still becomes 0.0, as before the cast moved here).
-    Canonical CSR and canonical COO (indptr from the rows) are copied as they
-    are; other COO and non-canonical CSR go through the Rust canonicalization,
-    which replaces scipy's single-threaded COO -> CSR (2.2 s on a 93M-entry COO
-    item model).
+    unsummed duplicates give wrong norms and binary counts. One route: the
+    arrays are copied once into float32/int32 (zeros are dropped after the
+    cast, so a float64 value below float32's range goes too); canonical input
+    (e.g. our own COO output, fed back) then only drops zeros, the rest goes
+    through the Rust canonicalization, which replaces scipy's single-threaded
+    COO -> CSR (2.2 s on a 93M-entry COO item model).
     """
-    if matrix.format == 'coo' and matrix.has_canonical_format:
-        # Row-major, sorted, summed (e.g. our own COO output, fed back): only
-        # the indptr to build, then the canonical CSR path below.
-        indptr = np.zeros(matrix.shape[0] + 1, dtype=np.int32)
-        np.cumsum(np.bincount(matrix.row, minlength=matrix.shape[0]), out=indptr[1:])
-        matrix = sp.csr_array((matrix.data, matrix.col, indptr), shape=matrix.shape)
-        matrix.has_canonical_format = True
     if matrix.format == 'coo':
         rows, cols, data = matrix.row, matrix.col, matrix.data
         if np.any(rows[1:] < rows[:-1]):
@@ -239,25 +231,19 @@ def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
         np.cumsum(np.bincount(rows, minlength=matrix.shape[0]), out=indptr[1:])
     else:
         csr = matrix.tocsr()
-        if csr.has_canonical_format:
-            if csr is matrix:  # tocsr() of another format is already a new matrix
-                csr = csr.copy()
-            if (csr.data == 0).any():
-                csr.eliminate_zeros()
-            with np.errstate(over='ignore'):  # inf: reported by the finite check (`_kernel_values`)
-                data = csr.data.astype(np.float32, copy=False)
-            out = sp.csr_array((data, csr.indices.astype(np.int32, copy=False),
-                                csr.indptr.astype(np.int32, copy=False)), shape=csr.shape)
-            out.has_canonical_format = True
-            return out
         indptr, cols, data = csr.indptr.astype(np.int32), csr.indices, csr.data
-    # private copies: canonicalized in place
+    canonical = (matrix if matrix.format == 'coo' else csr).has_canonical_format
     indices = cols.astype(np.int32)
-    with np.errstate(over='ignore'):
+    with np.errstate(over='ignore'):  # inf: reported by the finite check (`_kernel_values`)
         data = data.astype(np.float32)
-    indptr = _core.canonicalize_rows(indptr, indices, data, num_threads)
-    nnz = indptr[-1]
-    out = sp.csr_array((data[:nnz], indices[:nnz], indptr), shape=matrix.shape)
+    if canonical:
+        out = sp.csr_array((data, indices, indptr), shape=matrix.shape)
+        if (data == 0).any():
+            out.eliminate_zeros()
+    else:
+        indptr = _core.canonicalize_rows(indptr, indices, data, num_threads)
+        nnz = indptr[-1]
+        out = sp.csr_array((data[:nnz], indices[:nnz], indptr), shape=matrix.shape)
     out.has_canonical_format = True  # sorted, summed: skips scipy's re-checks
     return out
 
