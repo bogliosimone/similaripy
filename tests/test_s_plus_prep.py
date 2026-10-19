@@ -609,9 +609,9 @@ def test_prescale_in_place_zero_norm_gives_zero():
     from similaripy import _s_plus
     m = _m(4, 3, seed=1)
     d1, d2 = m.data.copy(), m.data.copy()
-    E = np.empty(0)
     X, Y = np.array([2.0, 0.0, 4.0, 1.0]), np.array([0.0, 0.5, 1.0])
-    assert _s_plus._prescale((d1, m.indices, m.indptr), (d2, m.indices, m.indptr), 2, [E, E, X, Y, E, E])
+    norms = _s_plus.Norms(x_cosine=X, y_cosine=Y)
+    assert _s_plus._prescale((d1, m.indices, m.indptr), (d2, m.indices, m.indptr), 2, norms)
     rows = np.repeat(np.arange(4), np.diff(m.indptr))
     np.testing.assert_allclose(d1, m.data / np.where(X == 0, np.inf, 2 * X)[rows], rtol=1e-6)
     np.testing.assert_allclose(d2, m.data / np.where(Y == 0, np.inf, Y)[m.indices], rtol=1e-6)
@@ -624,8 +624,7 @@ def test_prescale_overflow_changes_nothing():
     m = _m(4, 3, seed=1)
     m.data[0] = 1e30
     d1, d2 = m.data.copy(), m.data.copy()
-    E, ones = np.empty(0), np.ones(4)
-    norms = [E, E, ones, np.full(3, 1e-10), E, E]  # 1 / Y = 1e10: 1e30 * 1e10 overflows
+    norms = _s_plus.Norms(x_cosine=np.ones(4), y_cosine=np.full(3, 1e-10))  # 1 / Y = 1e10: 1e30 * 1e10 overflows
     assert not _s_plus._prescale((d1, m.indices, m.indptr), (d2, m.indices, m.indptr), 1, norms)
     assert d1.tobytes() == m.data.tobytes() and d2.tobytes() == m.data.tobytes()
 
