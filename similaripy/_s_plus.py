@@ -3,7 +3,7 @@
 """
 
 import time
-from typing import Union, Optional, List
+from typing import NamedTuple, Union, Optional, List
 
 import numpy as np
 import scipy.sparse as sp
@@ -39,6 +39,17 @@ _MAX_INT32_NNZ = np.iinfo(np.int32).max
 
 _EMPTY_F32 = np.empty(0, dtype=np.float32)
 _EMPTY_I32 = np.empty(0, dtype=np.int32)
+
+
+class Norms(NamedTuple):
+    """The kernel's normalization terms (kernel.rs `Norms`): x per m1 row, y
+    per m2 column, float32; empty when the weights don't use them."""
+    x_tversky: np.ndarray = _EMPTY_F32
+    y_tversky: np.ndarray = _EMPTY_F32
+    x_cosine: np.ndarray = _EMPTY_F32
+    y_cosine: np.ndarray = _EMPTY_F32
+    x_depop: np.ndarray = _EMPTY_F32
+    y_depop: np.ndarray = _EMPTY_F32
 
 
 def _validate_inputs(
@@ -483,12 +494,12 @@ def _s_plus(
                  weight_depop_matrix1, weight_depop_matrix2, p1, p2)
     if (_product_form(a1, l1, l2, l3, stabilized_shrink, bayesian_shrink)
             and _prescale(m1_arrays, m2_arrays, l2 + l3, _norms(*norm_args, dtype=np.float64))):
-        l2, l3, norms = 0, 0, [_EMPTY_F32] * 6  # plain dot of the scaled inputs: DOT mode
+        l2, l3, norms = 0, 0, Norms()  # plain dot of the scaled inputs: DOT mode
     else:
         norms = _norms(*norm_args)
         l2, l3, norms = _depop_as_cosine(l1, l2, l3, norms)
     filt, targ, m2_arrays = _selectors(filter_cols, target_cols, m2_arrays, n_output_cols, num_threads)
-    m2_arrays, norms, filt, targ, back_perm = _popularity_layout(
+    m2_arrays, norms, filt, targ, new_to_old = _popularity_layout(
         m2_arrays, norms, filt, targ, n_output_cols, num_threads)
 
     if bar is not None:
@@ -504,7 +515,7 @@ def _s_plus(
         k, n_output_cols,
         *filt,
         *targ,
-        _EMPTY_I32 if back_perm is None else back_perm,
+        _EMPTY_I32 if new_to_old is None else new_to_old,
         num_threads, block_size, bar,
     )
     kernel_end = time.perf_counter()
@@ -517,8 +528,7 @@ def _s_plus(
 
 
 # ---- `_s_plus` steps. CSR arrays travel as (data, indices, indptr), selectors
-# as (mode, indptr, indices), norms as the kernel's six arrays (x/y tversky,
-# cosine, depop; empty when unused). ----
+# as (mode, indptr, indices), norms as `Norms`. ----
 
 def _kernel_values(m1, m2, binary, a1, l1, t1, t2, bayesian_shrink):
     """
@@ -546,26 +556,27 @@ def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
     others stay empty. float32 for the kernel; float64 for `_prescale`.
     """
     (m1_data, _, m1_indptr), (m2_data, m2_indices, _) = m1_arrays, m2_arrays
-    Xtversky = Ytversky = Xcosine = Ycosine = Xdepop = Ydepop = _EMPTY_F32
+    norms = Norms()
     if l1 != 0 or l2 != 0:
         m1_sq = _row_sums(np.square(m1_data, dtype=dtype), m1_indptr)
         m2_sq = _col_sums(np.square(m2_data, dtype=dtype), m2_indices, n_cols, dtype)
     if l1 != 0:
-        Xtversky, Ytversky = m1_sq, m2_sq
+        norms = norms._replace(x_tversky=m1_sq, y_tversky=m2_sq)
     if l2 != 0:
-        Xcosine = np.power(m1_sq + dtype(additive_shrink), dtype(c1), dtype=dtype)
-        Ycosine = np.power(m2_sq + dtype(additive_shrink), dtype(c2), dtype=dtype)
+        norms = norms._replace(x_cosine=np.power(m1_sq + dtype(additive_shrink), dtype(c1), dtype=dtype),
+                               y_cosine=np.power(m2_sq + dtype(additive_shrink), dtype(c2), dtype=dtype))
     if l3 != 0:
         _check_used_weights('weight_depop_matrix1 (pop1)', weight_depop_matrix1, np.diff(m1_indptr) > 0)
         _check_used_weights('weight_depop_matrix2 (pop2)', weight_depop_matrix2,
                             np.bincount(m2_indices, minlength=n_cols) > 0)
         # 'sum' popularity = sum of |x| (identical on non-negative input)
-        Xdepop = _depop_weights(weight_depop_matrix1, lambda: _row_sums(np.abs(m1_data), m1_indptr, dtype),
-                                dtype(p1), len(m1_indptr) - 1, dtype)
-        Ydepop = _depop_weights(weight_depop_matrix2,
-                                lambda: _col_sums(np.abs(m2_data), m2_indices, n_cols, dtype),
-                                dtype(p2), n_cols, dtype)
-    return [Xtversky, Ytversky, Xcosine, Ycosine, Xdepop, Ydepop]
+        norms = norms._replace(
+            x_depop=_depop_weights(weight_depop_matrix1, lambda: _row_sums(np.abs(m1_data), m1_indptr, dtype),
+                                   dtype(p1), len(m1_indptr) - 1, dtype),
+            y_depop=_depop_weights(weight_depop_matrix2,
+                                   lambda: _col_sums(np.abs(m2_data), m2_indices, n_cols, dtype),
+                                   dtype(p2), n_cols, dtype))
+    return norms
 
 
 def _product_form(a1, l1, l2, l3, stabilized_shrink, bayesian_shrink) -> bool:
@@ -589,7 +600,8 @@ def _prescale(m1_arrays, m2_arrays, l, norms) -> bool:
     A scaled value may underflow to 0.0: the kernel scores it 0, never a result.
     """
     (m1_data, _, m1_indptr), (m2_data, m2_indices, _) = m1_arrays, m2_arrays
-    X, Y = (norms[2], norms[3]) if len(norms[2]) else (norms[4], norms[5])
+    X, Y = ((norms.x_cosine, norms.y_cosine) if len(norms.x_cosine)
+            else (norms.x_depop, norms.y_depop))
     with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
         sx = np.divide(1.0, l * X, out=np.zeros_like(X), where=X != 0).astype(np.float32)
         sy = np.divide(1.0, Y, out=np.zeros_like(Y), where=Y != 0).astype(np.float32)
@@ -610,8 +622,8 @@ def _depop_as_cosine(l1, l2, l3, norms):
     kernel.rs); den == 0 gives 0 in both. A bayesian shrink stays FULL.
     """
     if l1 == 0 and l2 == 0 and l3 != 0:
-        Xt, Yt, _, _, Xd, Yd = norms
-        return l3, 0, [Xt, Yt, Xd, Yd, _EMPTY_F32, _EMPTY_F32]
+        return l3, 0, norms._replace(x_cosine=norms.x_depop, y_cosine=norms.y_depop,
+                                     x_depop=_EMPTY_F32, y_depop=_EMPTY_F32)
     return l2, l3, norms
 
 
@@ -636,32 +648,38 @@ def _popularity_layout(m2_arrays, norms, filt, targ, n_cols, num_threads):
     first, cache-hot blocks, and the kernel's tie rule (lower column wins) means
     the same thing on every path: ties go to the more popular column, then to
     the lower original id (stable sort). The kernel writes original ids
-    (`back_perm`, None when the order is already the identity). Blocking needs
+    (`new_to_old`, None when the order is already the identity). Blocking needs
     sorted m2 rows (binary search): canonical m2 is, and a renumbering re-sorts.
     """
     m2_data, m2_indices, m2_indptr = m2_arrays
-    back_perm = None
-    forward = _EMPTY_I32
+    new_to_old = None
     if _COLUMN_ORDER == 'popularity':
         col_nnz = np.bincount(m2_indices, minlength=n_cols)
-        perm = np.argsort(-col_nnz, kind='stable').astype(np.int32)  # new col -> original col
-        if not np.array_equal(perm, np.arange(n_cols, dtype=np.int32)):
-            back_perm = perm
-            forward = np.empty(n_cols, dtype=np.int32)
-            forward[perm] = np.arange(n_cols, dtype=np.int32)
-            norms = [y[perm] if j % 2 == 1 and len(y) else y for j, y in enumerate(norms)]  # y_* only
-            filt, targ = (_renumbered_pattern(sel, forward, num_threads) for sel in (filt, targ))
+        order = np.argsort(-col_nnz, kind='stable').astype(np.int32)
+        if not np.array_equal(order, np.arange(n_cols, dtype=np.int32)):
+            new_to_old = order
+            old_to_new = np.empty(n_cols, dtype=np.int32)
+            old_to_new[new_to_old] = np.arange(n_cols, dtype=np.int32)
+            norms = norms._replace(y_tversky=_permuted(norms.y_tversky, new_to_old),
+                                   y_cosine=_permuted(norms.y_cosine, new_to_old),
+                                   y_depop=_permuted(norms.y_depop, new_to_old))
+            filt, targ = (_renumbered_pattern(sel, old_to_new, num_threads) for sel in (filt, targ))
             # ponytail: unblocked calls re-sort too (one Rust pass does both); a
             # remap-only pass would skip the sort if it ever shows in a profile
-            _sorted_rows(m2_data, m2_indices, m2_indptr, forward, num_threads)
-    return (m2_data, m2_indices, m2_indptr), norms, filt, targ, back_perm
+            _sorted_rows(m2_data, m2_indices, m2_indptr, old_to_new, num_threads)
+    return (m2_data, m2_indices, m2_indptr), norms, filt, targ, new_to_old
 
 
-def _renumbered_pattern(sel, forward, num_threads):
-    """A matrix selector with its columns renumbered by `forward` and rows re-sorted (in place); others unchanged."""
+def _permuted(y, new_to_old):
+    """A per-column norm in the new column order (empty: unused, unchanged)."""
+    return y[new_to_old] if len(y) else y
+
+
+def _renumbered_pattern(sel, old_to_new, num_threads):
+    """A matrix selector with its columns renumbered by `old_to_new` and rows re-sorted (in place); others unchanged."""
     mode, indptr, indices = sel
     if mode == MODE_MATRIX and len(indices) != 0:
-        _sorted_rows(np.ones(len(indices), dtype=np.float32), indices, indptr, forward, num_threads)
+        _sorted_rows(np.ones(len(indices), dtype=np.float32), indices, indptr, old_to_new, num_threads)
     return sel
 
 
