@@ -469,6 +469,18 @@ def test_canonical_coo_with_zeros():
     _same(sim.cosine(coo, **kw), sim.cosine(clean, **kw))
 
 
+@pytest.mark.parametrize('fmt', ['csr', 'coo', 'coo_unsorted'])
+def test_float64_underflow_dropped(fmt):
+    # Regression: canonical input dropped zeros before the float32 cast, so a
+    # float64 value below float32's range stayed as an explicit 0.0 (binary: 1).
+    d = np.array([[1e-50, 1.0], [1.0, 1.0]])
+    m = sp.csr_array(d) if fmt == 'csr' else sp.coo_array(d)
+    if fmt == 'coo_unsorted':
+        m = sp.coo_array((m.data[::-1], (m.row[::-1], m.col[::-1])), shape=m.shape)
+    out = sim.dot_product(m, binary=True, verbose=False)
+    np.testing.assert_array_equal(out.toarray(), [[1, 1], [1, 2]])
+
+
 def _assert_canonical(out):
     """No padding or zeros, rows sorted with unique columns (scipy re-checks a fresh copy)."""
     assert out.has_canonical_format
