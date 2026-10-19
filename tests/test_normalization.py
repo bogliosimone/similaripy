@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 import scipy.sparse as sp
 
@@ -168,3 +169,13 @@ def test_output_dtypes():
             out = norm.bm25(Xd, axis=axis)
             assert out.data.dtype == want and out.indices.dtype == out.indptr.dtype == np.int32
             np.testing.assert_allclose(out.toarray(), norm.bm25(X, axis=axis).toarray(), rtol=1e-6)
+
+
+@pytest.mark.parametrize('bad', [np.nan, np.inf])
+@pytest.mark.parametrize('name', ['normalize', 'binarize', 'tfidf', 'bm25', 'bm25plus'])
+def test_rejects_non_finite(name, bad):
+    # NaN/inf would spread through the row's norm or idf; binarize checks before writing 1s
+    X = generate_random_matrix()
+    X.data[3] = bad
+    with pytest.raises(ValueError, match='finite'):
+        getattr(norm, name)(X)

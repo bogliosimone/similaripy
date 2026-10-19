@@ -30,7 +30,7 @@ All similarity functions in Similaripy share the following parameters:
 | `shrink_type`    | Shrinkage type: `stabilized`, `bayesian`, or `additive`.  *(default: `stabilized`)* |
 | `binary`         | If `True`, binarizes the input matrix. *(default: `False`)* |
 | `target_rows`    | List or array of row indices to compute. If `None`, computes for all rows. *(default: `None`)* |
-| `target_cols`    | Subset of columns to consider **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
+| `target_cols`    | Subset of columns to consider **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). `None` = all columns; an empty selector raises `ValueError`. *(default: `None`)* |
 | `filter_cols`    | Subset of columns to filter **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
 | `verbose`        | If `True`, shows a progress bar. *(default: `True`)* |
 | `format_output`  | Output format: `'csr'` or `'coo'`. *(default: `'csr'`)* |

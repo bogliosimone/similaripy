@@ -39,10 +39,18 @@ def _transformed(X: sps.sparray, axis: int, op, name: str = None, **kwargs) -> s
     input must be non-negative.
     """
     X = _canonical(X, axis)
+    _check_finite(X)
     if name is not None:
         _check_non_negative(X, name)
     op(data=X.data, indices=X.indices, indptr=X.indptr, shape=X.shape, **kwargs)
     return X.T.tocsr() if axis == 0 else X
+
+
+def _check_finite(X: sps.csr_array) -> None:
+    """NaN/inf would spread through a row's norm or idf, silently (as the
+    similarities, checked on the canonical copy)."""
+    if not np.isfinite(X.data).all():
+        raise ValueError('X values must be finite')
 
 
 def _check_non_negative(X: sps.csr_array, name: str) -> None:
@@ -88,6 +96,9 @@ def normalize(
 
     Returns:
         Normalized CSR matrix.
+
+    Raises:
+        ValueError: on a NaN or inf value.
     """
     if norm not in _NORMALIZATIONS:
         raise ValueError(f"norm must be one of {_NORMALIZATIONS}, got '{norm}'")
@@ -109,8 +120,12 @@ def binarize(X: sps.sparray) -> sps.csr_array:
 
     Returns:
         Binarized CSR matrix.
+
+    Raises:
+        ValueError: on a NaN or inf value (checked before the values become 1).
     """
     X = _canonical(X)
+    _check_finite(X)  # before the values become 1
     X.data[:] = 1
     return X
 
@@ -141,7 +156,7 @@ def bm25(
         BM25-normalized CSR matrix.
 
     Raises:
-        ValueError: on a negative value.
+        ValueError: on a negative, NaN or inf value.
     """
     _validate_modes(tf_mode, idf_mode)
     return _transformed(X, axis, _core.bm25plus, 'bm25', k1=k1, b=b, delta=0.0,
@@ -176,7 +191,7 @@ def bm25plus(
         BM25+ normalized CSR matrix.
 
     Raises:
-        ValueError: on a negative value.
+        ValueError: on a negative, NaN or inf value.
     """
     _validate_modes(tf_mode, idf_mode)
     return _transformed(X, axis, _core.bm25plus, 'bm25plus', k1=k1, b=b, delta=delta,
@@ -205,7 +220,7 @@ def tfidf(
         TF-IDF normalized CSR matrix.
 
     Raises:
-        ValueError: on a negative value.
+        ValueError: on a negative, NaN or inf value.
     """
     _validate_modes(tf_mode, idf_mode)
     return _transformed(X, axis, _core.tfidf, 'tfidf', tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase)

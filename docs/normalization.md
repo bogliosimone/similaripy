@@ -54,4 +54,5 @@ All normalization functions in SimilariPy share the following parameters:
 ## Notes
 
 - All normalization functions return a new matrix: use the return value, `X = bm25(X)`.
+- Input values must be finite (NaN or inf raises a `ValueError`), as in the similarity functions.
 - `bm25` and `tfidf` are ideal for text, user-item, or interaction data.
