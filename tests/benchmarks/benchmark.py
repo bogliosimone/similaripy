@@ -346,7 +346,9 @@ def _get_similarity_function(similarity_type):
         'dot_product_bayesian': _fixed(sim.dot_product, shrink=SHRINK, shrink_type='bayesian'),
         'p3alpha_tuned': _fixed(sim.p3alpha, alpha=ALPHA),
         'p3alpha_bayesian': _fixed(sim.p3alpha, alpha=ALPHA, shrink=SHRINK, shrink_type='bayesian'),
+        'p3alpha_binary': _fixed(sim.p3alpha, alpha=ALPHA, binary=True),
         'rp3beta_tuned': _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA),
+        'rp3beta_binary': _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA, binary=True),
         'rp3beta_stabilized': _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA, shrink=SHRINK, shrink_type='stabilized'),
         'rp3beta_bayesian': _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA, shrink=SHRINK, shrink_type='bayesian'),
     }
