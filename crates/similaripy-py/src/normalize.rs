@@ -1,5 +1,5 @@
-//! Bindings of the in-place normalizations. Arrays keep their dtypes:
-//! data float32 | float64, indices/indptr int32 | int64 (scipy's choices).
+//! Bindings of the in-place normalizations on the canonical copy
+//! (`_canonical_csr`): data float32 | float64, indices/indptr int32.
 
 use numpy::{Element, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -49,21 +49,17 @@ impl Op {
     }
 }
 
-fn run<T, I>(
+fn run<T: Value + Element>(
     py: Python<'_>,
     data: &Bound<'_, PyAny>,
     indices: &Bound<'_, PyAny>,
     indptr: &Bound<'_, PyAny>,
     shape: (usize, usize),
     op: Op,
-) -> PyResult<()>
-where
-    T: Value + Element,
-    I: Copy + Into<i64> + Sync + Element,
-{
+) -> PyResult<()> {
     let mut data: PyReadwriteArray1<T> = data.extract()?;
-    let indices: PyReadonlyArray1<I> = indices.extract()?;
-    let indptr: PyReadonlyArray1<I> = indptr.extract()?;
+    let indices: PyReadonlyArray1<i32> = indices.extract()?;
+    let indptr: PyReadonlyArray1<i32> = indptr.extract()?;
     let (data, indices, indptr) = (
         data.as_slice_mut()?,
         indices.as_slice()?,
@@ -76,7 +72,7 @@ where
         .map_err(to_py)
 }
 
-/// Picks the (data, index) dtype instantiation.
+/// Picks the data dtype instantiation.
 fn dispatch(
     py: Python<'_>,
     data: &Bound<'_, PyAny>,
@@ -85,20 +81,12 @@ fn dispatch(
     shape: (usize, usize),
     op: Op,
 ) -> PyResult<()> {
-    let f32 = data.extract::<PyReadonlyArray1<f32>>().is_ok();
-    let i32 = indptr.extract::<PyReadonlyArray1<i32>>().is_ok();
-    let f64 = f32 || data.extract::<PyReadonlyArray1<f64>>().is_ok();
-    let i64 = i32 || indptr.extract::<PyReadonlyArray1<i64>>().is_ok();
-    if !(f64 && i64) {
-        return Err(PyTypeError::new_err(
-            "expected 1-d float32/float64 data and int32/int64 indices/indptr",
-        ));
-    }
-    match (f32, i32) {
-        (true, true) => run::<f32, i32>(py, data, indices, indptr, shape, op),
-        (true, false) => run::<f32, i64>(py, data, indices, indptr, shape, op),
-        (false, true) => run::<f64, i32>(py, data, indices, indptr, shape, op),
-        (false, false) => run::<f64, i64>(py, data, indices, indptr, shape, op),
+    if data.extract::<PyReadonlyArray1<f32>>().is_ok() {
+        run::<f32>(py, data, indices, indptr, shape, op)
+    } else if data.extract::<PyReadonlyArray1<f64>>().is_ok() {
+        run::<f64>(py, data, indices, indptr, shape, op)
+    } else {
+        Err(PyTypeError::new_err("expected 1-d float32/float64 data"))
     }
 }
 

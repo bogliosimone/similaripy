@@ -584,10 +584,9 @@ def test_normalization_canonicalizes_input(name, kw, axis):
         kw = {**kw, 'axis': axis}
     before = dup.data.copy()
     _same(f(dup, **kw), f(clean, **kw))
-    np.testing.assert_array_equal(dup.data, before)  # not in place by default
-    f(dup, inplace=True, **kw)
-    if axis == 1 or name == 'binarize':  # a CSR caller's matrix is canonicalized in place
-        assert dup.has_canonical_format and (dup.data != 0).all()
+    np.testing.assert_array_equal(dup.data, before)  # never in place
+    with pytest.raises(TypeError):
+        f(dup, inplace=True, **kw)  # removed in v1: use the return value
 
 
 @pytest.mark.parametrize('args, expected', [
@@ -647,3 +646,16 @@ def test_signed_power_alpha_one_same_bits():
     from similaripy.similarity import _signed_power
     x = np.array([0.3, -0.0, 0.0, -2.5, 1e-40, 3e38, -1e-45], dtype=np.float32)
     assert _signed_power(x, 1).tobytes() == np.copysign(np.abs(x) ** 1.0, x).tobytes()
+
+
+def test_rejects_past_int32_entries():
+    # Indices are int32 (`_canonical_csr`): fail loudly instead of wrapping, for
+    # the similarities and the normalizations alike
+    class Big(sp.csr_array):
+        nnz = property(lambda self: 2**31)
+    from similaripy import normalization
+    m = sp.random_array((5, 5), density=0.5, format='csr', random_state=0)
+    m.__class__ = Big  # after construction: scipy checks nnz against the arrays
+    for f in (lambda: sim.cosine(m, k=2, verbose=False), lambda: normalization.bm25(m)):
+        with pytest.raises(ValueError, match='non-zeros'):
+            f()

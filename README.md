@@ -48,7 +48,7 @@ For mathematical definitions and parameter details, see the **[📘 SimilariPy G
 ## 🧮 Normalization Functions
 
 SimilariPy provides a suite of normalization functions for sparse matrix pre-processing.  
-All functions are implemented in Cython and can operate in-place on CSR matrixes for maximum performance and memory efficiency.
+All functions return a new canonical CSR matrix (multi-threaded Rust core); the input never changes.
 
 - **L1, L2** – Applies row- or column-wise normalization.
 - **TF-IDF** – Computes TF-IDF weighting with customizable term-frequency and IDF modes.

@@ -1,4 +1,5 @@
 from . import _core
+from ._s_plus import _canonical_csr
 from math import e
 
 import scipy.sparse as sps
@@ -13,55 +14,35 @@ _IDF_MODES = ('unary', 'base', 'smooth', 'prob', 'bm25')
 
 # ---- Private helpers ----
 
-def _check_matrix(X: sps.sparray) -> sps.sparray:
+def _canonical(X: sps.sparray, axis: int = 1) -> sps.csr_array:
     """
-    Ensure the input is a valid sparse matrix with float32 or float64 dtype.
-
-    Args:
-        X: Input sparse matrix.
-
-    Returns:
-        Sparse matrix with float32 dtype if original dtype was unsupported.
+    The call's own canonical CSR copy of X (axis 1) or X.T (axis 0), see
+    `_canonical_csr`: float32/float64 values kept, other value types -> float32;
+    int32 indices.
 
     Raises:
+        ValueError: If axis is not 0 or 1, or X has more than 2^31 - 1 entries.
         TypeError: If X is not a sparse matrix.
-    """
-    if not sps.issparse(X):
-        raise TypeError("X must be a sparse matrix")
-    if X.data.dtype not in (np.float32, np.float64):
-        X = sps.csr_array(X, dtype=np.float32)
-    return X
-
-
-def _prepare_csr(X: sps.sparray, axis: int, inplace: bool) -> sps.csr_array:
-    """
-    Validate, optionally copy, handle axis transposition, and convert to
-    canonical CSR: duplicates summed, explicit zeros dropped (with
-    `inplace=True` on a CSR, the caller's matrix is canonicalized too).
-
-    Args:
-        X: Input sparse matrix.
-        axis: Normalize rows (1) or columns (0).
-        inplace: Whether to modify the matrix in place.
-
-    Returns:
-        CSR matrix ready for in-place normalization.
-
-    Raises:
-        TypeError: If X is not a sparse matrix.
-        ValueError: If axis is not 0 or 1.
     """
     if axis not in (0, 1):
         raise ValueError(f"axis must be 0 or 1, got {axis}")
-    X = _check_matrix(X)
-    if not inplace:
-        X = X.copy()
-    if axis == 0:
-        X = X.T
-    X = X.tocsr()
-    X.sum_duplicates()  # no-op when already canonical
-    X.eliminate_zeros()
-    return X
+    if not sps.issparse(X):
+        raise TypeError("X must be a sparse matrix")
+    dtype = X.dtype if X.dtype in (np.float32, np.float64) else np.float32
+    return _canonical_csr(X.T if axis == 0 else X, dtype, 0)
+
+
+def _transformed(X: sps.sparray, axis: int, op, *args, name: str = None) -> sps.csr_array:
+    """
+    The canonical copy of X with `op` (an in-place `_core` normalization) applied
+    to its rows (axis 1) or columns (axis 0); `name`: a term weighting, whose
+    input must be non-negative.
+    """
+    X = _canonical(X, axis)
+    if name is not None:
+        _check_non_negative(X, name)
+    op(X.data, X.indices, X.indptr, X.shape, *args)
+    return X.T.tocsr() if axis == 0 else X
 
 
 def _check_non_negative(X: sps.csr_array, name: str) -> None:
@@ -71,13 +52,6 @@ def _check_non_negative(X: sps.csr_array, name: str) -> None:
     if (X.data < 0).any():
         raise ValueError(f'{name} needs non-negative values (term frequencies); '
                          'signed input (values < 0) is not supported')
-
-
-def _finalize_csr(X: sps.sparray, axis: int) -> sps.csr_array:
-    """Undo axis transposition and return final CSR matrix."""
-    if axis == 0:
-        X = X.T
-    return X.tocsr()
 
 
 def _validate_modes(tf_mode: str, idf_mode: str) -> None:
@@ -99,7 +73,6 @@ def normalize(
     X: sps.sparray,
     norm: str = 'l2',
     axis: int = 1,
-    inplace: bool = False,
 ) -> sps.csr_array:
     """
     Normalize a sparse matrix along rows or columns using L1, L2, or max-norm.
@@ -112,22 +85,16 @@ def normalize(
         X: Input sparse matrix.
         norm: Normalization method ('l1', 'l2', or 'max').
         axis: Normalize rows (1) or columns (0).
-        inplace: Whether to modify the matrix in place.
 
     Returns:
         Normalized CSR matrix.
     """
     if norm not in _NORMALIZATIONS:
         raise ValueError(f"norm must be one of {_NORMALIZATIONS}, got '{norm}'")
-    X = _prepare_csr(X, axis, inplace)
-    _core.normalize(X.data, X.indices, X.indptr, X.shape, norm)
-    return _finalize_csr(X, axis)
+    return _transformed(X, axis, _core.normalize, norm)
 
 
-def binarize(
-    X: sps.sparray,
-    inplace: bool = False,
-) -> sps.csr_array:
+def binarize(X: sps.sparray) -> sps.csr_array:
     """
     Set every non-zero entry to 1.0 (set semantics): duplicates are summed
     first, then explicit zeros dropped. A negative value is an interaction
@@ -139,12 +106,11 @@ def binarize(
 
     Args:
         X: Input sparse matrix.
-        inplace: Whether to modify the matrix in place.
 
     Returns:
         Binarized CSR matrix.
     """
-    X = _prepare_csr(X, 1, inplace)
+    X = _canonical(X)
     X.data[:] = 1
     return X
 
@@ -157,21 +123,19 @@ def bm25(
     logbase: float = e,
     tf_mode: str = 'raw',
     idf_mode: str = 'bm25',
-    inplace: bool = False,
 ) -> sps.csr_array:
     """
     Apply BM25 normalization to a sparse matrix.
 
     Args:
         X: Input sparse matrix; values >= 0 (term frequencies), checked after
-            summing duplicates (with inplace=True a CSR is canonicalized before the error).
+            summing duplicates.
         axis: Normalize rows (1) or columns (0).
         k1: Term saturation parameter.
         b: Length normalization parameter.
         logbase: Logarithm base.
         tf_mode: Term frequency mode ('raw', 'log', 'sqrt', etc.).
         idf_mode: Inverse document frequency mode ('bm25', 'smooth', etc.).
-        inplace: Modify the matrix in place.
 
     Returns:
         BM25-normalized CSR matrix.
@@ -180,10 +144,7 @@ def bm25(
         ValueError: on a negative value.
     """
     _validate_modes(tf_mode, idf_mode)
-    X = _prepare_csr(X, axis, inplace)
-    _check_non_negative(X, 'bm25')
-    _core.bm25plus(X.data, X.indices, X.indptr, X.shape, k1, b, 0.0, tf_mode, idf_mode, logbase)
-    return _finalize_csr(X, axis)
+    return _transformed(X, axis, _core.bm25plus, k1, b, 0.0, tf_mode, idf_mode, logbase, name='bm25')
 
 
 def bm25plus(
@@ -195,14 +156,13 @@ def bm25plus(
     logbase: float = e,
     tf_mode: str = 'raw',
     idf_mode: str = 'bm25',
-    inplace: bool = False,
 ) -> sps.csr_array:
     """
     Apply BM25+ normalization to a sparse matrix.
 
     Args:
         X: Input sparse matrix; values >= 0 (term frequencies), checked after
-            summing duplicates (with inplace=True a CSR is canonicalized before the error).
+            summing duplicates.
         axis: Normalize rows (1) or columns (0).
         k1: Term saturation parameter.
         b: Length normalization parameter.
@@ -210,7 +170,6 @@ def bm25plus(
         logbase: Logarithm base.
         tf_mode: Term frequency mode.
         idf_mode: Inverse document frequency mode.
-        inplace: Modify the matrix in place.
 
     Returns:
         BM25+ normalized CSR matrix.
@@ -219,10 +178,7 @@ def bm25plus(
         ValueError: on a negative value.
     """
     _validate_modes(tf_mode, idf_mode)
-    X = _prepare_csr(X, axis, inplace)
-    _check_non_negative(X, 'bm25plus')
-    _core.bm25plus(X.data, X.indices, X.indptr, X.shape, k1, b, delta, tf_mode, idf_mode, logbase)
-    return _finalize_csr(X, axis)
+    return _transformed(X, axis, _core.bm25plus, k1, b, delta, tf_mode, idf_mode, logbase, name='bm25plus')
 
 
 def tfidf(
@@ -231,19 +187,17 @@ def tfidf(
     logbase: float = e,
     tf_mode: str = 'sqrt',
     idf_mode: str = 'smooth',
-    inplace: bool = False,
 ) -> sps.csr_array:
     """
     Apply TF-IDF normalization to a sparse matrix.
 
     Args:
         X: Input sparse matrix; values >= 0 (term frequencies), checked after
-            summing duplicates (with inplace=True a CSR is canonicalized before the error).
+            summing duplicates.
         axis: Normalize rows (1) or columns (0).
         logbase: Logarithm base.
         tf_mode: Term frequency mode.
         idf_mode: Inverse document frequency mode.
-        inplace: Modify the matrix in place.
 
     Returns:
         TF-IDF normalized CSR matrix.
@@ -252,9 +206,6 @@ def tfidf(
         ValueError: on a negative value.
     """
     _validate_modes(tf_mode, idf_mode)
-    X = _prepare_csr(X, axis, inplace)
-    _check_non_negative(X, 'tfidf')
-    _core.tfidf(X.data, X.indices, X.indptr, X.shape, tf_mode, idf_mode, logbase)
-    return _finalize_csr(X, axis)
+    return _transformed(X, axis, _core.tfidf, tf_mode, idf_mode, logbase, name='tfidf')
 
     

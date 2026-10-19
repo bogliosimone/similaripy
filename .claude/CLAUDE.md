@@ -120,8 +120,8 @@ make benchmark-similarity-small
 
 ### Sparse Matrices
 - All functions expect **CSR format** (converted automatically)
-- Inputs are canonicalized before use (summed duplicates, no explicit zeros: `_canonical_csr` in `_s_plus.py`, `_prepare_csr` in `normalization.py`); never mutate the caller's matrices
-- **Prep owns its data:** `_canonical_csr` always copies each input once (CSR, float32, int32, sorted, summed, no zeros); every later prep step assumes that form and may change the arrays in place. Prefer one copy over aliasing tricks in prep (cold code: clarity first)
+- Inputs are canonicalized before use (summed duplicates, no explicit zeros: `_canonical_csr` in `_s_plus.py`, also used by `normalization.py`); never mutate the caller's matrices
+- **Prep owns its data:** `_canonical_csr` always copies each input once (CSR, float32 for similarities / the input's float type for normalizations, int32, sorted, summed, no zeros); every later prep step assumes that form and may change the arrays in place. Prefer one copy over aliasing tricks in prep (cold code: clarity first)
 
 ### Rust Development
 - `uv run` (e.g. `make test-dev`) rebuilds the extension after `.rs` edits (`[tool.uv] cache-keys`)

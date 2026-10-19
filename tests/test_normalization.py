@@ -18,7 +18,7 @@ def test_binarize():
     expected = (X.toarray() != 0).astype(np.float32)
     np.testing.assert_array_equal(B.toarray(), expected)
     assert B.nnz == np.count_nonzero(before) and B.data.dtype == np.float32
-    np.testing.assert_array_equal(X.data, before)  # not in place by default
+    np.testing.assert_array_equal(X.data, before)  # never in place
     # same scores as binary=True
     import similaripy as sim
     np.testing.assert_allclose(sim.jaccard(B, k=10, verbose=False).toarray(),
@@ -154,3 +154,17 @@ def test_term_weightings_reject_negatives():
     dup = sp.coo_array((np.array([1, -1, 2], dtype=np.float32), ([0, 0, 1], [0, 0, 1])), shape=(2, 2))
     for f in (norm.tfidf, norm.bm25, norm.bm25plus):
         assert f(dup).nnz == 1
+
+
+def test_output_dtypes():
+    # float32/float64 values kept, anything else float32; indices always int32,
+    # whatever the input's, as the similarities (one cleaner, `_canonical_csr`)
+    X = generate_random_matrix()
+    X.data = np.ceil(X.data * 9)  # counts: exact in every dtype
+    X.indices, X.indptr = X.indices.astype(np.int64), X.indptr.astype(np.int64)
+    for dtype, want in ((np.float32, np.float32), (np.float64, np.float64), (np.int64, np.float32)):
+        Xd = X.astype(dtype)
+        for axis in (0, 1):
+            out = norm.bm25(Xd, axis=axis)
+            assert out.data.dtype == want and out.indices.dtype == out.indptr.dtype == np.int32
+            np.testing.assert_allclose(out.toarray(), norm.bm25(X, axis=axis).toarray(), rtol=1e-6)
