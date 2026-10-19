@@ -16,11 +16,6 @@ DEFAULT_BLOCK_SIZE = 262144
 PROGRESS_BAR_REFRESH_RATE = 3  # Hz
 PROGRESS_BAR_WIDTH = 25
 
-# Column selector modes (the kernel's `filter_mode` / `target_mode`)
-MODE_NONE = 0    # use all columns
-MODE_ARRAY = 1   # list/array, pre-filtered here: the kernel treats it as NONE
-MODE_MATRIX = 2  # sparse matrix, per-row check in the kernel
-
 # Wall time (s) of the last call's kernel (scoring, top-K, per-row un-permute
 # + sort, compaction) and output build (matrix wrap). Read by the benchmark
 # harness (tests/benchmarks/benchmark.py), which takes prep as total - kernel -
@@ -307,38 +302,27 @@ def _depop_weights(weight_spec, sums, p: float, n: int, dtype=np.float32) -> np.
     return np.power(sums(), p, dtype=dtype)
 
 
-def _column_selector(cols, num_threads: int):
+def _matrix_selector(cols, num_threads: int):
     """
-    (mode, indptr, indices) for filter_cols/target_cols.
+    (indptr, indices) of a sparse-matrix filter_cols/target_cols, checked per
+    row in the kernel; None for anything else (no selector, or a list, applied
+    in `_selectors`).
 
-    Matrix mode: the canonical pattern only (`_canonical_csr`; the values are
-    needed to canonicalize, then dropped), so an entry is selected iff its summed value is non-zero,
+    The canonical pattern only (`_canonical_csr`; the values are needed to
+    canonicalize, then dropped), so an entry is selected iff its summed value is non-zero,
     the same rule as the inputs: COO and non-canonical CSR agree on cancelling
     duplicates (signed input). A matrix whose entries all cancel selects
     nothing (as explicit zeros only); an empty one is no selector.
     """
     if sp.issparse(cols) and cols.data.shape[0] != 0:
         cols = _canonical_csr(cols, num_threads)
-        return MODE_MATRIX, cols.indptr, cols.indices
-    if isinstance(cols, (list, np.ndarray)) and len(cols) != 0:
-        return MODE_ARRAY, _EMPTY_I32, _EMPTY_I32
-    return MODE_NONE, _EMPTY_I32, _EMPTY_I32
+        return cols.indptr, cols.indices
+    return None
 
 
-def _array_keep_mask(filter_cols, target_cols, n_cols: int) -> np.ndarray:
-    """
-    Mask of the columns kept by array-mode selectors: the target array (or all
-    columns) minus the filter array (ids validated in range). Each argument is
-    the selector's array, or None when it isn't in array mode.
-    """
-    if target_cols is None:
-        mask = np.ones(n_cols, dtype=bool)
-    else:
-        mask = np.zeros(n_cols, dtype=bool)
-        mask[np.asarray(target_cols)] = True
-    if filter_cols is not None:
-        mask[np.asarray(filter_cols)] = False
-    return mask
+def _is_list(cols) -> bool:
+    """A non-empty list/array selector (an empty one is no selector)."""
+    return isinstance(cols, (list, np.ndarray)) and len(cols) != 0
 
 
 def _keep_columns(data, indices, indptr, keep_mask):
@@ -506,10 +490,7 @@ def _s_plus(
     m1_arrays = (m1_data, m1.indices, m1.indptr)
     m2_arrays = (m2_data, m2.indices, m2.indptr)
 
-    # Block size: 0 = auto, None = disabled (0 for the kernel), int > 0 = explicit
-    if block_size is None:
-        block_size = 0
-    elif block_size == 0:
+    if block_size == 0:  # auto; None (no blocking) and int > 0 go as they are
         block_size = DEFAULT_BLOCK_SIZE
 
     norm_args = (m1_arrays, m2_arrays, n_output_cols, l1, l2, l3, c1, c2, additive_shrink,
@@ -535,8 +516,8 @@ def _s_plus(
         a1, l1, l2, l3, t1, t2,
         stabilized_shrink, bayesian_shrink, threshold,
         k, n_output_cols,
-        *filt,
-        *targ,
+        filt,
+        targ,
         _EMPTY_I32 if new_to_old is None else new_to_old,
         num_threads, block_size, bar,
     )
@@ -549,8 +530,8 @@ def _s_plus(
     return out
 
 
-# ---- `_s_plus` steps. CSR arrays travel as (data, indices, indptr), selectors
-# as (mode, indptr, indices), norms as `Norms`. ----
+# ---- `_s_plus` steps. CSR arrays travel as (data, indices, indptr), matrix
+# selectors as (indptr, indices) or None, norms as `Norms`. ----
 
 def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
            weight_depop_matrix1, weight_depop_matrix2, p1, p2, dtype=np.float32):
@@ -629,14 +610,19 @@ def _depop_as_cosine(l1, l2, l3, norms):
 
 def _selectors(filter_cols, target_cols, m2_arrays, n_cols, num_threads):
     """
-    (filter, target) selectors for the kernel. Array selectors drop their
-    columns from m2 here (returned m2), so the kernel treats them as NONE.
+    (filter, target) matrix selectors for the kernel (`_matrix_selector`).
+    List selectors drop their columns from m2 here (returned m2): the target
+    list (or all columns) minus the filter list (ids validated in range).
     """
-    filt = _column_selector(filter_cols, num_threads)
-    targ = _column_selector(target_cols, num_threads)
-    if filt[0] == MODE_ARRAY or targ[0] == MODE_ARRAY:
-        keep = _array_keep_mask(filter_cols if filt[0] == MODE_ARRAY else None,
-                                target_cols if targ[0] == MODE_ARRAY else None, n_cols)
+    filt = _matrix_selector(filter_cols, num_threads)
+    targ = _matrix_selector(target_cols, num_threads)
+    if _is_list(filter_cols) or _is_list(target_cols):
+        keep = np.ones(n_cols, dtype=bool)
+        if _is_list(target_cols):
+            keep = np.zeros(n_cols, dtype=bool)
+            keep[np.asarray(target_cols)] = True
+        if _is_list(filter_cols):
+            keep[np.asarray(filter_cols)] = False
         m2_arrays = _keep_columns(*m2_arrays, keep)
     return filt, targ, m2_arrays
 
@@ -676,9 +662,9 @@ def _permuted(y, new_to_old):
 
 
 def _renumbered_pattern(sel, old_to_new, num_threads):
-    """A matrix selector with its columns renumbered by `old_to_new` and rows re-sorted (in place); others unchanged."""
-    mode, indptr, indices = sel
-    if mode == MODE_MATRIX and len(indices) != 0:
+    """A matrix selector with its columns renumbered by `old_to_new` and rows re-sorted (in place); None unchanged."""
+    if sel is not None and len(sel[1]) != 0:
+        indptr, indices = sel
         _sorted_rows(np.ones(len(indices), dtype=np.float32), indices, indptr, old_to_new, num_threads)
     return sel
 
