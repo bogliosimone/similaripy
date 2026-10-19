@@ -679,8 +679,7 @@ def _shrink_values(shrink: float, shrink_type: str, name: str, cosine: bool,
     """
     if shrink_type not in ('stabilized', 'bayesian', 'additive'):
         raise ValueError("shrink_type must be one of 'stabilized', 'bayesian', or 'additive'")
-    if not (np.isfinite(shrink) and shrink >= 0):
-        raise ValueError(f'shrink must be finite and >= 0, got {shrink}')
+    _check_scalar('shrink', shrink)
     if shrink != 0 and shrink_type == 'additive' and not cosine:
         raise ValueError(f"{name}: additive shrink only applies to a cosine term; use 'stabilized' or 'bayesian'")
     if shrink != 0 and shrink_type == 'stabilized' and not denominator:
