@@ -566,7 +566,7 @@ def _non_canonical(seed=0):
 @pytest.mark.parametrize('name', _SIMILARITIES)
 @pytest.mark.parametrize('binary', [False, True])
 def test_similarity_canonicalizes_input(name, binary):
-    # p3alpha/rp3beta normalize (and take popularity) before s_plus canonicalizes
+    # p3alpha/rp3beta normalize (and take popularity) on the canonical copies
     dup, clean = _non_canonical()
     f = getattr(sim, name)
     kw = {'k': 10, 'binary': binary, 'verbose': False}

@@ -364,6 +364,7 @@ def s_plus(
     format_output: str = 'csr',
     num_threads: int = 0,
     block_size: Optional[int] = 0,
+    prepare=None,
 ) -> Union[sp.csr_array, sp.coo_array]:
     """
     Compute top-K similarity between rows of two sparse matrices using the S_Plus algorithm.
@@ -407,6 +408,9 @@ def s_plus(
             0 = auto (DEFAULT_BLOCK_SIZE entries, ~1 MB).
             None = disabled (no blocking).
             int > 0 = explicit size in number of float32 entries.
+        prepare: Private (p3alpha, rp3beta): `prepare(m1, m2)` gets the call's
+            canonical copies before the data checks, changes their values in
+            place, and returns custom m2 depop weights (or None).
 
     Returns:
         A sparse matrix of shape (n_rows, n_cols) in the specified format,
@@ -460,7 +464,7 @@ def s_plus(
             bar, matrix1, matrix2, targets, k,
             weight_depop_matrix1, weight_depop_matrix2, p1, p2, a1, l1, l2, l3, t1, t2, c1, c2,
             stabilized_shrink, bayesian_shrink, additive_shrink, threshold, binary,
-            filter_cols, target_cols, format_output, num_threads, block_size,
+            filter_cols, target_cols, format_output, num_threads, block_size, prepare,
         )
     except BaseException:
         if bar is not None:
@@ -475,10 +479,12 @@ def _s_plus(
     bar, matrix1, matrix2, targets, k,
     weight_depop_matrix1, weight_depop_matrix2, p1, p2, a1, l1, l2, l3, t1, t2, c1, c2,
     stabilized_shrink, bayesian_shrink, additive_shrink, threshold, binary,
-    filter_cols, target_cols, format_output, num_threads, block_size,
+    filter_cols, target_cols, format_output, num_threads, block_size, prepare,
 ):
     m1 = _canonical_csr(matrix1, num_threads)
     m2 = _canonical_csr(matrix2, num_threads)
+    if prepare is not None and (w := prepare(m1, m2)) is not None:
+        weight_depop_matrix2 = w
     n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]
     _check_data(m1, m2, binary, a1, l1, l3, t1, t2, bayesian_shrink,
                 weight_depop_matrix1, weight_depop_matrix2)
