@@ -384,7 +384,7 @@ impl Params {
         // den != 0 first: the common case. den == 0 means either no denominator
         // term (only bayesian shrink: the raw xy_pow) or terms summing to 0: 0.
         // The Python layer keeps every weight >= 0 and, on any input sign,
-        // den > 0 (signed-input tversky rule, `_check_signed_rules` in
+        // den > 0 (signed-input tversky rule, `_check_score_rules` in
         // `_s_plus.py`), bar f32 underflow; the guard stays for direct core
         // callers.
         let den = tv + cs + dp + self.stabilized_shrink;

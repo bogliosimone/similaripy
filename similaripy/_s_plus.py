@@ -52,7 +52,7 @@ class Norms(NamedTuple):
     y_depop: np.ndarray = _EMPTY_F32
 
 
-def _validate_inputs(
+def _check_args(
     matrix1: sp.sparray,
     matrix2: sp.sparray,
     weight_depop_matrix1: Union[str, np.ndarray],
@@ -67,9 +67,8 @@ def _validate_inputs(
     block_size: Optional[int],
 ) -> None:
     """
-    Validate the `s_plus` arguments that don't need the data; the rules on the
-    canonical values (finite in float32, signed input, used depop weights) are
-    checked in `_s_plus`.
+    Check the `s_plus` arguments that don't need the values, before the copy
+    (fail fast); the rules on the canonical values are in `_check_data`.
 
     `weights`: name -> value of every scalar that must be finite and >= 0.
 
@@ -115,8 +114,8 @@ def _validate_inputs(
 
     # Every weight >= 0: the norms (sums of x^2), popularities (sums of |x|) and
     # cosine and depop terms are then >= 0 on any finite input, and tversky's
-    # denominator is kept > 0 by its rule in `_s_plus` (`_check_signed_rules`,
-    # with the rules for signed input). Negative weights would flip signs or
+    # denominator is kept > 0 by its rule in `_check_score_rules` (with the
+    # rules for signed input). Negative weights would flip signs or
     # make NaN (a negative base to a fractional power); alpha <= 0 would flatten
     # or invert the ranking.
     for name, value in weights.items():
@@ -159,7 +158,7 @@ def _ids(name: str, ids, n: int) -> np.ndarray:
 
 def _check_depop(name: str, weights, n: int) -> None:
     """'none', 'sum' or n finite weights >= 0 (a negative one would flip signs); > 0 where
-    it is used is checked in `_s_plus` (`_check_used_weights`)."""
+    it is used is checked in `_check_data` (`_check_used_weights`)."""
     if isinstance(weights, str):
         if weights not in ('none', 'sum'):
             raise ValueError(f'{name} must be "none", "sum" or an array of length {n}, got {weights!r}')
@@ -181,9 +180,28 @@ def _check_used_weights(name: str, weights, used: np.ndarray) -> None:
         raise ValueError(f'{name} weights must be > 0 on every row/column with entries')
 
 
-# ---- Prep helpers (numpy) ----
+def _check_data(m1, m2, binary, a1, l1, l3, t1, t2, bayesian_shrink,
+                weight_depop_matrix1, weight_depop_matrix2) -> None:
+    """
+    The rules on the canonical values (`_canonical_csr`): finite in float32 in
+    both modes (1e39 is inf there, and binary must not turn NaN/inf into 1.0),
+    the score rules (`_check_score_rules`), custom depop weights > 0 where used.
+    Signed input is fine: negative and cancelled (0.0) scores are never results.
+    `signed` is read from the values the kernel sees, so binary input is never
+    signed.
+    """
+    for name, m in (('matrix1', m1), ('matrix2', m2)):
+        if not np.isfinite(m.data).all():
+            raise ValueError(f'{name} values must be finite (in float32)')
+    signed = not binary and bool((m1.data < 0).any() or (m2.data < 0).any())
+    _check_score_rules(signed, binary, a1, l1, t1, t2, bayesian_shrink, m1.data, m2.data)
+    if l3 != 0:
+        _check_used_weights('weight_depop_matrix1 (pop1)', weight_depop_matrix1, np.diff(m1.indptr) > 0)
+        _check_used_weights('weight_depop_matrix2 (pop2)', weight_depop_matrix2,
+                            np.bincount(m2.indices, minlength=m2.shape[1]) > 0)
 
-def _check_signed_rules(signed: bool, binary: bool, a1, l1, t1, t2, bayesian_shrink,
+
+def _check_score_rules(signed: bool, binary: bool, a1, l1, t1, t2, bayesian_shrink,
                         m1_data, m2_data) -> None:
     """
     Parameters that would be wrong on signed input (docs/guide.md, "Signed
@@ -218,6 +236,8 @@ def _one_value(*arrays) -> bool:
     return len(vals) == 1
 
 
+# ---- Prep helpers (numpy) ----
+
 def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
     """
     The call's own canonical copy of `matrix`: CSR, float32 values, int32
@@ -245,7 +265,7 @@ def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
         indptr, cols, data = csr.indptr.astype(np.int32), csr.indices, csr.data
     canonical = (matrix if matrix.format == 'coo' else csr).has_canonical_format
     indices = cols.astype(np.int32)
-    with np.errstate(over='ignore'):  # inf: reported by the finite check (`_kernel_values`)
+    with np.errstate(over='ignore'):  # inf: reported by the finite check (`_check_data`)
         data = data.astype(np.float32)
     if canonical:
         out = sp.csr_array((data, indices, indptr), shape=matrix.shape)
@@ -416,16 +436,16 @@ def s_plus(
         sorted by column, canonical (`has_canonical_format`).
 
     Raises:
-        ValueError: invalid shapes or parameters (see `_validate_inputs`),
+        ValueError: invalid shapes or parameters (see `_check_args`),
             a negative block_size, more than 2^31 - 1 non-zeros in an input, input
             values not finite in float32, a1 != 1 or bayesian_shrink on signed input
             (values < 0, not binary), or l1 != 0 with t1, t2 whose tversky
-            term can be <= 0 on weighted input (see `_check_signed_rules`).
+            term can be <= 0 on weighted input (see `_check_score_rules`).
     """
     if matrix2 is None:
         matrix2 = matrix1.T
 
-    _validate_inputs(
+    _check_args(
         matrix1=matrix1,
         matrix2=matrix2,
         weight_depop_matrix1=weight_depop_matrix1,
@@ -480,7 +500,9 @@ def _s_plus(
     m1 = _canonical_csr(matrix1, num_threads)
     m2 = _canonical_csr(matrix2, num_threads)
     n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]
-    m1_data, m2_data = _kernel_values(m1, m2, binary, a1, l1, t1, t2, bayesian_shrink)
+    _check_data(m1, m2, binary, a1, l1, l3, t1, t2, bayesian_shrink,
+                weight_depop_matrix1, weight_depop_matrix2)
+    m1_data, m2_data = (np.ones(m.nnz, dtype=np.float32) if binary else m.data for m in (m1, m2))
     m1_arrays = (m1_data, m1.indices, m1.indptr)
     m2_arrays = (m2_data, m2.indices, m2.indptr)
 
@@ -530,25 +552,6 @@ def _s_plus(
 # ---- `_s_plus` steps. CSR arrays travel as (data, indices, indptr), selectors
 # as (mode, indptr, indices), norms as `Norms`. ----
 
-def _kernel_values(m1, m2, binary, a1, l1, t1, t2, bayesian_shrink):
-    """
-    Kernel values: float32 (all ones in binary mode). Finite is checked on the
-    float32 values in both modes (1e39 is inf there, and binary must not turn
-    NaN/inf into 1.0). Signed input is fine: negative and cancelled (0.0)
-    scores are never results. `signed` is read from the values the kernel sees,
-    so binary input is never signed.
-    """
-    def values(name, m):
-        data = m.data  # float32 since `_canonical_csr`
-        if not np.isfinite(data).all():
-            raise ValueError(f'{name} values must be finite (in float32)')
-        return np.ones(m.nnz, dtype=np.float32) if binary else data
-    m1_data, m2_data = values('matrix1', m1), values('matrix2', m2)
-    signed = not binary and bool((m1_data < 0).any() or (m2_data < 0).any())
-    _check_signed_rules(signed, binary, a1, l1, t1, t2, bayesian_shrink, m1_data, m2_data)
-    return m1_data, m2_data
-
-
 def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
            weight_depop_matrix1, weight_depop_matrix2, p1, p2, dtype=np.float32):
     """
@@ -566,9 +569,6 @@ def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
         norms = norms._replace(x_cosine=np.power(m1_sq + dtype(additive_shrink), dtype(c1), dtype=dtype),
                                y_cosine=np.power(m2_sq + dtype(additive_shrink), dtype(c2), dtype=dtype))
     if l3 != 0:
-        _check_used_weights('weight_depop_matrix1 (pop1)', weight_depop_matrix1, np.diff(m1_indptr) > 0)
-        _check_used_weights('weight_depop_matrix2 (pop2)', weight_depop_matrix2,
-                            np.bincount(m2_indices, minlength=n_cols) > 0)
         # 'sum' popularity = sum of |x| (identical on non-negative input)
         norms = norms._replace(
             x_depop=_depop_weights(weight_depop_matrix1, lambda: _row_sums(np.abs(m1_data), m1_indptr, dtype),
