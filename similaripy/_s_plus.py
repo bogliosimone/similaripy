@@ -134,8 +134,12 @@ def _check_args(
             _ids(name, cols, matrix2.shape[1])
         elif not sp.issparse(cols):
             raise TypeError(f'{name} must be a sparse matrix, list, numpy array, or None')
-        elif cols.data.shape[0] != 0 and cols.shape != expected_shape:
+        elif cols.nnz != 0 and cols.shape != expected_shape:
             raise ValueError(f'{name} shape {cols.shape} does not match expected shape {expected_shape}')
+    # An empty target_cols would score nothing: None is "all columns". An empty
+    # filter_cols excludes nothing, the same as None.
+    if target_cols is not None and (target_cols.nnz if sp.issparse(target_cols) else np.size(target_cols)) == 0:
+        raise ValueError('target_cols is empty: pass None to score all columns')
 
     # Check format_output
     if format_output not in ('coo', 'csr'):
@@ -351,7 +355,7 @@ def _matrix_selector(cols, num_threads: int):
     duplicates (signed input). A matrix whose entries all cancel selects
     nothing (as explicit zeros only); an empty one is no selector.
     """
-    if sp.issparse(cols) and cols.data.shape[0] != 0:
+    if sp.issparse(cols) and cols.nnz != 0:
         cols = _canonical_csr(cols, np.float32, num_threads)
         return cols.indptr, cols.indices
     return None
@@ -436,7 +440,8 @@ def s_plus(
         binary: If True, treat all non-zero values as 1.0 (set theory).
         target_rows: Specific rows to compute (duplicates ignored). If None, compute all rows.
         filter_cols: Columns to exclude from results (e.g., already seen items).
-        target_cols: Columns to include in results (only compute these).
+        target_cols: Columns to include in results (only compute these); None = all,
+            an empty one raises ValueError.
         verbose: Show progress bar during computation.
         format_output: Output matrix format: 'csr' or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or

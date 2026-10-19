@@ -37,7 +37,8 @@ def dot_product(
         threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before similarity computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
-        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
+        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
+            None = all columns, an empty one raises ValueError.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
@@ -100,7 +101,8 @@ def cosine(
         threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
-        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
+        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
+            None = all columns, an empty one raises ValueError.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
@@ -167,7 +169,8 @@ def asymmetric_cosine(
         threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
-        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
+        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
+            None = all columns, an empty one raises ValueError.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
@@ -241,7 +244,8 @@ def tversky(
         threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
-        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
+        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
+            None = all columns, an empty one raises ValueError.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
@@ -305,7 +309,8 @@ def jaccard(
         threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
-        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
+        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
+            None = all columns, an empty one raises ValueError.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
@@ -369,7 +374,8 @@ def dice(
         threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
-        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
+        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
+            None = all columns, an empty one raises ValueError.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
@@ -436,7 +442,8 @@ def p3alpha(
         threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
-        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
+        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
+            None = all columns, an empty one raises ValueError.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
@@ -504,7 +511,8 @@ def rp3beta(
         threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
-        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
+        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
+            None = all columns, an empty one raises ValueError.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.
@@ -602,7 +610,8 @@ def s_plus(
         threshold: Minimum similarity value to retain (>= 0).
         binary: Whether to binarize the input matrix before computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
-        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix.
+        target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
+            None = all columns, an empty one raises ValueError.
         filter_cols: Columns to exclude before top-k. Can be a list or sparse mask matrix.
         verbose: Whether to show a progress bar.
         format_output: Output format, either 'csr' (default) or 'coo'.

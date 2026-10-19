@@ -670,3 +670,23 @@ def test_core_bindings_keyword_only(name):
     from similaripy import _core
     with pytest.raises(TypeError, match='positional'):
         getattr(_core, name)(None)
+
+
+@pytest.mark.parametrize('target', [[], np.array([], dtype=np.int64), np.empty((5, 0), dtype=np.int64),
+                                    sp.csr_array((20, 20), dtype=np.float32), sp.lil_array((20, 20))])
+def test_empty_target_cols_raises(target):
+    # An empty target would score nothing (0.7.0 scored every column): None = all columns
+    m = _m(20, 30, seed=3)
+    with pytest.raises(ValueError, match='target_cols is empty'):
+        sim.cosine(m, m.T, k=5, target_cols=target, verbose=False)
+
+
+def test_empty_filter_and_partly_empty_target_rows_accepted():
+    m = _m(20, 30, seed=3)
+    ref = sim.cosine(m, m.T, k=5, verbose=False)
+    _same(sim.cosine(m, m.T, k=5, filter_cols=[], verbose=False), ref)  # excludes nothing
+    # a row with no target columns comes back empty, the others as usual
+    target = sp.csr_array(np.vstack([np.zeros((1, 20)), np.ones((19, 20))]).astype(np.float32))
+    out = sim.cosine(m, m.T, k=5, target_cols=target, verbose=False)
+    assert out[[0]].nnz == 0
+    np.testing.assert_array_equal(out.toarray()[1:], ref.toarray()[1:])

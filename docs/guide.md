@@ -144,6 +144,12 @@ Earlier v1 builds rejected any value that was not finite and `> 0`. Now:
   return a new `csr_array` (also for `spmatrix` input: use `@` for products)
   with int32 indices (float32/float64 values kept), and raise
   a `ValueError` past 2^31 - 1 entries, as the similarities.
+- An empty `target_cols` (list, array or sparse matrix with no entries) raises
+  a `ValueError` instead of scoring every column: pass `None` for all columns.
+  An empty `filter_cols` is still accepted (it excludes nothing).
+- The normalizations raise a `ValueError` on NaN or inf values (they used to
+  spread NaN through the row's or column's norm, and `binarize` turned them
+  into `1`).
 
 ## In-depth Introduction
 
