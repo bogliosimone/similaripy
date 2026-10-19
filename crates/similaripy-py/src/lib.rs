@@ -7,12 +7,13 @@ mod progress;
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
+use numpy::{Element, IntoPyArray, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
 use progress::ProgressBar;
+use similaripy_core::normalize::Value;
 use similaripy_core::{CsrPattern, CsrView, Error, Inputs, Norms, Params, compute};
 
 pub(crate) fn to_py(e: Error) -> PyErr {
@@ -202,13 +203,26 @@ fn remap_sort_rows(
 }
 
 /// In place: canonical rows (sorted, duplicates summed, zeros dropped),
-/// compacted to the front; returns the new indptr.
+/// compacted to the front; returns the new indptr. Data float32 or float64.
 #[pyfunction]
 fn canonicalize_rows<'py>(
     py: Python<'py>,
     indptr: PyReadonlyArray1<'py, i32>,
+    indices: PyReadwriteArray1<'py, i32>,
+    data: &Bound<'py, PyAny>,
+    num_threads: usize,
+) -> PyResult<Bound<'py, PyArray1<i32>>> {
+    match data.extract::<PyReadwriteArray1<'py, f32>>() {
+        Ok(d) => canonicalize(py, indptr, indices, d, num_threads),
+        Err(_) => canonicalize::<f64>(py, indptr, indices, data.extract()?, num_threads),
+    }
+}
+
+fn canonicalize<'py, V: Value + Element>(
+    py: Python<'py>,
+    indptr: PyReadonlyArray1<'py, i32>,
     mut indices: PyReadwriteArray1<'py, i32>,
-    mut data: PyReadwriteArray1<'py, f32>,
+    mut data: PyReadwriteArray1<'py, V>,
     num_threads: usize,
 ) -> PyResult<Bound<'py, PyArray1<i32>>> {
     let indptr = indptr.as_slice()?;
