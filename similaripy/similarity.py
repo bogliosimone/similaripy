@@ -654,7 +654,7 @@ def _random_walk(alpha: float, binary: bool, popularity: bool):
             m2.data[:] = 1
         pop = _col_sums(np.abs(m2.data), m2.indices, m2.shape[1]) if popularity else None
         for m in (m1, m2):
-            _core.normalize(m.data, m.indices, m.indptr, m.shape, 'l1')
+            _core.normalize(data=m.data, indices=m.indices, indptr=m.indptr, shape=m.shape, norm='l1')
             m.data = _signed_power(m.data, alpha)
         return pop
     return prepare

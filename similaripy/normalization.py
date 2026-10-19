@@ -32,7 +32,7 @@ def _canonical(X: sps.sparray, axis: int = 1) -> sps.csr_array:
     return _canonical_csr(X.T if axis == 0 else X, dtype, 0)
 
 
-def _transformed(X: sps.sparray, axis: int, op, *args, name: str = None) -> sps.csr_array:
+def _transformed(X: sps.sparray, axis: int, op, name: str = None, **kwargs) -> sps.csr_array:
     """
     The canonical copy of X with `op` (an in-place `_core` normalization) applied
     to its rows (axis 1) or columns (axis 0); `name`: a term weighting, whose
@@ -41,7 +41,7 @@ def _transformed(X: sps.sparray, axis: int, op, *args, name: str = None) -> sps.
     X = _canonical(X, axis)
     if name is not None:
         _check_non_negative(X, name)
-    op(X.data, X.indices, X.indptr, X.shape, *args)
+    op(data=X.data, indices=X.indices, indptr=X.indptr, shape=X.shape, **kwargs)
     return X.T.tocsr() if axis == 0 else X
 
 
@@ -91,7 +91,7 @@ def normalize(
     """
     if norm not in _NORMALIZATIONS:
         raise ValueError(f"norm must be one of {_NORMALIZATIONS}, got '{norm}'")
-    return _transformed(X, axis, _core.normalize, norm)
+    return _transformed(X, axis, _core.normalize, norm=norm)
 
 
 def binarize(X: sps.sparray) -> sps.csr_array:
@@ -144,7 +144,8 @@ def bm25(
         ValueError: on a negative value.
     """
     _validate_modes(tf_mode, idf_mode)
-    return _transformed(X, axis, _core.bm25plus, k1, b, 0.0, tf_mode, idf_mode, logbase, name='bm25')
+    return _transformed(X, axis, _core.bm25plus, 'bm25', k1=k1, b=b, delta=0.0,
+                        tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase)
 
 
 def bm25plus(
@@ -178,7 +179,8 @@ def bm25plus(
         ValueError: on a negative value.
     """
     _validate_modes(tf_mode, idf_mode)
-    return _transformed(X, axis, _core.bm25plus, k1, b, delta, tf_mode, idf_mode, logbase, name='bm25plus')
+    return _transformed(X, axis, _core.bm25plus, 'bm25plus', k1=k1, b=b, delta=delta,
+                        tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase)
 
 
 def tfidf(
@@ -206,6 +208,6 @@ def tfidf(
         ValueError: on a negative value.
     """
     _validate_modes(tf_mode, idf_mode)
-    return _transformed(X, axis, _core.tfidf, tf_mode, idf_mode, logbase, name='tfidf')
+    return _transformed(X, axis, _core.tfidf, 'tfidf', tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase)
 
     

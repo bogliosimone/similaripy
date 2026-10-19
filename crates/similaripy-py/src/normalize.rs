@@ -92,6 +92,7 @@ fn dispatch(
 
 /// In-place l1 / l2 / max row normalization.
 #[pyfunction]
+#[pyo3(signature = (*, data, indices, indptr, shape, norm))]
 pub fn normalize(
     py: Python<'_>,
     data: &Bound<'_, PyAny>,
@@ -111,6 +112,7 @@ pub fn normalize(
 
 /// In-place TF-IDF (rows = documents).
 #[pyfunction]
+#[pyo3(signature = (*, data, indices, indptr, shape, tf_mode, idf_mode, logbase))]
 #[allow(clippy::too_many_arguments)]
 pub fn tfidf(
     py: Python<'_>,
@@ -132,6 +134,7 @@ pub fn tfidf(
 
 /// In-place BM25+ (rows = documents); `delta = 0` is BM25.
 #[pyfunction]
+#[pyo3(signature = (*, data, indices, indptr, shape, k1, b, delta, tf_mode, idf_mode, logbase))]
 #[allow(clippy::too_many_arguments)]
 pub fn bm25plus(
     py: Python<'_>,

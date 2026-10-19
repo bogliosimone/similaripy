@@ -33,6 +33,29 @@ _COLUMN_ORDER = 'popularity'
 _MAX_INT32_NNZ = np.iinfo(np.int32).max
 
 
+# ---- The kernel's argument groups (`_core.compute_similarities` reads them by
+# attribute: kernel.rs `CsrView`, `Norms`, `Params`) ----
+
+class Csr(NamedTuple):
+    """A canonical CSR matrix's arrays (float32 data, int32 ids)."""
+    data: np.ndarray
+    indices: np.ndarray
+    indptr: np.ndarray
+    n_cols: int
+
+
+class Params(NamedTuple):
+    """The scoring weights (`s_plus` arguments of the same names)."""
+    a1: float
+    l1: float
+    l2: float
+    l3: float
+    t1: float
+    t2: float
+    stabilized_shrink: float
+    bayesian_shrink: float
+    threshold: float
+
 
 class Norms(NamedTuple):
     """The kernel's normalization terms (kernel.rs `Norms`): x per m1 row, y
@@ -268,7 +291,7 @@ def _canonical_csr(matrix: sp.sparray, dtype, num_threads: int) -> sp.csr_array:
         if (data == 0).any():
             out.eliminate_zeros()
     else:
-        indptr = _core.canonicalize_rows(indptr, indices, data, num_threads)
+        indptr = _core.canonicalize_rows(indptr=indptr, indices=indices, data=data, num_threads=num_threads)
         nnz = indptr[-1]
         out = sp.csr_array((data[:nnz], indices[:nnz], indptr), shape=matrix.shape)
     out.has_canonical_format = True  # sorted, summed: skips scipy's re-checks
@@ -326,14 +349,14 @@ def _is_list(cols) -> bool:
     return isinstance(cols, (list, np.ndarray)) and len(cols) != 0
 
 
-def _keep_columns(data, indices, indptr, keep_mask):
+def _keep_columns(m: Csr, keep_mask) -> Csr:
     """Drops the entries whose column is not in `keep_mask`; column ids and order unchanged."""
     # ponytail: two boolean gathers over nnz; a Rust pass is the upgrade if a
     # profile shows it
-    sel = keep_mask[indices]
-    new_indptr = np.zeros(len(indptr), dtype=np.int32)
-    np.cumsum(_row_sums(sel, indptr, dtype=np.int32), out=new_indptr[1:])
-    return data[sel], indices[sel], new_indptr
+    sel = keep_mask[m.indices]
+    new_indptr = np.zeros(len(m.indptr), dtype=np.int32)
+    np.cumsum(_row_sums(sel, m.indptr, dtype=np.int32), out=new_indptr[1:])
+    return m._replace(data=m.data[sel], indices=m.indices[sel], indptr=new_indptr)
 
 
 # ---- Entry point ----
@@ -491,8 +514,8 @@ def _s_plus(
     _check_data(m1, m2, binary, a1, l1, l3, t1, t2, bayesian_shrink,
                 weight_depop_matrix1, weight_depop_matrix2)
     m1_data, m2_data = (np.ones(m.nnz, dtype=np.float32) if binary else m.data for m in (m1, m2))
-    m1_arrays = (m1_data, m1.indices, m1.indptr)
-    m2_arrays = (m2_data, m2.indices, m2.indptr)
+    m1_arrays = Csr(m1_data, m1.indices, m1.indptr, m1.shape[1])
+    m2_arrays = Csr(m2_data, m2.indices, m2.indptr, n_output_cols)
 
     if block_size == 0:  # auto; None (no blocking) and int > 0 go as they are
         block_size = DEFAULT_BLOCK_SIZE
@@ -511,17 +534,10 @@ def _s_plus(
         bar.set_description('Computing')
     kernel_start = time.perf_counter()
     cols, vals, counts = _core.compute_similarities(
-        targets,
-        *m1_arrays, m1.shape[1],
-        *m2_arrays,
-        *norms,
-        a1, l1, l2, l3, t1, t2,
-        stabilized_shrink, bayesian_shrink, threshold,
-        k, n_output_cols,
-        filt,
-        targ,
-        new_to_old,
-        num_threads, block_size, bar,
+        targets=targets, m1=m1_arrays, m2=m2_arrays, norms=norms,
+        params=Params(a1, l1, l2, l3, t1, t2, stabilized_shrink, bayesian_shrink, threshold),
+        k=k, filter=filt, target=targ, col_map=new_to_old,
+        num_threads=num_threads, block_size=block_size, progress=bar,
     )
     kernel_end = time.perf_counter()
 
@@ -532,8 +548,8 @@ def _s_plus(
     return out
 
 
-# ---- `_s_plus` steps. CSR arrays travel as (data, indices, indptr), matrix
-# selectors as (indptr, indices) or None, norms as `Norms`. ----
+# ---- `_s_plus` steps. CSR arrays travel as `Csr`, matrix selectors as
+# (indptr, indices) or None, norms as `Norms`. ----
 
 def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
            weight_depop_matrix1, weight_depop_matrix2, p1, p2):
@@ -541,7 +557,7 @@ def _norms(m1_arrays, m2_arrays, n_cols, l1, l2, l3, c1, c2, additive_shrink,
     The normalization terms the weights use (x per m1 row, y per m2 column); the
     others stay None. float32, for the kernel and `_prescale` alike.
     """
-    (m1_data, _, m1_indptr), (m2_data, m2_indices, _) = m1_arrays, m2_arrays
+    m1_data, m1_indptr, m2_data, m2_indices = m1_arrays.data, m1_arrays.indptr, m2_arrays.data, m2_arrays.indices
     norms = Norms()
     if l1 != 0 or l2 != 0:
         m1_sq = _row_sums(np.square(m1_data), m1_indptr)
@@ -587,7 +603,7 @@ def _prescale(m1_arrays, m2_arrays, l, norms) -> None:
     that overflows; every m1 row is checked, `target_rows` or not (scaled
     whole). The kernel paths keep float32 norms too, without the check.
     """
-    (m1_data, _, m1_indptr), (m2_data, m2_indices, _) = m1_arrays, m2_arrays
+    m1_data, m1_indptr, m2_data, m2_indices = m1_arrays.data, m1_arrays.indptr, m2_arrays.data, m2_arrays.indices
     X, Y = norms.x_cosine, norms.y_cosine
     with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
         sx = np.divide(1, np.float32(l) * X, out=np.zeros_like(X), where=X != 0)
@@ -630,7 +646,7 @@ def _selectors(filter_cols, target_cols, m2_arrays, n_cols, num_threads):
             keep[np.asarray(target_cols)] = True
         if _is_list(filter_cols):
             keep[np.asarray(filter_cols)] = False
-        m2_arrays = _keep_columns(*m2_arrays, keep)
+        m2_arrays = _keep_columns(m2_arrays, keep)
     return filt, targ, m2_arrays
 
 
@@ -645,9 +661,8 @@ def _popularity_layout(m2_arrays, norms, filt, targ, n_cols, num_threads):
     Blocking needs sorted m2 rows (binary search): canonical m2 is, and a
     renumbering re-sorts.
     """
-    m2_data, m2_indices, m2_indptr = m2_arrays
     if _COLUMN_ORDER == 'popularity':
-        new_to_old = np.argsort(-np.bincount(m2_indices, minlength=n_cols), kind='stable').astype(np.int32)
+        new_to_old = np.argsort(-np.bincount(m2_arrays.indices, minlength=n_cols), kind='stable').astype(np.int32)
     else:
         new_to_old = np.arange(n_cols, dtype=np.int32)
     old_to_new = np.empty(n_cols, dtype=np.int32)
@@ -657,11 +672,13 @@ def _popularity_layout(m2_arrays, norms, filt, targ, n_cols, num_threads):
                            y_depop=_permuted(norms.y_depop, new_to_old))
     for sel in (filt, targ):  # matrix selectors: the pattern only
         if sel is not None:
-            _core.remap_sort_rows(*sel, None, old_to_new, num_threads)
+            _core.remap_sort_rows(indptr=sel[0], indices=sel[1], data=None, forward=old_to_new,
+                                  num_threads=num_threads)
     # ponytail: unblocked calls re-sort too (one Rust pass does both); a
     # remap-only pass would skip the sort if it ever shows in a profile
-    _core.remap_sort_rows(m2_indptr, m2_indices, m2_data, old_to_new, num_threads)
-    return (m2_data, m2_indices, m2_indptr), norms, filt, targ, new_to_old
+    _core.remap_sort_rows(indptr=m2_arrays.indptr, indices=m2_arrays.indices, data=m2_arrays.data,
+                          forward=old_to_new, num_threads=num_threads)
+    return m2_arrays, norms, filt, targ, new_to_old
 
 
 def _permuted(y, new_to_old):

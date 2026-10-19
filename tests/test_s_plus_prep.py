@@ -449,7 +449,7 @@ def test_coo_output_fed_back(monkeypatch):
     s = sim.cosine(m.T, k=20, format_output='coo', verbose=False)  # rows shorter than k
     ref = sim.dot_product(m, s.tocsr(), k=10, verbose=False)
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise AssertionError('canonicalize_rows called on a canonical input')
     monkeypatch.setattr(_core, 'canonicalize_rows', fail)
     _same(sim.dot_product(m, s, k=10, verbose=False), ref)
@@ -611,7 +611,7 @@ def test_prescale_in_place_zero_norm_gives_zero():
     d1, d2 = m.data.copy(), m.data.copy()
     X, Y = np.array([2, 0, 4, 1], dtype=np.float32), np.array([0.5, 0, 2], dtype=np.float32)
     norms = _s_plus.Norms(x_cosine=X, y_cosine=Y)
-    _s_plus._prescale((d1, m.indices, m.indptr), (d2, m.indices, m.indptr), 2, norms)
+    _s_plus._prescale(_s_plus.Csr(d1, m.indices, m.indptr, 3), _s_plus.Csr(d2, m.indices, m.indptr, 3), 2, norms)
     rows = np.repeat(np.arange(4), np.diff(m.indptr))
     np.testing.assert_allclose(d1, m.data / (2 * X)[rows], rtol=1e-6)
     np.testing.assert_allclose(d2, m.data / Y[m.indices], rtol=1e-6)
@@ -624,7 +624,8 @@ def test_prescale_scaled_overflow_raises():
     m.data[0] = 1e30
     norms = _s_plus.Norms(x_cosine=np.ones(4, dtype=np.float32), y_cosine=np.full(3, 1e-10, dtype=np.float32))
     with pytest.raises(ValueError, match='out of float32 range'):
-        _s_plus._prescale((m.data.copy(), m.indices, m.indptr), (m.data.copy(), m.indices, m.indptr), 1, norms)
+        _s_plus._prescale(_s_plus.Csr(m.data.copy(), m.indices, m.indptr, 3),
+                          _s_plus.Csr(m.data.copy(), m.indices, m.indptr, 3), 1, norms)
 
 
 @pytest.mark.parametrize('name, scale, kw', [
@@ -659,3 +660,12 @@ def test_rejects_past_int32_entries():
     for f in (lambda: sim.cosine(m, k=2, verbose=False), lambda: normalization.bm25(m)):
         with pytest.raises(ValueError, match='non-zeros'):
             f()
+
+
+@pytest.mark.parametrize('name', ['compute_similarities', 'remap_sort_rows', 'canonicalize_rows',
+                                  'normalize', 'tfidf', 'bm25plus'])
+def test_core_bindings_keyword_only(name):
+    # a swapped positional argument of the same type would pass silently
+    from similaripy import _core
+    with pytest.raises(TypeError, match='positional'):
+        getattr(_core, name)(None)
