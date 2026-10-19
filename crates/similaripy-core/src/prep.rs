@@ -3,6 +3,7 @@
 
 use crate::Error;
 use crate::csr::check_indptr;
+use crate::normalize::Value;
 
 /// Entries per sequential leaf; rows of ~100 entries sort in L1.
 const LEAF_NNZ: usize = 1 << 16;
@@ -54,25 +55,25 @@ fn remap_sort<V: Copy + Send>(
 
 /// Makes every row canonical, as scipy's `sum_duplicates` + `eliminate_zeros`:
 /// sorted by column, duplicate columns summed into one entry, zeros (explicit,
-/// or sums that cancel) dropped. Rows are processed in parallel, then compacted
+/// or sums that cancel) dropped; float32 or float64 values. Rows are processed in parallel, then compacted
 /// to the front of `indices`/`data` in one sequential pass; returns the new
 /// indptr (the first `new_indptr[-1]` entries are the result).
 ///
 /// Replaces scipy's single-threaded COO -> CSR (2.2 s on a 93M-entry COO
 /// item model) and sums duplicate entries of CSR inputs, which would otherwise
 /// reach the kernel unsummed (wrong norms and binary counts).
-pub fn canonicalize_rows(
+pub fn canonicalize_rows<V: Value>(
     indptr: &[i32],
     indices: &mut [i32],
-    data: &mut [f32],
+    data: &mut [V],
 ) -> Result<Vec<i32>, Error> {
     canonicalize_with_leaf(indptr, indices, data, LEAF_NNZ)
 }
 
-fn canonicalize_with_leaf(
+fn canonicalize_with_leaf<V: Value>(
     indptr: &[i32],
     indices: &mut [i32],
-    data: &mut [f32],
+    data: &mut [V],
     leaf: usize,
 ) -> Result<Vec<i32>, Error> {
     let bad = |m: &str| Err(Error::InvalidInput(format!("canonicalize_rows: {m}")));
@@ -93,7 +94,7 @@ fn canonicalize_with_leaf(
             let mut n = 0; // entries kept so far, sums still open
             for j in 0..cols.len() {
                 if n > 0 && cols[n - 1] == cols[j] {
-                    vals[n - 1] += vals[j];
+                    vals[n - 1] = vals[n - 1] + vals[j];
                 } else {
                     (cols[n], vals[n]) = (cols[j], vals[j]);
                     n += 1;
@@ -101,7 +102,7 @@ fn canonicalize_with_leaf(
             }
             let mut kept = 0;
             for j in 0..n {
-                if vals[j] != 0.0 {
+                if vals[j] != V::ZERO {
                     (cols[kept], vals[kept]) = (cols[j], vals[j]);
                     kept += 1;
                 }
@@ -238,7 +239,13 @@ mod tests {
                 }
                 indptr.push(indices.len() as i32);
             }
+            // float64 too: the values are exact in both types
+            let (mut indices64, mut data64): (Vec<i32>, Vec<f64>) = (indices.clone(), data.iter().map(|&v| v as f64).collect());
             let new_indptr = canonicalize_with_leaf(&indptr, &mut indices, &mut data, leaf).unwrap();
+            prop_assert_eq!(&canonicalize_with_leaf(&indptr, &mut indices64, &mut data64, leaf).unwrap(), &new_indptr);
+            let nnz = new_indptr[new_indptr.len() - 1] as usize;
+            prop_assert_eq!(&indices64[..nnz], &indices[..nnz]);
+            prop_assert!(data64[..nnz].iter().zip(&data[..nnz]).all(|(&a, &b)| a == b as f64));
             prop_assert_eq!(new_indptr.len(), indptr.len());
             for (i, r) in rows.iter().enumerate() {
                 let mut dense = [0.0f32; 6];
