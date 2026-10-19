@@ -58,31 +58,60 @@ fn selection<'a>(
         .map_err(to_py)
 }
 
-/// The kernel inputs as flat arrays (positional for now), plus `col_map`
-/// (output id of each m2 column) and `block_size`
-/// (None = no column blocking). Returns `(cols, values, counts)`: row `i` of
-/// `targets` has `counts[i]` results, sorted by column, packed in
-/// `cols`/`values` (numpy arrays over the Rust buffers, no copy). Releases the
-/// GIL. `num_threads = 0` runs on the global rayon pool (concurrent callers
-/// queue on it).
-#[pyfunction]
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn compute_similarities<'py>(
-    py: Python<'py>,
-    targets: PyReadonlyArray1<i32>,
-    m1_data: PyReadonlyArray1<f32>,
-    m1_indices: PyReadonlyArray1<i32>,
-    m1_indptr: PyReadonlyArray1<i32>,
-    m1_n_cols: usize,
-    m2_data: PyReadonlyArray1<f32>,
-    m2_indices: PyReadonlyArray1<i32>,
-    m2_indptr: PyReadonlyArray1<i32>,
-    x_tversky: Option<PyReadonlyArray1<f32>>,
-    y_tversky: Option<PyReadonlyArray1<f32>>,
-    x_cosine: Option<PyReadonlyArray1<f32>>,
-    y_cosine: Option<PyReadonlyArray1<f32>>,
-    x_depop: Option<PyReadonlyArray1<f32>>,
-    y_depop: Option<PyReadonlyArray1<f32>>,
+/// A CSR matrix, read by attribute from `similaripy._s_plus.Csr`.
+#[derive(FromPyObject)]
+struct CsrArg<'py> {
+    data: PyReadonlyArray1<'py, f32>,
+    indices: PyReadonlyArray1<'py, i32>,
+    indptr: PyReadonlyArray1<'py, i32>,
+    n_cols: usize,
+}
+
+impl CsrArg<'_> {
+    fn view(&self, name: &'static str) -> PyResult<CsrView<'_>> {
+        CsrView::new(
+            name,
+            self.indptr.as_slice()?,
+            self.indices.as_slice()?,
+            self.data.as_slice()?,
+            self.n_cols,
+        )
+        .map_err(to_py)
+    }
+}
+
+/// The normalization terms, read by attribute from `similaripy._s_plus.Norms`
+/// (None = unused).
+#[derive(FromPyObject)]
+struct NormsArg<'py> {
+    x_tversky: Option<PyReadonlyArray1<'py, f32>>,
+    y_tversky: Option<PyReadonlyArray1<'py, f32>>,
+    x_cosine: Option<PyReadonlyArray1<'py, f32>>,
+    y_cosine: Option<PyReadonlyArray1<'py, f32>>,
+    x_depop: Option<PyReadonlyArray1<'py, f32>>,
+    y_depop: Option<PyReadonlyArray1<'py, f32>>,
+}
+
+impl NormsArg<'_> {
+    fn norms(&self) -> PyResult<Norms<'_>> {
+        fn s<'a>(a: &'a Option<PyReadonlyArray1<'_, f32>>) -> PyResult<Option<&'a [f32]>> {
+            Ok(a.as_ref().map(|a| a.as_slice()).transpose()?)
+        }
+        Ok(Norms {
+            x_tversky: s(&self.x_tversky)?,
+            y_tversky: s(&self.y_tversky)?,
+            x_cosine: s(&self.x_cosine)?,
+            y_cosine: s(&self.y_cosine)?,
+            x_depop: s(&self.x_depop)?,
+            y_depop: s(&self.y_depop)?,
+        })
+    }
+}
+
+/// The scoring weights, read by attribute from `similaripy._s_plus.Params`
+/// (the core's `Params` stays free of Python).
+#[derive(FromPyObject)]
+struct ParamsArg {
     a1: f32,
     l1: f32,
     l2: f32,
@@ -92,8 +121,41 @@ fn compute_similarities<'py>(
     stabilized_shrink: f32,
     bayesian_shrink: f32,
     threshold: f32,
+}
+
+impl From<ParamsArg> for Params {
+    fn from(p: ParamsArg) -> Self {
+        Params {
+            a1: p.a1,
+            l1: p.l1,
+            l2: p.l2,
+            l3: p.l3,
+            t1: p.t1,
+            t2: p.t2,
+            stabilized_shrink: p.stabilized_shrink,
+            bayesian_shrink: p.bayesian_shrink,
+            threshold: p.threshold,
+        }
+    }
+}
+
+/// The kernel inputs (`m2.n_cols` = output columns), plus `col_map` (output id
+/// of each m2 column) and `block_size` (None = no column blocking). Returns
+/// `(cols, values, counts)`: row `i` of `targets` has `counts[i]` results,
+/// sorted by column, packed in `cols`/`values` (numpy arrays over the Rust
+/// buffers, no copy). Releases the GIL. `num_threads = 0` runs on the global
+/// rayon pool (concurrent callers queue on it).
+#[pyfunction]
+#[pyo3(signature = (*, targets, m1, m2, norms, params, k, filter, target, col_map, num_threads, block_size, progress))]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn compute_similarities<'py>(
+    py: Python<'py>,
+    targets: PyReadonlyArray1<i32>,
+    m1: CsrArg<'py>,
+    m2: CsrArg<'py>,
+    norms: NormsArg<'py>,
+    params: ParamsArg,
     k: usize,
-    n_output_cols: usize,
     filter: Selection<'py>,
     target: Selection<'py>,
     col_map: PyReadonlyArray1<i32>,
@@ -105,46 +167,15 @@ fn compute_similarities<'py>(
     Bound<'py, PyArray1<f32>>,
     Bound<'py, PyArray1<u32>>,
 )> {
-    let m1 = CsrView::new(
-        "m1",
-        m1_indptr.as_slice()?,
-        m1_indices.as_slice()?,
-        m1_data.as_slice()?,
-        m1_n_cols,
-    );
-    let m2 = CsrView::new(
-        "m2",
-        m2_indptr.as_slice()?,
-        m2_indices.as_slice()?,
-        m2_data.as_slice()?,
-        n_output_cols,
-    );
-    let (m1, m2) = (m1.map_err(to_py)?, m2.map_err(to_py)?);
+    let n_cols = m2.n_cols;
     let inp = Inputs {
-        m1,
-        m2,
+        m1: m1.view("m1")?,
+        m2: m2.view("m2")?,
         targets: targets.as_slice()?,
-        norms: Norms {
-            x_tversky: x_tversky.as_ref().map(|a| a.as_slice()).transpose()?,
-            y_tversky: y_tversky.as_ref().map(|a| a.as_slice()).transpose()?,
-            x_cosine: x_cosine.as_ref().map(|a| a.as_slice()).transpose()?,
-            y_cosine: y_cosine.as_ref().map(|a| a.as_slice()).transpose()?,
-            x_depop: x_depop.as_ref().map(|a| a.as_slice()).transpose()?,
-            y_depop: y_depop.as_ref().map(|a| a.as_slice()).transpose()?,
-        },
-        params: Params {
-            a1,
-            l1,
-            l2,
-            l3,
-            t1,
-            t2,
-            stabilized_shrink,
-            bayesian_shrink,
-            threshold,
-        },
-        filter: selection("filter_cols", &filter, n_output_cols)?,
-        target_cols: selection("target_cols", &target, n_output_cols)?,
+        norms: norms.norms()?,
+        params: params.into(),
+        filter: selection("filter_cols", &filter, n_cols)?,
+        target_cols: selection("target_cols", &target, n_cols)?,
         col_map: Some(col_map.as_slice()?),
     };
 
@@ -183,6 +214,7 @@ where
 /// In place: renumbers columns by `forward` and sorts every row, carrying
 /// `data` (None: the pattern only; prep for the blocked kernel).
 #[pyfunction]
+#[pyo3(signature = (*, indptr, indices, data, forward, num_threads))]
 fn remap_sort_rows(
     py: Python<'_>,
     indptr: PyReadonlyArray1<'_, i32>,
@@ -205,6 +237,7 @@ fn remap_sort_rows(
 /// In place: canonical rows (sorted, duplicates summed, zeros dropped),
 /// compacted to the front; returns the new indptr. Data float32 or float64.
 #[pyfunction]
+#[pyo3(signature = (*, indptr, indices, data, num_threads))]
 fn canonicalize_rows<'py>(
     py: Python<'py>,
     indptr: PyReadonlyArray1<'py, i32>,
