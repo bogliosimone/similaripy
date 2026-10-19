@@ -1,5 +1,5 @@
-from ._s_plus import s_plus as _s_plus, _check_scalar
-from .normalization import binarize as _binarize, normalize as _normalize
+from ._s_plus import s_plus as _s_plus, _check_scalar, _col_sums
+from . import _core
 import numpy as np
 
 from typing import Optional, Union, Literal
@@ -450,9 +450,6 @@ def p3alpha(
     _check_scalar('alpha', alpha, strict=True)  # 0 makes every probability 1, < 0 inverts them
     if matrix2 is None:
         matrix2 = matrix1.T
-    if binary:  # before the normalization, which the kernel's binary mode would erase
-        matrix1, matrix2 = _binarize(matrix1), _binarize(matrix2)
-    matrix1, matrix2 = _transition_probabilities(matrix1, alpha), _transition_probabilities(matrix2, alpha)
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, 'p3alpha', cosine=False, denominator=False)
     return _s_plus(
@@ -469,6 +466,7 @@ def p3alpha(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
+        prepare=_random_walk(alpha, binary, popularity=False),
     )
 
 
@@ -520,15 +518,10 @@ def rp3beta(
     _check_scalar('alpha', alpha, strict=True)  # 0 makes every probability 1, < 0 inverts them
     if matrix2 is None:
         matrix2 = matrix1.T
-    if binary:  # before the normalization, which the kernel's binary mode would erase
-        matrix1, matrix2 = _binarize(matrix1), _binarize(matrix2)
-    pop_m2 = _abs_col_sums(matrix2)  # item degree when binary
-    matrix1, matrix2 = _transition_probabilities(matrix1, alpha), _transition_probabilities(matrix2, alpha)
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, 'rp3beta', cosine=False, denominator=True)
     return _s_plus(
         matrix1=matrix1, matrix2=matrix2,
-        weight_depop_matrix2=pop_m2,
         p2=beta,
         l3=1,
         k=k,
@@ -543,6 +536,7 @@ def rp3beta(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
+        prepare=_random_walk(alpha, binary, popularity=True),
     )
 
 
@@ -647,12 +641,23 @@ def s_plus(
     )
 
 
-def _transition_probabilities(m: sparray, alpha: float) -> sparray:
-    """The random walk's transition probabilities (rows l1-normalized) raised to
-    alpha, as in the P3alpha / RP3beta papers; a copy."""
-    m = _normalize(m, norm='l1', axis=1, inplace=False)
-    m.data = _signed_power(m.data, alpha)
-    return m
+def _random_walk(alpha: float, binary: bool, popularity: bool):
+    """
+    `prepare` for p3alpha / rp3beta, on the call's canonical copies (cleaned
+    once, no extra copy): binarize if asked, rp3beta's popularity (column sums
+    of |x| of m2, the item degree when binary), then the transition
+    probabilities (rows l1-normalized) raised to alpha, as in the papers.
+    """
+    def prepare(m1, m2):
+        if binary:  # before the normalization, which the kernel's binary mode would erase
+            m1.data[:] = 1
+            m2.data[:] = 1
+        pop = _col_sums(np.abs(m2.data), m2.indices, m2.shape[1]) if popularity else None
+        for m in (m1, m2):
+            _core.normalize(m.data, m.indices, m.indptr, m.shape, 'l1')
+            m.data = _signed_power(m.data, alpha)
+        return pop
+    return prepare
 
 
 def _signed_power(x: np.ndarray, alpha: float) -> np.ndarray:
@@ -662,19 +667,6 @@ def _signed_power(x: np.ndarray, alpha: float) -> np.ndarray:
     if alpha == 1:
         return x
     return np.copysign(np.abs(x) ** alpha, x)
-
-
-def _abs_col_sums(m: sparray) -> np.ndarray:
-    """
-    Column sums of |x| over the summed entries, as in the canonical matrix the
-    kernel sees: duplicates (3, -1) count 2, not 4. Non-negative input keeps the
-    plain m.sum(axis=0), its exact float additions: summing duplicates first
-    (what scipy's abs() does, in place, hence the copy) sorts COO and unsorted
-    CSC entries and moves popularities by an ulp.
-    """
-    if not (m.tocoo(copy=False).data < 0).any():
-        return np.asarray(m.sum(axis=0)).ravel()
-    return np.asarray(abs(m.copy()).sum(axis=0)).ravel()
 
 
 def _shrink_values(shrink: float, shrink_type: str, name: str, cosine: bool,

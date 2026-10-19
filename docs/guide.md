@@ -135,6 +135,9 @@ Earlier v1 builds rejected any value that was not finite and `> 0`. Now:
 - Popularity `'sum'` in `s_plus` and the `rp3beta` popularity are sums of `|x|`
   over the summed entries; P3α / RP3β raise signed weights to `alpha` keeping
   their sign.
+- `p3alpha` / `rp3beta` copy their input once and normalize it in float32
+  (numpy prep peak on Yambda 50M about 40% lower); float64 input may move by
+  float rounding.
 - A `filter_cols` / `target_cols` matrix with duplicate entries that cancel
   (e.g. `+1` and `-1`) no longer selects that column, in any format.
 - `binary=True` still treats every non-zero (negative too) as `1`.
