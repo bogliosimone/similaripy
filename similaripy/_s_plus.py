@@ -212,27 +212,25 @@ def _check_data(m1, m2, params: Params, norm_params: NormParams) -> None:
     `signed` is read from the values the kernel sees, so binary input is never
     signed.
     """
-    a1, l1, l3, t1, t2, bayesian_shrink = (params.a1, params.l1, params.l3, params.t1, params.t2,
-                                           params.bayesian_shrink)
     binary = norm_params.binary
     for name, m in (('matrix1', m1), ('matrix2', m2)):
         if not np.isfinite(m.data).all():
             raise ValueError(f'{name} values must be finite (in float32)')
     signed = not binary and bool((m1.data < 0).any() or (m2.data < 0).any())
-    _check_score_rules(signed, binary, a1, l1, t1, t2, bayesian_shrink, m1.data, m2.data)
-    if l3 != 0:
+    _check_score_rules(signed, binary, params, m1.data, m2.data)
+    if params.l3 != 0:
         _check_used_weights('weight_depop_matrix1 (pop1)', norm_params.depop1, np.diff(m1.indptr) > 0)
         _check_used_weights('weight_depop_matrix2 (pop2)', norm_params.depop2,
                             np.bincount(m2.indices, minlength=m2.shape[1]) > 0)
 
 
-def _check_score_rules(signed: bool, binary: bool, a1, l1, t1, t2, bayesian_shrink,
-                        m1_data, m2_data) -> None:
+def _check_score_rules(signed: bool, binary: bool, params: Params, m1_data, m2_data) -> None:
     """
     Parameters that would be wrong on signed input (docs/guide.md, "Signed
     Input"), plus the tversky denominator rule, which also binds on
     non-negative weighted input.
     """
+    a1, l1, t1, t2, bayesian_shrink = params.a1, params.l1, params.t1, params.t2, params.bayesian_shrink
     if signed and bayesian_shrink != 0:
         raise ValueError("bayesian shrink (shrink_type='bayesian', s_plus bayesian_shrink) is not "
                          'supported on signed input (values < 0): xy / (xy + shrink) flips the sign '
@@ -525,10 +523,11 @@ def _s_plus(
         norm_params = norm_params._replace(depop2=w)
     n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]
     _check_data(m1, m2, params, norm_params)
-    m1_data, m2_data = (np.ones(m.nnz, dtype=np.float32) if norm_params.binary else m.data
-                        for m in (m1, m2))
-    m1_arrays = Csr(m1_data, m1.indices, m1.indptr, m1.shape[1])
-    m2_arrays = Csr(m2_data, m2.indices, m2.indptr, n_output_cols)
+    if norm_params.binary:  # in place: the raw values were only needed by `_check_data`
+        m1.data[:] = 1
+        m2.data[:] = 1
+    m1_arrays = Csr(m1.data, m1.indices, m1.indptr, m1.shape[1])
+    m2_arrays = Csr(m2.data, m2.indices, m2.indptr, n_output_cols)
 
     if block_size == 0:  # auto; None (no blocking) and int > 0 go as they are
         block_size = DEFAULT_BLOCK_SIZE
