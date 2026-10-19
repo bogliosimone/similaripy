@@ -49,7 +49,8 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
 ### Reproducibility contract
 - **Same version + same machine → identical results, bit for bit**, run to run, whatever `num_threads` or `block_size`. Different versions or platforms may differ by float rounding.
 - New code keeps the **addition order within an output row fixed by the data**, never by thread timing: no atomic float adds, no "first finished, first combined". Intra-row parallelism only by column blocks or fixed chunks combined in a fixed order.
-- **Exact check on every core change:** `check_kernel_parity.py --dump` under the base and under the head, then compare the arrays byte for byte. An unexpected difference is a bug until explained; an expected one (a precision-for-speed trade) needs a tolerance check against an f64 reference + top-k overlap with the previous version, and a changelog line.
+- **Parity check on every core change:** `check_kernel_parity.py --dump` under the base, `--compare` under the head. A refactor that claims no change: `--exact` (free, catches real bugs). Any other change: `--rtol 1e-4` + top-k overlap with the previous version, and a migration-notes line if users can see it. Small float differences (float32 vs float64, summation order) are fine: never add code just to keep bits identical.
+- **Normal use cases first:** extreme values (e.g. data ×1e-30 or ×1e19, past float32 range) are best effort; a cheap check on a realistic failure is fine, dedicated code paths are not.
 
 ### Index widths
 - Inputs and ids are **int32** (each input's nnz ≤ int32 max, output column ids int32). Only output counts and offsets are 64-bit: past 2^31 results the CSR output gets int64 indptr and indices.
