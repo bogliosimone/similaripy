@@ -33,7 +33,6 @@ _COLUMN_ORDER = 'popularity'
 _MAX_INT32_NNZ = np.iinfo(np.int32).max
 
 _EMPTY_F32 = np.empty(0, dtype=np.float32)
-_EMPTY_I32 = np.empty(0, dtype=np.int32)
 
 
 class Norms(NamedTuple):
@@ -335,11 +334,6 @@ def _keep_columns(data, indices, indptr, keep_mask):
     return data[sel], indices[sel], new_indptr
 
 
-def _sorted_rows(data, indices, indptr, forward, num_threads):
-    """Columns renumbered by `forward` and rows re-sorted by column id, in place, in Rust, in parallel."""
-    _core.remap_sort_rows(indptr, indices, data, forward, num_threads)
-
-
 # ---- Entry point ----
 
 def s_plus(
@@ -518,7 +512,7 @@ def _s_plus(
         k, n_output_cols,
         filt,
         targ,
-        _EMPTY_I32 if new_to_old is None else new_to_old,
+        new_to_old,
         num_threads, block_size, bar,
     )
     kernel_end = time.perf_counter()
@@ -633,40 +627,33 @@ def _popularity_layout(m2_arrays, norms, filt, targ, n_cols, num_threads):
     descending count, on every call, blocked or not. Popular columns share the
     first, cache-hot blocks, and the kernel's tie rule (lower column wins) means
     the same thing on every path: ties go to the more popular column, then to
-    the lower original id (stable sort). The kernel writes original ids
-    (`new_to_old`, None when the order is already the identity). Blocking needs
-    sorted m2 rows (binary search): canonical m2 is, and a renumbering re-sorts.
+    the lower original id (stable sort); 'original' keeps the ids (one path:
+    an identity remap). The kernel writes original ids (`new_to_old`).
+    Blocking needs sorted m2 rows (binary search): canonical m2 is, and a
+    renumbering re-sorts.
     """
     m2_data, m2_indices, m2_indptr = m2_arrays
-    new_to_old = None
     if _COLUMN_ORDER == 'popularity':
-        col_nnz = np.bincount(m2_indices, minlength=n_cols)
-        order = np.argsort(-col_nnz, kind='stable').astype(np.int32)
-        if not np.array_equal(order, np.arange(n_cols, dtype=np.int32)):
-            new_to_old = order
-            old_to_new = np.empty(n_cols, dtype=np.int32)
-            old_to_new[new_to_old] = np.arange(n_cols, dtype=np.int32)
-            norms = norms._replace(y_tversky=_permuted(norms.y_tversky, new_to_old),
-                                   y_cosine=_permuted(norms.y_cosine, new_to_old),
-                                   y_depop=_permuted(norms.y_depop, new_to_old))
-            filt, targ = (_renumbered_pattern(sel, old_to_new, num_threads) for sel in (filt, targ))
-            # ponytail: unblocked calls re-sort too (one Rust pass does both); a
-            # remap-only pass would skip the sort if it ever shows in a profile
-            _sorted_rows(m2_data, m2_indices, m2_indptr, old_to_new, num_threads)
+        new_to_old = np.argsort(-np.bincount(m2_indices, minlength=n_cols), kind='stable').astype(np.int32)
+    else:
+        new_to_old = np.arange(n_cols, dtype=np.int32)
+    old_to_new = np.empty(n_cols, dtype=np.int32)
+    old_to_new[new_to_old] = np.arange(n_cols, dtype=np.int32)
+    norms = norms._replace(y_tversky=_permuted(norms.y_tversky, new_to_old),
+                           y_cosine=_permuted(norms.y_cosine, new_to_old),
+                           y_depop=_permuted(norms.y_depop, new_to_old))
+    for sel in (filt, targ):  # matrix selectors: the pattern only
+        if sel is not None:
+            _core.remap_sort_rows(*sel, None, old_to_new, num_threads)
+    # ponytail: unblocked calls re-sort too (one Rust pass does both); a
+    # remap-only pass would skip the sort if it ever shows in a profile
+    _core.remap_sort_rows(m2_indptr, m2_indices, m2_data, old_to_new, num_threads)
     return (m2_data, m2_indices, m2_indptr), norms, filt, targ, new_to_old
 
 
 def _permuted(y, new_to_old):
     """A per-column norm in the new column order (empty: unused, unchanged)."""
     return y[new_to_old] if len(y) else y
-
-
-def _renumbered_pattern(sel, old_to_new, num_threads):
-    """A matrix selector with its columns renumbered by `old_to_new` and rows re-sorted (in place); None unchanged."""
-    if sel is not None and len(sel[1]) != 0:
-        indptr, indices = sel
-        _sorted_rows(np.ones(len(indices), dtype=np.float32), indices, indptr, old_to_new, num_threads)
-    return sel
 
 
 def _build_output(cols, vals, counts, targets, shape, format_output):
