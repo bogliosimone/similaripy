@@ -58,7 +58,7 @@ fn selection<'a>(
 }
 
 /// The kernel inputs as flat arrays (positional for now), plus `col_map`
-/// (output id of each m2 column; empty = keep the ids) and `block_size`
+/// (output id of each m2 column) and `block_size`
 /// (None = no column blocking). Returns `(cols, values, counts)`: row `i` of
 /// `targets` has `counts[i]` results, sorted by column, packed in
 /// `cols`/`values` (numpy arrays over the Rust buffers, no copy). Releases the
@@ -144,7 +144,7 @@ fn compute_similarities<'py>(
         },
         filter: selection("filter_cols", &filter, n_output_cols)?,
         target_cols: selection("target_cols", &target, n_output_cols)?,
-        col_map: Some(col_map.as_slice()?).filter(|m| !m.is_empty()),
+        col_map: Some(col_map.as_slice()?),
     };
 
     let block_size = block_size.unwrap_or(0); // the core's 0 = no blocking
@@ -179,19 +179,20 @@ where
     }
 }
 
-/// In place: renumbers columns by `forward` (empty = keep) and sorts every
-/// row, carrying `data` (prep for the blocked kernel).
+/// In place: renumbers columns by `forward` and sorts every row, carrying
+/// `data` (None: the pattern only; prep for the blocked kernel).
 #[pyfunction]
 fn remap_sort_rows(
     py: Python<'_>,
     indptr: PyReadonlyArray1<'_, i32>,
     mut indices: PyReadwriteArray1<'_, i32>,
-    mut data: PyReadwriteArray1<'_, f32>,
+    mut data: Option<PyReadwriteArray1<'_, f32>>,
     forward: PyReadonlyArray1<'_, i32>,
     num_threads: usize,
 ) -> PyResult<()> {
     let (indptr, forward) = (indptr.as_slice()?, forward.as_slice()?);
-    let (indices, data) = (indices.as_slice_mut()?, data.as_slice_mut()?);
+    let indices = indices.as_slice_mut()?;
+    let data = data.as_mut().map(|d| d.as_slice_mut()).transpose()?;
     py.detach(|| {
         with_pool(num_threads, || {
             similaripy_core::prep::remap_sort_rows(indptr, indices, data, forward)
