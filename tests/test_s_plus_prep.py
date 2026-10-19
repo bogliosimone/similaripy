@@ -127,7 +127,7 @@ def test_progress_bar_closed_on_prep_error(capfd, monkeypatch):
 
     def boom(cols, num_threads):
         raise RuntimeError('prep failed')
-    monkeypatch.setattr(_s_plus, '_column_selector', boom)
+    monkeypatch.setattr(_s_plus, '_matrix_selector', boom)
     with pytest.raises(RuntimeError, match='prep failed'):
         sim.cosine(_m(), k=5, verbose=True)
     assert capfd.readouterr().err.split('\r')[-1].startswith('Failed:')

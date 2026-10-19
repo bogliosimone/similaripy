@@ -15,8 +15,6 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
 use progress::ProgressBar;
 use similaripy_core::{CsrPattern, CsrView, Error, Inputs, Norms, Params, compute};
 
-const SELECTION_MATRIX: i32 = 2;
-
 pub(crate) fn to_py(e: Error) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
@@ -42,24 +40,26 @@ fn cached_pool(n: usize) -> Result<Arc<ThreadPool>, Error> {
     })
 }
 
+/// A matrix column selector as `(indptr, indices)`; None = no selector (list
+/// selectors are applied in Python). Empty `Some` selects nothing.
+type Selection<'py> = Option<(PyReadonlyArray1<'py, i32>, PyReadonlyArray1<'py, i32>)>;
+
 fn selection<'a>(
-    mode: i32,
     name: &'static str,
-    indptr: &'a [i32],
-    indices: &'a [i32],
+    sel: &'a Selection<'_>,
     n_cols: usize,
 ) -> PyResult<Option<CsrPattern<'a>>> {
-    // NONE and ARRAY (pre-filtered in Python) need no per-row check.
-    if mode != SELECTION_MATRIX {
+    let Some((indptr, indices)) = sel else {
         return Ok(None);
-    }
-    CsrPattern::new(name, indptr, indices, n_cols)
+    };
+    CsrPattern::new(name, indptr.as_slice()?, indices.as_slice()?, n_cols)
         .map(Some)
         .map_err(to_py)
 }
 
 /// The kernel inputs as flat arrays (positional for now), plus `col_map`
-/// (output id of each m2 column; empty = keep the ids). Returns `(cols, values, counts)`: row `i` of
+/// (output id of each m2 column; empty = keep the ids) and `block_size`
+/// (None = no column blocking). Returns `(cols, values, counts)`: row `i` of
 /// `targets` has `counts[i]` results, sorted by column, packed in
 /// `cols`/`values` (numpy arrays over the Rust buffers, no copy). Releases the
 /// GIL. `num_threads = 0` runs on the global rayon pool (concurrent callers
@@ -93,15 +93,11 @@ fn compute_similarities<'py>(
     threshold: f32,
     k: usize,
     n_output_cols: usize,
-    filter_mode: i32,
-    filter_indptr: PyReadonlyArray1<i32>,
-    filter_indices: PyReadonlyArray1<i32>,
-    target_mode: i32,
-    target_indptr: PyReadonlyArray1<i32>,
-    target_indices: PyReadonlyArray1<i32>,
+    filter: Selection<'py>,
+    target: Selection<'py>,
     col_map: PyReadonlyArray1<i32>,
     num_threads: usize,
-    block_size: usize,
+    block_size: Option<usize>,
     progress: Option<Bound<'_, ProgressBar>>,
 ) -> PyResult<(
     Bound<'py, PyArray1<i32>>,
@@ -146,23 +142,12 @@ fn compute_similarities<'py>(
             bayesian_shrink,
             threshold,
         },
-        filter: selection(
-            filter_mode,
-            "filter_cols",
-            filter_indptr.as_slice()?,
-            filter_indices.as_slice()?,
-            n_output_cols,
-        )?,
-        target_cols: selection(
-            target_mode,
-            "target_cols",
-            target_indptr.as_slice()?,
-            target_indices.as_slice()?,
-            n_output_cols,
-        )?,
+        filter: selection("filter_cols", &filter, n_output_cols)?,
+        target_cols: selection("target_cols", &target, n_output_cols)?,
         col_map: Some(col_map.as_slice()?).filter(|m| !m.is_empty()),
     };
 
+    let block_size = block_size.unwrap_or(0); // the core's 0 = no blocking
     let bar = progress.as_ref().map(|b| b.get());
     let out = py
         .detach(|| {
