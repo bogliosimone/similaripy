@@ -1,6 +1,6 @@
 # 🧮 Normalization Functions
 
-SimilariPy includes several normalization functions designed for sparse matrix pre-processing. All functions are implemented in Cython and support in-place operation for memory efficiency.
+SimilariPy includes several normalization functions designed for sparse matrix pre-processing. All functions return a new CSR matrix (the input never changes): float32 or float64 values as the input (other types become float32), int32 indices, duplicates summed, no explicit zeros.
 
 ## Normalizations
 
@@ -19,7 +19,6 @@ All normalization functions in SimilariPy share the following parameters:
 | Parameter     | Description |
 |---------------|-------------|
 | `axis`        | `1` for row-wise (default), `0` for column-wise normalization. |
-| `inplace`     | If `True`, modifies the input matrix in-place. |
 | `logbase`     | Base of the logarithm (e.g. `e`, `2`) for TF-IDF and BM25. |
 | `tf_mode`     | Term frequency transformation mode for TF-IDF and BM25 (see TF table). |
 | `idf_mode`    | Inverse document frequency mode for TF-IDF and BM25 (see IDF table). |
@@ -54,5 +53,5 @@ All normalization functions in SimilariPy share the following parameters:
 
 ## Notes
 
-- All normalization functions can operate in-place on **CSR** format to reduce memory overhead.
+- All normalization functions return a new matrix: use the return value, `X = bm25(X)`.
 - `bm25` and `tfidf` are ideal for text, user-item, or interaction data.

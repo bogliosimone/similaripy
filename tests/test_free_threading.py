@@ -47,7 +47,7 @@ def test_concurrent_calls_match_serial():
     with ThreadPoolExecutor(N_THREADS) as pool:
         for name, got in pool.map(run, jobs):
             np.testing.assert_array_equal(got, expected[name], err_msg=name)  # same machine: same bits
-    # inputs are not modified by non-inplace calls
+    # inputs are never modified
     np.testing.assert_array_equal(m.toarray(), _matrix().toarray())
 
 

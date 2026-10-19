@@ -121,12 +121,6 @@ def _check_args(
     if not (_is_int(num_threads) and num_threads >= 0):
         raise ValueError(f'num_threads must be an integer >= 0, got {num_threads!r}')
 
-    # Input indices and indptrs are int32: fail loudly instead of wrapping. The
-    # output may pass 2^31 results (see `_MAX_INT32_NNZ`).
-    int32_max = np.iinfo(np.int32).max
-    if matrix1.nnz > int32_max or matrix2.nnz > int32_max:
-        raise ValueError(f"input matrices must have at most {int32_max} non-zeros")
-
 
 def _is_int(x) -> bool:
     return isinstance(x, (int, np.integer)) and not isinstance(x, (bool, np.bool_))
@@ -232,21 +226,30 @@ def _one_value(*arrays) -> bool:
 
 # ---- Prep helpers (numpy) ----
 
-def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
+def _canonical_csr(matrix: sp.sparray, dtype, num_threads: int) -> sp.csr_array:
     """
-    The call's own canonical copy of `matrix`: CSR, float32 values, int32
-    indices, rows sorted, duplicates summed, no explicit zeros. Always a copy:
-    the caller's matrix never changes, and every later prep step assumes this
-    form and may change the arrays in place.
+    The call's own canonical copy of `matrix`: CSR, `dtype` values (float32 or
+    float64), int32 indices, rows sorted, duplicates summed, no explicit zeros.
+    Always a copy: the caller's matrix never changes, and every later prep step
+    assumes this form and may change the arrays in place. One cleaner for the
+    similarities (float32) and the normalizations (the input's float type).
 
     Explicit zeros are wrong in binary mode (they would become 1.0), and
     unsummed duplicates give wrong norms and binary counts. One route: the
-    arrays are copied once into float32/int32 (zeros are dropped after the
-    cast, so a float64 value below float32's range goes too); canonical input
+    arrays are copied once into `dtype`/int32 (zeros are dropped after the
+    cast, so a float64 value below float32's range goes too when `dtype` is
+    float32); canonical input
     (e.g. our own COO output, fed back) then only drops zeros, the rest goes
     through the Rust canonicalization, which replaces scipy's single-threaded
     COO -> CSR (2.2 s on a 93M-entry COO item model).
+
+    Raises:
+        ValueError: more than 2^31 - 1 stored entries (indices are int32: fail
+            loudly instead of wrapping; outputs may pass 2^31, `_MAX_INT32_NNZ`).
     """
+    int32_max = np.iinfo(np.int32).max
+    if matrix.nnz > int32_max:
+        raise ValueError(f'sparse inputs must have at most {int32_max} non-zeros')
     if matrix.format == 'coo':
         rows, cols, data = matrix.row, matrix.col, matrix.data
         if np.any(rows[1:] < rows[:-1]):
@@ -259,8 +262,8 @@ def _canonical_csr(matrix: sp.sparray, num_threads: int) -> sp.csr_array:
         indptr, cols, data = csr.indptr.astype(np.int32), csr.indices, csr.data
     canonical = (matrix if matrix.format == 'coo' else csr).has_canonical_format
     indices = cols.astype(np.int32)
-    with np.errstate(over='ignore'):  # inf: reported by the finite check (`_check_data`)
-        data = data.astype(np.float32)
+    with np.errstate(over='ignore'):  # inf: reported by the similarities' finite check (`_check_data`)
+        data = data.astype(dtype)
     if canonical:
         out = sp.csr_array((data, indices, indptr), shape=matrix.shape)
         if (data == 0).any():
@@ -314,7 +317,7 @@ def _matrix_selector(cols, num_threads: int):
     nothing (as explicit zeros only); an empty one is no selector.
     """
     if sp.issparse(cols) and cols.data.shape[0] != 0:
-        cols = _canonical_csr(cols, num_threads)
+        cols = _canonical_csr(cols, np.float32, num_threads)
         return cols.indptr, cols.indices
     return None
 
@@ -481,8 +484,8 @@ def _s_plus(
     stabilized_shrink, bayesian_shrink, additive_shrink, threshold, binary,
     filter_cols, target_cols, format_output, num_threads, block_size, prepare,
 ):
-    m1 = _canonical_csr(matrix1, num_threads)
-    m2 = _canonical_csr(matrix2, num_threads)
+    m1 = _canonical_csr(matrix1, np.float32, num_threads)
+    m2 = _canonical_csr(matrix2, np.float32, num_threads)
     if prepare is not None and (w := prepare(m1, m2)) is not None:
         weight_depop_matrix2 = w
     n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]

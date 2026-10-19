@@ -4,7 +4,7 @@ SimilariPy provides **high-performance KNN similarity functions** in Python, opt
 
 Primarily designed for Recommender Systems and Information Retrieval (IR) tasks, but can be applied to other domains as well.
 
-The package also includes a set of normalization functions useful for pre-processing data in-place before the similarity computation.
+The package also includes a set of normalization functions useful for pre-processing data before the similarity computation.
 
 ## Similarity Functions
 
@@ -30,7 +30,7 @@ All functions are multi-threaded and implemented in Cython + OpenMP for fast par
 ## Normalization Functions
 
 SimilariPy provides a suite of normalization functions for sparse matrix pre-processing.  
-All functions are implemented in Cython and can operate in-place on CSR matrixes for maximum performance and memory efficiency.
+All functions return a new canonical CSR matrix (multi-threaded Rust core); the input never changes.
 
 - **L1, L2** – Applies row- or column-wise normalization.
 - **TF-IDF** – Computes TF-IDF weighting with customizable term-frequency and IDF modes.
@@ -117,8 +117,6 @@ Earlier v1 builds rejected any value that was not finite and `> 0`. Now:
 - Negative values are accepted wherever the result stays meaningful;
   where it would be wrong a `ValueError` says why (bayesian shrink, `alpha != 1`
   in `s_plus` on signed input; `tfidf`, `bm25`, `bm25plus` on negative values).
-  With `inplace=True` those three canonicalize a CSR caller's matrix before
-  raising, as they do for any input.
 - `tversky` / `s_plus` (`l1 != 0`, not binary) reject `alpha`/`beta` pairs whose
   denominator can be `<= 0`: when `alpha + beta > 1` on any weighted input (e.g.
   `(3, 0.05)`, which 0.7.0 silently dropped pairs for), and when
@@ -141,6 +139,11 @@ Earlier v1 builds rejected any value that was not finite and `> 0`. Now:
 - A `filter_cols` / `target_cols` matrix with duplicate entries that cancel
   (e.g. `+1` and `-1`) no longer selects that column, in any format.
 - `binary=True` still treats every non-zero (negative too) as `1`.
+- `normalize`, `binarize`, `tfidf`, `bm25`, `bm25plus` no longer take
+  `inplace` (a `TypeError`): use the return value, `X = bm25(X)`. They always
+  return a new `csr_array` (also for `spmatrix` input: use `@` for products)
+  with int32 indices (float32/float64 values kept), and raise
+  a `ValueError` past 2^31 - 1 entries, as the similarities.
 
 ## In-depth Introduction
 
