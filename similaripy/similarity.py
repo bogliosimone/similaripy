@@ -1,4 +1,4 @@
-from ._s_plus import s_plus as _s_plus
+from ._s_plus import s_plus as _s_plus, _check_scalar
 from .normalization import binarize as _binarize, normalize as _normalize
 import numpy as np
 
@@ -447,16 +447,12 @@ def p3alpha(
     Returns:
         A sparse matrix of top-k P3alpha similarities in the specified format.
     """
-    if not (np.isfinite(alpha) and alpha > 0):  # 0 makes every probability 1, < 0 inverts them
-        raise ValueError(f'alpha must be finite and > 0, got {alpha}')
+    _check_scalar('alpha', alpha, strict=True)  # 0 makes every probability 1, < 0 inverts them
     if matrix2 is None:
         matrix2 = matrix1.T
     if binary:  # before the normalization, which the kernel's binary mode would erase
         matrix1, matrix2 = _binarize(matrix1), _binarize(matrix2)
-    matrix1 = _normalize(matrix1, norm='l1', axis=1, inplace=False)
-    matrix1.data = _signed_power(matrix1.data, alpha)
-    matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
-    matrix2.data = _signed_power(matrix2.data, alpha)
+    matrix1, matrix2 = _transition_probabilities(matrix1, alpha), _transition_probabilities(matrix2, alpha)
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, 'p3alpha', cosine=False, denominator=False)
     return _s_plus(
@@ -521,17 +517,13 @@ def rp3beta(
     Returns:
         A sparse matrix of top-k RP3beta similarities in the specified format.
     """
-    if not (np.isfinite(alpha) and alpha > 0):  # 0 makes every probability 1, < 0 inverts them
-        raise ValueError(f'alpha must be finite and > 0, got {alpha}')
+    _check_scalar('alpha', alpha, strict=True)  # 0 makes every probability 1, < 0 inverts them
     if matrix2 is None:
         matrix2 = matrix1.T
     if binary:  # before the normalization, which the kernel's binary mode would erase
         matrix1, matrix2 = _binarize(matrix1), _binarize(matrix2)
     pop_m2 = _abs_col_sums(matrix2)  # item degree when binary
-    matrix1 = _normalize(matrix1, norm='l1', axis=1, inplace=False)
-    matrix1.data = _signed_power(matrix1.data, alpha)
-    matrix2 = _normalize(matrix2, norm='l1', axis=1, inplace=False)
-    matrix2.data = _signed_power(matrix2.data, alpha)
+    matrix1, matrix2 = _transition_probabilities(matrix1, alpha), _transition_probabilities(matrix2, alpha)
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, 'rp3beta', cosine=False, denominator=True)
     return _s_plus(
@@ -653,6 +645,14 @@ def s_plus(
         num_threads=num_threads,
         block_size=block_size,
     )
+
+
+def _transition_probabilities(m: sparray, alpha: float) -> sparray:
+    """The random walk's transition probabilities (rows l1-normalized) raised to
+    alpha, as in the P3alpha / RP3beta papers; a copy."""
+    m = _normalize(m, norm='l1', axis=1, inplace=False)
+    m.data = _signed_power(m.data, alpha)
+    return m
 
 
 def _signed_power(x: np.ndarray, alpha: float) -> np.ndarray:
