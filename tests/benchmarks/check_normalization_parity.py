@@ -3,7 +3,8 @@ Normalization parity: this install vs a reference install's `--dump`
 (two steps, as check_kernel_parity.py).
 
 Every output value must match with rtol=1e-5, atol=1e-7 (NaN/inf must match too);
-output dtypes and the sparsity structure must be identical.
+the data dtype and the sparsity structure must be identical (index dtypes may
+differ: v1 outputs int32 indices for any input, 0.7.0 kept the input's).
 
 Usage (from the repo root; the same options on both steps):
     uv run --isolated --no-project --python 3.14 --with similaripy==0.7.0 --with pandas --with datasets \
@@ -53,20 +54,23 @@ def with_dtypes(X, data_dtype, index_dtype):
     return X
 
 
-def check_case(name, cy, rs):
+def check_case(name, ref, rs):
+    """ref: the dumped (data, indices, indptr, shape). Returns (ok, bit-identical)."""
+    data, indices, indptr, shape = ref
     fail = None
-    if cy.data.dtype != rs.data.dtype or cy.indices.dtype != rs.indices.dtype:
-        fail = f'dtype {cy.data.dtype}/{cy.indices.dtype} vs {rs.data.dtype}/{rs.indices.dtype}'
-    elif not (np.array_equal(cy.indptr, rs.indptr) and np.array_equal(cy.indices, rs.indices)):
+    if data.dtype != rs.data.dtype:
+        fail = f'dtype {data.dtype} vs {rs.data.dtype}'
+    elif not (tuple(shape) == rs.shape and np.array_equal(indptr, rs.indptr)
+              and np.array_equal(indices, rs.indices)):
         fail = 'structure differs'
     else:
-        bad = ~np.isclose(rs.data, cy.data, rtol=RTOL, atol=ATOL, equal_nan=True)
+        bad = ~np.isclose(rs.data, data, rtol=RTOL, atol=ATOL, equal_nan=True)
         if bad.any():
             j = np.flatnonzero(bad)[0]
-            fail = f'{bad.sum()} values differ, first at {j}: ref {cy.data[j]!r} vs new {rs.data[j]!r}'
+            fail = f'{bad.sum()} values differ, first at {j}: ref {data[j]!r} vs new {rs.data[j]!r}'
     if fail:
         print(f'{name:<40} FAIL  {fail}')
-    return fail is None
+    return fail is None, fail is None and np.array_equal(data, rs.data, equal_nan=True)
 
 
 def main():
@@ -88,7 +92,7 @@ def main():
     meta = {k: v for k, v in vars(args).items() if k not in ('dump', 'compare')}
     ref = None if args.dump else load_outputs(args.compare, meta)
 
-    ok, outputs = True, {}
+    ok, n_exact, outputs = True, 0, {}
     for data_dtype, index_dtype, axis in itertools.product((np.float32, np.float64), (np.int32, np.int64), (1, 0)):
         X = with_dtypes(X0, data_dtype, index_dtype)
         tag = f'{np.dtype(data_dtype).name}/{np.dtype(index_dtype).name}/axis={axis}'
@@ -101,14 +105,16 @@ def main():
             if ref is None:
                 outputs[key] = out
             else:
-                group_ok &= check_case(key, ref(key), out)
+                case_ok, exact = check_case(key, ref(key), out)
+                group_ok &= case_ok
+                n_exact += exact
         if ref is not None:
             print(f'{tag:<28} {"OK" if group_ok else "FAIL"}')
         ok &= group_ok
     if ref is None:
         save_outputs(args.dump, outputs, meta)
         return
-    print(f'{"PASS" if ok else "FAIL"} ({len(cases(full)) * 8} cases)')
+    print(f'{"PASS" if ok else "FAIL"} ({len(cases(full)) * 8} cases, {n_exact} bit-identical)')
     sys.exit(0 if ok else 1)
 
 
