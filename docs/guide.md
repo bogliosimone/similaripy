@@ -110,6 +110,26 @@ similarity_matrix = sim.cosine(urm.T, k=50, threshold=1e-6)
   [Similarities](similarity.md#signed-input) and
   [Normalizations](normalization.md#signed-input).
 
+## Recipes
+
+### Compacting empty rows and columns
+
+Rows and columns without entries still take space in the output and in the
+per-column buffers. To drop them, keep the ids of the non-empty ones as maps
+back to the original ids:
+
+```python
+rows = np.flatnonzero(np.diff(urm.indptr))  # users with entries (urm is CSR)
+cols = np.unique(urm.indices)  # items with entries
+compact = urm[rows][:, cols]
+
+# Compact row i is user rows[i], compact column j is item cols[j]
+item_similarity = sim.cosine(compact.T, k=50)
+neighbours_of_first_item = cols[item_similarity[[0]].indices]
+```
+
+An id missing from `rows` or `cols` has no values, so it has no results either.
+
 Coming from 0.7.0? See [Migration from 0.7.0](migration.md) for every change.
 
 ## In-depth Introduction

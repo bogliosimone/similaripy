@@ -127,7 +127,7 @@ notebook = [
   "optuna",
   "umap-learn",
   "scikit-learn",
-  "IProgress",
+  "ipywidgets",
 ]
 
 [tool.ty.src]
