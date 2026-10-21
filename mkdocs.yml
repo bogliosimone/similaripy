@@ -59,6 +59,7 @@ nav:
   - Getting Started: guide.md
   - Similarities: similarity.md
   - Normalizations: normalization.md
+  - Migration from 0.7.0: migration.md
   - Full API Reference:
       - Similarity API: api/similarity.md
       - Normalization API: api/normalization.md

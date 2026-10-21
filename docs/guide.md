@@ -104,61 +104,13 @@ similarity_matrix = sim.cosine(urm.T, k=50, threshold=1e-6)
   filtered.
 - **Range:** values must be finite in float32 (`|x| < 3.4e38`). Sums that
   overflow float32 give `inf` (kept) or NaN (`inf - inf`, dropped) scores
-  (`ValueError` where noted in the migration notes below): rescale very
+  (`ValueError` where noted in the [migration notes](migration.md#api)): rescale very
   large values first.
 - What each function accepts on signed input is listed in
   [Similarities](similarity.md#signed-input) and
   [Normalizations](normalization.md#signed-input).
 
-### Migration notes
-
-From 0.7.0 (API):
-
-- Every parameter after `matrix2` is keyword-only: `sim.cosine(m, None, 50)`
-  raises `TypeError`; write `sim.cosine(m, k=50)`.
-- `verbose` defaults to `False`: pass `verbose=True` for the progress bar.
-- `block_size` defaults to `'auto'`; `0` (0.7.0's auto) raises `ValueError`.
-- `format_output` defaults to `'csr'` (0.7.0: `'coo'`): pass
-  `format_output='coo'` to keep the old output format.
-
-Earlier v1 builds rejected any value that was not finite and `> 0`. Now:
-
-- Negative values are accepted wherever the result stays meaningful;
-  where it would be wrong a `ValueError` says why (bayesian shrink, `alpha != 1`
-  in `s_plus` on signed input; `tfidf`, `bm25`, `bm25plus` on negative values).
-- `tversky` / `s_plus` (`l1 != 0`, not binary) reject `alpha`/`beta` pairs whose
-  denominator can be `<= 0`: when `alpha + beta > 1` on any weighted input (e.g.
-  `(3, 0.05)`, which 0.7.0 silently dropped pairs for), and when
-  `alpha + beta < 1` on signed input. No default is affected, nor binary or
-  0/1 data.
-- `cosine`, `asymmetric_cosine` (no shrink or additive) and `rp3beta` (no
-  shrink) can return pairs that cancel exactly as tiny scores (`~1e-8`), even on
-  integer data; a small `threshold` drops them.
-- The same functions (and `s_plus` with a single cosine or depop term) raise a
-  `ValueError` when their norms fall out of float32 range (e.g. data scaled by
-  `1e-25` or `1e19`) instead of returning empty rows: rescale the input.
-- `normalize(norm='max')` divides by the largest `|x|`: mixed-sign and
-  all-negative rows change (non-negative rows don't).
-- Popularity `'sum'` in `s_plus` and the `rp3beta` popularity are sums of `|x|`
-  over the summed entries; P3α / RP3β raise signed weights to `alpha` keeping
-  their sign.
-- `p3alpha` / `rp3beta` copy their input once and normalize it in float32
-  (numpy prep peak on Yambda 50M about 40% lower); float64 input may move by
-  float rounding.
-- A `filter_cols` / `target_cols` matrix with duplicate entries that cancel
-  (e.g. `+1` and `-1`) no longer selects that column, in any format.
-- `binary=True` still treats every non-zero (negative too) as `1`.
-- `normalize`, `binarize`, `tfidf`, `bm25`, `bm25plus` no longer take
-  `inplace` (a `TypeError`): use the return value, `X = bm25(X)`. They always
-  return a new `csr_array` (also for `spmatrix` input: use `@` for products)
-  with int32 indices (float32/float64 values kept), and raise
-  a `ValueError` past 2^31 - 1 entries, as the similarities.
-- An empty `target_cols` (list, array or sparse matrix with no entries) raises
-  a `ValueError` instead of scoring every column: pass `None` for all columns.
-  An empty `filter_cols` is still accepted (it excludes nothing).
-- The normalizations raise a `ValueError` on NaN or inf values (they used to
-  spread NaN through the row's or column's norm, and `binarize` turned them
-  into `1`).
+Coming from 0.7.0? See [Migration from 0.7.0](migration.md) for every change.
 
 ## In-depth Introduction
 

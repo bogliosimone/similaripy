@@ -30,6 +30,7 @@
 - [Quickstart guide](guide.md)
 - [Quick reference to similarity functions](similarity.md)
 - [Quick reference to normalization functions](normalization.md)
+- [Migration from 0.7.0](migration.md)
 - [Full API documentation](api/similarity.md)
 
 ---
