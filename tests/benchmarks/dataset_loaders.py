@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
-
 # Dataset configuration
 DATASET_DIR = Path("datasets_bench")
 
@@ -79,8 +78,7 @@ def load_movielens(version="32m", verbose=True):
     ratings_file = dataset_path / "ratings.csv"
     if not ratings_file.exists():
         raise FileNotFoundError(
-            f"Ratings file not found at {ratings_file}. "
-            f"Please ensure the dataset is properly downloaded."
+            f"Ratings file not found at {ratings_file}. Please ensure the dataset is properly downloaded."
         )
 
     if verbose:
@@ -92,15 +90,15 @@ def load_movielens(version="32m", verbose=True):
         print(f"Loaded {len(df)} ratings")
 
     # Create mappings for user and item IDs
-    unique_users = df['userId'].unique()
-    unique_items = df['movieId'].unique()
+    unique_users = df["userId"].unique()
+    unique_items = df["movieId"].unique()
 
     user_id_map = {user_id: idx for idx, user_id in enumerate(unique_users)}
     item_id_map = {item_id: idx for idx, item_id in enumerate(unique_items)}
 
     # Map IDs to indices
-    df['user_idx'] = df['userId'].map(user_id_map)
-    df['item_idx'] = df['movieId'].map(item_id_map)
+    df["user_idx"] = df["userId"].map(user_id_map)
+    df["item_idx"] = df["movieId"].map(item_id_map)
 
     # Create sparse matrix
     n_users = len(unique_users)
@@ -110,9 +108,9 @@ def load_movielens(version="32m", verbose=True):
         print(f"Creating sparse URM: {n_users} users x {n_items} items")
 
     URM = sp.csr_array(
-        (df['rating'].values, (df['user_idx'].values, df['item_idx'].values)),
+        (df["rating"].values, (df["user_idx"].values, df["item_idx"].values)),
         shape=(n_users, n_items),
-        dtype=np.float32
+        dtype=np.float32,
     )
 
     density = URM.nnz / (n_users * n_items)
@@ -123,12 +121,12 @@ def load_movielens(version="32m", verbose=True):
         print(f"URM nnz: {URM.nnz}")
 
     metadata = {
-        'n_users': n_users,
-        'n_items': n_items,
-        'n_ratings': URM.nnz,
-        'density': density,
-        'user_id_map': user_id_map,
-        'item_id_map': item_id_map,
+        "n_users": n_users,
+        "n_items": n_items,
+        "n_ratings": URM.nnz,
+        "density": density,
+        "user_id_map": user_id_map,
+        "item_id_map": item_id_map,
     }
 
     return URM, metadata
@@ -166,8 +164,7 @@ def load_yambda(version="50m", event_type="multi_event", verbose=True):
         from datasets import load_dataset
     except ImportError:
         raise ImportError(
-            "Yambda dataset requires the 'datasets' package. "
-            "Install it with: pip install datasets pyarrow"
+            "Yambda dataset requires the 'datasets' package. Install it with: pip install datasets pyarrow"
         )
 
     if version not in YAMBDA_CONFIGS:
@@ -183,15 +180,13 @@ def load_yambda(version="50m", event_type="multi_event", verbose=True):
     # Only uid/item_id are used and ids are re-coded below, so the URM is the same.
     try:
         from huggingface_hub import hf_hub_download
-        path = hf_hub_download("yandex/yambda", f"{config['data_dir']}/{data_files}",
-                               repo_type="dataset", local_files_only=True)
+
+        path = hf_hub_download(
+            "yandex/yambda", f"{config['data_dir']}/{data_files}", repo_type="dataset", local_files_only=True
+        )
         df = pd.read_parquet(path, columns=["uid", "item_id"])
     except (ImportError, FileNotFoundError):  # not cached yet: download
-        ds = load_dataset(
-            "yandex/yambda",
-            data_dir=config["data_dir"],
-            data_files=data_files
-        )
+        ds = load_dataset("yandex/yambda", data_dir=config["data_dir"], data_files=data_files)
         df = ds["train"].to_pandas()
 
     if verbose:
@@ -228,12 +223,12 @@ def load_yambda(version="50m", event_type="multi_event", verbose=True):
     item_id_map = dict(zip(i_cat.categories.astype(np.int64), range(n_items)))
 
     metadata = {
-        'n_users': n_users,
-        'n_items': n_items,
-        'n_interactions': URM.nnz,
-        'density': density,
-        'user_id_map': user_id_map,
-        'item_id_map': item_id_map,
+        "n_users": n_users,
+        "n_items": n_items,
+        "n_interactions": URM.nnz,
+        "density": density,
+        "user_id_map": user_id_map,
+        "item_id_map": item_id_map,
     }
 
     return URM, metadata
@@ -256,13 +251,13 @@ def _download_movielens(version, verbose=True):
     if not zip_path.exists():
         if verbose:
             print(f"Downloading MovieLens {version} from {config['url']}...")
-        urlretrieve(config['url'], zip_path)
+        urlretrieve(config["url"], zip_path)
         if verbose:
             print(f"Downloaded to {zip_path}")
 
     if verbose:
         print(f"Extracting {zip_path}...")
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
         zip_ref.extractall(DATASET_DIR)
     if verbose:
         print(f"Extracted to {dataset_path}")
@@ -313,7 +308,4 @@ def load_URM(dataset, version=None, verbose=True, **kwargs):
         return load_yambda(version=version, event_type=event_type, verbose=verbose)
 
     else:
-        raise ValueError(
-            f"Unknown dataset '{dataset}'. "
-            f"Available datasets: movielens, yambda"
-        )
+        raise ValueError(f"Unknown dataset '{dataset}'. Available datasets: movielens, yambda")

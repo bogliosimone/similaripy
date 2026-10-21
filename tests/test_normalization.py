@@ -1,5 +1,5 @@
-import pytest
 import numpy as np
+import pytest
 import scipy.sparse as sp
 
 import similaripy.normalization as norm
@@ -7,7 +7,7 @@ import similaripy.normalization as norm
 
 def generate_random_matrix(n_rows=100, n_cols=50, density=0.05, seed=42):
     rng = np.random.default_rng(seed)
-    return sp.random_array((n_rows, n_cols), density=density, format='csr', dtype=np.float32, random_state=rng)
+    return sp.random_array((n_rows, n_cols), density=density, format="csr", dtype=np.float32, random_state=rng)
 
 
 def test_binarize():
@@ -22,13 +22,17 @@ def test_binarize():
     np.testing.assert_array_equal(X.data, before)  # never in place
     # same scores as binary=True
     import similaripy as sim
-    np.testing.assert_allclose(sim.jaccard(B, k=10, verbose=False).toarray(),
-                               sim.jaccard(X, k=10, binary=True, verbose=False).toarray(), rtol=1e-6)
+
+    np.testing.assert_allclose(
+        sim.jaccard(B, k=10, verbose=False).toarray(),
+        sim.jaccard(X, k=10, binary=True, verbose=False).toarray(),
+        rtol=1e-6,
+    )
 
 
 def test_normalize_l1():
     X = generate_random_matrix()
-    X_norm = norm.normalize(X, norm='l1')
+    X_norm = norm.normalize(X, norm="l1")
 
     expected = X.copy()
     row_sums = np.asarray(expected.sum(axis=1)).ravel()
@@ -40,7 +44,7 @@ def test_normalize_l1():
 
 def test_normalize_l2():
     X = generate_random_matrix()
-    X_norm = norm.normalize(X, norm='l2')
+    X_norm = norm.normalize(X, norm="l2")
 
     expected = X.copy()
     row_norms = np.asarray(np.sqrt(expected.multiply(expected).sum(axis=1))).ravel()
@@ -52,7 +56,7 @@ def test_normalize_l2():
 
 def test_normalize_max():
     X = generate_random_matrix()
-    X_norm = norm.normalize(X, norm='max')
+    X_norm = norm.normalize(X, norm="max")
 
     expected = X.copy()
     max_values = expected.max(axis=1).toarray().flatten()
@@ -64,7 +68,7 @@ def test_normalize_max():
 
 def test_tfidf():
     X = generate_random_matrix(n_rows=200, n_cols=100, density=0.05)
-    X_tfidf = norm.tfidf(X, tf_mode='sqrt', idf_mode='smooth', logbase=np.e)
+    X_tfidf = norm.tfidf(X, tf_mode="sqrt", idf_mode="smooth", logbase=np.e)
 
     tf = X.copy().tocsr()
 
@@ -84,7 +88,7 @@ def test_tfidf():
 
 def test_bm25():
     X = generate_random_matrix(n_rows=200, n_cols=100, density=0.05)
-    X_bm25 = norm.bm25(X, k1=1.2, b=0.75, tf_mode='raw', idf_mode='bm25', logbase=np.e)
+    X_bm25 = norm.bm25(X, k1=1.2, b=0.75, tf_mode="raw", idf_mode="bm25", logbase=np.e)
 
     tf = X.copy().tocsr()
     dl = np.array(tf.sum(axis=1)).flatten()
@@ -110,17 +114,20 @@ def test_bm25():
 
 def test_binarize_sums_duplicates():
     # Entry (0, 1) stored twice, (1, 2) as +1 and -1: summed first, so one 1.0 and a dropped zero
-    X = sp.csr_array((np.array([1, 1, 1, -1, 2], dtype=np.float32), np.array([1, 1, 2, 2, 0]),
-                      np.array([0, 2, 4, 5])), shape=(3, 3))
+    X = sp.csr_array(
+        (np.array([1, 1, 1, -1, 2], dtype=np.float32), np.array([1, 1, 2, 2, 0]), np.array([0, 2, 4, 5])), shape=(3, 3)
+    )
     B = norm.binarize(X)
     np.testing.assert_array_equal(B.toarray(), [[0, 1, 0], [0, 0, 0], [1, 0, 0]])
     import similaripy as sim
-    np.testing.assert_array_equal(sim.dot_product(B, k=3, verbose=False).toarray(),
-                                  sim.dot_product(X, k=3, binary=True, verbose=False).toarray())
 
+    np.testing.assert_array_equal(
+        sim.dot_product(B, k=3, verbose=False).toarray(), sim.dot_product(X, k=3, binary=True, verbose=False).toarray()
+    )
 
 
 # ---- Signed input ----
+
 
 def _signed(seed=0):
     X = generate_random_matrix(seed=seed)
@@ -131,13 +138,12 @@ def _signed(seed=0):
 def test_normalize_signed():
     X = _signed()
     A = X.toarray().astype(np.float64)
-    for name, d in (('l1', np.abs(A).sum(axis=1)), ('l2', np.sqrt((A ** 2).sum(axis=1))),
-                    ('max', np.abs(A).max(axis=1))):
+    for name, d in (("l1", np.abs(A).sum(axis=1)), ("l2", np.sqrt((A**2).sum(axis=1))), ("max", np.abs(A).max(axis=1))):
         expected = np.divide(A, d[:, None], out=np.zeros_like(A), where=d[:, None] != 0)
         np.testing.assert_allclose(norm.normalize(X, norm=name).toarray(), expected, rtol=1e-6, err_msg=name)
     # all-negative row: max divides by its largest |x| (before: left unchanged)
     neg = sp.csr_array(np.array([[-2.0, -4.0]], dtype=np.float32))
-    np.testing.assert_array_equal(norm.normalize(neg, norm='max').toarray(), [[-0.5, -1.0]])
+    np.testing.assert_array_equal(norm.normalize(neg, norm="max").toarray(), [[-0.5, -1.0]])
 
 
 def test_binarize_signed():
@@ -147,9 +153,10 @@ def test_binarize_signed():
 
 def test_term_weightings_reject_negatives():
     import pytest
+
     X = _signed()
     for f in (norm.tfidf, norm.bm25, norm.bm25plus):
-        with pytest.raises(ValueError, match=f'{f.__name__} needs non-negative values'):
+        with pytest.raises(ValueError, match=f"{f.__name__} needs non-negative values"):
             f(X)
     # a +1/-1 duplicate pair sums to 0 (dropped), not a negative value
     dup = sp.coo_array((np.array([1, -1, 2], dtype=np.float32), ([0, 0, 1], [0, 0, 1])), shape=(2, 2))
@@ -171,23 +178,26 @@ def test_output_dtypes():
             np.testing.assert_allclose(out.toarray(), norm.bm25(X, axis=axis).toarray(), rtol=1e-6)
 
 
-@pytest.mark.parametrize('bad', [np.nan, np.inf])
-@pytest.mark.parametrize('name', ['normalize', 'binarize', 'tfidf', 'bm25', 'bm25plus'])
+@pytest.mark.parametrize("bad", [np.nan, np.inf])
+@pytest.mark.parametrize("name", ["normalize", "binarize", "tfidf", "bm25", "bm25plus"])
 def test_rejects_non_finite(name, bad):
     # NaN/inf would spread through the row's norm or idf; binarize checks before writing 1s
     X = generate_random_matrix()
     X.data[3] = bad
-    with pytest.raises(ValueError, match='finite'):
+    with pytest.raises(ValueError, match="finite"):
         getattr(norm, name)(X)
 
 
-@pytest.mark.parametrize('call, error, match', [
-    (lambda X: norm.normalize(X, axis=2), ValueError, 'axis must be 0 or 1'),
-    (lambda X: norm.normalize(X.toarray()), TypeError, 'X must be a sparse matrix'),
-    (lambda X: norm.normalize(X, norm='l3'), ValueError, 'norm must be one of'),
-    (lambda X: norm.tfidf(X, tf_mode='x'), ValueError, 'tf_mode must be one of'),
-    (lambda X: norm.bm25(X, idf_mode='x'), ValueError, 'idf_mode must be one of'),
-])
+@pytest.mark.parametrize(
+    "call, error, match",
+    [
+        (lambda X: norm.normalize(X, axis=2), ValueError, "axis must be 0 or 1"),
+        (lambda X: norm.normalize(X.toarray()), TypeError, "X must be a sparse matrix"),
+        (lambda X: norm.normalize(X, norm="l3"), ValueError, "norm must be one of"),
+        (lambda X: norm.tfidf(X, tf_mode="x"), ValueError, "tf_mode must be one of"),
+        (lambda X: norm.bm25(X, idf_mode="x"), ValueError, "idf_mode must be one of"),
+    ],
+)
 def test_rejects_bad_arguments(call, error, match):
     with pytest.raises(error, match=match):
         call(generate_random_matrix())

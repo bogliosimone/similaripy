@@ -1,5 +1,6 @@
 """s_plus prep: input canonicalization, layout, selectors, output build, and the
 regressions they fixed."""
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -8,19 +9,19 @@ import similaripy as sim
 
 
 def _m(rows=60, cols=40, seed=0):
-    return sp.random_array((rows, cols), density=0.2, format='csr', dtype=np.float32, rng=seed)
+    return sp.random_array((rows, cols), density=0.2, format="csr", dtype=np.float32, rng=seed)
 
 
 def _same(a, b):
     np.testing.assert_allclose(a.toarray(), b.toarray(), rtol=1e-6)
 
 
-@pytest.mark.parametrize('selector', ['filter_cols', 'target_cols'])
+@pytest.mark.parametrize("selector", ["filter_cols", "target_cols"])
 def test_int64_indices_with_array_selector(selector):
     m = _m()
     m64 = m.copy()
     m64.indices, m64.indptr = m64.indices.astype(np.int64), m64.indptr.astype(np.int64)
-    kw = {selector: [1, 2, 7], 'k': 10, 'verbose': False}
+    kw = {selector: [1, 2, 7], "k": 10, "verbose": False}
     _same(sim.cosine(m64, **kw), sim.cosine(m, **kw))
 
 
@@ -46,11 +47,11 @@ def test_unsorted_m2_blocked_identity_permutation():
 def test_inputs_not_mutated():
     m = _m()
     m.data[::7] = 0  # explicit zeros
-    f = sp.csr_array((np.array([1, 0, 1], np.float32), np.array([5, 3, 1]), np.array([0, 3] + [3] * 59)),
-                     shape=(60, 60))
+    f = sp.csr_array(
+        (np.array([1, 0, 1], np.float32), np.array([5, 3, 1]), np.array([0, 3] + [3] * 59)), shape=(60, 60)
+    )
     m_before, f_before = (m.data.copy(), m.indices.copy()), (f.data.copy(), f.indices.copy())
-    sim.cosine(m, k=5, binary=True, filter_cols=f, target_cols=f.copy(), block_size=8,
-               verbose=False)
+    sim.cosine(m, k=5, binary=True, filter_cols=f, target_cols=f.copy(), block_size=8, verbose=False)
     for arr, before in zip((m.data, m.indices, f.data, f.indices), (*m_before, *f_before)):
         np.testing.assert_array_equal(arr, before)
 
@@ -65,16 +66,22 @@ def _input_formats():
     unsorted = m.tocoo()
     order = np.random.default_rng(0).permutation(unsorted.nnz)
     unsorted = sp.coo_array((unsorted.data[order], (unsorted.row[order], unsorted.col[order])), shape=m.shape)
-    return {'csr': m, 'csr_zeros': zeros, 'csr_f64_int64': wide, 'csc': m.tocsc(),
-            'coo_canonical': m.tocoo(), 'coo_unsorted': unsorted}
+    return {
+        "csr": m,
+        "csr_zeros": zeros,
+        "csr_f64_int64": wide,
+        "csc": m.tocsc(),
+        "coo_canonical": m.tocoo(),
+        "coo_unsorted": unsorted,
+    }
 
 
 def _arrays(m):
-    return [m.data, m.row, m.col] if m.format == 'coo' else [m.data, m.indices, m.indptr]
+    return [m.data, m.row, m.col] if m.format == "coo" else [m.data, m.indices, m.indptr]
 
 
-@pytest.mark.parametrize('fmt', list(_input_formats()))
-@pytest.mark.parametrize('name', ['dot_product', 'cosine', 'rp3beta'])
+@pytest.mark.parametrize("fmt", list(_input_formats()))
+@pytest.mark.parametrize("name", ["dot_product", "cosine", "rp3beta"])
 def test_inputs_not_mutated_any_format(name, fmt):
     # prep copies each input once, then works in place (`_canonical_csr`): the
     # caller's arrays never change, also as matrix2 (sorted in place) and when
@@ -83,7 +90,7 @@ def test_inputs_not_mutated_any_format(name, fmt):
     before = [a.copy() for a in _arrays(m)]
     f = getattr(sim, name)
     ref = f(m, m.T.tocsr(), k=5, verbose=False)
-    for kw in ({}, {'block_size': 8}):
+    for kw in ({}, {"block_size": 8}):
         f(m, k=5, verbose=False, **kw)
         out = f(m, m, k=5, verbose=False, **kw)  # matrix2 = the caller's own (square) matrix
         _same(out, f(m, m.copy(), k=5, verbose=False, **kw))
@@ -98,18 +105,18 @@ def test_binary_ignores_explicit_zeros():
     m.data[::7] = 0
     clean.data[::7] = 0
     clean.eliminate_zeros()
-    kw = {'k': 10, 'binary': True, 'verbose': False}
+    kw = {"k": 10, "binary": True, "verbose": False}
     _same(sim.jaccard(m, **kw), sim.jaccard(clean, **kw))
 
 
-@pytest.mark.parametrize('format_output', ['csr', 'coo'])
-@pytest.mark.parametrize('index_dtype', [np.int32, np.int64])
+@pytest.mark.parametrize("format_output", ["csr", "coo"])
+@pytest.mark.parametrize("index_dtype", [np.int32, np.int64])
 def test_output_dtypes(format_output, index_dtype):
     m = _m()
     m.indices, m.indptr = m.indices.astype(index_dtype), m.indptr.astype(index_dtype)
     out = sim.cosine(m, k=10, verbose=False, format_output=format_output, filter_cols=[1, 2])
     assert out.format == format_output and out.data.dtype == np.float32
-    idx = (out.indices,) if format_output == 'csr' else out.coords
+    idx = (out.indices,) if format_output == "csr" else out.coords
     assert all(i.dtype == np.int32 for i in idx)
 
 
@@ -126,27 +133,29 @@ def test_progress_bar_closed_on_prep_error(capfd, monkeypatch):
     from similaripy import _s_plus
 
     def boom(cols, num_threads):
-        raise RuntimeError('prep failed')
-    monkeypatch.setattr(_s_plus, '_matrix_selector', boom)
-    with pytest.raises(RuntimeError, match='prep failed'):
+        raise RuntimeError("prep failed")
+
+    monkeypatch.setattr(_s_plus, "_matrix_selector", boom)
+    with pytest.raises(RuntimeError, match="prep failed"):
         sim.cosine(_m(), k=5, verbose=True)
-    assert capfd.readouterr().err.split('\r')[-1].startswith('Failed:')
+    assert capfd.readouterr().err.split("\r")[-1].startswith("Failed:")
 
 
-@pytest.mark.parametrize('limit, dtype', [(None, np.int32), (100, np.int64)])
+@pytest.mark.parametrize("limit, dtype", [(None, np.int32), (100, np.int64)])
 def test_csr_index_dtype_past_int32_nnz(limit, dtype, monkeypatch):
     # Past 2^31 results the CSR gets int64 indptr and indices; tested at a
     # lowered limit (a real run needs ~26 GB). Same matrix either way.
     from similaripy import _s_plus
+
     m = _m(60, 40)
-    ref = sim.cosine(m, k=10, format_output='csr', verbose=False)
+    ref = sim.cosine(m, k=10, format_output="csr", verbose=False)
     if limit is not None:
-        monkeypatch.setattr(_s_plus, '_MAX_INT32_NNZ', limit)
-    out = sim.cosine(m, k=10, format_output='csr', verbose=False)
+        monkeypatch.setattr(_s_plus, "_MAX_INT32_NNZ", limit)
+    out = sim.cosine(m, k=10, format_output="csr", verbose=False)
     assert out.nnz > 100
     assert out.indptr.dtype == out.indices.dtype == dtype
     assert out.has_canonical_format
-    for a in ('indptr', 'indices', 'data'):
+    for a in ("indptr", "indices", "data"):
         np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
 
 
@@ -156,57 +165,60 @@ def _csr_bytes(m):
 
 
 # without shrink rp3beta takes `_product_form` instead
-@pytest.mark.parametrize('kwargs', [{'shrink': 3}, {'shrink': 3, 'shrink_type': 'bayesian'},
-                                    {'alpha': 0.7, 'beta': 0.4, 'shrink': 0.5}])
-@pytest.mark.parametrize('block_size', [None, 8])
+@pytest.mark.parametrize(
+    "kwargs", [{"shrink": 3}, {"shrink": 3, "shrink_type": "bayesian"}, {"alpha": 0.7, "beta": 0.4, "shrink": 0.5}]
+)
+@pytest.mark.parametrize("block_size", [None, 8])
 def test_depop_as_cosine_same_bits(kwargs, block_size, monkeypatch):
     # rp3beta (depop only) through the cosine slots: COSINE mode, FULL's bits
     from similaripy import _s_plus
+
     d = _m(80, 50, seed=3).toarray()
     d[5], d[:, 7] = 0, 0  # an empty row and column
     m = sp.csr_array(d)
     kw = dict(k=20, verbose=False, block_size=block_size, **kwargs)
     swapped = sim.rp3beta(m, **kw)
-    monkeypatch.setattr(_s_plus, '_depop_as_cosine', lambda params, norms: (params, norms))
+    monkeypatch.setattr(_s_plus, "_depop_as_cosine", lambda params, norms: (params, norms))
     assert _csr_bytes(swapped) == _csr_bytes(sim.rp3beta(m, **kw))
 
 
-@pytest.mark.parametrize('order', ['popularity', 'original'])
-@pytest.mark.parametrize('block_size', [None, 8, 64])
+@pytest.mark.parametrize("order", ["popularity", "original"])
+@pytest.mark.parametrize("block_size", [None, 8, 64])
 def test_tie_rule_independent_of_blocking(order, block_size, monkeypatch):
     # Binary dot scores are small integers, so ties at the k-th place are
     # everywhere; the kept columns must not depend on block size or push order.
     # Ties go to the more popular column (m2 column count), then the lower id;
     # with the 'original' column order, to the lower id.
     from similaripy import _s_plus
-    monkeypatch.setattr(_s_plus, '_COLUMN_ORDER', order)
+
+    monkeypatch.setattr(_s_plus, "_COLUMN_ORDER", order)
     m = _m(60, 300)
     k = 10
     b = sim.normalization.binarize(m)
     xy = (b.T @ b).toarray()
-    pop = np.diff(b.tocsc().indptr) if order == 'popularity' else np.zeros(m.shape[1])
+    pop = np.diff(b.tocsc().indptr) if order == "popularity" else np.zeros(m.shape[1])
     out = sim.dot_product(m.T, k=k, binary=True, block_size=block_size, verbose=False).tocsr()
     for row in range(xy.shape[0]):
         cols = np.flatnonzero(xy[row])
         best = cols[np.lexsort((cols, -pop[cols], -xy[row, cols]))][:k]
-        got = out.indices[out.indptr[row]:out.indptr[row + 1]]
-        got = got[out.data[out.indptr[row]:out.indptr[row + 1]] != 0]
+        got = out.indices[out.indptr[row] : out.indptr[row + 1]]
+        got = got[out.data[out.indptr[row] : out.indptr[row + 1]] != 0]
         assert sorted(got.tolist()) == sorted(best.tolist()), row
 
 
-@pytest.mark.parametrize('bad', [np.nan, np.inf, 1e39])  # 1e39: finite in f64, inf in f32
-@pytest.mark.parametrize('side', ['matrix1', 'matrix2'])
-@pytest.mark.parametrize('binary', [False, True])
+@pytest.mark.parametrize("bad", [np.nan, np.inf, 1e39])  # 1e39: finite in f64, inf in f32
+@pytest.mark.parametrize("side", ["matrix1", "matrix2"])
+@pytest.mark.parametrize("binary", [False, True])
 def test_rejects_non_finite_values(bad, side, binary):
     # Checked on the f32 values in both modes: binary must not turn NaN/inf into 1.0.
     m = _m(60, 40).astype(np.float64)
     bad_m = m.copy()
     bad_m.data[3] = bad
-    m1, m2 = (bad_m, m.T) if side == 'matrix1' else (m, bad_m.T)
-    with pytest.raises(ValueError, match=f'{side} values must be finite'):
+    m1, m2 = (bad_m, m.T) if side == "matrix1" else (m, bad_m.T)
+    with pytest.raises(ValueError, match=f"{side} values must be finite"):
         sim.dot_product(m1, m2, k=5, binary=binary, verbose=False)
     if bad != 1e39:  # the l1 normalization divides 1e39 back into range
-        with pytest.raises(ValueError, match='values must be finite'):
+        with pytest.raises(ValueError, match="values must be finite"):
             sim.p3alpha(bad_m, k=5, verbose=False)  # checked after the wrapper's normalization
 
 
@@ -216,14 +228,17 @@ def _signed_m(seed=0):
     return m
 
 
-@pytest.mark.parametrize('name, kwargs, match', [
-    ('cosine', {'shrink': 5, 'shrink_type': 'bayesian'}, "shrink_type='bayesian'.*not supported on signed"),
-    ('dot_product', {'shrink': 5, 'shrink_type': 'bayesian'}, "shrink_type='bayesian'.*not supported on signed"),
-    ('s_plus', {'l1': 1, 'l2': 0, 't1': 0.2, 't2': 0.2}, 'denominator <= 0 on some pairs of signed input'),
-    ('s_plus', {'alpha': 2}, r'a1 \(alpha\) must be 1 on signed'),
-    ('s_plus', {'alpha': 0.5}, r'a1 \(alpha\) must be 1 on signed'),
-    ('tversky', {'alpha': 0.2, 'beta': 0.2}, 'denominator <= 0 on some pairs of signed input'),
-])
+@pytest.mark.parametrize(
+    "name, kwargs, match",
+    [
+        ("cosine", {"shrink": 5, "shrink_type": "bayesian"}, "shrink_type='bayesian'.*not supported on signed"),
+        ("dot_product", {"shrink": 5, "shrink_type": "bayesian"}, "shrink_type='bayesian'.*not supported on signed"),
+        ("s_plus", {"l1": 1, "l2": 0, "t1": 0.2, "t2": 0.2}, "denominator <= 0 on some pairs of signed input"),
+        ("s_plus", {"alpha": 2}, r"a1 \(alpha\) must be 1 on signed"),
+        ("s_plus", {"alpha": 0.5}, r"a1 \(alpha\) must be 1 on signed"),
+        ("tversky", {"alpha": 0.2, "beta": 0.2}, "denominator <= 0 on some pairs of signed input"),
+    ],
+)
 def test_signed_rejections(name, kwargs, match):
     f = getattr(sim, name)
     with pytest.raises(ValueError, match=match):
@@ -234,24 +249,36 @@ def test_signed_rejections(name, kwargs, match):
     _same(f(m, k=5, binary=True, verbose=False, **kwargs), f(ones, k=5, verbose=False, **kwargs))
 
 
-@pytest.mark.parametrize('alpha, beta, data, ok', [
-    # weighted non-negative: c = 1 - alpha - beta < 0 needs 4 alpha beta > c^2, c >= 0 is always safe
-    (1, 1, 'weighted', True), (0.5, 0.5, 'weighted', True), (1, 0, 'weighted', True),
-    (0.5, 0.1, 'weighted', True), (0.2, 0.2, 'weighted', True), (3, 0.05, 'weighted', False),
-    # signed: c > 0 needs it too
-    (1, 1, 'signed', True), (0.5, 0.5, 'signed', True), (1, 0, 'signed', True),
-    (0.5, 0.1, 'signed', True), (0.2, 0.2, 'signed', False), (3, 0.05, 'signed', False),
-    # binary: den >= |X & Y|, always safe
-    (0.2, 0.2, 'binary', True), (3, 0.05, 'binary', True),
-])
+@pytest.mark.parametrize(
+    "alpha, beta, data, ok",
+    [
+        # weighted non-negative: c = 1 - alpha - beta < 0 needs 4 alpha beta > c^2, c >= 0 is always safe
+        (1, 1, "weighted", True),
+        (0.5, 0.5, "weighted", True),
+        (1, 0, "weighted", True),
+        (0.5, 0.1, "weighted", True),
+        (0.2, 0.2, "weighted", True),
+        (3, 0.05, "weighted", False),
+        # signed: c > 0 needs it too
+        (1, 1, "signed", True),
+        (0.5, 0.5, "signed", True),
+        (1, 0, "signed", True),
+        (0.5, 0.1, "signed", True),
+        (0.2, 0.2, "signed", False),
+        (3, 0.05, "signed", False),
+        # binary: den >= |X & Y|, always safe
+        (0.2, 0.2, "binary", True),
+        (3, 0.05, "binary", True),
+    ],
+)
 def test_tversky_denominator_rule(alpha, beta, data, ok):
-    m = _signed_m() if data == 'signed' else _m(60, 40)
-    kw = {'alpha': alpha, 'beta': beta, 'k': 5, 'binary': data == 'binary', 'verbose': False}
+    m = _signed_m() if data == "signed" else _m(60, 40)
+    kw = {"alpha": alpha, "beta": beta, "k": 5, "binary": data == "binary", "verbose": False}
     if ok:
         sim.tversky(m, **kw)
-        sim.s_plus(m, l1=1, l2=0, t1=alpha, t2=beta, k=5, binary=data == 'binary', verbose=False)
+        sim.s_plus(m, l1=1, l2=0, t1=alpha, t2=beta, k=5, binary=data == "binary", verbose=False)
     else:
-        with pytest.raises(ValueError, match=r't1, t2 \(tversky alpha, beta\)'):
+        with pytest.raises(ValueError, match=r"t1, t2 \(tversky alpha, beta\)"):
             sim.tversky(m, **kw)
 
 
@@ -260,8 +287,10 @@ def test_tversky_rule_exempts_one_valued_data():
     m = _m(60, 40)
     m.data[:] = 1
     for alpha, beta in ((2, 0), (3, 0.05)):
-        _same(sim.tversky(m, alpha=alpha, beta=beta, k=5, verbose=False),
-              sim.tversky(m, alpha=alpha, beta=beta, k=5, binary=True, verbose=False))
+        _same(
+            sim.tversky(m, alpha=alpha, beta=beta, k=5, verbose=False),
+            sim.tversky(m, alpha=alpha, beta=beta, k=5, binary=True, verbose=False),
+        )
 
 
 def test_weighted_tversky_rule_closes_negative_denominator():
@@ -270,19 +299,29 @@ def test_weighted_tversky_rule_closes_negative_denominator():
     m = sp.csr_array(np.array([[1, 0], [10, 10]], dtype=np.float32))
     x, y, xy = 1.0, 200.0, 10.0
     assert 3 * (x - xy) + 0.05 * (y - xy) + xy < 0
-    with pytest.raises(ValueError, match='denominator <= 0'):
+    with pytest.raises(ValueError, match="denominator <= 0"):
         sim.tversky(m, alpha=3, beta=0.05, verbose=False)
 
 
 def test_signed_depop_sum_uses_abs():
     # pop 'sum' = sum of |x|: on |m| (same pattern) the denominators are the same
     m = _signed_m()
-    kw = {'l1': 0, 'l2': 0, 'l3': 1, 'pop1': 'sum', 'pop2': 'sum', 'beta1': 0.5, 'beta2': 0.5,
-          'k': 60, 'verbose': False}
+    kw = {
+        "l1": 0,
+        "l2": 0,
+        "l3": 1,
+        "pop1": "sum",
+        "pop2": "sum",
+        "beta1": 0.5,
+        "beta2": 0.5,
+        "k": 60,
+        "verbose": False,
+    }
     a = abs(m)
     xy, xy_abs = (m @ m.T).toarray(), (a @ a.T).toarray()
-    den = np.divide(xy_abs, sim.s_plus(a, **kw).toarray(), out=np.zeros_like(xy_abs),
-                    where=xy_abs != 0)  # pop1 pop2 per pair, from the non-negative run
+    den = np.divide(
+        xy_abs, sim.s_plus(a, **kw).toarray(), out=np.zeros_like(xy_abs), where=xy_abs != 0
+    )  # pop1 pop2 per pair, from the non-negative run
     got = sim.s_plus(m, **kw).toarray()
     expected = np.divide(xy, den, out=np.zeros_like(xy), where=den != 0)
     expected[expected <= 0] = 0
@@ -292,100 +331,101 @@ def test_signed_depop_sum_uses_abs():
 def _cancelling_selector(fmt):
     """60 x 60 selector: (0, 5) as +1/-1 duplicates (cancels), (0, 7) and (1, 3) kept, (2, 9) a stored 0."""
     rows, cols, vals = [0, 0, 0, 1, 2], [5, 7, 5, 3, 9], np.array([1, 1, -1, 1, 0], dtype=np.float32)
-    if fmt == 'coo':
+    if fmt == "coo":
         return sp.coo_array((vals, (rows, cols)), shape=(60, 60))
-    order = np.argsort(rows, kind='stable')
+    order = np.argsort(rows, kind="stable")
     indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=60))])
     return sp.csr_array((vals[order], np.array(cols)[order], indptr), shape=(60, 60))
 
 
-@pytest.mark.parametrize('fmt', ['csr', 'coo'])
-@pytest.mark.parametrize('selector', ['filter_cols', 'target_cols'])
+@pytest.mark.parametrize("fmt", ["csr", "coo"])
+@pytest.mark.parametrize("selector", ["filter_cols", "target_cols"])
 def test_selector_matrix_uses_summed_values(fmt, selector):
     # An entry is selected iff its summed value is non-zero, in every format
     m = _m(60, 40)
     sel = _cancelling_selector(fmt)
     before = sel.copy()
     clean = sp.csr_array((np.ones(2, dtype=np.float32), ([0, 1], [7, 3])), shape=(60, 60))
-    kw = {'k': 60, 'verbose': False}
+    kw = {"k": 60, "verbose": False}
     _same(sim.cosine(m, **{selector: sel}, **kw), sim.cosine(m, **{selector: clean}, **kw))
     np.testing.assert_array_equal(sel.data, before.data)  # caller's matrix untouched
 
 
-@pytest.mark.parametrize('fmt', ['csr', 'coo'])
+@pytest.mark.parametrize("fmt", ["csr", "coo"])
 def test_selector_matrix_all_cancelled_selects_nothing(fmt):
     m = _m(60, 40)
     sel = _cancelling_selector(fmt)
     sel = sel.tocoo()
     keep = (sel.row == 0) & (sel.col == 5)
     sel = sp.coo_array((sel.data[keep], (sel.row[keep], sel.col[keep])), shape=sel.shape)
-    sel = sel if fmt == 'coo' else sp.csr_array((sel.data, sel.col, [0, 2] + [2] * 59), shape=sel.shape)
-    kw = {'k': 10, 'verbose': False}
+    sel = sel if fmt == "coo" else sp.csr_array((sel.data, sel.col, [0, 2] + [2] * 59), shape=sel.shape)
+    kw = {"k": 10, "verbose": False}
     _same(sim.cosine(m, filter_cols=sel, **kw), sim.cosine(m, **kw))
     assert sim.cosine(m, target_cols=sel, **kw).nnz == 0
 
 
 _BAD_PARAMS = [
-    ('dot_product', {'k': 0}, 'k must be'),
-    ('dot_product', {'k': 2.5}, 'k must be'),
-    ('dot_product', {'num_threads': -1}, 'num_threads'),
-    ('dot_product', {'block_size': 1.5}, 'block_size'),
-    ('dot_product', {'block_size': -1}, 'block_size'),
-    ('dot_product', {'block_size': 0}, "block_size must be 'auto'"),  # 0.7.0's auto
-    ('dot_product', {'block_size': 'big'}, 'block_size'),
-    ('dot_product', {'threshold': -0.1}, 'threshold'),
-    ('dot_product', {'threshold': np.nan}, 'threshold'),
-    ('dot_product', {'target_rows': [0, 60]}, 'target_rows ids'),
-    ('dot_product', {'target_rows': [0.0, 1.5]}, 'integer ids'),
-    ('dot_product', {'filter_cols': [3, 60]}, 'filter_cols ids'),
-    ('dot_product', {'target_cols': [-1]}, 'target_cols ids'),
-    ('cosine', {'shrink': -1}, 'shrink must be'),
-    ('cosine', {'shrink_type': 'other'}, 'shrink_type'),
-    ('dot_product', {'shrink': 5, 'shrink_type': 'stabilized'}, 'only rescales'),
-    ('p3alpha', {'shrink': 5, 'shrink_type': 'stabilized'}, 'only rescales'),
-    ('jaccard', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
-    ('rp3beta', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
-    ('dot_product', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
-    ('tversky', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
-    ('dice', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
-    ('p3alpha', {'shrink': 5, 'shrink_type': 'additive'}, 'cosine term'),
-    ('dot_product', {'k': True}, 'k must be'),
-    ('dot_product', {'format_output': 'dense'}, 'format_output'),
-    ('dot_product', {'filter_cols': {3}}, 'filter_cols must be'),
-    ('dot_product', {'target_cols': sp.csr_array(np.eye(5, dtype=np.float32))}, 'target_cols shape'),
-    ('dot_product', {'matrix2': np.ones((60, 60))}, 'matrix2 must be a sparse'),
-    ('dot_product', {'matrix2': _m(40, 60)}, 'Incompatible matrix shapes'),
-    ('asymmetric_cosine', {'alpha': 1.5}, 'alpha must be in'),
-    ('tversky', {'alpha': -0.5}, 'tversky alpha'),
-    ('p3alpha', {'alpha': 0}, 'alpha must be finite and > 0'),
-    ('rp3beta', {'alpha': -1}, 'alpha must be finite and > 0'),
-    ('rp3beta', {'beta': -0.5}, 'rp3beta beta'),
-    ('s_plus', {'l2': -1}, 'l2'),
-    ('s_plus', {'c1': np.inf}, 'c1'),
-    ('s_plus', {'beta1': -1, 'l3': 1}, 'beta1'),
-    ('s_plus', {'pop2': np.ones(5)}, 'array of length 60'),
-    ('s_plus', {'pop2': 'max'}, 'pop2'),
-    ('s_plus', {'pop1': None}, 'pop1 must be "none", "sum"'),
-    ('s_plus', {'pop1': np.zeros(60), 'l3': 1}, 'on every row/column with entries'),
-    ('s_plus', {'pop2': -np.ones(60), 'l3': 1}, 'finite and >= 0'),
+    ("dot_product", {"k": 0}, "k must be"),
+    ("dot_product", {"k": 2.5}, "k must be"),
+    ("dot_product", {"num_threads": -1}, "num_threads"),
+    ("dot_product", {"block_size": 1.5}, "block_size"),
+    ("dot_product", {"block_size": -1}, "block_size"),
+    ("dot_product", {"block_size": 0}, "block_size must be 'auto'"),  # 0.7.0's auto
+    ("dot_product", {"block_size": "big"}, "block_size"),
+    ("dot_product", {"threshold": -0.1}, "threshold"),
+    ("dot_product", {"threshold": np.nan}, "threshold"),
+    ("dot_product", {"target_rows": [0, 60]}, "target_rows ids"),
+    ("dot_product", {"target_rows": [0.0, 1.5]}, "integer ids"),
+    ("dot_product", {"filter_cols": [3, 60]}, "filter_cols ids"),
+    ("dot_product", {"target_cols": [-1]}, "target_cols ids"),
+    ("cosine", {"shrink": -1}, "shrink must be"),
+    ("cosine", {"shrink_type": "other"}, "shrink_type"),
+    ("dot_product", {"shrink": 5, "shrink_type": "stabilized"}, "only rescales"),
+    ("p3alpha", {"shrink": 5, "shrink_type": "stabilized"}, "only rescales"),
+    ("jaccard", {"shrink": 5, "shrink_type": "additive"}, "cosine term"),
+    ("rp3beta", {"shrink": 5, "shrink_type": "additive"}, "cosine term"),
+    ("dot_product", {"shrink": 5, "shrink_type": "additive"}, "cosine term"),
+    ("tversky", {"shrink": 5, "shrink_type": "additive"}, "cosine term"),
+    ("dice", {"shrink": 5, "shrink_type": "additive"}, "cosine term"),
+    ("p3alpha", {"shrink": 5, "shrink_type": "additive"}, "cosine term"),
+    ("dot_product", {"k": True}, "k must be"),
+    ("dot_product", {"format_output": "dense"}, "format_output"),
+    ("dot_product", {"filter_cols": {3}}, "filter_cols must be"),
+    ("dot_product", {"target_cols": sp.csr_array(np.eye(5, dtype=np.float32))}, "target_cols shape"),
+    ("dot_product", {"matrix2": np.ones((60, 60))}, "matrix2 must be a sparse"),
+    ("dot_product", {"matrix2": _m(40, 60)}, "Incompatible matrix shapes"),
+    ("asymmetric_cosine", {"alpha": 1.5}, "alpha must be in"),
+    ("tversky", {"alpha": -0.5}, "tversky alpha"),
+    ("p3alpha", {"alpha": 0}, "alpha must be finite and > 0"),
+    ("rp3beta", {"alpha": -1}, "alpha must be finite and > 0"),
+    ("rp3beta", {"beta": -0.5}, "rp3beta beta"),
+    ("s_plus", {"l2": -1}, "l2"),
+    ("s_plus", {"c1": np.inf}, "c1"),
+    ("s_plus", {"beta1": -1, "l3": 1}, "beta1"),
+    ("s_plus", {"pop2": np.ones(5)}, "array of length 60"),
+    ("s_plus", {"pop2": "max"}, "pop2"),
+    ("s_plus", {"pop1": None}, 'pop1 must be "none", "sum"'),
+    ("s_plus", {"pop1": np.zeros(60), "l3": 1}, "on every row/column with entries"),
+    ("s_plus", {"pop2": -np.ones(60), "l3": 1}, "finite and >= 0"),
 ]
 
 
-@pytest.mark.parametrize('name, kwargs, match', _BAD_PARAMS)
+@pytest.mark.parametrize("name, kwargs, match", _BAD_PARAMS)
 def test_rejects_bad_parameters(name, kwargs, match):
     with pytest.raises((ValueError, TypeError), match=match):
         getattr(sim, name)(_m(60, 60), verbose=False, **kwargs)
 
 
-@pytest.mark.parametrize('name', ['dot_product', 'cosine', 'asymmetric_cosine', 'tversky', 'jaccard',
-                                  'dice', 'p3alpha', 'rp3beta', 's_plus'])
+@pytest.mark.parametrize(
+    "name", ["dot_product", "cosine", "asymmetric_cosine", "tversky", "jaccard", "dice", "p3alpha", "rp3beta", "s_plus"]
+)
 def test_keyword_only_after_matrix2(name):
-    with pytest.raises(TypeError, match='positional'):
+    with pytest.raises(TypeError, match="positional"):
         getattr(sim, name)(_m(60, 60), None, 5)
 
 
 def test_rejects_dense_matrix1():
-    with pytest.raises(TypeError, match='matrix1 must be a sparse'):
+    with pytest.raises(TypeError, match="matrix1 must be a sparse"):
         sim.dot_product(np.ones((5, 5)), _m(5, 5), verbose=False)
 
 
@@ -397,7 +437,7 @@ def test_zero_weight_on_empty_columns_accepted():
     counts = np.diff(m.tocsc().indptr).astype(np.float64)
     assert counts[7] == 0
     ones = np.where(counts == 0, 1.0, counts)
-    kw = {'l1': 0, 'l2': 0, 'l3': 1, 'beta2': 0.5, 'k': 10, 'verbose': False}
+    kw = {"l1": 0, "l2": 0, "l3": 1, "beta2": 0.5, "k": 10, "verbose": False}
     _same(sim.s_plus(m.T, m, pop2=counts, **kw), sim.s_plus(m.T, m, pop2=ones, **kw))
 
 
@@ -405,8 +445,15 @@ def test_accepts_numpy_scalars_and_sequences():
     # Validation must not reject numpy types or tuples the old code took.
     m = _m(60, 60)
     ref = sim.s_plus(m, l3=1, pop1=list(np.arange(1, 61)), k=np.int64(5), verbose=False)
-    out = sim.s_plus(m, l3=1, pop1=tuple(np.arange(1, 61)), k=5, verbose=np.True_,
-                     target_rows=np.arange(60, dtype=np.int64), num_threads=np.int32(0))
+    out = sim.s_plus(
+        m,
+        l3=1,
+        pop1=tuple(np.arange(1, 61)),
+        k=5,
+        verbose=np.True_,
+        target_rows=np.arange(60, dtype=np.int64),
+        num_threads=np.int32(0),
+    )
     _same(out, ref)
 
 
@@ -424,14 +471,14 @@ def _with_duplicates(m, seed=0):
     return rows[order], cols[order], vals[order]
 
 
-@pytest.mark.parametrize('fmt', ['csr', 'coo'])
-@pytest.mark.parametrize('binary', [False, True])
-@pytest.mark.parametrize('block_size', [None, 8])
+@pytest.mark.parametrize("fmt", ["csr", "coo"])
+@pytest.mark.parametrize("binary", [False, True])
+@pytest.mark.parametrize("block_size", [None, 8])
 def test_duplicate_entries_are_summed(fmt, binary, block_size):
     # Regression: CSR duplicates reached the kernel unsummed (wrong norms and binary counts).
     m = _m(60, 40)
     rows, cols, vals = _with_duplicates(m)
-    if fmt == 'coo':
+    if fmt == "coo":
         dup = sp.coo_array((vals, (rows, cols)), shape=m.shape)
     else:
         indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=m.shape[0]))])
@@ -440,7 +487,7 @@ def test_duplicate_entries_are_summed(fmt, binary, block_size):
     clean = sp.csr_array((vals, (rows, cols)), shape=m.shape)  # scipy sums duplicates
     clean.eliminate_zeros()
     before = (dup.data.copy(),)
-    kw = {'k': 10, 'binary': binary, 'block_size': block_size, 'verbose': False}
+    kw = {"k": 10, "binary": binary, "block_size": block_size, "verbose": False}
     for f in (sim.cosine, sim.jaccard, sim.dot_product):
         _same(f(dup.T, **kw), f(clean.T, **kw))
         _same(f(m, dup.T.tocsr(), **kw), f(m, clean.T, **kw))
@@ -451,13 +498,15 @@ def test_coo_output_fed_back(monkeypatch):
     # Feeding an output back (chained calls) must equal feeding its CSR form,
     # and skip the canonicalization: the output is canonical already.
     from similaripy import _core
-    m = sp.random_array((200, 60), density=0.01, format='csr', dtype=np.float32, rng=0)
-    s = sim.cosine(m.T, k=20, format_output='coo', verbose=False)  # rows shorter than k
+
+    m = sp.random_array((200, 60), density=0.01, format="csr", dtype=np.float32, rng=0)
+    s = sim.cosine(m.T, k=20, format_output="coo", verbose=False)  # rows shorter than k
     ref = sim.dot_product(m, s.tocsr(), k=10, verbose=False)
 
     def fail(*args, **kwargs):
-        raise AssertionError('canonicalize_rows called on a canonical input')
-    monkeypatch.setattr(_core, 'canonicalize_rows', fail)
+        raise AssertionError("canonicalize_rows called on a canonical input")
+
+    monkeypatch.setattr(_core, "canonicalize_rows", fail)
     _same(sim.dot_product(m, s, k=10, verbose=False), ref)
     _same(sim.dot_product(m, s.tocsr(), k=10, verbose=False), ref)
 
@@ -471,17 +520,17 @@ def test_canonical_coo_with_zeros():
     assert coo.has_canonical_format and (coo.data == 0).any()
     clean = coo.tocsr()
     clean.eliminate_zeros()
-    kw = {'k': 10, 'binary': True, 'verbose': False}
+    kw = {"k": 10, "binary": True, "verbose": False}
     _same(sim.cosine(coo, **kw), sim.cosine(clean, **kw))
 
 
-@pytest.mark.parametrize('fmt', ['csr', 'coo', 'coo_unsorted'])
+@pytest.mark.parametrize("fmt", ["csr", "coo", "coo_unsorted"])
 def test_float64_underflow_dropped(fmt):
     # Regression: canonical input dropped zeros before the float32 cast, so a
     # float64 value below float32's range stayed as an explicit 0.0 (binary: 1).
     d = np.array([[1e-50, 1.0], [1.0, 1.0]])
-    m = sp.csr_array(d) if fmt == 'csr' else sp.coo_array(d)
-    if fmt == 'coo_unsorted':
+    m = sp.csr_array(d) if fmt == "csr" else sp.coo_array(d)
+    if fmt == "coo_unsorted":
         m = sp.coo_array((m.data[::-1], (m.row[::-1], m.col[::-1])), shape=m.shape)
     out = sim.dot_product(m, binary=True, verbose=False)
     np.testing.assert_array_equal(out.toarray(), [[1, 1], [1, 2]])
@@ -495,35 +544,36 @@ def _assert_canonical(out):
     assert fresh.has_canonical_format
 
 
-@pytest.mark.parametrize('order', ['popularity', 'original'])
-@pytest.mark.parametrize('block_size', [None, 8])
+@pytest.mark.parametrize("order", ["popularity", "original"])
+@pytest.mark.parametrize("block_size", [None, 8])
 def test_output_exact_and_canonical(order, block_size, monkeypatch):
     # Rows packed (no padding), sorted by column, canonical in both
     # formats; blocked, permuted and unblocked give the same arrays exactly.
     from similaripy import _s_plus
-    monkeypatch.setattr(_s_plus, '_COLUMN_ORDER', order)
-    m = sp.random_array((300, 60), density=0.03, format='csr', dtype=np.float32, rng=2)
+
+    monkeypatch.setattr(_s_plus, "_COLUMN_ORDER", order)
+    m = sp.random_array((300, 60), density=0.03, format="csr", dtype=np.float32, rng=2)
     m = sp.csr_array(m.multiply((np.arange(60) != 5).astype(np.float32)))  # column 5 empty:
-    m.eliminate_zeros()                                                     # output row 5 empty
-    kw = {'k': 15, 'verbose': False}
-    out = sim.cosine(m.T, block_size=block_size, format_output='csr', **kw)
+    m.eliminate_zeros()  # output row 5 empty
+    kw = {"k": 15, "verbose": False}
+    out = sim.cosine(m.T, block_size=block_size, format_output="csr", **kw)
     _assert_canonical(out)
     assert out.indptr[6] == out.indptr[5]
-    ref = sim.cosine(m.T, block_size=None, format_output='csr', **kw)
-    for a in ('indptr', 'indices', 'data'):
+    ref = sim.cosine(m.T, block_size=None, format_output="csr", **kw)
+    for a in ("indptr", "indices", "data"):
         np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
-    coo = sim.cosine(m.T, block_size=block_size, format_output='coo', **kw)
+    coo = sim.cosine(m.T, block_size=block_size, format_output="coo", **kw)
     assert coo.has_canonical_format
     want = out.tocoo()
-    for a in ('row', 'col', 'data'):
+    for a in ("row", "col", "data"):
         np.testing.assert_array_equal(getattr(coo, a), getattr(want, a))
 
 
-@pytest.mark.parametrize('fmt', ['csr', 'coo'])
+@pytest.mark.parametrize("fmt", ["csr", "coo"])
 def test_duplicate_and_unsorted_target_rows(fmt):
     # Regression: a repeated target gave a row with every entry twice (scipy then summed them).
     m = _m(60, 40)
-    kw = {'k': 5, 'format_output': fmt, 'verbose': False}
+    kw = {"k": 5, "format_output": fmt, "verbose": False}
     out = sim.cosine(m, target_rows=[30, 3, 1, 3, 30], **kw)
     ref = sim.cosine(m, target_rows=[1, 3, 30], **kw)
     assert out.nnz == ref.nnz == 15
@@ -531,7 +581,7 @@ def test_duplicate_and_unsorted_target_rows(fmt):
     _assert_canonical(out.tocsr())
 
 
-@pytest.mark.parametrize('fmt', ['csr', 'coo'])
+@pytest.mark.parametrize("fmt", ["csr", "coo"])
 def test_underflowed_product_dropped(fmt):
     # 1e-30 * 1e-30 underflows to 0.0 in f32: the column was pushed again on its next
     # hit and came back twice, once as an explicit 0.0, in an output flagged canonical.
@@ -550,11 +600,26 @@ def test_k_larger_than_columns():
     _same(sim.cosine(m, k=1000, verbose=False), sim.cosine(m, k=60, verbose=False))  # 60 output cols
 
 
-_SIMILARITIES = ['dot_product', 'cosine', 'asymmetric_cosine', 'tversky', 'jaccard', 'dice',
-                 'p3alpha', 'rp3beta', 's_plus']
-_NORMALIZATIONS = [('normalize', {'norm': 'l1'}), ('normalize', {'norm': 'l2'}),
-                   ('normalize', {'norm': 'max'}), ('binarize', {}), ('bm25', {}),
-                   ('bm25plus', {}), ('tfidf', {})]
+_SIMILARITIES = [
+    "dot_product",
+    "cosine",
+    "asymmetric_cosine",
+    "tversky",
+    "jaccard",
+    "dice",
+    "p3alpha",
+    "rp3beta",
+    "s_plus",
+]
+_NORMALIZATIONS = [
+    ("normalize", {"norm": "l1"}),
+    ("normalize", {"norm": "l2"}),
+    ("normalize", {"norm": "max"}),
+    ("binarize", {}),
+    ("bm25", {}),
+    ("bm25plus", {}),
+    ("tfidf", {}),
+]
 
 
 def _non_canonical(seed=0):
@@ -569,25 +634,26 @@ def _non_canonical(seed=0):
     return dup, clean
 
 
-@pytest.mark.parametrize('name', _SIMILARITIES)
-@pytest.mark.parametrize('binary', [False, True])
+@pytest.mark.parametrize("name", _SIMILARITIES)
+@pytest.mark.parametrize("binary", [False, True])
 def test_similarity_canonicalizes_input(name, binary):
     # p3alpha/rp3beta normalize (and take popularity) on the canonical copies
     dup, clean = _non_canonical()
     f = getattr(sim, name)
-    kw = {'k': 10, 'binary': binary, 'verbose': False}
+    kw = {"k": 10, "binary": binary, "verbose": False}
     _same(f(dup.T, **kw), f(clean.T, **kw))
 
 
-@pytest.mark.parametrize('name, kw', _NORMALIZATIONS)
-@pytest.mark.parametrize('axis', [0, 1])
+@pytest.mark.parametrize("name, kw", _NORMALIZATIONS)
+@pytest.mark.parametrize("axis", [0, 1])
 def test_normalization_canonicalizes_input(name, kw, axis):
     # Regression: duplicates gave e.g. l2 row norms of 1.414 and negative bm25/tfidf weights
     from similaripy import normalization
+
     dup, clean = _non_canonical()
     f = getattr(normalization, name)
-    if name != 'binarize':
-        kw = {**kw, 'axis': axis}
+    if name != "binarize":
+        kw = {**kw, "axis": axis}
     before = dup.data.copy()
     _same(f(dup, **kw), f(clean, **kw))
     np.testing.assert_array_equal(dup.data, before)  # never in place
@@ -595,18 +661,22 @@ def test_normalization_canonicalizes_input(name, kw, axis):
         f(dup, inplace=True, **kw)  # removed in v1: use the return value
 
 
-@pytest.mark.parametrize('args, expected', [
-    ((1, 0, 1, 0, 0, 0), True),     # cosine, asymmetric cosine (additive shrink inside the norms)
-    ((1, 0, 0, 1, 0, 0), True),     # rp3beta
-    ((0.9, 0, 1, 0, 0, 0), False),  # s_plus alpha: (x s)^a1 != x^a1 s
-    ((1, 1, 1, 0, 0, 0), False),    # tversky term
-    ((1, 0, 1, 1, 0, 0), False),    # cosine + depop
-    ((1, 0, 0, 0, 0, 0), False),    # dot product: nothing to scale
-    ((1, 0, 1, 0, 2, 0), False),    # stabilized shrink
-    ((1, 0, 0, 1, 0, 2), False),    # bayesian shrink
-])
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        ((1, 0, 1, 0, 0, 0), True),  # cosine, asymmetric cosine (additive shrink inside the norms)
+        ((1, 0, 0, 1, 0, 0), True),  # rp3beta
+        ((0.9, 0, 1, 0, 0, 0), False),  # s_plus alpha: (x s)^a1 != x^a1 s
+        ((1, 1, 1, 0, 0, 0), False),  # tversky term
+        ((1, 0, 1, 1, 0, 0), False),  # cosine + depop
+        ((1, 0, 0, 0, 0, 0), False),  # dot product: nothing to scale
+        ((1, 0, 1, 0, 2, 0), False),  # stabilized shrink
+        ((1, 0, 0, 1, 0, 2), False),  # bayesian shrink
+    ],
+)
 def test_product_form(args, expected):
     from similaripy import _s_plus
+
     a1, l1, l2, l3, stabilized, bayesian = args
     assert _s_plus._product_form(_s_plus.Params(a1, l1, l2, l3, 1, 1, stabilized, bayesian, 0)) is expected
 
@@ -614,6 +684,7 @@ def test_product_form(args, expected):
 def test_prescale_in_place_zero_norm_gives_zero():
     # a 0 norm only on an empty row/column: scale 0 there
     from similaripy import _s_plus
+
     m = sp.csr_array(np.array([[1, 0, 2], [0, 0, 0], [3, 0, 4], [0, 0, 5]], dtype=np.float32))
     d1, d2 = m.data.copy(), m.data.copy()
     X, Y = np.array([2, 0, 4, 1], dtype=np.float32), np.array([0.5, 0, 2], dtype=np.float32)
@@ -627,31 +698,40 @@ def test_prescale_in_place_zero_norm_gives_zero():
 def test_prescale_scaled_overflow_raises():
     # 1 / Y = 1e10 times 1e30 overflows float32
     from similaripy import _s_plus
+
     m = _m(4, 3, seed=1)
     m.data[0] = 1e30
     norms = _s_plus.Norms(x_cosine=np.ones(4, dtype=np.float32), y_cosine=np.full(3, 1e-10, dtype=np.float32))
-    with pytest.raises(ValueError, match='out of float32 range'):
-        _s_plus._prescale(_s_plus.Csr(m.data.copy(), m.indices, m.indptr, 3),
-                          _s_plus.Csr(m.data.copy(), m.indices, m.indptr, 3), 1, norms)
+    with pytest.raises(ValueError, match="out of float32 range"):
+        _s_plus._prescale(
+            _s_plus.Csr(m.data.copy(), m.indices, m.indptr, 3),
+            _s_plus.Csr(m.data.copy(), m.indices, m.indptr, 3),
+            1,
+            norms,
+        )
 
 
-@pytest.mark.parametrize('name, scale, kw', [
-    ('cosine', 1e19, {}),  # sums of squares overflow
-    ('cosine', 1e-30, {}),  # sums of squares underflow
-    ('asymmetric_cosine', 1e-25, {}),
-    ('rp3beta', 1e-30, {'beta': 2.0}),  # pop^2 underflows
-])
-@pytest.mark.filterwarnings('ignore:overflow')  # the norm sums, before the raise
+@pytest.mark.parametrize(
+    "name, scale, kw",
+    [
+        ("cosine", 1e19, {}),  # sums of squares overflow
+        ("cosine", 1e-30, {}),  # sums of squares underflow
+        ("asymmetric_cosine", 1e-25, {}),
+        ("rp3beta", 1e-30, {"beta": 2.0}),  # pop^2 underflows
+    ],
+)
+@pytest.mark.filterwarnings("ignore:overflow")  # the norm sums, before the raise
 def test_product_form_out_of_range_raises(name, scale, kw):
     # float32 norms (as the kernel paths): out of range raises instead of empty rows
     m = _m(60, 40, seed=4)
-    with pytest.raises(ValueError, match='out of float32 range'):
+    with pytest.raises(ValueError, match="out of float32 range"):
         getattr(sim, name)(m * np.float32(scale), k=10, verbose=False, **kw)
 
 
 def test_signed_power_alpha_one_same_bits():
     # p3alpha / rp3beta skip the power at alpha == 1: same bits as computing it
     from similaripy.similarity import _signed_power
+
     x = np.array([0.3, -0.0, 0.0, -2.5, 1e-40, 3e38, -1e-45], dtype=np.float32)
     assert _signed_power(x, 1).tobytes() == np.copysign(np.abs(x) ** 1.0, x).tobytes()
 
@@ -661,29 +741,41 @@ def test_rejects_past_int32_entries():
     # the similarities and the normalizations alike
     class Big(sp.csr_array):
         nnz = property(lambda self: 2**31)
+
     from similaripy import normalization
-    m = sp.random_array((5, 5), density=0.5, format='csr', random_state=0)
+
+    m = sp.random_array((5, 5), density=0.5, format="csr", random_state=0)
     m.__class__ = Big  # after construction: scipy checks nnz against the arrays
     for f in (lambda: sim.cosine(m, k=2, verbose=False), lambda: normalization.bm25(m)):
-        with pytest.raises(ValueError, match='non-zeros'):
+        with pytest.raises(ValueError, match="non-zeros"):
             f()
 
 
-@pytest.mark.parametrize('name', ['compute_similarities', 'remap_sort_rows', 'canonicalize_rows',
-                                  'normalize', 'tfidf', 'bm25plus'])
+@pytest.mark.parametrize(
+    "name", ["compute_similarities", "remap_sort_rows", "canonicalize_rows", "normalize", "tfidf", "bm25plus"]
+)
 def test_core_bindings_keyword_only(name):
     # a swapped positional argument of the same type would pass silently
     from similaripy import _core
-    with pytest.raises(TypeError, match='positional'):
+
+    with pytest.raises(TypeError, match="positional"):
         getattr(_core, name)(None)
 
 
-@pytest.mark.parametrize('target', [[], np.array([], dtype=np.int64), np.empty((5, 0), dtype=np.int64),
-                                    sp.csr_array((20, 20), dtype=np.float32), sp.lil_array((20, 20))])
+@pytest.mark.parametrize(
+    "target",
+    [
+        [],
+        np.array([], dtype=np.int64),
+        np.empty((5, 0), dtype=np.int64),
+        sp.csr_array((20, 20), dtype=np.float32),
+        sp.lil_array((20, 20)),
+    ],
+)
 def test_empty_target_cols_raises(target):
     # An empty target would score nothing (0.7.0 scored every column): None = all columns
     m = _m(20, 30, seed=3)
-    with pytest.raises(ValueError, match='target_cols is empty'):
+    with pytest.raises(ValueError, match="target_cols is empty"):
         sim.cosine(m, m.T, k=5, target_cols=target, verbose=False)
 
 

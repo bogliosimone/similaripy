@@ -13,23 +13,23 @@ ROUNDS = 4
 
 
 def _matrix():
-    return sp.random(2000, 500, density=0.02, format='csr', dtype=np.float32, random_state=42)
+    return sp.random(2000, 500, density=0.02, format="csr", dtype=np.float32, random_state=42)
 
 
 def _calls(m):
     return {
-        'dot_product': lambda: sim.dot_product(m, k=50, verbose=False, num_threads=2),
-        'cosine': lambda: sim.cosine(m, k=50, verbose=False, num_threads=2),
+        "dot_product": lambda: sim.dot_product(m, k=50, verbose=False, num_threads=2),
+        "cosine": lambda: sim.cosine(m, k=50, verbose=False, num_threads=2),
         # default threads: the rayon global pool, shared by all callers
-        'cosine_all_threads': lambda: sim.cosine(m, k=50, verbose=False),
-        'rp3beta': lambda: sim.rp3beta(m, k=50, verbose=False, num_threads=2),
-        's_plus': lambda: sim.s_plus(m, k=50, verbose=False, num_threads=2),
-        'bm25': lambda: sim.bm25(m),
-        'normalize': lambda: sim.normalize(m),
+        "cosine_all_threads": lambda: sim.cosine(m, k=50, verbose=False),
+        "rp3beta": lambda: sim.rp3beta(m, k=50, verbose=False, num_threads=2),
+        "s_plus": lambda: sim.s_plus(m, k=50, verbose=False, num_threads=2),
+        "bm25": lambda: sim.bm25(m),
+        "normalize": lambda: sim.normalize(m),
     }
 
 
-@pytest.mark.skipif(not sysconfig.get_config_var('Py_GIL_DISABLED'), reason='free-threaded build only')
+@pytest.mark.skipif(not sysconfig.get_config_var("Py_GIL_DISABLED"), reason="free-threaded build only")
 def test_gil_stays_disabled():
     # importing a module not marked freethreading_compatible re-enables the GIL
     assert not sys._is_gil_enabled()
@@ -64,13 +64,12 @@ def _bits(x):
     return x.data.tobytes(), x.indices.tobytes(), x.indptr.tobytes()
 
 
-@pytest.mark.parametrize('name', ['dot_product', 'cosine', 'rp3beta', 's_plus'])
+@pytest.mark.parametrize("name", ["dot_product", "cosine", "rp3beta", "s_plus"])
 def test_similarity_identical_across_threads_and_blocking(name):
     # Same version, same machine: the result never depends on thread count or blocking
     m = _non_canonical_coo()
     f = getattr(sim, name)
-    runs = [_bits(f(m, k=50, verbose=False, num_threads=n, block_size=bs))
-            for n in (1, 4, 0) for bs in (None, 64)]
+    runs = [_bits(f(m, k=50, verbose=False, num_threads=n, block_size=bs)) for n in (1, 4, 0) for bs in (None, 64)]
     assert all(r == runs[0] for r in runs[1:])
 
 
@@ -93,9 +92,15 @@ def test_normalization_identical_across_threads(tmp_path):
     import subprocess
 
     def run(n):
-        env = {**os.environ, 'RAYON_NUM_THREADS': str(n)}
-        r = subprocess.run([sys.executable, '-c', _NORMALIZE_SCRIPT], env=env, cwd=tmp_path,
-                           capture_output=True, text=True)
+        env = {**os.environ, "RAYON_NUM_THREADS": str(n)}
+        r = subprocess.run(
+            [sys.executable, "-c", _NORMALIZE_SCRIPT],
+            env=env,
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         assert r.returncode == 0, r.stderr
         return r.stdout
 

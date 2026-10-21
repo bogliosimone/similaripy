@@ -130,11 +130,15 @@ notebook = [
 [tool.ty.src]
 include = ["similaripy"]
 
+[tool.ruff]
+# The width the code is written at; double quotes (the formatter's default)
+line-length = 120
+
 [tool.ruff.lint]
-# Explicit: ruff's classic default set (newer releases select far more) + a
-# docstring on every public function (the library; tests and notebooks exempt)
-select = ["E4", "E7", "E9", "F", "D103"]
+# ruff's default rules + a docstring on every public function (the library;
+# tests and notebooks exempt)
+extend-select = ["D103"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D103"]
-"notebooks/**" = ["D103"]
+"notebooks/**" = ["D103", "BLE001"]  # demo code: a broad except around a plot is fine

@@ -219,9 +219,7 @@ tests/datasets/            # Downloaded datasets (gitignored)
 
 ## Output Files
 
-Benchmark results are automatically saved in two formats:
-- **Text report**: Human-readable summary table (`result_{version}_{timestamp}.txt`)
-- **JSON report**: Machine-readable data for comparisons (`result_{version}_{timestamp}.json`)
+Each run prints the summary table and saves a JSON report (`result_{version}_{timestamp}.json`), the input of `compare_benchmarks.py`.
 
 **Default location**: `bench_results/` directory
 
