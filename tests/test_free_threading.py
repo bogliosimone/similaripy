@@ -94,7 +94,12 @@ def test_normalization_identical_across_threads(tmp_path):
     def run(n):
         env = {**os.environ, "RAYON_NUM_THREADS": str(n)}
         r = subprocess.run(
-            [sys.executable, "-c", _NORMALIZE_SCRIPT], env=env, cwd=tmp_path, capture_output=True, text=True
+            [sys.executable, "-c", _NORMALIZE_SCRIPT],
+            env=env,
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         assert r.returncode == 0, r.stderr
         return r.stdout

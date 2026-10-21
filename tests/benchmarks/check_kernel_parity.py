@@ -117,7 +117,7 @@ def load_outputs(path, meta):
 def case_kwargs(kwargs, block_size):
     # auto = the library default, left out: 0.7.0 spells it 0, v1 'auto'
     auto = {} if block_size == "auto" else {"block_size": None if block_size == "none" else int(block_size)}
-    return dict(k=100, verbose=False, format_output="csr") | auto | kwargs
+    return {"k": 100, "verbose": False, "format_output": "csr"} | auto | kwargs
 
 
 def check_case(name, ref_arrays, new, kw, exact=False):

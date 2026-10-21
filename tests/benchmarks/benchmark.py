@@ -50,7 +50,9 @@ def get_system_info():
     try:
         system = platform.system()
         if system == "Darwin":
-            r = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, timeout=5, check=False
+            )
             if r.returncode == 0:
                 cpu_model = r.stdout.strip()
         elif system == "Linux":
@@ -59,16 +61,18 @@ def get_system_info():
                     if "model name" in line:
                         cpu_model = line.split(":", 1)[1].strip()
                         break
-    except Exception:
+    except (OSError, subprocess.SubprocessError):  # best effort: "unknown"
         pass
 
     # Git commit hash
     git_hash = "unknown"
     try:
-        r = subprocess.run(["git", "describe", "--always", "--dirty"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(
+            ["git", "describe", "--always", "--dirty"], capture_output=True, text=True, timeout=5, check=False
+        )
         if r.returncode == 0:
             git_hash = r.stdout.strip()
-    except Exception:
+    except (OSError, subprocess.SubprocessError):  # best effort: "unknown"
         pass
 
     os_version = platform.platform()
@@ -83,10 +87,10 @@ def get_system_info():
 
     def tool_version(cmd):
         try:
-            r = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=5, check=False)
             if r.returncode == 0:
                 return r.stdout.splitlines()[0].strip()
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
         return "unknown"
 

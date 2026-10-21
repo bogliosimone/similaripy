@@ -204,7 +204,7 @@ def run_benchmarks(config, verbose=True):
                 "format_output": config["format_output"],
             }
 
-        def run_once(sim_type):
+        def run_once(sim_type, URM=URM):  # bound now, not at call time (B023)
             # Drop the output matrix right away: keeping one per round adds GBs on Yambda
             r = benchmark_similarity(URM, **call_kwargs(sim_type))
             del r["similarity_matrix"]
