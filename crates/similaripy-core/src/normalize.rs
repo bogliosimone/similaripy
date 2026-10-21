@@ -9,6 +9,7 @@
 use std::ops::{Add, Div, Mul, Sub};
 
 use crate::Error;
+use crate::csr::check_indptr;
 
 /// Rows per parallel leaf are grouped until they hold at least this many entries.
 const LEAF_NNZ: usize = 1 << 16;
@@ -108,13 +109,9 @@ impl IdfMode {
 /// Divides each row by its l1 / l2 / max norm (sum of |x|, sqrt of the sum
 /// of x^2, largest |x|: signed rows keep their signs). Empty rows and zero
 /// norms are left unchanged.
-pub fn normalize_rows<T: Value, I: Copy + Into<i64> + Sync>(
-    norm: Norm,
-    data: &mut [T],
-    indptr: &[I],
-) -> Result<(), Error> {
-    let (lo, hi) = check_indptr(indptr, data.len())?;
-    par_rows(&mut data[lo..hi], indptr, &|_, _, row: &mut [T]| {
+pub fn normalize_rows<T: Value>(norm: Norm, data: &mut [T], indptr: &[i32]) -> Result<(), Error> {
+    check_indptr("normalize", indptr, data.len())?;
+    par_rows(data, indptr, &|_, _, row: &mut [T]| {
         let d = match norm {
             Norm::L1 => row.iter().fold(T::ZERO, |s, &x| s + x.abs()),
             Norm::L2 => row.iter().fold(T::ZERO, |s, &x| s + x * x).sqrt(),
@@ -131,20 +128,19 @@ pub fn normalize_rows<T: Value, I: Copy + Into<i64> + Sync>(
 }
 
 /// TF-IDF in place; rows are documents, columns are terms.
-pub fn tfidf<T: Value, I: Copy + Into<i64> + Sync>(
+pub fn tfidf<T: Value>(
     data: &mut [T],
-    indices: &[I],
-    indptr: &[I],
+    indices: &[i32],
+    indptr: &[i32],
     n_cols: usize,
     tf_mode: TfMode,
     idf_mode: IdfMode,
     logbase: f64,
 ) -> Result<(), Error> {
-    let (lo, hi) = check_indptr(indptr, data.len())?;
-    check_indices(indices, lo, hi, n_cols)?;
+    check_csr(data, indices, indptr, n_cols)?;
     let lb = log_logbase::<T>(logbase);
     let (idf_, _) = idf_and_doc_len(data, indices, indptr, n_cols, idf_mode, lb, false);
-    par_rows(&mut data[lo..hi], indptr, &|_, start, row: &mut [T]| {
+    par_rows(data, indptr, &|_, start, row: &mut [T]| {
         let doc_len = row.iter().fold(T::ZERO, |s, &x| s + x);
         for (x, c) in row.iter_mut().zip(&indices[start..]) {
             *x = tf(*x, doc_len, tf_mode, lb) * idf_[ix(*c)];
@@ -155,10 +151,10 @@ pub fn tfidf<T: Value, I: Copy + Into<i64> + Sync>(
 
 /// BM25+ in place (`delta = 0` is plain BM25); rows are documents, columns are terms.
 #[allow(clippy::too_many_arguments)]
-pub fn bm25plus<T: Value, I: Copy + Into<i64> + Sync>(
+pub fn bm25plus<T: Value>(
     data: &mut [T],
-    indices: &[I],
-    indptr: &[I],
+    indices: &[i32],
+    indptr: &[i32],
     n_cols: usize,
     k1: f64,
     b: f64,
@@ -167,8 +163,7 @@ pub fn bm25plus<T: Value, I: Copy + Into<i64> + Sync>(
     idf_mode: IdfMode,
     logbase: f64,
 ) -> Result<(), Error> {
-    let (lo, hi) = check_indptr(indptr, data.len())?;
-    check_indices(indices, lo, hi, n_cols)?;
+    check_csr(data, indices, indptr, n_cols)?;
     let lb = log_logbase::<T>(logbase);
     let n_docs = indptr.len() - 1;
     if n_docs == 0 {
@@ -178,7 +173,7 @@ pub fn bm25plus<T: Value, I: Copy + Into<i64> + Sync>(
     // Serial sum in row order, in the data type: one fixed rounding, O(rows).
     let avg = doc_len.iter().fold(T::ZERO, |s, &x| s + x) / T::narrow(n_docs as f64);
     let (k1, b, delta) = (T::narrow(k1), T::narrow(b), T::narrow(delta));
-    par_rows(&mut data[lo..hi], indptr, &|r, start, row: &mut [T]| {
+    par_rows(data, indptr, &|r, start, row: &mut [T]| {
         let norm_len = T::narrow((1.0 - b.wide()) + (b * doc_len[r] / avg).wide());
         for (x, c) in row.iter_mut().zip(&indices[start..]) {
             let t = tf(*x, doc_len[r], tf_mode, lb);
@@ -192,10 +187,10 @@ pub fn bm25plus<T: Value, I: Copy + Into<i64> + Sync>(
 /// Per-column IDF (0 for unused columns) and, if asked, per-row document length.
 /// Serial: the count is a column histogram over all rows (O(nnz) increments).
 /// Counts are integers: an f32 counter would stop at 2^24.
-fn idf_and_doc_len<T: Value, I: Copy + Into<i64>>(
+fn idf_and_doc_len<T: Value>(
     data: &[T],
-    indices: &[I],
-    indptr: &[I],
+    indices: &[i32],
+    indptr: &[i32],
     n_cols: usize,
     mode: IdfMode,
     lb: T,
@@ -263,82 +258,46 @@ fn log_logbase<T: Value>(logbase: f64) -> T {
     T::narrow(T::narrow(logbase).wide().ln())
 }
 
-fn ix<I: Into<i64>>(i: I) -> usize {
-    i.into() as usize
+fn ix(i: i32) -> usize {
+    i as usize
 }
 
-/// indptr: non-empty, non-negative, monotone, last entry within `data_len`.
-/// Returns the data range the rows cover. Looser than `csr::check_indptr`
-/// (`indptr[0]` may be > 0, entries may follow the last row): scipy's rules,
-/// since this works in place on the caller's arrays.
-fn check_indptr<I: Copy + Into<i64>>(
-    indptr: &[I],
-    data_len: usize,
-) -> Result<(usize, usize), Error> {
-    let bad = |m: &str| Err(Error::InvalidInput(format!("indptr: {m}")));
-    let (Some(&first), Some(&last)) = (indptr.first(), indptr.last()) else {
-        return bad("empty");
-    };
-    if first.into() < 0 {
-        return bad("negative");
+/// The canonical CSR the Python prep passes (`_canonical_csr`): indptr from 0
+/// to nnz, one value per entry, column indices in `0..n_cols`.
+fn check_csr<T>(data: &[T], indices: &[i32], indptr: &[i32], n_cols: usize) -> Result<(), Error> {
+    check_indptr("normalize", indptr, indices.len())?;
+    if data.len() != indices.len() {
+        return Err(Error::InvalidInput("len(data) != len(indices)".into()));
     }
-    if indptr.windows(2).any(|w| w[0].into() > w[1].into()) {
-        return bad("not monotone");
-    }
-    if last.into() as u64 > data_len as u64 {
-        return bad("last entry exceeds data length");
-    }
-    Ok((ix(first), ix(last)))
-}
-
-/// Column indices of entries `lo..hi` are in `0..n_cols`.
-fn check_indices<I: Copy + Into<i64>>(
-    indices: &[I],
-    lo: usize,
-    hi: usize,
-    n_cols: usize,
-) -> Result<(), Error> {
-    if indices.len() < hi {
-        return Err(Error::InvalidInput(
-            "indices shorter than indptr's last entry".into(),
-        ));
-    }
-    if indices[lo..hi]
-        .iter()
-        .any(|&c| c.into() < 0 || c.into() as u64 >= n_cols as u64)
-    {
+    if indices.iter().any(|&c| c < 0 || c as usize >= n_cols) {
         return Err(Error::InvalidInput("column index out of range".into()));
     }
     Ok(())
 }
 
 /// Runs `f(row, start, row_data)` for every row, in parallel. `data` covers
-/// entries `indptr[0]..indptr[last]`; `start` is the row's absolute offset.
-/// Splits by entries, not rows, so popularity-ordered rows still balance. Same
-/// split as `prep::par_leaves`, kept separate: generic over the index type and
-/// one data slice (prep's is i32 with two).
-fn par_rows<T, I, F>(data: &mut [T], indptr: &[I], f: &F)
+/// entries `indptr[0]..indptr[last]` (a split's `indptr` starts past 0);
+/// `start` is the row's absolute offset. Splits by entries, not rows, so
+/// popularity-ordered rows still balance. Same split as `prep::par_leaves`,
+/// kept separate: one data slice (prep's has two).
+fn par_rows<T, F>(data: &mut [T], indptr: &[i32], f: &F)
 where
     T: Send,
-    I: Copy + Into<i64> + Sync,
     F: Fn(usize, usize, &mut [T]) + Sync,
 {
     rows_from(data, indptr, 0, LEAF_NNZ, f)
 }
 
-fn rows_from<T, I, F>(data: &mut [T], indptr: &[I], first_row: usize, leaf: usize, f: &F)
+fn rows_from<T, F>(data: &mut [T], indptr: &[i32], first_row: usize, leaf: usize, f: &F)
 where
     T: Send,
-    I: Copy + Into<i64> + Sync,
     F: Fn(usize, usize, &mut [T]) + Sync,
 {
     let n = indptr.len() - 1;
     let base = ix(indptr[0]);
     if n > 1 && data.len() > leaf {
-        let half = (base + data.len() / 2) as i64;
-        let mid = indptr
-            .partition_point(|&p| p.into() <= half)
-            .clamp(1, n - 1);
+        let half = base + data.len() / 2;
+        let mid = indptr.partition_point(|&p| ix(p) <= half).clamp(1, n - 1);
         let (l, r) = data.split_at_mut(ix(indptr[mid]) - base);
         rayon::join(
             || rows_from(l, &indptr[..=mid], first_row, leaf, f),
@@ -368,9 +327,9 @@ mod tests {
             leaf in 0usize..8,
             offset in 0usize..3,
         ) {
-            let mut indptr = vec![offset as i64];
+            let mut indptr = vec![offset as i32];
             for l in &lens {
-                indptr.push(indptr.last().unwrap() + *l as i64);
+                indptr.push(indptr.last().unwrap() + *l as i32);
             }
             let total = *indptr.last().unwrap() as usize;
             let mut data: Vec<f32> = (0..total).map(|i| i as f32).collect();
@@ -392,5 +351,15 @@ mod tests {
         let indptr = [0i32, 3, 5, 7, 7, 9];
         normalize_rows(Norm::Max, &mut data, &indptr).unwrap();
         assert_eq!(data, [0.5, -1.0, 0.25, -1.0, -0.5, 0.5, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn check_csr_rejects_non_canonical_input() {
+        let ok = |d: &[f32], ix: &[i32], p: &[i32]| check_csr(d, ix, p, 3).is_ok();
+        assert!(ok(&[1.0, 2.0], &[0, 2], &[0, 1, 2]));
+        assert!(!ok(&[1.0, 2.0], &[0, 2], &[1, 1, 2])); // indptr[0] != 0
+        assert!(!ok(&[1.0, 2.0], &[0, 2], &[0, 1, 1])); // indptr[-1] != nnz
+        assert!(!ok(&[1.0], &[0, 2], &[0, 1, 2])); // one value per entry
+        assert!(!ok(&[1.0, 2.0], &[0, 3], &[0, 1, 2])); // index out of range
     }
 }

@@ -25,11 +25,11 @@ enum Op {
 }
 
 impl Op {
-    fn apply<T: Value, I: Copy + Into<i64> + Sync>(
+    fn apply<T: Value>(
         self,
         data: &mut [T],
-        indices: &[I],
-        indptr: &[I],
+        indices: &[i32],
+        indptr: &[i32],
         n_cols: usize,
     ) -> Result<(), Error> {
         match self {

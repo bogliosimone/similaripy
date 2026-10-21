@@ -301,3 +301,4 @@ def test_signed_row_with_only_negative_scores_is_empty():
     out = sim.dot_product(m, -m.T, k=3, verbose=False)
     # row 0 . -row 0 = -2, row 0 . -row 1 = 2, row 0 . -row 2 = 0 (cancelled): only column 1
     np.testing.assert_array_equal(out.toarray(), [[0, 2, 0], [2, 0, 0], [0, 0, 0]])
+

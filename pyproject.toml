@@ -72,7 +72,7 @@ cache-keys = [
 [tool.cibuildwheel]
 # Python range comes from requires-python, free-threaded (t) builds included
 skip = "*-musllinux_* *-win32 *_i686"
-test-requires = ["pytest"]
+test-groups = ["test"]
 test-command = "pytest {project}/tests"
 
 [tool.cibuildwheel.linux]
@@ -95,11 +95,15 @@ lint = [
   "ty==0.0.90",
   "scipy-stubs",
 ]
-dev = [
-  { include-group = "lint" },
-  "maturin",
+# What every test run installs: CI jobs, wheel tests (cibuildwheel test-groups), sdist test
+test = [
   "pytest",
   "hypothesis",
+]
+dev = [
+  { include-group = "lint" },
+  { include-group = "test" },
+  "maturin",
   "pre-commit",
 ]
 docs = [
