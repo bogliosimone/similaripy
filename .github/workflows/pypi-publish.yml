@@ -37,8 +37,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-15-intel: the last Intel image (no "latest" label for Intel)
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest, macos-15-intel]
+        # macos-15-intel: the last Intel image (no "latest" label for Intel). Not on
+        # PRs: the slowest job (~5 min); pushes and releases build it as before.
+        os: ${{ fromJSON(github.event_name == 'pull_request'
+          && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest", "macos-latest"]'
+          || '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest", "macos-latest", "macos-15-intel"]') }}
 
     steps:
       - uses: actions/checkout@v7

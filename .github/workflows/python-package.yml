@@ -25,6 +25,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        # macOS/Windows: the oldest and newest Python only (9 cells, not 15). The
+        # wheel jobs test every version there (cp314 on PRs, all on push).
+        exclude:
+          - { os: macos-latest, python-version: "3.12" }
+          - { os: macos-latest, python-version: "3.13" }
+          - { os: macos-latest, python-version: "3.14" }
+          - { os: windows-latest, python-version: "3.12" }
+          - { os: windows-latest, python-version: "3.13" }
+          - { os: windows-latest, python-version: "3.14" }
 
     steps:
     - uses: actions/checkout@v7
