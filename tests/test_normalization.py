@@ -179,3 +179,15 @@ def test_rejects_non_finite(name, bad):
     X.data[3] = bad
     with pytest.raises(ValueError, match='finite'):
         getattr(norm, name)(X)
+
+
+@pytest.mark.parametrize('call, error, match', [
+    (lambda X: norm.normalize(X, axis=2), ValueError, 'axis must be 0 or 1'),
+    (lambda X: norm.normalize(X.toarray()), TypeError, 'X must be a sparse matrix'),
+    (lambda X: norm.normalize(X, norm='l3'), ValueError, 'norm must be one of'),
+    (lambda X: norm.tfidf(X, tf_mode='x'), ValueError, 'tf_mode must be one of'),
+    (lambda X: norm.bm25(X, idf_mode='x'), ValueError, 'idf_mode must be one of'),
+])
+def test_rejects_bad_arguments(call, error, match):
+    with pytest.raises(error, match=match):
+        call(generate_random_matrix())
