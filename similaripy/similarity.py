@@ -45,8 +45,9 @@ def dot_product(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
-            int > 0 = explicit size in float32 entries).
+        block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
+            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
         A sparse matrix of shape (n_rows, n_cols) in the specified format,
@@ -111,8 +112,9 @@ def cosine(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
-            int > 0 = explicit size in float32 entries).
+        block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
+            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
         A sparse matrix of top-k cosine similarities in the specified format.
@@ -181,8 +183,9 @@ def asymmetric_cosine(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
-            int > 0 = explicit size in float32 entries).
+        block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
+            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
         A sparse matrix of shape (n_rows, n_cols) containing the top-k
@@ -258,8 +261,9 @@ def tversky(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
-            int > 0 = explicit size in float32 entries).
+        block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
+            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
         A sparse matrix of top-k Tversky similarities in the specified format.
@@ -325,8 +329,9 @@ def jaccard(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
-            int > 0 = explicit size in float32 entries).
+        block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
+            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
         A sparse matrix of top-k Jaccard similarities in the specified format.
@@ -392,8 +397,9 @@ def dice(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
-            int > 0 = explicit size in float32 entries).
+        block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
+            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
         A sparse matrix of top-k Dice similarities in the specified format.
@@ -462,8 +468,9 @@ def p3alpha(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
-            int > 0 = explicit size in float32 entries).
+        block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
+            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
         A sparse matrix of top-k P3alpha similarities in the specified format.
@@ -533,8 +540,9 @@ def rp3beta(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
-            int > 0 = explicit size in float32 entries).
+        block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
+            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
         A sparse matrix of top-k RP3beta similarities in the specified format.
@@ -634,8 +642,9 @@ def s_plus(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
-            int > 0 = explicit size in float32 entries).
+        block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
+            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
         A sparse matrix of top-k s_plus similarities in the specified format.
