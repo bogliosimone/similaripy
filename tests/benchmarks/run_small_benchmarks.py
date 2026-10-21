@@ -204,7 +204,7 @@ def main():
         'shrink': 0,
         'threshold': 0,
         'num_threads': args.threads,
-        'block_size': 0,
+        'block_size': 'auto',
         'format_output': args.format_output,
         'rounds': args.rounds,
         'warmup': args.warmup,

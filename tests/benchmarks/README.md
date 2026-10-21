@@ -140,7 +140,7 @@ Variants with fixed parameters (`benchmark.py`, placeholder values: shrink 10, a
 --shrink SHRINK        Shrinkage parameter (default: 0)
 --threshold THRESHOLD  Minimum threshold (default: 0)
 --threads THREADS      Number of threads, 0=auto (default: 0)
---block-size SIZE      Block size: 0=auto, none=disabled, or int>0 (default: 0)
+--block-size SIZE      Block size: auto, none=disabled, or int>0 (default: auto)
 --format-output FMT    Output format csr/coo passed to every call (default: csr; also in
                         run_small_benchmarks.py / run_recommend_benchmarks.py). Builds whose
                         library default differs (0.7.0: coo) time the same output.

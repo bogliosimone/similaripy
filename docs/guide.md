@@ -53,7 +53,7 @@ urm = sps.random_array((1000, 2000), density=0.025)
 urm = sim.normalization.bm25(urm)
 
 # Train an item-item cosine similarity model
-similarity_matrix = sim.cosine(urm.T, k=50)
+similarity_matrix = sim.cosine(urm.T, k=50, verbose=True)  # verbose: progress bar
 
 # Compute recommendations for user 1, 14, 8 
 # filtering out already-seen items
@@ -111,6 +111,15 @@ similarity_matrix = sim.cosine(urm.T, k=50, threshold=1e-6)
   [Normalizations](normalization.md#signed-input).
 
 ### Migration notes
+
+From 0.7.0 (API):
+
+- Every parameter after `matrix2` is keyword-only: `sim.cosine(m, None, 50)`
+  raises `TypeError`; write `sim.cosine(m, k=50)`.
+- `verbose` defaults to `False`: pass `verbose=True` for the progress bar.
+- `block_size` defaults to `'auto'`; `0` (0.7.0's auto) raises `ValueError`.
+- `format_output` defaults to `'csr'` (0.7.0: `'coo'`): pass
+  `format_output='coo'` to keep the old output format.
 
 Earlier v1 builds rejected any value that was not finite and `> 0`. Now:
 

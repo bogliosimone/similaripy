@@ -18,7 +18,7 @@ SimilariPy provides a suite of similarity functions for sparse matrixes, all imp
 
 ## Common Parameters
 
-All similarity functions in Similaripy share the following parameters:
+All similarity functions in Similaripy share the following parameters (everything after `m2` is keyword-only):
 
 | Parameter        | Description |
 |------------------|-------------|
@@ -32,10 +32,10 @@ All similarity functions in Similaripy share the following parameters:
 | `target_rows`    | List or array of row indices to compute. If `None`, computes for all rows. *(default: `None`)* |
 | `target_cols`    | Subset of columns to consider **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). `None` = all columns; an empty selector raises `ValueError`. *(default: `None`)* |
 | `filter_cols`    | Subset of columns to filter **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
-| `verbose`        | If `True`, shows a progress bar. *(default: `True`)* |
+| `verbose`        | If `True`, shows a progress bar. *(default: `False`)* |
 | `format_output`  | Output format: `'csr'` or `'coo'`. *(default: `'csr'`)* |
 | `num_threads`    | Number of threads to use. `0` means use all available cores. *(default: `0`)* |
-| `block_size`     | Block size for column-blocked accumulation. `0` = auto (recommended), `None` = disabled. *(default: `0`)* |
+| `block_size`     | Block size for column-blocked accumulation. `'auto'` (recommended: the library's choice, currently 262144 float32 entries, ~1 MB; may adapt in future versions), `None` = disabled, or an int > 0. Results are the same at any size. *(default: `'auto'`)* |
 
 ## Shrinkage Types
 

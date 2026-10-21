@@ -45,11 +45,13 @@ def parse_block_size(raw):
 
     Returns
     -------
-    int or None
-        None means disabled, 0 means auto, >0 means explicit size.
+    'auto', int or None
+        None means disabled, >0 means explicit size.
     """
     if raw.lower() == 'none':
         return None
+    if raw.lower() == 'auto':
+        return 'auto'
     return int(raw)
 
 
@@ -57,7 +59,7 @@ def format_block_size(block_size):
     """Human-readable block_size string."""
     if block_size is None:
         return 'disabled'
-    return 'auto' if block_size == 0 else str(block_size)
+    return str(block_size)
 
 
 def aggregate_rounds(round_results):
@@ -264,7 +266,7 @@ def format_summary_table(all_results, sys_info, block_size):
         Results from run_benchmarks().
     sys_info : dict
         System info from get_system_info().
-    block_size : int or None
+    block_size : 'auto', int or None
         Block size parameter for display.
 
     Returns
@@ -568,8 +570,8 @@ Examples:
                         help='Untimed warm-up rounds before the timed ones (default: 1)')
     parser.add_argument('--tag', type=str, default=None,
                         help='Report filename tag (default: similaripy version)')
-    parser.add_argument('--block-size', type=str, default='0',
-                        help='Block size: 0=auto, none=disabled, or int>0 (default: 0)')
+    parser.add_argument('--block-size', type=str, default='auto',
+                        help='Block size: auto, none=disabled, or int>0 (default: auto)')
     parser.add_argument('--column-order', default=None, choices=['popularity', 'original'],
                         help="Kernel column order (private switch; default: the library's, popularity)")
     parser.add_argument('--format-output', default='csr', choices=['csr', 'coo'],

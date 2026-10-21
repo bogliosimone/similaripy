@@ -3,7 +3,7 @@
 """
 
 import time
-from typing import NamedTuple, Union, Optional, List
+from typing import NamedTuple, Union, Optional, List, Literal
 
 import numpy as np
 import scipy.sparse as sp
@@ -93,7 +93,7 @@ def _check_args(
     weights: dict,
     a1: float,
     num_threads: int,
-    block_size: Optional[int],
+    block_size: Union[int, Literal['auto'], None],
 ) -> None:
     """
     Check the `s_plus` arguments that don't need the values, before the copy
@@ -121,8 +121,8 @@ def _check_args(
     if not _is_int(k) or k < 1:
         raise ValueError(f'k must be an integer >= 1, got {k!r}')
 
-    _check_depop('weight_depop_matrix1 (pop1)', weight_depop_matrix1, matrix1.shape[0])
-    _check_depop('weight_depop_matrix2 (pop2)', weight_depop_matrix2, matrix2.shape[1])
+    _check_depop('pop1', weight_depop_matrix1, matrix1.shape[0])
+    _check_depop('pop2', weight_depop_matrix2, matrix2.shape[1])
 
     # Column selectors: a list/array is one set of column ids for every row, a
     # sparse matrix one row of columns per output row.
@@ -155,8 +155,9 @@ def _check_args(
         _check_scalar(name, value)
     _check_scalar('a1 (alpha)', a1, strict=True)
 
-    if block_size is not None and not (_is_int(block_size) and block_size >= 0):
-        raise ValueError(f'block_size must be None (no blocking), 0 (auto) or > 0, got {block_size!r}')
+    if not (block_size is None or (isinstance(block_size, str) and block_size == 'auto')
+            or (_is_int(block_size) and block_size > 0)):
+        raise ValueError(f"block_size must be 'auto', None (no blocking) or an integer > 0, got {block_size!r}")
     if not (_is_int(num_threads) and num_threads >= 0):
         raise ValueError(f'num_threads must be an integer >= 0, got {num_threads!r}')
 
@@ -223,8 +224,8 @@ def _check_data(m1, m2, params: Params, norm_params: NormParams) -> None:
     signed = not binary and bool((m1.data < 0).any() or (m2.data < 0).any())
     _check_score_rules(signed, binary, params, m1.data, m2.data)
     if params.l3 != 0:
-        _check_used_weights('weight_depop_matrix1 (pop1)', norm_params.depop1, np.diff(m1.indptr) > 0)
-        _check_used_weights('weight_depop_matrix2 (pop2)', norm_params.depop2,
+        _check_used_weights('pop1', norm_params.depop1, np.diff(m1.indptr) > 0)
+        _check_used_weights('pop2', norm_params.depop2,
                             np.bincount(m2.indices, minlength=m2.shape[1]) > 0)
 
 
@@ -402,10 +403,10 @@ def s_plus(
     target_rows: Optional[Union[list, np.ndarray]] = None,
     filter_cols: Optional[Union[list, np.ndarray, sp.sparray]] = None,
     target_cols: Optional[Union[list, np.ndarray, sp.sparray]] = None,
-    verbose: bool = True,
+    verbose: bool = False,
     format_output: str = 'csr',
     num_threads: int = 0,
-    block_size: Optional[int] = 0,
+    block_size: Union[int, Literal['auto'], None] = 'auto',
     prepare=None,
 ) -> Union[sp.csr_array, sp.coo_array]:
     """
@@ -448,7 +449,8 @@ def s_plus(
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation. Controls the trade-off
             between cache efficiency and multi-pass overhead.
-            0 = auto (DEFAULT_BLOCK_SIZE entries, ~1 MB).
+            'auto' = the library's choice, currently DEFAULT_BLOCK_SIZE entries (~1 MB);
+            may adapt in future versions (results are the same at any size).
             None = disabled (no blocking).
             int > 0 = explicit size in number of float32 entries.
         prepare: Private (p3alpha, rp3beta): `prepare(m1, m2)` gets the call's
@@ -462,8 +464,8 @@ def s_plus(
 
     Raises:
         ValueError: invalid shapes or parameters (see `_check_args`),
-            a negative block_size, more than 2^31 - 1 non-zeros in an input, input
-            values not finite in float32, a1 != 1 or bayesian_shrink on signed input
+            a block_size other than 'auto', None or an int > 0, more than
+            2^31 - 1 non-zeros in an input, input values not finite in float32, a1 != 1 or bayesian_shrink on signed input
             (values < 0, not binary), or l1 != 0 with t1, t2 whose tversky
             term can be <= 0 on weighted input (see `_check_score_rules`), values
             out of float32 range for a score computed from pre-scaled inputs
@@ -534,7 +536,7 @@ def _s_plus(
     m1_arrays = Csr(m1.data, m1.indices, m1.indptr, m1.shape[1])
     m2_arrays = Csr(m2.data, m2.indices, m2.indptr, n_output_cols)
 
-    if block_size == 0:  # auto; None (no blocking) and int > 0 go as they are
+    if isinstance(block_size, str):  # 'auto'; None (no blocking) and int > 0 go as they are
         block_size = DEFAULT_BLOCK_SIZE
 
     norms = _norms(m1_arrays, m2_arrays, n_output_cols, params, norm_params)
