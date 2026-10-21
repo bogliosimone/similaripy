@@ -41,13 +41,7 @@ DEFAULT_VERSIONS = {
 
 
 def parse_block_size(raw):
-    """Parse the --block-size CLI value.
-
-    Returns
-    -------
-    'auto', int or None
-        None means disabled, >0 means explicit size.
-    """
+    """--block-size value: 'auto', None ('none': no blocking) or an int > 0."""
     if raw.lower() == "none":
         return None
     if raw.lower() == "auto":
@@ -99,12 +93,8 @@ def format_time(computation_time, std_time):
 
 
 def build_report_stem(sys_info, config):
-    """Build descriptive base filename (without extension) for reports.
-
-    Format: result_{tag}_{datasets}_{timestamp}[_{note}], tag defaults to the version
-    Example: result_0.6.0_movielens_32m_20260224_144649
-    Example: result_0.6.0_movielens_32m_20260224_144649_my_note
-    """
+    """Report filename without extension: result_{tag}_{datasets}_{timestamp}[_{note}], tag = version by default
+    (e.g. result_0.6.0_movielens_32m_20260224_144649)."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     datasets_str = "_".join(f"{d}_{v}" for d, v in config["datasets"])
     tag = config.get("tag") or sys_info["similaripy_version"]
@@ -121,16 +111,11 @@ def build_report_stem(sys_info, config):
 
 
 def rss_child(dataset_name, version, dataset_kwargs, call_kwargs):
-    """Peak memory of one call, run as the first call in a fresh process.
+    """Peak memory of one call, run as the first call in a fresh process: (MB before, MB peak above it).
 
     On macOS a repeated call reuses the allocator's cached regions without
     them counting again: the second identical ML-32M cosine call stayed flat
     while the first rose by ~490 MB. Only a first call shows its peak.
-
-    Returns
-    -------
-    tuple
-        (memory before the call in MB, peak above it in MB), see peak_rss.
     """
     URM, _ = load_URM(dataset_name, version=version, verbose=False, **dataset_kwargs)
     _, base_mb, peak_mb = peak_rss(lambda: benchmark_similarity(URM, **call_kwargs))
@@ -138,23 +123,7 @@ def rss_child(dataset_name, version, dataset_kwargs, call_kwargs):
 
 
 def run_benchmarks(config, verbose=True):
-    """
-    Run benchmarks on multiple datasets and similarity types.
-
-    Parameters
-    ----------
-    config : dict
-        Benchmark configuration with keys: datasets, similarities, k,
-        shrink, threshold, num_threads, block_size, warmup, rounds, dataset_kwargs.
-    verbose : bool
-        Print progress.
-
-    Returns
-    -------
-    tuple
-        (all_results, dataset_info) where all_results is a nested dictionary
-        and dataset_info contains URM statistics.
-    """
+    """Run every configured similarity on each dataset: (all_results, dataset_info)."""
     all_results = {}
     dataset_info = {}
 
@@ -253,25 +222,7 @@ def run_benchmarks(config, verbose=True):
 
 
 def format_summary_table(all_results, sys_info, block_size):
-    """
-    Build the benchmark summary table as a string.
-
-    Used by both terminal output and text report writing.
-
-    Parameters
-    ----------
-    all_results : dict
-        Results from run_benchmarks().
-    sys_info : dict
-        System info from get_system_info().
-    block_size : 'auto', int or None
-        Block size parameter for display.
-
-    Returns
-    -------
-    str
-        Formatted summary table.
-    """
+    """The summary table printed at the end of a run."""
     lines = []
     w = 167
 
@@ -343,72 +294,8 @@ def format_summary_table(all_results, sys_info, block_size):
     return "\n".join(lines)
 
 
-def write_text_report(output_path, config, dataset_info, all_results, sys_info):
-    """
-    Write a human-readable text report.
-
-    Parameters
-    ----------
-    output_path : Path
-        Path to output file.
-    config : dict
-        Benchmark configuration.
-    dataset_info : dict
-        Dataset statistics.
-    all_results : dict
-        Benchmark results.
-    sys_info : dict
-        System info from get_system_info().
-    """
-    with open(output_path, "w") as f:
-        # Section 1: Configuration header
-        f.write("=" * 70 + "\n")
-        f.write("SIMILARIPY BENCHMARK SUITE\n")
-        f.write("=" * 70 + "\n")
-        f.write(f"Date: {sys_info['timestamp']}\n")
-        ds, ver = config["datasets"][0]
-        f.write(f"Dataset: {ds}:{ver}\n")
-        f.write(f"Similarities: {', '.join(config['similarities'])}\n")
-        f.write(f"Parameters: k={config['k']}, shrink={config['shrink']}, threshold={config['threshold']}\n")
-        f.write(f"Threads: {config['num_threads'] if config['num_threads'] > 0 else 'auto'}\n")
-        f.write(f"Block size: {format_block_size(config['block_size'])}\n")
-        f.write(f"Rounds: {config['rounds']} (+{config['warmup']} warmup)\n")
-        if config.get("note"):
-            f.write(f"Note: {config['note']}\n")
-        f.write("=" * 70 + "\n")
-
-        # Section 2: Dataset statistics
-        for (dataset_name, version), info in dataset_info.items():
-            f.write(f"\n{'=' * 70}\n")
-            f.write(f"Loading dataset: {dataset_name.upper()} (version: {version})\n")
-            f.write(f"{'=' * 70}\n")
-            f.write(f"URM shape: {info['shape']}\n")
-            f.write(f"URM nnz: {info['nnz']:,}\n")
-            f.write(f"URM density: {info['density']:.6%}\n")
-
-        # Section 3: Summary table (reuses the shared formatter)
-        f.write("\n")
-        f.write(format_summary_table(all_results, sys_info, config["block_size"]))
-        f.write("\n")
-
-
 def write_json_report(output_path, config, dataset_info, all_results, sys_info):
-    """
-    Write benchmark results as a JSON file for machine-readable comparison.
-
-    Parameters
-    ----------
-    output_path : Path
-        Path to output JSON file.
-    config : dict
-        Benchmark configuration.
-    dataset_info : dict
-        Dataset statistics.
-    all_results : dict
-        Benchmark results.
-    sys_info : dict
-        System info from get_system_info().
-    """
+    """Write the run as JSON (the input of compare_benchmarks.py)."""
     report = {
         "metadata": {
             **sys_info,
@@ -474,19 +361,7 @@ def write_json_report(output_path, config, dataset_info, all_results, sys_info):
 
 
 def build_config(args):
-    """
-    Build a benchmark config dict from parsed CLI arguments.
-
-    Parameters
-    ----------
-    args : argparse.Namespace
-        Parsed CLI arguments.
-
-    Returns
-    -------
-    dict
-        Benchmark configuration dictionary.
-    """
+    """The benchmark config dict from the parsed CLI arguments."""
     version = args.version or DEFAULT_VERSIONS.get(args.dataset)
     datasets = [(args.dataset, version)]
 
@@ -634,15 +509,11 @@ Examples:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     base_filename = build_report_stem(sys_info, config)
-    txt_path = output_dir / f"{base_filename}.txt"
     json_path = output_dir / f"{base_filename}.json"
 
-    write_text_report(txt_path, config, dataset_info, all_results, sys_info)
     write_json_report(json_path, config, dataset_info, all_results, sys_info)
 
-    print("\nResults saved to:")
-    print(f"  Text:  {txt_path}")
-    print(f"  JSON:  {json_path}")
+    print(f"\nResults saved to: {json_path}")
 
 
 if __name__ == "__main__":

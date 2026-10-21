@@ -32,7 +32,6 @@ from run_benchmarks import (
     build_report_stem,
     format_summary_table,
     write_json_report,
-    write_text_report,
 )
 
 import similaripy as sim
@@ -221,9 +220,8 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = build_report_stem(sys_info, config)
-    write_text_report(output_dir / f"{stem}.txt", config, dataset_info, all_results, sys_info)
     write_json_report(output_dir / f"{stem}.json", config, dataset_info, all_results, sys_info)
-    print(f"\nResults saved to:\n  Text:  {output_dir / stem}.txt\n  JSON:  {output_dir / stem}.json")
+    print(f"\nResults saved to: {output_dir / stem}.json")
 
 
 if __name__ == "__main__":

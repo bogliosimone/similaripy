@@ -21,30 +21,7 @@ import similaripy as sim
 
 
 def get_system_info():
-    """Collect system and environment information for benchmark reports.
-
-    Returns
-    -------
-    dict
-        Dictionary with keys: similaripy_version, numpy_version, scipy_version, python_version, system,
-        arch, cpu_model, cpu_count, git_hash, timestamp, os_version, memory_gb,
-        rustc, gil_enabled.
-    """
-    try:
-        similaripy_version = sim.__version__
-    except AttributeError:
-        similaripy_version = "unknown"
-
-    try:
-        numpy_version = np.__version__
-    except AttributeError:
-        numpy_version = "unknown"
-
-    try:
-        scipy_version = sp.__version__
-    except AttributeError:
-        scipy_version = "unknown"
-
+    """Versions, machine, git hash and timestamp for the reports."""
     # CPU model name
     cpu_model = "unknown"
     try:
@@ -97,9 +74,9 @@ def get_system_info():
     rustc = tool_version("rustc")
 
     return {
-        "similaripy_version": similaripy_version,
-        "numpy_version": numpy_version,
-        "scipy_version": scipy_version,
+        "similaripy_version": sim.__version__,
+        "numpy_version": np.__version__,
+        "scipy_version": sp.__version__,
         "python_version": platform.python_version(),
         "system": platform.system(),
         "arch": platform.machine(),
@@ -117,72 +94,9 @@ def get_system_info():
 def benchmark_similarity(
     URM, similarity_type="cosine", k=100, shrink=0, threshold=0, num_threads=0, verbose=True, **similarity_kwargs
 ):
-    """
-    Benchmark similarity computation on a User Rating Matrix (URM).
-
-    This function computes item-item similarity and measures performance metrics.
-
-    Parameters
-    ----------
-    URM : scipy.sparse.csr_array
-        User-item rating matrix (users x items)
-    similarity_type : str, optional
-        Type of similarity to compute: "cosine", "asymmetric_cosine",
-        "jaccard", "dice", "tversky", "p3alpha", "rp3beta", "splus"
-        (default: "cosine")
-    k : int, optional
-        Number of top similar items to keep for each item (default: 100)
-    shrink : float, optional
-        Shrinkage parameter (default: 0)
-    threshold : float, optional
-        Minimum similarity threshold (default: 0)
-    num_threads : int, optional
-        Number of threads for parallel computation (0 = auto) (default: 0)
-    verbose : bool, optional
-        Unused for timing: the similarity call always runs with verbose=False
-        so the progress bar stays out of the timed region (default: True)
-    **similarity_kwargs : dict
-        Additional similarity-specific parameters
-
-    Returns
-    -------
-    dict
-        Benchmark results with keys:
-        - 'similarity_matrix': computed similarity matrix
-        - 'computation_time': time taken for similarity computation (seconds)
-        - 'kernel_time': time spent inside the compute kernel (seconds)
-        - 'prep_time', 'output_time': everything before the kernel (wrapper normalization + numpy prep) / output build after it (seconds)
-        - 'n_items': number of items
-        - 'nnz': number of non-zero entries in similarity matrix
-        - 'density': similarity matrix density
-        - 'avg_neighbors': average number of neighbors per item
-        - 'throughput': items processed per second
-        - 'similarity_type': type of similarity computed
-        - 'k': k parameter used
-        - 'shrink': shrink parameter passed by the harness
-        - 'params': shrink and kwargs the call really ran with
-        - 'threshold': threshold parameter used
-
-    Examples
-    --------
-    >>> from dataset_loaders import load_URM
-    >>> from benchmark import benchmark_similarity
-    >>>
-    >>> # Load dataset
-    >>> URM, meta = load_URM("movielens", version="25m")
-    >>>
-    >>> # Benchmark cosine similarity
-    >>> results = benchmark_similarity(
-    ...     URM,
-    ...     similarity_type="cosine",
-    ...     k=100,
-    ...     shrink=0,
-    ...     verbose=True
-    ... )
-    >>>
-    >>> print(f"Computation time: {results['computation_time']:.2f}s")
-    >>> print(f"Throughput: {results['throughput']:.1f} items/s")
-    """
+    """Time one item-item similarity on URM (users x items): the output matrix, total / kernel / prep /
+    output seconds, output stats and the parameters the call really ran with (`params`). The call
+    always runs with verbose=False, so the progress bar stays out of the timed region."""
     # Transpose for item-item similarity
     item_matrix = URM.T
 
@@ -249,7 +163,7 @@ def benchmark_similarity(
 
 
 def peak_rss(func):
-    """Run func() while sampling the process memory every 1 ms.
+    """Run func() while sampling the process memory every 1 ms: (result, MB before, MB peak above it).
 
     ru_maxrss can't be reset and the dataset load peaks higher than a call,
     so the per-call peak is sampled. Spikes shorter than ~1 ms are missed;
@@ -259,11 +173,6 @@ def peak_rss(func):
     RSS: freed malloc pages stay in RSS, so after the dataset load new
     temporaries reuse resident pages and RSS barely moves (+1 MB measured for
     an ML-32M call). Elsewhere: psutil RSS.
-
-    Returns
-    -------
-    tuple
-        (func's result, memory before the call in MB, peak above it in MB)
     """
     if platform.system() == "Darwin":
         import ctypes
