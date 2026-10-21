@@ -107,7 +107,7 @@ pip install similaripy
 
 Pre-built wheels are available for Python 3.11–3.15 on:
 
-- Linux x86_64 and aarch64 (glibc 2.28+)
+- Linux x86_64 and aarch64 (glibc 2.28+, or musl 1.2+ e.g. Alpine)
 - macOS 15+ (Apple Silicon and Intel)
 - Windows x64
 

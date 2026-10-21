@@ -70,13 +70,14 @@ cache-keys = [
 ]
 
 [tool.cibuildwheel]
-# Python range comes from requires-python, free-threaded (t) builds included
-skip = "*-musllinux_* *-win32 *_i686"
+# Python range comes from requires-python, free-threaded (t) builds included;
+# musllinux (Alpine) too, on the same Linux runners as manylinux
+skip = "*-win32 *_i686"
 test-groups = ["test"]
 test-command = "pytest {project}/tests"
 
 [tool.cibuildwheel.linux]
-# manylinux images have no Rust: install rustup, then the rust-toolchain.toml pin
+# manylinux/musllinux images have no Rust: install rustup, then the rust-toolchain.toml pin
 before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none && cd {project} && $HOME/.cargo/bin/rustup toolchain install"
 environment = { PATH = "$HOME/.cargo/bin:$PATH" }
 
