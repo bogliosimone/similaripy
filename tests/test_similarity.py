@@ -1,7 +1,8 @@
-import similaripy as sim
-import pytest
 import numpy as np
+import pytest
 import scipy.sparse as sp
+
+import similaripy as sim
 
 
 def generate_random_matrix(n_rows=100, n_cols=50, density=0.05, seed=42):

@@ -23,10 +23,10 @@ import json
 import statistics
 import time
 
-import similaripy as sim
 from benchmark import get_system_info
 from dataset_loaders import load_URM
 
+import similaripy as sim
 
 PHASES = ("total", "prep", "kernel", "output")
 

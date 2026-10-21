@@ -26,8 +26,6 @@ from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
-
-import similaripy as sim
 from benchmark import get_system_info
 from run_benchmarks import (
     aggregate_rounds,
@@ -37,6 +35,7 @@ from run_benchmarks import (
     write_text_report,
 )
 
+import similaripy as sim
 
 DATASET = ("synthetic", "10k")
 FORMAT_OUTPUT = "csr"  # --format-output

@@ -1,11 +1,10 @@
-from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
-from ._s_plus import _canonical_csr, SparseInput
 from math import e
-from typing import Optional, Union
 
-import scipy.sparse as sps
 import numpy as np
+import scipy.sparse as sps
 
+from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
+from ._s_plus import SparseInput, _canonical_csr
 
 # ---- Valid mode strings ----
 _NORMALIZATIONS = ("l1", "l2", "max")
@@ -34,7 +33,7 @@ def _canonical(X: SparseInput, axis: int = 1) -> sps.csr_array:
     return _canonical_csr(X.T if axis == 0 else X, dtype, 0)
 
 
-def _transformed(X: SparseInput, axis: int, op, name: Optional[str] = None, **kwargs) -> sps.csr_array:
+def _transformed(X: SparseInput, axis: int, op, name: str | None = None, **kwargs) -> sps.csr_array:
     """
     The canonical copy of X with `op` (an in-place `_core` normalization) applied
     to its rows (axis 1) or columns (axis 0); `name`: a term weighting, whose
@@ -83,7 +82,7 @@ def _validate_modes(tf_mode: str, idf_mode: str) -> None:
 
 
 def normalize(
-    X: Union[sps.sparray, sps.spmatrix],
+    X: sps.sparray | sps.spmatrix,
     norm: str = "l2",
     axis: int = 1,
 ) -> sps.csr_array:
@@ -110,7 +109,7 @@ def normalize(
     return _transformed(X, axis, _core.normalize, norm=norm)
 
 
-def binarize(X: Union[sps.sparray, sps.spmatrix]) -> sps.csr_array:
+def binarize(X: sps.sparray | sps.spmatrix) -> sps.csr_array:
     """
     Set every non-zero entry to 1.0 (set semantics): duplicates are summed
     first, then explicit zeros dropped. A negative value is an interaction
@@ -136,7 +135,7 @@ def binarize(X: Union[sps.sparray, sps.spmatrix]) -> sps.csr_array:
 
 
 def bm25(
-    X: Union[sps.sparray, sps.spmatrix],
+    X: sps.sparray | sps.spmatrix,
     axis: int = 1,
     k1: float = 1.2,
     b: float = 0.75,
@@ -170,7 +169,7 @@ def bm25(
 
 
 def bm25plus(
-    X: Union[sps.sparray, sps.spmatrix],
+    X: sps.sparray | sps.spmatrix,
     axis: int = 1,
     k1: float = 1.2,
     b: float = 0.75,
@@ -215,7 +214,7 @@ def bm25plus(
 
 
 def tfidf(
-    X: Union[sps.sparray, sps.spmatrix],
+    X: sps.sparray | sps.spmatrix,
     axis: int = 1,
     logbase: float = e,
     tf_mode: str = "sqrt",

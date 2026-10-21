@@ -1,0 +1,4 @@
+# Formatting-only commits: git blame skips them (git config blame.ignoreRevsFile .git-blame-ignore-revs;
+# GitHub honours this file by default)
+# ruff format (120 columns, double quotes)
+44a4592bf0efa94bb3e5c591cf0aefc537043f2f

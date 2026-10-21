@@ -5,17 +5,19 @@ This module provides standardized functions for benchmarking similarity
 computation across different datasets and versions.
 """
 
-import time
-import platform
 import os
+import platform
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from functools import partial
-import similaripy as sim
+
 import numpy as np
 import scipy as sp
+
+import similaripy as sim
 
 
 def get_system_info():

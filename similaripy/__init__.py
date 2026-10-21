@@ -1,37 +1,37 @@
-from importlib.metadata import version, PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version
 
 try:
     __version__ = version("similaripy")
 except PackageNotFoundError:
     __version__ = "unknown"
 
-from .normalization import normalize, binarize, bm25, bm25plus, tfidf
+from .normalization import binarize, bm25, bm25plus, normalize, tfidf
 from .similarity import (
-    dot_product,
-    cosine,
     asymmetric_cosine,
-    jaccard,
+    cosine,
     dice,
-    tversky,
+    dot_product,
+    jaccard,
     p3alpha,
     rp3beta,
     s_plus,
+    tversky,
 )
 
 __all__ = [
     "__version__",
-    "normalize",
+    "asymmetric_cosine",
     "binarize",
     "bm25",
     "bm25plus",
-    "tfidf",
-    "dot_product",
     "cosine",
-    "asymmetric_cosine",
-    "jaccard",
     "dice",
-    "tversky",
+    "dot_product",
+    "jaccard",
+    "normalize",
     "p3alpha",
     "rp3beta",
     "s_plus",
+    "tfidf",
+    "tversky",
 ]

@@ -5,9 +5,9 @@ Skipped without hypothesis (packagers running the tests with pytest only)."""
 import numpy as np
 import pytest
 import scipy.sparse as sp
+from test_similarity import _CASES, _SIGNED_CASES, _check_scores, _dense_scores, _drop_cancellation_noise
 
 import similaripy as sim
-from test_similarity import _CASES, _SIGNED_CASES, _check_scores, _dense_scores, _drop_cancellation_noise
 
 hypothesis = pytest.importorskip("hypothesis")
 given, settings, st = hypothesis.given, hypothesis.settings, hypothesis.strategies

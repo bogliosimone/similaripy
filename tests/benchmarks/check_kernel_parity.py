@@ -35,11 +35,11 @@ import sys
 
 import numpy as np
 import scipy.sparse as sp
-
-import similaripy as sim
 from benchmark import _get_similarity_function
 from dataset_loaders import load_URM
 from run_small_benchmarks import build_cases, make_urm
+
+import similaripy as sim
 
 RTOL, ATOL = 1e-5, 1e-7
 

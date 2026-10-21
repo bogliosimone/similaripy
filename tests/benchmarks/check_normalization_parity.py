@@ -21,11 +21,11 @@ import sys
 
 import numpy as np
 import scipy.sparse as sp
+from check_kernel_parity import load_outputs, save_outputs
+from dataset_loaders import load_URM
+from run_small_benchmarks import make_urm
 
 import similaripy as sim
-from dataset_loaders import load_URM
-from check_kernel_parity import load_outputs, save_outputs
-from run_small_benchmarks import make_urm
 
 RTOL, ATOL = 1e-5, 1e-7
 TF_MODES = ("binary", "raw", "sqrt", "freq", "log")

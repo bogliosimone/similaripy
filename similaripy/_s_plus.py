@@ -3,7 +3,7 @@ s_plus on the Rust kernel: numpy prep, kernel call, output build.
 """
 
 import time
-from typing import Any, NamedTuple, Union, Optional, List, Literal
+from typing import Any, Literal, NamedTuple
 
 import numpy as np
 import scipy.sparse as sp
@@ -75,8 +75,8 @@ class NormParams(NamedTuple):
     p1: float
     p2: float
     additive_shrink: float
-    depop1: Union[str, np.ndarray]
-    depop2: Union[str, np.ndarray]
+    depop1: str | np.ndarray
+    depop2: str | np.ndarray
     binary: bool
 
 
@@ -84,27 +84,27 @@ class Norms(NamedTuple):
     """The kernel's normalization terms (kernel.rs `Norms`): x per m1 row, y
     per m2 column, float32; None when the weights don't use them."""
 
-    x_tversky: Optional[np.ndarray] = None
-    y_tversky: Optional[np.ndarray] = None
-    x_cosine: Optional[np.ndarray] = None
-    y_cosine: Optional[np.ndarray] = None
-    x_depop: Optional[np.ndarray] = None
-    y_depop: Optional[np.ndarray] = None
+    x_tversky: np.ndarray | None = None
+    y_tversky: np.ndarray | None = None
+    x_cosine: np.ndarray | None = None
+    y_cosine: np.ndarray | None = None
+    x_depop: np.ndarray | None = None
+    y_depop: np.ndarray | None = None
 
 
 def _check_args(
     matrix1: SparseInput,
     matrix2: SparseInput,
-    weight_depop_matrix1: Union[str, np.ndarray],
-    weight_depop_matrix2: Union[str, np.ndarray],
+    weight_depop_matrix1: str | np.ndarray,
+    weight_depop_matrix2: str | np.ndarray,
     k: int,
-    filter_cols: Optional[Union[List, np.ndarray, SparseInput]],
-    target_cols: Optional[Union[List, np.ndarray, SparseInput]],
+    filter_cols: list | np.ndarray | SparseInput | None,
+    target_cols: list | np.ndarray | SparseInput | None,
     format_output: str,
     weights: dict,
     a1: float,
     num_threads: int,
-    block_size: Union[int, Literal["auto"], None],
+    block_size: int | Literal["auto"] | None,
 ) -> None:
     """
     Check the `s_plus` arguments that don't need the values, before the copy
@@ -410,9 +410,9 @@ def _keep_columns(m: Csr, keep_mask) -> Csr:
 
 def s_plus(
     matrix1: SparseInput,
-    matrix2: Optional[SparseInput] = None,
-    weight_depop_matrix1: Union[str, np.ndarray] = "none",
-    weight_depop_matrix2: Union[str, np.ndarray] = "none",
+    matrix2: SparseInput | None = None,
+    weight_depop_matrix1: str | np.ndarray = "none",
+    weight_depop_matrix2: str | np.ndarray = "none",
     p1: float = 0,
     p2: float = 0,
     a1: float = 1,
@@ -429,15 +429,15 @@ def s_plus(
     additive_shrink: float = 0,
     threshold: float = 0,
     binary: bool = False,
-    target_rows: Optional[Union[list, np.ndarray]] = None,
-    filter_cols: Optional[Union[list, np.ndarray, SparseInput]] = None,
-    target_cols: Optional[Union[list, np.ndarray, SparseInput]] = None,
+    target_rows: list | np.ndarray | None = None,
+    filter_cols: list | np.ndarray | SparseInput | None = None,
+    target_cols: list | np.ndarray | SparseInput | None = None,
     verbose: bool = False,
     format_output: str = "csr",
     num_threads: int = 0,
-    block_size: Union[int, Literal["auto"], None] = "auto",
+    block_size: int | Literal["auto"] | None = "auto",
     prepare=None,
-) -> Union[sp.csr_array, sp.coo_array]:
+) -> sp.csr_array | sp.coo_array:
     """
     Compute top-K similarity between rows of two sparse matrices using the S_Plus algorithm.
 

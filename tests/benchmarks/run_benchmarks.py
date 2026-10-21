@@ -28,9 +28,9 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from dataset_loaders import load_URM
-from benchmark import benchmark_similarity, get_system_info, peak_rss
 
+from benchmark import benchmark_similarity, get_system_info, peak_rss
+from dataset_loaders import load_URM
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
