@@ -1,6 +1,6 @@
 # 🔍 Similarity Functions
 
-SimilariPy provides a suite of similarity functions for sparse matrixes, all implemented in Cython and parallelized with OpenMP. These models compute item-to-item or user-to-user similarity based on vector math or graph-based transformations.
+SimilariPy provides a suite of similarity functions for sparse matrices, all running in a multi-threaded Rust core. These models compute item-to-item or user-to-user similarity based on vector math or graph-based transformations.
 
 ## Similarities
 
@@ -10,7 +10,7 @@ SimilariPy provides a suite of similarity functions for sparse matrixes, all imp
 | `cosine()`         | Cosine similarity with optional shrinkage. |
 | `asymmetric_cosine(alpha=0.5)` | Asymmetric variant of cosine similarity, where `alpha` controls the weighting between vectors. |
 | `jaccard()`        | Set-based similarity defined as the intersection over union. |
-| `dice()`           | Harmonic mean of two vectors' lengths. |
+| `dice()`           | Overlap over the mean of the two vectors' lengths (Tversky with `alpha = beta = 0.5`). |
 | `tversky(alpha=1.0, beta=1.0)` | Tversky similarity, a generalization of Jaccard and Dice. |
 | `p3alpha(alpha=1.0)` | Graph-based similarity computed as normalized matrix multiplication with `alpha` exponentiation. |
 | `rp3beta(alpha=1.0, beta=1.0)` | P3alpha variant that penalizes popular items with a `beta` exponent. |
@@ -18,15 +18,15 @@ SimilariPy provides a suite of similarity functions for sparse matrixes, all imp
 
 ## Common Parameters
 
-All similarity functions in Similaripy share the following parameters (everything after `m2` is keyword-only):
+All similarity functions in Similaripy share the following parameters (everything after `matrix2` is keyword-only):
 
 | Parameter        | Description |
 |------------------|-------------|
-| `m1`             | Input sparse matrix for which to calculate the similarity. |
-| `m2`             | Optional transpose matrix. If `None`, uses `m1.T`. *(default: `None`)* |
+| `matrix1`        | Input sparse matrix for which to calculate the similarity. |
+| `matrix2`        | Optional second matrix. If `None`, uses `matrix1.T`. *(default: `None`)* |
 | `k`              | Number of top-k items per row. *(default: `100`)* |
-| `h`              | Shrinkage coefficient applied during normalization. |
-| `threshold`      | Minimum similarity value to retain. Values below are set to zero. *(default: `0`)* |
+| `shrink`         | Shrinkage strength `h` (`>= 0`), see [Shrinkage Types](#shrinkage-types). *(default: `0`)* |
+| `threshold`      | Minimum similarity value to retain: scores `>= threshold` are kept, lower ones are dropped; a score of exactly `0` is always dropped. *(default: `0`)* |
 | `shrink_type`    | Shrinkage type: `stabilized`, `bayesian`, or `additive`.  *(default: `stabilized`)* |
 | `binary`         | If `True`, binarizes the input matrix. *(default: `False`)* |
 | `target_rows`    | List or array of row indices to compute. If `None`, computes for all rows. *(default: `None`)* |
@@ -34,12 +34,18 @@ All similarity functions in Similaripy share the following parameters (everythin
 | `filter_cols`    | Subset of columns to filter **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
 | `verbose`        | If `True`, shows a progress bar. *(default: `False`)* |
 | `format_output`  | Output format: `'csr'` or `'coo'`. *(default: `'csr'`)* |
-| `num_threads`    | Number of threads to use. `0` means use all available cores. *(default: `0`)* |
+| `num_threads`    | Number of threads to use. `0` = all cores, on one shared thread pool (concurrent calls queue on it; `RAYON_NUM_THREADS` caps it). *(default: `0`)* |
 | `block_size`     | Block size for column-blocked accumulation. `'auto'` (recommended: the library's choice, currently 262144 float32 entries, ~1 MB; may adapt in future versions), `None` = disabled, or an int > 0. Results are the same at any size. *(default: `'auto'`)* |
 
 ## Shrinkage Types
 
-The shrinkage equations are displayed with the cosine normalization for simplicity, however, they are available in all the similarities.
+The shrinkage equations are displayed with the cosine normalization for simplicity; `h` is the `shrink` parameter. Not every type applies to every similarity: a shrink that would do nothing raises a `ValueError`.
+
+| Shrink type | Applies to |
+|-------------|------------|
+| `stabilized` | Every similarity with a denominator: all but `dot_product` and `p3alpha` (there it would divide every score by the same constant). |
+| `bayesian` | Every similarity (non-negative input only: see [Signed Input](#signed-input)). |
+| `additive` | The cosine norms: `cosine`, `asymmetric_cosine`, `s_plus` with `l2 != 0`. |
 
 ### Stabilized Shrinkage
 $s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i x_i^2} \cdot \sqrt{\sum_i y_i^2} + h}$
@@ -56,7 +62,7 @@ $s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i x_i^2} \cdot \sqrt{\sum_i y_i^2}} \cdot 
 - `shrink_type = 'bayesian'`
 
 ### Additive Shrinkage
-$s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i (x_i^2 + h)} \cdot \sqrt{\sum_i (y_i^2 + h)}}$
+$s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i x_i^2 + h} \cdot \sqrt{\sum_i y_i^2 + h}}$
 
 - Penalizes similarities with items with low support.
 - Adds shrinkage directly into the cosine denominator norms.
@@ -80,7 +86,7 @@ of these restrictions apply.
 
 ## Notes
 
-- All similarity functions are implemented in **Cython + OpenMP** for high-performance computation on CSR matrixes.
+- All similarity functions run in a **Rust core** on CSR matrices.
 - Computations are fully **multi-threaded** and scale with CPU cores.
 - Supports **CSR** and **COO** sparse matrix formats as output.
 
@@ -98,40 +104,43 @@ $s_{xy} = \frac{x \cdot y}{\left(\sum x_i^2\right)^\alpha \left(\sum y_i^2\right
 - **`α`**: Asymmetry coefficient ∈ [0, 1]
 
 ### Jaccard
+
+In Jaccard, Dice, Tversky and S-Plus, $|x| = \sum_i x_i^2$ (the number of non-zeros on binary data).
+
 $s_{xy} = \frac{x \cdot y}{|x| + |y| - x \cdot y}$
 
 ### Dice
 
-$s_{xy} = \frac{x \cdot y}{\frac{1}{2}|x| + \frac{1}{2}|y| - x \cdot y}$
+$s_{xy} = \frac{x \cdot y}{\frac{1}{2}|x| + \frac{1}{2}|y|}$
 
 ### Tversky
 $s_{xy} = \frac{x \cdot y}{\alpha(|x| - x \cdot y) + \beta(|y| - x \cdot y) + x \cdot y}$
 
-- **`α`**, **`β`**: Tversky coefficients ∈ [0, 1]
+- **`α`**, **`β`**: Tversky coefficients `>= 0` (on weighted input not every pair is allowed: see [Signed Input](#signed-input))
 
 ### P3α
 $s_{xy} =  x^\alpha \cdot  y^\alpha$
 
-- **`α`**: P3α coefficient ∈ [0, 1]
-- Normalizion row-wise (L1) is applied before exponentiation
+- **`α`**: P3α coefficient `> 0`
+- Normalization row-wise (L1) is applied before exponentiation
 
 ### RP3β
 $s_{xy} = \frac{x^\alpha \cdot y^\alpha}{{pop}(y)^\beta}$
 
-- **`α`**: P3α coefficient ∈ [0, 1]  
-- **`β`**: Popularity penalization coefficient ∈ [0, 1]
-- **`pop(y)`** Number of interactions for item y
-- Normalizion row-wise (L1) is applied before exponentiation
+- **`α`**: P3α coefficient `> 0`
+- **`β`**: Popularity penalization coefficient `>= 0`
+- **`pop(y)`**: popularity of item y, the column sum of `|x|` in `matrix2` before the row normalization (the number of interactions with `binary=True`)
+- Normalization row-wise (L1) is applied before exponentiation
 - Penalization is applied before the top k selection
 
 ### S-Plus
 
 $s_{xy} = \frac{(x \cdot y)^\alpha}{l_1 \left(t_1(|x| - x \cdot y) + t_2(|y| - x \cdot y) + x \cdot y\right) + l_2\left(\sum x_i^2\right)^{c_1} \cdot \left(\sum y_i^2\right)^{c_2} + l_3(pop_1(x)^{\beta_1} \cdot pop_2(y)^{\beta_2})}$
 
-- **`l1`**, **`l2`**: Tversky,Cosine normalization strength ∈ [0, 1]
-- **`l3`**: Popularity penalization strength ∈ [0, 1]  
-- **`t1`**, **`t2`**: Tversky coefficients ∈ [0, 1]  
-- **`c1`**, **`c2`**: Cosine weighting exponent ∈ [0, 1]
-- **`α`**: Coefficient for the raw interaction overlap (different from P3α)
-- **`β1`**, **`β2`**: Popularity penalization coefficient for the item x/y ∈ [0, 1]
+- **`l1`**, **`l2`**: Tversky, Cosine normalization strength `>= 0`
+- **`l3`**: Popularity penalization strength `>= 0`
+- **`t1`**, **`t2`**: Tversky coefficients `>= 0` (same rule as `tversky` when `l1 != 0`)
+- **`c1`**, **`c2`**: Cosine weighting exponents `>= 0`
+- **`α`**: Power of the raw overlap `x · y`, `> 0` (different from P3α)
+- **`β1`**, **`β2`**: Popularity penalization coefficient for the item x/y `>= 0`
 - **`pop(x)`**, **`pop(y)`**: Popularity value for the item x/y
