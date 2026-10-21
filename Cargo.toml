@@ -5,6 +5,13 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 license = "MIT"
+# Measured: let-chains in core and proptest 1.12 need 1.88. rust-toolchain.toml
+# only acts under rustup; this gives a clear error to a distro cargo.
+rust-version = "1.88"
+
+# Every `unsafe` block carries a `// SAFETY:` comment
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
 
 # Fat LTO, one codegen unit, no target-cpu=native (portable wheels).
 [profile.release]

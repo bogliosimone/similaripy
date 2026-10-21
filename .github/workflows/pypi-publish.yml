@@ -26,6 +26,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'release' }}
 
+# Read-only token unless a job asks for more
+permissions:
+  contents: read
+
 jobs:
   build_wheels:
     name: Wheels on ${{ matrix.os }}

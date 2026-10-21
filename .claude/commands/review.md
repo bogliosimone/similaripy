@@ -18,6 +18,8 @@ Review the recent code changes in the repository focusing on:
    - Float32 vs Float64 usage; codegen-sensitive loops (`tests/benchmarks/README.md`) left intact
    - `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` clean
 
+4. **Docs**: public functions have a docstring (ruff `D103`), updated when a signature changes
+
 5. **Testing**: Suggest additional test cases for edge cases if needed
 
 Provide specific, actionable feedback with file and line references.

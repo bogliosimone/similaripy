@@ -6,6 +6,10 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
+    # Skip releases younger than a week (a bad or compromised release is usually
+    # pulled by then); security updates bypass it
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns: ["*"]
@@ -16,6 +20,8 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
+    cooldown:
+      default-days: 7
     groups:
       # Own PR: bindings bumps get the codegen check (and often source changes)
       bindings:

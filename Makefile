@@ -1,13 +1,19 @@
-.PHONY: install
-install:
-	uv pip install '.'
-
 .PHONY: install-dev
 install-dev:
 	uv sync --all-groups
 
 .PHONY: test-dev
 test-dev:
+	uv run pytest
+
+# What CI's lint, Rust and test jobs run (Miri and wheels stay in CI)
+.PHONY: check
+check:
+	uv run --only-group lint ruff check
+	uv check --no-install-project --group lint --preview-features check-command
+	cargo fmt --check
+	cargo clippy --workspace --all-targets -- -D warnings
+	cargo test --workspace
 	uv run pytest
 
 # Undefined-behaviour check of the Rust core unsafe code. One-time setup:
@@ -39,7 +45,7 @@ benchmark-similarity-large:
 .PHONY: clean
 clean:
 	rm -rf dist/
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name __pycache__ -not -path './.venv/*' -exec rm -rf {} + 2>/dev/null || true
 	rm -f similaripy/_core*.so similaripy/_core*.pyd
 
 .PHONY: mkdocs

@@ -6,6 +6,7 @@
 *.so
 *.pyd
 uv.lock
+.venv/
 dist/
 .cache/
 
@@ -22,7 +23,6 @@ datasets_bench/
 
 /other/
 /private/
-/pypirc
 
 # ==================
 # macOS System Files
@@ -35,17 +35,12 @@ datasets_bench/
 # ==================
 
 .ipynb_checkpoints/
-*/.ipynb_checkpoints/*
 
 # ======================
 # Visual Studio Code
 # ======================
 
 .vscode/
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
 *.code-workspace
 
 # ==================
@@ -53,4 +48,3 @@ datasets_bench/
 # ==================
 
 /target/
-!Cargo.lock
