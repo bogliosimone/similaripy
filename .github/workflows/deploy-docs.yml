@@ -31,5 +31,7 @@ jobs:
           uv pip install --system --group docs
 
       - name: Deploy documentation
+        # Pages serves the gh-pages branch: build, then push site/ there
         run: |
-          mkdocs gh-deploy --force
+          zensical build --strict
+          ghp-import -n -p -f site

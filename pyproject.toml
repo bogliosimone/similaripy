@@ -107,10 +107,13 @@ dev = [
   "maturin",
   "pre-commit",
 ]
+# Zensical (the Material for MkDocs successor) reads mkdocs.yml. Exact pins, bumped by hand
+# like the linters: a release can break the strict build. ghp-import: the gh-pages deploy
 docs = [
-  "mkdocs",
-  "mkdocs-material",
-  "mkdocstrings[python]",
+  "zensical==0.0.70",
+  "mkdocstrings[python]==1.0.7",
+  "mkdocstrings-python==2.0.9",
+  "ghp-import==2.1.0",
 ]
 bench = [
   "pandas",
