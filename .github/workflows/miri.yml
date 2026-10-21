@@ -1,5 +1,6 @@
 # Undefined-behaviour check of the Rust core's unsafe code (make test-miri).
-# Runs only when the core changes: ~75 s of tests plus the nightly install.
+# Runs only when the core changes. nextest runs one Miri process per test, in
+# parallel on the runner's cores (before: ~9 min serial).
 
 name: Miri
 
@@ -23,6 +24,7 @@ concurrency:
 env:
   # Pinned: an unpinned nightly can break the job with no change on our side
   MIRI_TOOLCHAIN: nightly-2026-10-12
+  NEXTEST_VERSION: 0.9.148
 
 # Read-only token unless a job asks for more
 permissions:
@@ -40,6 +42,11 @@ jobs:
       run: |
         rustup toolchain install "$MIRI_TOOLCHAIN" --profile minimal --component miri,rust-src
         cargo "+$MIRI_TOOLCHAIN" miri setup
+
+    - name: Install cargo-nextest
+      # The pinned release binary (nexte.st's CI install, a GitHub release asset):
+      # building it with `cargo install` took ~3.5 min of the job
+      run: curl -LsSf "https://get.nexte.st/$NEXTEST_VERSION/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
     - name: Run Miri
       run: make test-miri MIRI_TOOLCHAIN="$MIRI_TOOLCHAIN"
