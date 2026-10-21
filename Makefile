@@ -6,7 +6,7 @@ install-dev:
 test-dev:
 	uv run pytest
 
-# What CI's lint, Rust and test jobs run (Miri and wheels stay in CI)
+# What CI's lint, docs, Rust and test jobs run (Miri and wheels stay in CI)
 .PHONY: check
 check:
 	uv run --only-group lint ruff check
@@ -15,6 +15,7 @@ check:
 	cargo clippy --workspace --all-targets -- -D warnings
 	cargo test --workspace
 	uv run pytest
+	uv run --only-group docs zensical build --strict
 
 # Undefined-behaviour check of the Rust core unsafe code. One-time setup:
 #   rustup toolchain install nightly --component miri rust-src && cargo +nightly miri setup
@@ -50,6 +51,6 @@ clean:
 	find . -type d -name __pycache__ -not -path './.venv/*' -exec rm -rf {} + 2>/dev/null || true
 	rm -f similaripy/_core*.so similaripy/_core*.pyd
 
-.PHONY: mkdocs
-mkdocs:
-	uv run mkdocs serve
+.PHONY: docs
+docs:
+	uv run --only-group docs zensical serve

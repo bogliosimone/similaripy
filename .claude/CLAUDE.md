@@ -74,7 +74,7 @@ uv run pre-commit install   # optional: ruff + cargo fmt on each commit
 # Local tests (fast, correctness only)
 make test-dev
 
-# Everything CI's lint, Rust and test jobs run: ruff, ty, cargo fmt/clippy/test, pytest
+# Everything CI's lint, docs, Rust and test jobs run: ruff, ty, cargo fmt/clippy/test, pytest, strict docs build
 make check
 ```
 

@@ -9,6 +9,7 @@ uv.lock
 .venv/
 dist/
 .cache/
+site/
 
 # ============================
 # Benchmark Results
