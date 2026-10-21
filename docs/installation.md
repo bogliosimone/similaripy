@@ -11,7 +11,7 @@ pip install similaripy
 Pre-built wheels are available for Python 3.11–3.15 on:
 
 - Linux x86_64 and aarch64 (glibc 2.28+, or musl 1.2+ e.g. Alpine)
-- macOS 15+ (Apple Silicon and Intel)
+- macOS 11+ (Apple Silicon) and 10.15+ (Intel)
 - Windows x64
 
 No compiler is needed on these platforms. Elsewhere, pip builds the package from source (see below).
@@ -20,42 +20,27 @@ Free-threaded Python (3.14t, 3.15t) is supported: the GIL stays disabled. When c
 
 ## Build from source
 
-Building from source is needed only when no wheel matches your platform, or to compile with CPU-specific optimizations. It requires a GCC-compatible compiler with OpenMP.
+Building from source is needed only when no wheel matches your platform (pip then builds the source distribution), or to build for your exact CPU. It needs a Rust toolchain; no C compiler or OpenMP.
 
-### Ubuntu / Debian
-
-Install the official dev-tools:
+Install Rust with [rustup](https://rustup.rs):
 
 ```bash
-sudo apt update && sudo apt install build-essential
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-### MacOS (Intel & Apple Silicon)
+On Windows, run `rustup-init.exe` from [rustup.rs](https://rustup.rs) instead; it also offers to install the Visual C++ build tools that Rust needs for linking.
 
-Install GCC with homebrew:
-
-```bash
-brew install gcc
-```
-
-### Windows
-
-Install the official **[Visual C++ Build Tools](https://visualstudio.microsoft.com/en/visual-cpp-build-tools/)**.
+Then `pip install similaripy` builds the package. The source distribution pins the Rust version it was tested with (`rust-toolchain.toml`), and rustup installs that version on the first build. Without rustup (e.g. a distribution's `cargo` package), Rust 1.88 or newer is needed.
 
 ### Optional: native CPU optimizations
 
-Wheels target a generic CPU baseline. To build for your exact CPU (use `-mcpu=native` on ARM):
+Wheels target a generic CPU baseline. To build for your exact CPU:
 
 ```bash
-pip install similaripy --no-binary similaripy -C cmake.define.CMAKE_CXX_FLAGS="-march=native"
+RUSTFLAGS="-C target-cpu=native" pip install similaripy --no-binary similaripy --no-cache-dir
 ```
 
-The speedup depends on the CPU: on Apple Silicon we measured none, so benchmark it on your workload.
-
-### Optional Optimization: Intel MKL for Intel CPUs
-
-For Intel CPUs, using SciPy/Numpy with MKL (Math Kernel Library) is highly recommended for best performance.
-The easiest way to achieve this is to install them via Anaconda.
+(PowerShell: `$env:RUSTFLAGS="-C target-cpu=native"` first.) The speedup depends on the CPU and the workload: benchmark it on yours.
 
 ## Requirements
 

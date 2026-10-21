@@ -9,7 +9,7 @@ The package also includes a set of normalization functions useful for pre-proces
 ## Similarity Functions
 
 SimilariPy provides a range of high-performance similarity functions for sparse matrices.  
-All functions are multi-threaded and implemented in Cython + OpenMP for fast parallel computation on CSR matrixes.
+All functions run in a multi-threaded Rust core, GIL-free, on sparse CSR matrices.
 
 ### Core 
 

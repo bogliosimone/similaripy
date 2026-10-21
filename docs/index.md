@@ -17,8 +17,8 @@
 
 ## 🔥 Why SimilariPy?
 
-- **Fast**: powered by Cython and OpenMP for fast parallel execution
-- **Sparse matrix focus**: optimized for Scipy CSR/COO formats
+- **Fast**: a multi-threaded Rust core, GIL-free
+- **Sparse matrix focus**: any SciPy sparse input, CSR or COO output
 - **Wide similarity coverage**: Dot Product, Cosine, Tversky, P3α, RP3β, and more
 - **Flexible normalization**: includes L1, L2, TF-IDF, BM25, BM25+
 
@@ -38,15 +38,12 @@
 
 SimilariPy achieves high performance through several key optimizations:
 
-- **Cython compilation**: Core algorithms compiled to C++ for native-speed execution
-- **OpenMP parallelization**: Multi-threaded execution scales with available CPU cores
-- **GIL-free computation**: Releases Python's Global Interpreter Lock during heavy computation
-- **CSR-optimized**: Direct memory access patterns optimized for Compressed Sparse Row format
-- **Column-blocked accumulation**: Tiles the output columns into cache-sized blocks with popularity-based reordering, dramatically reducing L2 cache misses on large matrices
-- **Cache-friendly data structures**: Sequential vector storage for hot-path accumulators ensures optimal CPU cache utilization and memory bandwidth
-- **Pre-allocated buffers**: Reuses row buffers across iterations, eliminating millions of allocations per computation
-- **Float32 precision**: Uses 32-bit floats for matrix values instead of 64-bit for 2× memory bandwidth
-- **Fused types**: Single codebase supports both int32/int64 matrix indices without overhead or code duplication
-- **Top-K filtering**: Early termination and efficient heap structures minimize unnecessary computation
+- **Rust core**: compiled to native code, multi-threaded with rayon
+- **GIL-free computation**: releases Python's Global Interpreter Lock during the heavy computation (free-threaded Python supported)
+- **CSR-optimized**: direct memory access patterns for the Compressed Sparse Row format
+- **Column-blocked accumulation**: tiles the output columns into cache-sized blocks with popularity-based reordering, reducing L2 cache misses on large matrices
+- **Pre-allocated buffers**: per-thread accumulators and heaps reused across rows, no allocation per row
+- **Float32 precision**: 32-bit values for 2× memory bandwidth (accuracy: see [Similarities](similarity.md#notes))
+- **Top-K filtering**: a heap per row keeps only the best `k` candidates
 
 ---
