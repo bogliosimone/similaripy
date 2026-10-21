@@ -226,7 +226,7 @@ mod tests {
         fn canonicalize_matches_dense_sum(
             rows in proptest::collection::vec(
                 proptest::collection::vec((0i32..6, prop_oneof![Just(0.0f32), Just(1.0), Just(-1.0), Just(2.5)]), 0..10),
-                1..30,
+                1..if cfg!(miri) { 10 } else { 30 }, // Miri: each rayon split is costly
             ),
             leaf in 0usize..8,
         ) {

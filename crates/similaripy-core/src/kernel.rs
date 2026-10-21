@@ -811,6 +811,7 @@ mod tests {
     use proptest::prelude::*;
 
     proptest! {
+        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
         #[test]
         fn lower_bound_matches_partition_point(
             mut s in proptest::collection::vec(-50i32..50, 0..64),
