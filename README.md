@@ -81,7 +81,7 @@ urm = sps.random_array((1000, 2000), density=0.025)
 urm = sim.normalization.bm25(urm)
 
 # Train an item-item cosine similarity model
-similarity_matrix = sim.cosine(urm.T, k=50)
+similarity_matrix = sim.cosine(urm.T, k=50, verbose=True)  # verbose: progress bar
 
 # Compute recommendations for user 1, 14, 8 
 # filtering out already-seen items

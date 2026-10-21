@@ -9,6 +9,7 @@ from scipy.sparse import sparray
 def dot_product(
     matrix1: sparray,
     matrix2: Optional[sparray] = None,
+    *,
     k: int = 100,
     shrink: float = 0.0,
     shrink_type: Literal['stabilized', 'bayesian', 'additive'] = 'stabilized',
@@ -17,10 +18,10 @@ def dot_product(
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
-    verbose: bool = True,
+    verbose: bool = False,
     format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
-    block_size: Optional[int] = 0,
+    block_size: Union[int, Literal['auto'], None] = 'auto',
 ) -> sparray:
     """
     Compute dot product similarity between rows of matrix1 and columns of matrix2.
@@ -44,7 +45,8 @@ def dot_product(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
+        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
+            int > 0 = explicit size in float32 entries).
 
     Returns:
         A sparse matrix of shape (n_rows, n_cols) in the specified format,
@@ -73,6 +75,7 @@ def dot_product(
 def cosine(
     matrix1: sparray,
     matrix2: Optional[sparray] = None,
+    *,
     k: int = 100,
     shrink: float = 0.0,
     shrink_type: Literal['stabilized', 'bayesian', 'additive'] = 'stabilized',
@@ -81,10 +84,10 @@ def cosine(
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
-    verbose: bool = True,
+    verbose: bool = False,
     format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
-    block_size: Optional[int] = 0,
+    block_size: Union[int, Literal['auto'], None] = 'auto',
 ) -> sparray:
     """
     Compute cosine similarity between sparse vectors.
@@ -108,7 +111,8 @@ def cosine(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
+        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
+            int > 0 = explicit size in float32 entries).
 
     Returns:
         A sparse matrix of top-k cosine similarities in the specified format.
@@ -138,6 +142,7 @@ def cosine(
 def asymmetric_cosine(
     matrix1: sparray,
     matrix2: Optional[sparray] = None,
+    *,
     alpha: float = 0.5,
     k: int = 100,
     shrink: float = 0.0,
@@ -147,10 +152,10 @@ def asymmetric_cosine(
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
-    verbose: bool = True,
+    verbose: bool = False,
     format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
-    block_size: Optional[int] = 0,
+    block_size: Union[int, Literal['auto'], None] = 'auto',
 ) -> sparray:
     """
     Compute asymmetric cosine similarity.
@@ -176,7 +181,8 @@ def asymmetric_cosine(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
+        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
+            int > 0 = explicit size in float32 entries).
 
     Returns:
         A sparse matrix of shape (n_rows, n_cols) containing the top-k
@@ -209,6 +215,7 @@ def asymmetric_cosine(
 def tversky(
     matrix1: sparray,
     matrix2: Optional[sparray] = None,
+    *,
     alpha: float = 1.0,
     beta: float = 1.0,
     k: int = 100,
@@ -219,10 +226,10 @@ def tversky(
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
-    verbose: bool = True,
+    verbose: bool = False,
     format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
-    block_size: Optional[int] = 0,
+    block_size: Union[int, Literal['auto'], None] = 'auto',
 ) -> sparray:
     """
     Compute Tversky similarity between sparse vectors.
@@ -251,7 +258,8 @@ def tversky(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
+        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
+            int > 0 = explicit size in float32 entries).
 
     Returns:
         A sparse matrix of top-k Tversky similarities in the specified format.
@@ -281,6 +289,7 @@ def tversky(
 def jaccard(
     matrix1: sparray,
     matrix2: Optional[sparray] = None,
+    *,
     k: int = 100,
     shrink: float = 0.0,
     shrink_type: Literal['stabilized', 'bayesian', 'additive'] = 'stabilized',
@@ -289,10 +298,10 @@ def jaccard(
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
-    verbose: bool = True,
+    verbose: bool = False,
     format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
-    block_size: Optional[int] = 0,
+    block_size: Union[int, Literal['auto'], None] = 'auto',
 ) -> sparray:
     """
     Compute Jaccard similarity (intersection over union).
@@ -316,7 +325,8 @@ def jaccard(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
+        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
+            int > 0 = explicit size in float32 entries).
 
     Returns:
         A sparse matrix of top-k Jaccard similarities in the specified format.
@@ -346,6 +356,7 @@ def jaccard(
 def dice(
     matrix1: sparray,
     matrix2: Optional[sparray] = None,
+    *,
     k: int = 100,
     shrink: float = 0.0,
     shrink_type: Literal['stabilized', 'bayesian', 'additive'] = 'stabilized',
@@ -354,10 +365,10 @@ def dice(
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
-    verbose: bool = True,
+    verbose: bool = False,
     format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
-    block_size: Optional[int] = 0,
+    block_size: Union[int, Literal['auto'], None] = 'auto',
 ) -> sparray:
     """
     Compute Dice similarity (harmonic mean of overlap and size).
@@ -381,7 +392,8 @@ def dice(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
+        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
+            int > 0 = explicit size in float32 entries).
 
     Returns:
         A sparse matrix of top-k Dice similarities in the specified format.
@@ -411,6 +423,7 @@ def dice(
 def p3alpha(
     matrix1: sparray,
     matrix2: Optional[sparray] = None,
+    *,
     alpha: float = 1.0,
     k: int = 100,
     shrink: float = 0.0,
@@ -420,10 +433,10 @@ def p3alpha(
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
-    verbose: bool = True,
+    verbose: bool = False,
     format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
-    block_size: Optional[int] = 0,
+    block_size: Union[int, Literal['auto'], None] = 'auto',
 ) -> sparray:
     """
     Compute P3alpha similarity using a normalized 3-step random walk.
@@ -449,7 +462,8 @@ def p3alpha(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
+        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
+            int > 0 = explicit size in float32 entries).
 
     Returns:
         A sparse matrix of top-k P3alpha similarities in the specified format.
@@ -480,6 +494,7 @@ def p3alpha(
 def rp3beta(
     matrix1: sparray,
     matrix2: Optional[sparray] = None,
+    *,
     alpha: float = 1.0,
     beta: float = 1.0,
     k: int = 100,
@@ -490,10 +505,10 @@ def rp3beta(
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
-    verbose: bool = True,
+    verbose: bool = False,
     format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
-    block_size: Optional[int] = 0,
+    block_size: Union[int, Literal['auto'], None] = 'auto',
 ) -> sparray:
     """
     Compute RP3beta similarity: P3alpha with popularity penalization.
@@ -518,7 +533,8 @@ def rp3beta(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
+        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
+            int > 0 = explicit size in float32 entries).
 
     Returns:
         A sparse matrix of top-k RP3beta similarities in the specified format.
@@ -551,6 +567,7 @@ def rp3beta(
 def s_plus(
     matrix1: sparray,
     matrix2: Optional[sparray] = None,
+    *,
     l1: float = 0.5,
     l2: float = 0.5,
     l3: float = 0.0,
@@ -558,8 +575,8 @@ def s_plus(
     t2: float = 1.0,
     c1: float = 0.5,
     c2: float = 0.5,
-    pop1: Optional[Union[Literal['none','sum'], np.ndarray]]= 'none',
-    pop2: Optional[Union[Literal['none','sum'], np.ndarray]]= 'none',
+    pop1: Union[Literal['none', 'sum'], np.ndarray] = 'none',
+    pop2: Union[Literal['none', 'sum'], np.ndarray] = 'none',
     alpha: float = 1.0,
     beta1: float = 0.0,
     beta2: float = 0.0,
@@ -571,10 +588,10 @@ def s_plus(
     target_rows: Optional[Union[list[int], np.ndarray]] = None,
     target_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
     filter_cols: Optional[Union[list[int], np.ndarray, sparray]] = None,
-    verbose: bool = True,
+    verbose: bool = False,
     format_output: Literal['csr', 'coo'] = 'csr',
     num_threads: int = 0,
-    block_size: Optional[int] = 0,
+    block_size: Union[int, Literal['auto'], None] = 'auto',
 ) -> sparray:
     """
     Combines Tversky and Cosine normalizations with RP3Beta-style depopularization, fully controlled by tunable weights
@@ -617,7 +634,8 @@ def s_plus(
         format_output: Output format, either 'csr' (default) or 'coo'.
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
-        block_size: Block size for column-blocked accumulation (0=auto, None=disabled).
+        block_size: Block size for column-blocked accumulation ('auto' = default size, None = disabled,
+            int > 0 = explicit size in float32 entries).
 
     Returns:
         A sparse matrix of top-k s_plus similarities in the specified format.

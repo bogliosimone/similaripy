@@ -150,11 +150,6 @@ def test_csr_index_dtype_past_int32_nnz(limit, dtype, monkeypatch):
         np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
 
 
-def test_negative_block_size():
-    with pytest.raises(ValueError, match='block_size'):
-        sim.cosine(_m(), k=5, block_size=-1, verbose=False)
-
-
 def _csr_bytes(m):
     m = m.tocsr()
     return [(a.dtype, a.tobytes()) for a in (m.data, m.indices, m.indptr)]
@@ -335,6 +330,9 @@ _BAD_PARAMS = [
     ('dot_product', {'k': 2.5}, 'k must be'),
     ('dot_product', {'num_threads': -1}, 'num_threads'),
     ('dot_product', {'block_size': 1.5}, 'block_size'),
+    ('dot_product', {'block_size': -1}, 'block_size'),
+    ('dot_product', {'block_size': 0}, "block_size must be 'auto'"),  # 0.7.0's auto
+    ('dot_product', {'block_size': 'big'}, 'block_size'),
     ('dot_product', {'threshold': -0.1}, 'threshold'),
     ('dot_product', {'threshold': np.nan}, 'threshold'),
     ('dot_product', {'target_rows': [0, 60]}, 'target_rows ids'),
@@ -367,6 +365,7 @@ _BAD_PARAMS = [
     ('s_plus', {'beta1': -1, 'l3': 1}, 'beta1'),
     ('s_plus', {'pop2': np.ones(5)}, 'array of length 60'),
     ('s_plus', {'pop2': 'max'}, 'pop2'),
+    ('s_plus', {'pop1': None}, 'pop1 must be "none", "sum"'),
     ('s_plus', {'pop1': np.zeros(60), 'l3': 1}, 'on every row/column with entries'),
     ('s_plus', {'pop2': -np.ones(60), 'l3': 1}, 'finite and >= 0'),
 ]
@@ -376,6 +375,13 @@ _BAD_PARAMS = [
 def test_rejects_bad_parameters(name, kwargs, match):
     with pytest.raises((ValueError, TypeError), match=match):
         getattr(sim, name)(_m(60, 60), verbose=False, **kwargs)
+
+
+@pytest.mark.parametrize('name', ['dot_product', 'cosine', 'asymmetric_cosine', 'tversky', 'jaccard',
+                                  'dice', 'p3alpha', 'rp3beta', 's_plus'])
+def test_keyword_only_after_matrix2(name):
+    with pytest.raises(TypeError, match='positional'):
+        getattr(sim, name)(_m(60, 60), None, 5)
 
 
 def test_rejects_dense_matrix1():

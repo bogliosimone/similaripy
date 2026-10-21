@@ -107,7 +107,9 @@ def load_outputs(path, meta):
 
 
 def case_kwargs(kwargs, block_size):
-    return dict(k=100, verbose=False, format_output='csr', block_size=block_size) | kwargs
+    # auto = the library default, left out: 0.7.0 spells it 0, v1 'auto'
+    auto = {} if block_size == 'auto' else {'block_size': None if block_size == 'none' else int(block_size)}
+    return dict(k=100, verbose=False, format_output='csr') | auto | kwargs
 
 
 def check_case(name, ref_arrays, new, kw, exact=False):
@@ -163,7 +165,7 @@ def main():
     p.add_argument('--version', default=None)
     p.add_argument('--similarities', nargs='+', default=['dot_product', 'cosine', 'rp3beta'])
     p.add_argument('--k', type=int, default=100)
-    p.add_argument('--block-size', type=int, default=0, help='0 = auto (262144)')
+    p.add_argument('--block-size', default='auto', help="'auto' (262144), 'none' or an int > 0")
     p.add_argument('--exact', action='store_true', help='--compare: fail on any bit difference')
     p.add_argument('--rtol', type=float, default=RTOL, help=f'--compare: score tolerance (default {RTOL})')
     args = p.parse_args()

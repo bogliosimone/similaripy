@@ -196,7 +196,7 @@ def benchmark_similarity(
     # Select similarity function
     similarity_func = _get_similarity_function(similarity_type)
 
-    block_size = similarity_kwargs.pop('block_size', 0)
+    block_size = similarity_kwargs.pop('block_size', 'auto')
     # Private kernel column order ('popularity' / 'original'); None = library default
     column_order = similarity_kwargs.pop('column_order', None)
     if column_order is not None:
@@ -211,7 +211,8 @@ def benchmark_similarity(
         threshold=threshold,
         verbose=False,
         num_threads=num_threads,
-        block_size=block_size,
+        # auto = the library default, left out: 0.7.0 spells it 0, v1 'auto'
+        **({} if block_size == 'auto' else {'block_size': block_size}),
         **similarity_kwargs
     )
 
