@@ -83,14 +83,14 @@ urm = sim.normalization.bm25(urm)
 # Train an item-item cosine similarity model
 similarity_matrix = sim.cosine(urm.T, k=50, verbose=True)  # verbose: progress bar
 
-# Compute recommendations for user 1, 14, 8 
+# Compute recommendations for user 1, 14, 8
 # filtering out already-seen items
 recommendations = sim.dot_product(
     urm,
     similarity_matrix.T,
     k=100,
     target_rows=[1, 14, 8],
-    filter_cols=urm
+    filter_cols=urm,
 )
 ```
 

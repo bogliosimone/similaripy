@@ -130,6 +130,10 @@ notebook = [
 [tool.ty.src]
 include = ["similaripy"]
 
+[tool.ruff]
+# The width the code is written at; double quotes (the formatter's default)
+line-length = 120
+
 [tool.ruff.lint]
 # Explicit: ruff's classic default set (newer releases select far more) + a
 # docstring on every public function (the library; tests and notebooks exempt)

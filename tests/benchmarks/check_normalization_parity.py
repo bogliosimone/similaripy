@@ -28,22 +28,24 @@ from check_kernel_parity import load_outputs, save_outputs
 from run_small_benchmarks import make_urm
 
 RTOL, ATOL = 1e-5, 1e-7
-TF_MODES = ('binary', 'raw', 'sqrt', 'freq', 'log')
-IDF_MODES = ('unary', 'base', 'smooth', 'prob', 'bm25')
+TF_MODES = ("binary", "raw", "sqrt", "freq", "log")
+IDF_MODES = ("unary", "base", "smooth", "prob", "bm25")
 
 
 def cases(full):
     """(name, func, kwargs). full=False: defaults + one mode varied at a time."""
-    out = [(f'normalize_{n}', sim.normalize, {'norm': n}) for n in ('l1', 'l2', 'max')]
+    out = [(f"normalize_{n}", sim.normalize, {"norm": n}) for n in ("l1", "l2", "max")]
     if full:
         modes = list(itertools.product(TF_MODES, IDF_MODES))
     else:
-        modes = [(tf, 'bm25') for tf in TF_MODES] + [('raw', idf) for idf in IDF_MODES if idf != 'bm25']
+        modes = [(tf, "bm25") for tf in TF_MODES] + [("raw", idf) for idf in IDF_MODES if idf != "bm25"]
     for tf, idf in modes:
-        kw = {'tf_mode': tf, 'idf_mode': idf}
-        out += [(f'tfidf_{tf}_{idf}', sim.tfidf, kw),
-                (f'bm25_{tf}_{idf}', sim.bm25, kw),
-                (f'bm25plus_{tf}_{idf}', sim.bm25plus, kw | {'delta': 0.5, 'k1': 1.5, 'b': 0.6})]
+        kw = {"tf_mode": tf, "idf_mode": idf}
+        out += [
+            (f"tfidf_{tf}_{idf}", sim.tfidf, kw),
+            (f"bm25_{tf}_{idf}", sim.bm25, kw),
+            (f"bm25plus_{tf}_{idf}", sim.bm25plus, kw | {"delta": 0.5, "k1": 1.5, "b": 0.6}),
+        ]
     return out
 
 
@@ -59,47 +61,46 @@ def check_case(name, ref, rs):
     data, indices, indptr, shape = ref
     fail = None
     if data.dtype != rs.data.dtype:
-        fail = f'dtype {data.dtype} vs {rs.data.dtype}'
-    elif not (tuple(shape) == rs.shape and np.array_equal(indptr, rs.indptr)
-              and np.array_equal(indices, rs.indices)):
-        fail = 'structure differs'
+        fail = f"dtype {data.dtype} vs {rs.data.dtype}"
+    elif not (tuple(shape) == rs.shape and np.array_equal(indptr, rs.indptr) and np.array_equal(indices, rs.indices)):
+        fail = "structure differs"
     else:
         bad = ~np.isclose(rs.data, data, rtol=RTOL, atol=ATOL, equal_nan=True)
         if bad.any():
             j = np.flatnonzero(bad)[0]
-            fail = f'{bad.sum()} values differ, first at {j}: ref {data[j]!r} vs new {rs.data[j]!r}'
+            fail = f"{bad.sum()} values differ, first at {j}: ref {data[j]!r} vs new {rs.data[j]!r}"
     if fail:
-        print(f'{name:<40} FAIL  {fail}')
+        print(f"{name:<40} FAIL  {fail}")
     return fail is None, fail is None and np.array_equal(data, rs.data, equal_nan=True)
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = p.add_mutually_exclusive_group(required=True)
-    mode.add_argument('--dump', metavar='NPZ', help="save this install's outputs (run under the reference)")
-    mode.add_argument('--compare', metavar='NPZ', help="check this install's outputs against a --dump file")
-    p.add_argument('--dataset', default='synthetic', choices=['synthetic', 'movielens', 'yambda'])
-    p.add_argument('--version', default=None)
+    mode.add_argument("--dump", metavar="NPZ", help="save this install's outputs (run under the reference)")
+    mode.add_argument("--compare", metavar="NPZ", help="check this install's outputs against a --dump file")
+    p.add_argument("--dataset", default="synthetic", choices=["synthetic", "movielens", "yambda"])
+    p.add_argument("--version", default=None)
     args = p.parse_args()
 
-    if args.dataset == 'synthetic':
+    if args.dataset == "synthetic":
         X0 = make_urm()
     else:
         X0, _ = load_URM(args.dataset, version=args.version)
-    full = args.dataset == 'synthetic'
+    full = args.dataset == "synthetic"
     # Datasets: keep a fixed 1% of output rows, or 240 full outputs take ~90 GB
     rows = None if full else np.sort(np.random.default_rng(0).choice(X0.shape[0], X0.shape[0] // 100, replace=False))
-    meta = {k: v for k, v in vars(args).items() if k not in ('dump', 'compare')}
+    meta = {k: v for k, v in vars(args).items() if k not in ("dump", "compare")}
     ref = None if args.dump else load_outputs(args.compare, meta)
 
     ok, n_exact, outputs = True, 0, {}
     for data_dtype, index_dtype, axis in itertools.product((np.float32, np.float64), (np.int32, np.int64), (1, 0)):
         X = with_dtypes(X0, data_dtype, index_dtype)
-        tag = f'{np.dtype(data_dtype).name}/{np.dtype(index_dtype).name}/axis={axis}'
+        tag = f"{np.dtype(data_dtype).name}/{np.dtype(index_dtype).name}/axis={axis}"
         group_ok = True
         for name, func, kw in cases(full):
-            key = f'{name} [{tag}]'
-            out = func(X, **kw | {'axis': axis})
+            key = f"{name} [{tag}]"
+            out = func(X, **kw | {"axis": axis})
             if rows is not None:
                 out = out.tocsr()[rows]
             if ref is None:
@@ -109,14 +110,14 @@ def main():
                 group_ok &= case_ok
                 n_exact += exact
         if ref is not None:
-            print(f'{tag:<28} {"OK" if group_ok else "FAIL"}')
+            print(f"{tag:<28} {'OK' if group_ok else 'FAIL'}")
         ok &= group_ok
     if ref is None:
         save_outputs(args.dump, outputs, meta)
         return
-    print(f'{"PASS" if ok else "FAIL"} ({len(cases(full)) * 8} cases, {n_exact} bit-identical)')
+    print(f"{'PASS' if ok else 'FAIL'} ({len(cases(full)) * 8} cases, {n_exact} bit-identical)")
     sys.exit(0 if ok else 1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

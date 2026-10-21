@@ -8,12 +8,13 @@ import numpy as np
 
 
 # ---- Valid mode strings ----
-_NORMALIZATIONS = ('l1', 'l2', 'max')
-_TF_MODES = ('binary', 'raw', 'sqrt', 'freq', 'log')
-_IDF_MODES = ('unary', 'base', 'smooth', 'prob', 'bm25')
+_NORMALIZATIONS = ("l1", "l2", "max")
+_TF_MODES = ("binary", "raw", "sqrt", "freq", "log")
+_IDF_MODES = ("unary", "base", "smooth", "prob", "bm25")
 
 
 # ---- Private helpers ----
+
 
 def _canonical(X: SparseInput, axis: int = 1) -> sps.csr_array:
     """
@@ -52,7 +53,7 @@ def _check_finite(X: sps.csr_array) -> None:
     """NaN/inf would spread through a row's norm or idf, silently (as the
     similarities, checked on the canonical copy)."""
     if not np.isfinite(X.data).all():
-        raise ValueError('X values must be finite')
+        raise ValueError("X values must be finite")
 
 
 def _check_non_negative(X: sps.csr_array, name: str) -> None:
@@ -60,8 +61,9 @@ def _check_non_negative(X: sps.csr_array, name: str) -> None:
     negative document length (signed input). Checked on the canonical data,
     so +1/-1 duplicates sum to 0 and pass."""
     if (X.data < 0).any():
-        raise ValueError(f'{name} needs non-negative values (term frequencies); '
-                         'signed input (values < 0) is not supported')
+        raise ValueError(
+            f"{name} needs non-negative values (term frequencies); signed input (values < 0) is not supported"
+        )
 
 
 def _validate_modes(tf_mode: str, idf_mode: str) -> None:
@@ -79,9 +81,10 @@ def _validate_modes(tf_mode: str, idf_mode: str) -> None:
 
 # ---- Public API ----
 
+
 def normalize(
     X: Union[sps.sparray, sps.spmatrix],
-    norm: str = 'l2',
+    norm: str = "l2",
     axis: int = 1,
 ) -> sps.csr_array:
     """
@@ -138,8 +141,8 @@ def bm25(
     k1: float = 1.2,
     b: float = 0.75,
     logbase: float = e,
-    tf_mode: str = 'raw',
-    idf_mode: str = 'bm25',
+    tf_mode: str = "raw",
+    idf_mode: str = "bm25",
 ) -> sps.csr_array:
     """
     Apply BM25 normalization to a sparse matrix.
@@ -161,8 +164,9 @@ def bm25(
         ValueError: on a negative, NaN or inf value.
     """
     _validate_modes(tf_mode, idf_mode)
-    return _transformed(X, axis, _core.bm25plus, 'bm25', k1=k1, b=b, delta=0.0,
-                        tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase)
+    return _transformed(
+        X, axis, _core.bm25plus, "bm25", k1=k1, b=b, delta=0.0, tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase
+    )
 
 
 def bm25plus(
@@ -172,8 +176,8 @@ def bm25plus(
     b: float = 0.75,
     delta: float = 1.0,
     logbase: float = e,
-    tf_mode: str = 'raw',
-    idf_mode: str = 'bm25',
+    tf_mode: str = "raw",
+    idf_mode: str = "bm25",
 ) -> sps.csr_array:
     """
     Apply BM25+ normalization to a sparse matrix.
@@ -196,16 +200,26 @@ def bm25plus(
         ValueError: on a negative, NaN or inf value.
     """
     _validate_modes(tf_mode, idf_mode)
-    return _transformed(X, axis, _core.bm25plus, 'bm25plus', k1=k1, b=b, delta=delta,
-                        tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase)
+    return _transformed(
+        X,
+        axis,
+        _core.bm25plus,
+        "bm25plus",
+        k1=k1,
+        b=b,
+        delta=delta,
+        tf_mode=tf_mode,
+        idf_mode=idf_mode,
+        logbase=logbase,
+    )
 
 
 def tfidf(
     X: Union[sps.sparray, sps.spmatrix],
     axis: int = 1,
     logbase: float = e,
-    tf_mode: str = 'sqrt',
-    idf_mode: str = 'smooth',
+    tf_mode: str = "sqrt",
+    idf_mode: str = "smooth",
 ) -> sps.csr_array:
     """
     Apply TF-IDF normalization to a sparse matrix.
@@ -225,6 +239,4 @@ def tfidf(
         ValueError: on a negative, NaN or inf value.
     """
     _validate_modes(tf_mode, idf_mode)
-    return _transformed(X, axis, _core.tfidf, 'tfidf', tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase)
-
-    
+    return _transformed(X, axis, _core.tfidf, "tfidf", tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase)

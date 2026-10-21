@@ -37,10 +37,10 @@ def get_system_info():
         numpy_version = np.__version__
     except AttributeError:
         numpy_version = "unknown"
-    
-    try:        
+
+    try:
         scipy_version = sp.__version__
-    except AttributeError:        
+    except AttributeError:
         scipy_version = "unknown"
 
     # CPU model name
@@ -48,10 +48,7 @@ def get_system_info():
     try:
         system = platform.system()
         if system == "Darwin":
-            r = subprocess.run(
-                ["sysctl", "-n", "machdep.cpu.brand_string"],
-                capture_output=True, text=True, timeout=5
-            )
+            r = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, timeout=5)
             if r.returncode == 0:
                 cpu_model = r.stdout.strip()
         elif system == "Linux":
@@ -66,10 +63,7 @@ def get_system_info():
     # Git commit hash
     git_hash = "unknown"
     try:
-        r = subprocess.run(
-            ["git", "describe", "--always", "--dirty"],
-            capture_output=True, text=True, timeout=5
-        )
+        r = subprocess.run(["git", "describe", "--always", "--dirty"], capture_output=True, text=True, timeout=5)
         if r.returncode == 0:
             git_hash = r.stdout.strip()
     except Exception:
@@ -115,14 +109,7 @@ def get_system_info():
 
 
 def benchmark_similarity(
-    URM,
-    similarity_type="cosine",
-    k=100,
-    shrink=0,
-    threshold=0,
-    num_threads=0,
-    verbose=True,
-    **similarity_kwargs
+    URM, similarity_type="cosine", k=100, shrink=0, threshold=0, num_threads=0, verbose=True, **similarity_kwargs
 ):
     """
     Benchmark similarity computation on a User Rating Matrix (URM).
@@ -196,9 +183,9 @@ def benchmark_similarity(
     # Select similarity function
     similarity_func = _get_similarity_function(similarity_type)
 
-    block_size = similarity_kwargs.pop('block_size', 'auto')
+    block_size = similarity_kwargs.pop("block_size", "auto")
     # Private kernel column order ('popularity' / 'original'); None = library default
-    column_order = similarity_kwargs.pop('column_order', None)
+    column_order = similarity_kwargs.pop("column_order", None)
     if column_order is not None:
         sim._s_plus._COLUMN_ORDER = column_order
 
@@ -212,8 +199,8 @@ def benchmark_similarity(
         verbose=False,
         num_threads=num_threads,
         # auto = the library default, left out: 0.7.0 spells it 0, v1 'auto'
-        **({} if block_size == 'auto' else {'block_size': block_size}),
-        **similarity_kwargs
+        **({} if block_size == "auto" else {"block_size": block_size}),
+        **similarity_kwargs,
     )
 
     end_time = time.perf_counter()
@@ -228,31 +215,28 @@ def benchmark_similarity(
     throughput = n_items / computation_time
 
     # Validate results
-    assert similarity_matrix.shape[0] == similarity_matrix.shape[1], \
-        "Similarity matrix should be square"
-    assert similarity_matrix.shape[0] == n_items, \
-        "Similarity matrix should have same dimension as number of items"
-    assert nnz > 0, \
-        "Similarity matrix should have non-zero entries"
+    assert similarity_matrix.shape[0] == similarity_matrix.shape[1], "Similarity matrix should be square"
+    assert similarity_matrix.shape[0] == n_items, "Similarity matrix should have same dimension as number of items"
+    assert nnz > 0, "Similarity matrix should have non-zero entries"
 
     results = {
-        'similarity_matrix': similarity_matrix,
+        "similarity_matrix": similarity_matrix,
         # The shrink and kwargs the call really ran with (fixed entries override the harness's)
-        'params': {'shrink': shrink, **similarity_kwargs, **getattr(similarity_func, 'fixed', {})},
-        'computation_time': computation_time,
-        'kernel_time': timings['kernel'],
-        'prep_time': computation_time - timings['kernel'] - timings['output'],
-        'output_time': timings['output'],
-        'n_items': n_items,
-        'nnz': nnz,
-        'density': density,
-        'avg_neighbors': avg_neighbors,
-        'throughput': throughput,
-        'similarity_type': similarity_type,
-        'k': k,
-        'shrink': shrink,
-        'threshold': threshold,
-        'block_size': block_size,
+        "params": {"shrink": shrink, **similarity_kwargs, **getattr(similarity_func, "fixed", {})},
+        "computation_time": computation_time,
+        "kernel_time": timings["kernel"],
+        "prep_time": computation_time - timings["kernel"] - timings["output"],
+        "output_time": timings["output"],
+        "n_items": n_items,
+        "nnz": nnz,
+        "density": density,
+        "avg_neighbors": avg_neighbors,
+        "throughput": throughput,
+        "similarity_type": similarity_type,
+        "k": k,
+        "shrink": shrink,
+        "threshold": threshold,
+        "block_size": block_size,
     }
 
     return results
@@ -319,8 +303,10 @@ def _fixed(func, **fixed):
 
     functools.partial won't do: the call's shrink=0 would override the fixed
     shrink and silently run plain cosine. A kwarg in both raises TypeError."""
+
     def call(X, shrink=0, **kwargs):
         return func(X, **kwargs, **fixed)
+
     call.fixed = fixed
     return call
 
@@ -332,32 +318,29 @@ SHRINK, ALPHA, BETA = 10, 0.8, 0.6
 def _get_similarity_function(similarity_type):
     """Get similarity function from similaripy."""
     similarity_map = {
-        'dot_product': sim.dot_product,
-        'dot_product_binary': partial(sim.dot_product, binary=True),  # integer scores: tie-heavy
-        'cosine': sim.cosine,
-        'asymmetric_cosine': sim.asymmetric_cosine,
-        'jaccard': sim.jaccard,
-        'dice': sim.dice,
-        'tversky': sim.tversky,
-        'p3alpha': sim.p3alpha,
-        'rp3beta': sim.rp3beta,
-        'splus': sim.s_plus,
-        'cosine_bayesian': _fixed(sim.cosine, shrink=SHRINK, shrink_type='bayesian'),
-        'cosine_stabilized': _fixed(sim.cosine, shrink=SHRINK, shrink_type='stabilized'),
-        'dot_product_bayesian': _fixed(sim.dot_product, shrink=SHRINK, shrink_type='bayesian'),
-        'p3alpha_tuned': _fixed(sim.p3alpha, alpha=ALPHA),
-        'p3alpha_bayesian': _fixed(sim.p3alpha, alpha=ALPHA, shrink=SHRINK, shrink_type='bayesian'),
-        'p3alpha_binary': _fixed(sim.p3alpha, alpha=ALPHA, binary=True),
-        'rp3beta_tuned': _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA),
-        'rp3beta_binary': _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA, binary=True),
-        'rp3beta_stabilized': _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA, shrink=SHRINK, shrink_type='stabilized'),
-        'rp3beta_bayesian': _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA, shrink=SHRINK, shrink_type='bayesian'),
+        "dot_product": sim.dot_product,
+        "dot_product_binary": partial(sim.dot_product, binary=True),  # integer scores: tie-heavy
+        "cosine": sim.cosine,
+        "asymmetric_cosine": sim.asymmetric_cosine,
+        "jaccard": sim.jaccard,
+        "dice": sim.dice,
+        "tversky": sim.tversky,
+        "p3alpha": sim.p3alpha,
+        "rp3beta": sim.rp3beta,
+        "splus": sim.s_plus,
+        "cosine_bayesian": _fixed(sim.cosine, shrink=SHRINK, shrink_type="bayesian"),
+        "cosine_stabilized": _fixed(sim.cosine, shrink=SHRINK, shrink_type="stabilized"),
+        "dot_product_bayesian": _fixed(sim.dot_product, shrink=SHRINK, shrink_type="bayesian"),
+        "p3alpha_tuned": _fixed(sim.p3alpha, alpha=ALPHA),
+        "p3alpha_bayesian": _fixed(sim.p3alpha, alpha=ALPHA, shrink=SHRINK, shrink_type="bayesian"),
+        "p3alpha_binary": _fixed(sim.p3alpha, alpha=ALPHA, binary=True),
+        "rp3beta_tuned": _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA),
+        "rp3beta_binary": _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA, binary=True),
+        "rp3beta_stabilized": _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA, shrink=SHRINK, shrink_type="stabilized"),
+        "rp3beta_bayesian": _fixed(sim.rp3beta, alpha=ALPHA, beta=BETA, shrink=SHRINK, shrink_type="bayesian"),
     }
 
     if similarity_type not in similarity_map:
-        raise ValueError(
-            f"Unknown similarity type '{similarity_type}'. "
-            f"Available: {list(similarity_map.keys())}"
-        )
+        raise ValueError(f"Unknown similarity type '{similarity_type}'. Available: {list(similarity_map.keys())}")
 
     return similarity_map[similarity_type]

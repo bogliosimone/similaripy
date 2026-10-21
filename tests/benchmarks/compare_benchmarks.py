@@ -35,6 +35,7 @@ from pathlib import Path
 
 # ── I/O helpers ──────────────────────────────────────────────────────────────
 
+
 def load_benchmark(filepath):
     """Load a benchmark JSON report file.
 
@@ -205,13 +206,7 @@ def list_reports(bench_dir, pattern=None):
 
     print(f"\nFound {len(files)} benchmark report(s) in {bench_dir}:\n")
     header = (
-        f"{'#':<4} "
-        f"{'Filename':<60} "
-        f"{'Version':<8} "
-        f"{'Timestamp':<20} "
-        f"{'Datasets':<20} "
-        f"{'Similarities':<30} "
-        f"{'Params'}"
+        f"{'#':<4} {'Filename':<60} {'Version':<8} {'Timestamp':<20} {'Datasets':<20} {'Similarities':<30} {'Params'}"
     )
     print(header)
     print("-" * len(header))
@@ -227,6 +222,7 @@ def list_reports(bench_dir, pattern=None):
 
 
 # ── Comparison logic ─────────────────────────────────────────────────────────
+
 
 def compare_reports(reports, similarity_filter=None):
     """Print a comparison table with speedups relative to the reference.
@@ -369,6 +365,7 @@ def compare_reports(reports, similarity_filter=None):
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Compare similaripy benchmark results from JSON reports.",
@@ -396,28 +393,40 @@ Examples:
     )
 
     parser.add_argument(
-        "files", nargs="*",
+        "files",
+        nargs="*",
         help="JSON report files to compare. First = reference for speedup. "
-             "If omitted, latest run is used as reference.",
+        "If omitted, latest run is used as reference.",
     )
     parser.add_argument(
-        "--list", action="store_true",
+        "--list",
+        action="store_true",
         help="List all available benchmark reports",
     )
     parser.add_argument(
-        "--latest", type=int, default=None, metavar="N",
+        "--latest",
+        type=int,
+        default=None,
+        metavar="N",
         help="Compare the latest N benchmark runs (most recent = reference)",
     )
     parser.add_argument(
-        "--filter", type=str, default=None, metavar="PATTERN",
+        "--filter",
+        type=str,
+        default=None,
+        metavar="PATTERN",
         help="Filter report filenames containing PATTERN (e.g., version number)",
     )
     parser.add_argument(
-        "--similarity", type=str, default=None,
+        "--similarity",
+        type=str,
+        default=None,
         help="Only compare results for this similarity type",
     )
     parser.add_argument(
-        "--bench-dir", type=str, default="bench_results",
+        "--bench-dir",
+        type=str,
+        default="bench_results",
         help="Directory containing benchmark results (default: bench_results)",
     )
 
@@ -446,7 +455,8 @@ Examples:
             # Only reference given → find compatible others
             ref_path, ref_report = reports[0]
             compatible = find_compatible_reports(
-                bench_dir, ref_report,
+                bench_dir,
+                ref_report,
                 exclude_paths={ref_path},
                 pattern=args.filter,
             )
@@ -461,7 +471,7 @@ Examples:
         if len(all_files) < 2:
             print("Not enough JSON reports found. Run benchmarks first or use --list.")
             sys.exit(1)
-        selected = all_files[-args.latest:] if args.latest <= len(all_files) else all_files
+        selected = all_files[-args.latest :] if args.latest <= len(all_files) else all_files
         # Most recent last → reverse so most recent = first (reference)
         selected = list(reversed(selected))
         for filepath in selected:
@@ -476,7 +486,8 @@ Examples:
         ref_path = all_files[-1]
         ref_report = load_benchmark(ref_path)
         compatible = find_compatible_reports(
-            bench_dir, ref_report,
+            bench_dir,
+            ref_report,
             exclude_paths={ref_path},
             pattern=args.filter,
         )

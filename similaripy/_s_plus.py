@@ -1,5 +1,5 @@
 """
-    s_plus on the Rust kernel: numpy prep, kernel call, output build.
+s_plus on the Rust kernel: numpy prep, kernel call, output build.
 """
 
 import time
@@ -27,12 +27,12 @@ PROGRESS_BAR_WIDTH = 25
 # harness (tests/benchmarks/benchmark.py), which takes prep as total - kernel -
 # output, so prep includes the wrappers' normalization. Racy under concurrent
 # calls: read it only after serial calls.
-_last_timings = {'kernel': 0.0, 'output': 0.0}
+_last_timings = {"kernel": 0.0, "output": 0.0}
 
 # Kernel column order: 'popularity' (default, see `_s_plus`) or 'original'
 # (no renumbering: ties go to the lower original column). Private switch for
 # benchmarks and tests, not an API; don't flip it under concurrent calls.
-_COLUMN_ORDER = 'popularity'
+_COLUMN_ORDER = "popularity"
 
 # Largest output nnz with an int32 CSR indptr; past it indptr and indices
 # are int64. A module constant so tests can lower it.
@@ -42,8 +42,10 @@ _MAX_INT32_NNZ = np.iinfo(np.int32).max
 # ---- The kernel's argument groups (`_core.compute_similarities` reads them by
 # attribute: kernel.rs `CsrView`, `Norms`, `Params`) ----
 
+
 class Csr(NamedTuple):
     """A canonical CSR matrix's arrays (float32 data, int32 ids)."""
+
     data: np.ndarray
     indices: np.ndarray
     indptr: np.ndarray
@@ -52,6 +54,7 @@ class Csr(NamedTuple):
 
 class Params(NamedTuple):
     """The scoring weights (`s_plus` arguments of the same names)."""
+
     a1: float
     l1: float
     l2: float
@@ -66,6 +69,7 @@ class Params(NamedTuple):
 class NormParams(NamedTuple):
     """The prep-only `s_plus` arguments: norms (`_norms`) and data rules
     (`_check_data`); depop1/depop2 = weight_depop_matrix1/2."""
+
     c1: float
     c2: float
     p1: float
@@ -79,6 +83,7 @@ class NormParams(NamedTuple):
 class Norms(NamedTuple):
     """The kernel's normalization terms (kernel.rs `Norms`): x per m1 row, y
     per m2 column, float32; None when the weights don't use them."""
+
     x_tversky: Optional[np.ndarray] = None
     y_tversky: Optional[np.ndarray] = None
     x_cosine: Optional[np.ndarray] = None
@@ -99,7 +104,7 @@ def _check_args(
     weights: dict,
     a1: float,
     num_threads: int,
-    block_size: Union[int, Literal['auto'], None],
+    block_size: Union[int, Literal["auto"], None],
 ) -> None:
     """
     Check the `s_plus` arguments that don't need the values, before the copy
@@ -113,42 +118,45 @@ def _check_args(
     """
     # Check matrix types
     if not sp.issparse(matrix1):
-        raise TypeError('matrix1 must be a sparse matrix')
+        raise TypeError("matrix1 must be a sparse matrix")
     if not sp.issparse(matrix2):
-        raise TypeError('matrix2 must be a sparse matrix')
+        raise TypeError("matrix2 must be a sparse matrix")
 
     # Check matrix dimensions
     if matrix1.shape[1] != matrix2.shape[0]:
         raise ValueError(
-            f'Incompatible matrix shapes: matrix1.shape[1]={matrix1.shape[1]} '
-            f'must equal matrix2.shape[0]={matrix2.shape[0]}'
+            f"Incompatible matrix shapes: matrix1.shape[1]={matrix1.shape[1]} "
+            f"must equal matrix2.shape[0]={matrix2.shape[0]}"
         )
 
     if not _is_int(k) or k < 1:
-        raise ValueError(f'k must be an integer >= 1, got {k!r}')
+        raise ValueError(f"k must be an integer >= 1, got {k!r}")
 
-    _check_depop('pop1', weight_depop_matrix1, matrix1.shape[0])
-    _check_depop('pop2', weight_depop_matrix2, matrix2.shape[1])
+    _check_depop("pop1", weight_depop_matrix1, matrix1.shape[0])
+    _check_depop("pop2", weight_depop_matrix2, matrix2.shape[1])
 
     # Column selectors: a list/array is one set of column ids for every row, a
     # sparse matrix one row of columns per output row.
     expected_shape = (matrix1.shape[0], matrix2.shape[1])
-    for name, cols in (('filter_cols', filter_cols), ('target_cols', target_cols)):
+    for name, cols in (("filter_cols", filter_cols), ("target_cols", target_cols)):
         if cols is None:
             continue
         if isinstance(cols, (list, np.ndarray)):
             _ids(name, cols, matrix2.shape[1])
         elif not sp.issparse(cols):
-            raise TypeError(f'{name} must be a sparse matrix, list, numpy array, or None')
+            raise TypeError(f"{name} must be a sparse matrix, list, numpy array, or None")
         elif cols.nnz != 0 and cols.shape != expected_shape:
-            raise ValueError(f'{name} shape {cols.shape} does not match expected shape {expected_shape}')
+            raise ValueError(f"{name} shape {cols.shape} does not match expected shape {expected_shape}")
     # An empty target_cols would score nothing: None is "all columns". An empty
     # filter_cols excludes nothing, the same as None.
-    if target_cols is not None and (np.size(target_cols) if isinstance(target_cols, (list, np.ndarray)) else target_cols.nnz) == 0:
-        raise ValueError('target_cols is empty: pass None to score all columns')
+    if (
+        target_cols is not None
+        and (np.size(target_cols) if isinstance(target_cols, (list, np.ndarray)) else target_cols.nnz) == 0
+    ):
+        raise ValueError("target_cols is empty: pass None to score all columns")
 
     # Check format_output
-    if format_output not in ('coo', 'csr'):
+    if format_output not in ("coo", "csr"):
         raise ValueError(f"format_output must be 'coo' or 'csr', got '{format_output}'")
 
     # Every weight >= 0: the norms (sums of x^2), popularities (sums of |x|) and
@@ -159,13 +167,16 @@ def _check_args(
     # or invert the ranking.
     for name, value in weights.items():
         _check_scalar(name, value)
-    _check_scalar('a1 (alpha)', a1, strict=True)
+    _check_scalar("a1 (alpha)", a1, strict=True)
 
-    if not (block_size is None or (isinstance(block_size, str) and block_size == 'auto')
-            or (_is_int(block_size) and block_size > 0)):
+    if not (
+        block_size is None
+        or (isinstance(block_size, str) and block_size == "auto")
+        or (_is_int(block_size) and block_size > 0)
+    ):
         raise ValueError(f"block_size must be 'auto', None (no blocking) or an integer > 0, got {block_size!r}")
     if not (_is_int(num_threads) and num_threads >= 0):
-        raise ValueError(f'num_threads must be an integer >= 0, got {num_threads!r}')
+        raise ValueError(f"num_threads must be an integer >= 0, got {num_threads!r}")
 
 
 def _is_int(x) -> bool:
@@ -175,7 +186,7 @@ def _is_int(x) -> bool:
 def _check_scalar(name: str, value, strict: bool = False) -> None:
     """Finite and >= 0 (> 0 if `strict`)."""
     if not (np.isfinite(value) and (value > 0 if strict else value >= 0)):
-        raise ValueError(f'{name} must be finite and {">" if strict else ">="} 0, got {value}')
+        raise ValueError(f"{name} must be finite and {'>' if strict else '>='} 0, got {value}")
 
 
 def _ids(name: str, ids, n: int) -> np.ndarray:
@@ -184,9 +195,9 @@ def _ids(name: str, ids, n: int) -> np.ndarray:
     if ids.size == 0:
         return ids.astype(np.int64)
     if not np.issubdtype(ids.dtype, np.integer):
-        raise TypeError(f'{name} must hold integer ids, got dtype {ids.dtype}')
+        raise TypeError(f"{name} must hold integer ids, got dtype {ids.dtype}")
     if ids.min() < 0 or ids.max() >= n:
-        raise ValueError(f'{name} ids must be in [0, {n}), got min {ids.min()} and max {ids.max()}')
+        raise ValueError(f"{name} ids must be in [0, {n}), got min {ids.min()} and max {ids.max()}")
     return ids
 
 
@@ -194,14 +205,14 @@ def _check_depop(name: str, weights, n: int) -> None:
     """'none', 'sum' or n finite weights >= 0 (a negative one would flip signs); > 0 where
     it is used is checked in `_check_data` (`_check_used_weights`)."""
     if isinstance(weights, str):
-        if weights not in ('none', 'sum'):
+        if weights not in ("none", "sum"):
             raise ValueError(f'{name} must be "none", "sum" or an array of length {n}, got {weights!r}')
         return
     w = np.asarray(weights)
     if w.shape != (n,):
         raise ValueError(f'{name} must be "none", "sum" or an array of length {n}, got shape {w.shape}')
     if not np.all((w >= 0) & (w < np.inf)):
-        raise ValueError(f'{name} weights must be finite and >= 0')
+        raise ValueError(f"{name} weights must be finite and >= 0")
 
 
 def _check_used_weights(name: str, weights, used: np.ndarray) -> None:
@@ -211,7 +222,7 @@ def _check_used_weights(name: str, weights, used: np.ndarray) -> None:
     no interactions, pop 0 when computed as counts) are never read.
     """
     if not isinstance(weights, str) and not np.all(np.asarray(weights)[used] > 0):
-        raise ValueError(f'{name} weights must be > 0 on every row/column with entries')
+        raise ValueError(f"{name} weights must be > 0 on every row/column with entries")
 
 
 def _check_data(m1, m2, params: Params, norm_params: NormParams) -> None:
@@ -224,15 +235,14 @@ def _check_data(m1, m2, params: Params, norm_params: NormParams) -> None:
     signed.
     """
     binary = norm_params.binary
-    for name, m in (('matrix1', m1), ('matrix2', m2)):
+    for name, m in (("matrix1", m1), ("matrix2", m2)):
         if not np.isfinite(m.data).all():
-            raise ValueError(f'{name} values must be finite (in float32)')
+            raise ValueError(f"{name} values must be finite (in float32)")
     signed = not binary and bool((m1.data < 0).any() or (m2.data < 0).any())
     _check_score_rules(signed, binary, params, m1.data, m2.data)
     if params.l3 != 0:
-        _check_used_weights('pop1', norm_params.depop1, np.diff(m1.indptr) > 0)
-        _check_used_weights('pop2', norm_params.depop2,
-                            np.bincount(m2.indices, minlength=m2.shape[1]) > 0)
+        _check_used_weights("pop1", norm_params.depop1, np.diff(m1.indptr) > 0)
+        _check_used_weights("pop2", norm_params.depop2, np.bincount(m2.indices, minlength=m2.shape[1]) > 0)
 
 
 def _check_score_rules(signed: bool, binary: bool, params: Params, m1_data, m2_data) -> None:
@@ -243,12 +253,16 @@ def _check_score_rules(signed: bool, binary: bool, params: Params, m1_data, m2_d
     """
     a1, l1, t1, t2, bayesian_shrink = params.a1, params.l1, params.t1, params.t2, params.bayesian_shrink
     if signed and bayesian_shrink != 0:
-        raise ValueError("bayesian shrink (shrink_type='bayesian', s_plus bayesian_shrink) is not "
-                         'supported on signed input (values < 0): xy / (xy + shrink) flips the sign '
-                         'of negative scores')
+        raise ValueError(
+            "bayesian shrink (shrink_type='bayesian', s_plus bayesian_shrink) is not "
+            "supported on signed input (values < 0): xy / (xy + shrink) flips the sign "
+            "of negative scores"
+        )
     if signed and a1 != 1:
-        raise ValueError(f'a1 (alpha) must be 1 on signed input (values < 0), got {a1}: '
-                         'a power of a negative score is NaN or turns it positive')
+        raise ValueError(
+            f"a1 (alpha) must be 1 on signed input (values < 0), got {a1}: "
+            "a power of a negative score is NaN or turns it positive"
+        )
     # den = t1 |x|^2 + t2 |y|^2 + c xy (c = 1 - t1 - t2), |xy| <= |x| |y|: > 0 on
     # every pair iff c = 0 or 4 t1 t2 > c^2. The worst pair has xy = |x||y| for
     # c < 0 (any weighted input) and xy = -|x||y| for c > 0 (signed input only).
@@ -256,12 +270,19 @@ def _check_score_rules(signed: bool, binary: bool, params: Params, m1_data, m2_d
     # binary=True): den >= v^2 |X & Y| > 0 always. Only the tversky term is checked:
     # l2/l3/stabilized shrink terms may keep den > 0, but not on every pair.
     c = 1 - t1 - t2
-    if (l1 != 0 and not binary and c != 0 and (c < 0 or signed) and not 4 * t1 * t2 > c * c
-            and not _one_value(m1_data, m2_data)):
+    if (
+        l1 != 0
+        and not binary
+        and c != 0
+        and (c < 0 or signed)
+        and not 4 * t1 * t2 > c * c
+        and not _one_value(m1_data, m2_data)
+    ):
         raise ValueError(
-            f't1, t2 (tversky alpha, beta) = ({t1}, {t2}) give a denominator <= 0 on some pairs'
-            f'{" of signed input (values < 0)" if c > 0 else ""}: need t1 + t2 = 1 or '
-            f'4 t1 t2 > (1 - t1 - t2)^2')
+            f"t1, t2 (tversky alpha, beta) = ({t1}, {t2}) give a denominator <= 0 on some pairs"
+            f"{' of signed input (values < 0)' if c > 0 else ''}: need t1 + t2 = 1 or "
+            f"4 t1 t2 > (1 - t1 - t2)^2"
+        )
 
 
 def _one_value(*arrays) -> bool:
@@ -271,6 +292,7 @@ def _one_value(*arrays) -> bool:
 
 
 # ---- Prep helpers (numpy) ----
+
 
 def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> sp.csr_array:
     """
@@ -295,20 +317,20 @@ def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> sp.csr_array
     """
     int32_max = np.iinfo(np.int32).max
     if matrix.nnz > int32_max:
-        raise ValueError(f'sparse inputs must have at most {int32_max} non-zeros')
-    if matrix.format == 'coo':
+        raise ValueError(f"sparse inputs must have at most {int32_max} non-zeros")
+    if matrix.format == "coo":
         rows, cols, data = matrix.row, matrix.col, matrix.data
         if np.any(rows[1:] < rows[:-1]):
-            order = np.argsort(rows, kind='stable')
+            order = np.argsort(rows, kind="stable")
             rows, cols, data = rows[order], cols[order], data[order]
         indptr = np.zeros(matrix.shape[0] + 1, dtype=np.int32)
         np.cumsum(np.bincount(rows, minlength=matrix.shape[0]), out=indptr[1:])
     else:
         csr = matrix.tocsr()
         indptr, cols, data = csr.indptr.astype(np.int32), csr.indices, csr.data
-    canonical = (matrix if matrix.format == 'coo' else csr).has_canonical_format
+    canonical = (matrix if matrix.format == "coo" else csr).has_canonical_format
     indices = cols.astype(np.int32)
-    with np.errstate(over='ignore'):  # inf: reported by the similarities' finite check (`_check_data`)
+    with np.errstate(over="ignore"):  # inf: reported by the similarities' finite check (`_check_data`)
         data = data.astype(dtype)
     if canonical:
         out = sp.csr_array((data, indices, indptr), shape=matrix.shape)
@@ -345,7 +367,7 @@ def _depop_weights(weight_spec, sums, p: np.float32, n: int) -> np.ndarray:
     """Depopularization weights (float32): custom array ** p, 'none' (ones) or row/col sums ** p."""
     if not isinstance(weight_spec, str):
         return np.power(np.asarray(weight_spec, dtype=np.float32), p, dtype=np.float32)
-    if weight_spec == 'none':
+    if weight_spec == "none":
         return np.ones(n, dtype=np.float32)  # 1 ** p == 1
     return np.power(sums(), p, dtype=np.float32)
 
@@ -385,11 +407,12 @@ def _keep_columns(m: Csr, keep_mask) -> Csr:
 
 # ---- Entry point ----
 
+
 def s_plus(
     matrix1: SparseInput,
     matrix2: Optional[SparseInput] = None,
-    weight_depop_matrix1: Union[str, np.ndarray] = 'none',
-    weight_depop_matrix2: Union[str, np.ndarray] = 'none',
+    weight_depop_matrix1: Union[str, np.ndarray] = "none",
+    weight_depop_matrix2: Union[str, np.ndarray] = "none",
     p1: float = 0,
     p2: float = 0,
     a1: float = 1,
@@ -410,9 +433,9 @@ def s_plus(
     filter_cols: Optional[Union[list, np.ndarray, SparseInput]] = None,
     target_cols: Optional[Union[list, np.ndarray, SparseInput]] = None,
     verbose: bool = False,
-    format_output: str = 'csr',
+    format_output: str = "csr",
     num_threads: int = 0,
-    block_size: Union[int, Literal['auto'], None] = 'auto',
+    block_size: Union[int, Literal["auto"], None] = "auto",
     prepare=None,
 ) -> Union[sp.csr_array, sp.coo_array]:
     """
@@ -489,10 +512,21 @@ def s_plus(
         filter_cols=filter_cols,
         target_cols=target_cols,
         format_output=format_output,
-        weights={'l1': l1, 'l2': l2, 'l3': l3, 't1 (tversky alpha)': t1, 't2 (tversky beta)': t2,
-                 'c1': c1, 'c2': c2, 'p1 (beta1)': p1, 'p2 (beta2, rp3beta beta)': p2,
-                 'threshold': threshold, 'stabilized_shrink': stabilized_shrink,
-                 'bayesian_shrink': bayesian_shrink, 'additive_shrink': additive_shrink},
+        weights={
+            "l1": l1,
+            "l2": l2,
+            "l3": l3,
+            "t1 (tversky alpha)": t1,
+            "t2 (tversky beta)": t2,
+            "c1": c1,
+            "c2": c2,
+            "p1 (beta1)": p1,
+            "p2 (beta2, rp3beta beta)": p2,
+            "threshold": threshold,
+            "stabilized_shrink": stabilized_shrink,
+            "bayesian_shrink": bayesian_shrink,
+            "additive_shrink": additive_shrink,
+        },
         a1=a1,
         num_threads=num_threads,
         block_size=block_size,
@@ -501,7 +535,7 @@ def s_plus(
     # Sorted, unique: output rows come out in row order (CSR straight from the
     # counts), and a duplicate target would duplicate its row's entries.
     if target_rows is not None:
-        target_rows = np.unique(_ids('target_rows', target_rows, matrix1.shape[0])).astype(np.int32)
+        target_rows = np.unique(_ids("target_rows", target_rows, matrix1.shape[0])).astype(np.int32)
 
     targets = np.arange(matrix1.shape[0], dtype=np.int32) if target_rows is None else target_rows
     n_targets = len(targets)
@@ -509,26 +543,46 @@ def s_plus(
     bar = None
     if verbose:
         bar = _core.ProgressBar(n_targets, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
-        bar.set_description('Preprocessing')
+        bar.set_description("Preprocessing")
     try:
         res = _s_plus(
-            bar, matrix1, matrix2, targets, k,
+            bar,
+            matrix1,
+            matrix2,
+            targets,
+            k,
             Params(a1, l1, l2, l3, t1, t2, stabilized_shrink, bayesian_shrink, threshold),
             NormParams(c1, c2, p1, p2, additive_shrink, weight_depop_matrix1, weight_depop_matrix2, binary),
-            filter_cols, target_cols, format_output, num_threads, block_size, prepare,
+            filter_cols,
+            target_cols,
+            format_output,
+            num_threads,
+            block_size,
+            prepare,
         )
     except BaseException:
         if bar is not None:
-            bar.close('Failed')
+            bar.close("Failed")
         raise
     if bar is not None:
-        bar.close('Done')
+        bar.close("Done")
     return res
 
 
 def _s_plus(
-    bar, matrix1, matrix2, targets, k, params: Params, norm_params: NormParams,
-    filter_cols, target_cols, format_output, num_threads, block_size, prepare,
+    bar,
+    matrix1,
+    matrix2,
+    targets,
+    k,
+    params: Params,
+    norm_params: NormParams,
+    filter_cols,
+    target_cols,
+    format_output,
+    num_threads,
+    block_size,
+    prepare,
 ):
     m1 = _canonical_csr(matrix1, np.float32, num_threads)
     m2 = _canonical_csr(matrix2, np.float32, num_threads)
@@ -552,21 +606,30 @@ def _s_plus(
         params, norms = params._replace(l2=0), Norms()  # plain dot of the scaled inputs: DOT mode
     filt, targ, m2_arrays = _selectors(filter_cols, target_cols, m2_arrays, n_output_cols, num_threads)
     m2_arrays, norms, filt, targ, new_to_old = _popularity_layout(
-        m2_arrays, norms, filt, targ, n_output_cols, num_threads)
+        m2_arrays, norms, filt, targ, n_output_cols, num_threads
+    )
 
     if bar is not None:
-        bar.set_description('Computing')
+        bar.set_description("Computing")
     kernel_start = time.perf_counter()
     cols, vals, counts = _core.compute_similarities(
-        targets=targets, m1=m1_arrays, m2=m2_arrays, norms=norms,
+        targets=targets,
+        m1=m1_arrays,
+        m2=m2_arrays,
+        norms=norms,
         params=params,
-        k=k, filter=filt, target=targ, col_map=new_to_old,
-        num_threads=num_threads, block_size=block_size, progress=bar,
+        k=k,
+        filter=filt,
+        target=targ,
+        col_map=new_to_old,
+        num_threads=num_threads,
+        block_size=block_size,
+        progress=bar,
     )
     kernel_end = time.perf_counter()
 
     if bar is not None:
-        bar.set_description(f'Building {format_output} matrix')
+        bar.set_description(f"Building {format_output} matrix")
     out = _build_output(cols, vals, counts, targets, (n_output_rows, n_output_cols), format_output)
     _last_timings.update(kernel=kernel_end - kernel_start, output=time.perf_counter() - kernel_end)
     return out
@@ -574,6 +637,7 @@ def _s_plus(
 
 # ---- `_s_plus` steps. CSR arrays travel as `Csr`, matrix selectors as
 # (indptr, indices) or None, norms as `Norms`. ----
+
 
 def _norms(m1_arrays, m2_arrays, n_cols, params: Params, norm_params: NormParams):
     """
@@ -593,15 +657,20 @@ def _norms(m1_arrays, m2_arrays, n_cols, params: Params, norm_params: NormParams
         norms = norms._replace(x_tversky=m1_sq, y_tversky=m2_sq)
     if l2 != 0:
         f32 = np.float32
-        norms = norms._replace(x_cosine=np.power(m1_sq + f32(additive_shrink), f32(c1), dtype=f32),
-                               y_cosine=np.power(m2_sq + f32(additive_shrink), f32(c2), dtype=f32))
+        norms = norms._replace(
+            x_cosine=np.power(m1_sq + f32(additive_shrink), f32(c1), dtype=f32),
+            y_cosine=np.power(m2_sq + f32(additive_shrink), f32(c2), dtype=f32),
+        )
     if l3 != 0:
         # 'sum' popularity = sum of |x| (identical on non-negative input)
         norms = norms._replace(
-            x_depop=_depop_weights(weight_depop_matrix1, lambda: _row_sums(np.abs(m1_data), m1_indptr),
-                                   np.float32(p1), len(m1_indptr) - 1),
-            y_depop=_depop_weights(weight_depop_matrix2, lambda: _col_sums(np.abs(m2_data), m2_indices, n_cols),
-                                   np.float32(p2), n_cols))
+            x_depop=_depop_weights(
+                weight_depop_matrix1, lambda: _row_sums(np.abs(m1_data), m1_indptr), np.float32(p1), len(m1_indptr) - 1
+            ),
+            y_depop=_depop_weights(
+                weight_depop_matrix2, lambda: _col_sums(np.abs(m2_data), m2_indices, n_cols), np.float32(p2), n_cols
+            ),
+        )
     return norms
 
 
@@ -612,8 +681,9 @@ def _product_form(p: Params) -> bool:
     is the plain dot product of m1 rows scaled by 1 / (l X) and m2 columns by
     1 / Y (`_prescale`).
     """
-    return (p.a1 == 1 and p.l1 == 0 and (p.l2 != 0) != (p.l3 != 0)
-            and p.stabilized_shrink == 0 and p.bayesian_shrink == 0)
+    return (
+        p.a1 == 1 and p.l1 == 0 and (p.l2 != 0) != (p.l3 != 0) and p.stabilized_shrink == 0 and p.bayesian_shrink == 0
+    )
 
 
 def _prescale(m1_arrays, m2_arrays, l2, norms) -> None:
@@ -632,17 +702,22 @@ def _prescale(m1_arrays, m2_arrays, l2, norms) -> None:
     """
     m1_data, m1_indptr, m2_data, m2_indices = m1_arrays.data, m1_arrays.indptr, m2_arrays.data, m2_arrays.indices
     X, Y = norms.x_cosine, norms.y_cosine
-    with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
         sx = np.divide(1, np.float32(l2) * X, out=np.zeros_like(X), where=X != 0)
         sy = np.divide(1, Y, out=np.zeros_like(Y), where=Y != 0)
         m1_data *= np.repeat(sx, np.diff(m1_indptr))
         m2_data *= sy[m2_indices]
     used_x, used_y = np.diff(m1_indptr) > 0, np.bincount(m2_indices, minlength=len(Y)) > 0
-    ok = (all(np.isfinite(a).all() and a.all() for a in (sx[used_x], sy[used_y]))
-          and np.isfinite(m1_data).all() and np.isfinite(m2_data).all())
+    ok = (
+        all(np.isfinite(a).all() and a.all() for a in (sx[used_x], sy[used_y]))
+        and np.isfinite(m1_data).all()
+        and np.isfinite(m2_data).all()
+    )
     if not ok:
-        raise ValueError('input values out of float32 range for this similarity (a norm or a '
-                         'scaled value underflows or overflows): rescale the input')
+        raise ValueError(
+            "input values out of float32 range for this similarity (a norm or a "
+            "scaled value underflows or overflows): rescale the input"
+        )
 
 
 def _depop_as_cosine(params: Params, norms):
@@ -654,7 +729,8 @@ def _depop_as_cosine(params: Params, norms):
     """
     if params.l1 == 0 and params.l2 == 0 and params.l3 != 0:
         return params._replace(l2=params.l3, l3=0), norms._replace(
-            x_cosine=norms.x_depop, y_cosine=norms.y_depop, x_depop=None, y_depop=None)
+            x_cosine=norms.x_depop, y_cosine=norms.y_depop, x_depop=None, y_depop=None
+        )
     return params, norms
 
 
@@ -688,23 +764,29 @@ def _popularity_layout(m2_arrays, norms, filt, targ, n_cols, num_threads):
     Blocking needs sorted m2 rows (binary search): canonical m2 is, and a
     renumbering re-sorts.
     """
-    if _COLUMN_ORDER == 'popularity':
-        new_to_old = np.argsort(-np.bincount(m2_arrays.indices, minlength=n_cols), kind='stable').astype(np.int32)
+    if _COLUMN_ORDER == "popularity":
+        new_to_old = np.argsort(-np.bincount(m2_arrays.indices, minlength=n_cols), kind="stable").astype(np.int32)
     else:
         new_to_old = np.arange(n_cols, dtype=np.int32)
     old_to_new = np.empty(n_cols, dtype=np.int32)
     old_to_new[new_to_old] = np.arange(n_cols, dtype=np.int32)
-    norms = norms._replace(y_tversky=_permuted(norms.y_tversky, new_to_old),
-                           y_cosine=_permuted(norms.y_cosine, new_to_old),
-                           y_depop=_permuted(norms.y_depop, new_to_old))
+    norms = norms._replace(
+        y_tversky=_permuted(norms.y_tversky, new_to_old),
+        y_cosine=_permuted(norms.y_cosine, new_to_old),
+        y_depop=_permuted(norms.y_depop, new_to_old),
+    )
     for sel in (filt, targ):  # matrix selectors: the pattern only
         if sel is not None:
-            _core.remap_sort_rows(indptr=sel[0], indices=sel[1], data=None, forward=old_to_new,
-                                  num_threads=num_threads)
+            _core.remap_sort_rows(indptr=sel[0], indices=sel[1], data=None, forward=old_to_new, num_threads=num_threads)
     # ponytail: unblocked calls re-sort too (one Rust pass does both); a
     # remap-only pass would skip the sort if it ever shows in a profile
-    _core.remap_sort_rows(indptr=m2_arrays.indptr, indices=m2_arrays.indices, data=m2_arrays.data,
-                          forward=old_to_new, num_threads=num_threads)
+    _core.remap_sort_rows(
+        indptr=m2_arrays.indptr,
+        indices=m2_arrays.indices,
+        data=m2_arrays.data,
+        forward=old_to_new,
+        num_threads=num_threads,
+    )
     return m2_arrays, norms, filt, targ, new_to_old
 
 
@@ -720,7 +802,7 @@ def _build_output(cols, vals, counts, targets, shape, format_output):
     copy. Canonical as well: no duplicates and no zeros (the kernel drops 0.0
     scores: cancelled sums on signed input, or an f32 underflow).
     """
-    if format_output == 'coo':
+    if format_output == "coo":
         out = sp.coo_array((vals, (np.repeat(targets, counts), cols)), shape=shape)
     else:
         indptr = np.zeros(shape[0] + 1, dtype=np.int64)

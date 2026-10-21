@@ -38,11 +38,11 @@ from run_benchmarks import (
 )
 
 
-DATASET = ('synthetic', '10k')
-FORMAT_OUTPUT = 'csr'  # --format-output
+DATASET = ("synthetic", "10k")
+FORMAT_OUTPUT = "csr"  # --format-output
 
 # Default smoke set: catches big (>20%) regressions; the rest via --cases all
-SMOKE_CASES = ['dot_product', 'cosine', 'cosine_k1000', 'cosine_filter_matrix', 'cosine_block2048']
+SMOKE_CASES = ["dot_product", "cosine", "cosine_k1000", "cosine_filter_matrix", "cosine_block2048"]
 
 
 def make_urm(n_users=10_000, n_items=10_000, nnz=1_000_000, zipf_a=0.8, seed=42):
@@ -78,31 +78,28 @@ def build_cases(X):
     n = X.shape[0]
     rng = np.random.default_rng(7)
     return [
-        ('dot_product', sim.dot_product, {}),
-        ('cosine', sim.cosine, {}),
-        ('rp3beta', sim.rp3beta, {}),
-        ('cosine_k10', sim.cosine, {'k': 10}),
-        ('cosine_k1000', sim.cosine, {'k': 1000}),
-        ('cosine_binary', sim.cosine, {'binary': True}),
-        ('cosine_noblock', sim.cosine, {'block_size': None}),
-        ('cosine_block2048', sim.cosine, {'block_size': 2048}),
-        ('cosine_filter_array', sim.cosine,
-         {'filter_cols': np.sort(rng.choice(n, n // 10, replace=False))}),
-        ('cosine_filter_matrix', sim.cosine,
-         {'filter_cols': random_col_matrix(n, n, 50, seed=1)}),
-        ('cosine_target_matrix', sim.cosine,
-         {'target_cols': random_col_matrix(n, n, 500, seed=2)}),
+        ("dot_product", sim.dot_product, {}),
+        ("cosine", sim.cosine, {}),
+        ("rp3beta", sim.rp3beta, {}),
+        ("cosine_k10", sim.cosine, {"k": 10}),
+        ("cosine_k1000", sim.cosine, {"k": 1000}),
+        ("cosine_binary", sim.cosine, {"binary": True}),
+        ("cosine_noblock", sim.cosine, {"block_size": None}),
+        ("cosine_block2048", sim.cosine, {"block_size": 2048}),
+        ("cosine_filter_array", sim.cosine, {"filter_cols": np.sort(rng.choice(n, n // 10, replace=False))}),
+        ("cosine_filter_matrix", sim.cosine, {"filter_cols": random_col_matrix(n, n, 50, seed=1)}),
+        ("cosine_target_matrix", sim.cosine, {"target_cols": random_col_matrix(n, n, 500, seed=2)}),
     ]
 
 
 def time_call(func, X, kwargs, num_threads):
     """One serial call: (total seconds, {prep, kernel, output} seconds, output); prep = the rest."""
-    kw = {'k': 100, 'verbose': False, 'num_threads': num_threads, 'format_output': FORMAT_OUTPUT, **kwargs}
+    kw = {"k": 100, "verbose": False, "num_threads": num_threads, "format_output": FORMAT_OUTPUT, **kwargs}
     start = time.perf_counter()
     out = func(X, **kw)
     total = time.perf_counter() - start
     t = sim._s_plus._last_timings
-    return total, {'prep': total - t['kernel'] - t['output'], **t}, out
+    return total, {"prep": total - t["kernel"] - t["output"], **t}, out
 
 
 def measure(func, X, kwargs, num_threads, reps):
@@ -114,18 +111,18 @@ def measure(func, X, kwargs, num_threads, reps):
         phases.append(timings)
     n_items = out.shape[0]
     return {
-        'computation_time': statistics.median(totals),
-        **{f'{p}_time': statistics.median(t[p] for t in phases) for p in ('prep', 'kernel', 'output')},
-        'n_items': n_items,
-        'nnz': out.nnz,
-        'density': out.nnz / (n_items * out.shape[1]),
-        'avg_neighbors': out.nnz / n_items,
+        "computation_time": statistics.median(totals),
+        **{f"{p}_time": statistics.median(t[p] for t in phases) for p in ("prep", "kernel", "output")},
+        "n_items": n_items,
+        "nnz": out.nnz,
+        "density": out.nnz / (n_items * out.shape[1]),
+        "avg_neighbors": out.nnz / n_items,
     }
 
 
 def measure_concurrent(X, reps, concurrent):
     """Median wall time of two cosine calls (num_threads=2 each), concurrent or serial."""
-    kw = {'k': 100, 'verbose': False, 'num_threads': 2, 'format_output': FORMAT_OUTPUT}
+    kw = {"k": 100, "verbose": False, "num_threads": 2, "format_output": FORMAT_OUTPUT}
     times = []
     with ThreadPoolExecutor(max_workers=2) as pool:
         for _ in range(reps):
@@ -138,30 +135,34 @@ def measure_concurrent(X, reps, concurrent):
     out = outs[0]
     n_items = out.shape[0]
     return {
-        'computation_time': statistics.median(times),
+        "computation_time": statistics.median(times),
         # per-call global is racy under concurrency
-        'prep_time': float('nan'), 'kernel_time': float('nan'), 'output_time': float('nan'),
-        'n_items': n_items,
-        'nnz': out.nnz,
-        'density': out.nnz / (n_items * out.shape[1]),
-        'avg_neighbors': out.nnz / n_items,
+        "prep_time": float("nan"),
+        "kernel_time": float("nan"),
+        "output_time": float("nan"),
+        "n_items": n_items,
+        "nnz": out.nnz,
+        "density": out.nnz / (n_items * out.shape[1]),
+        "avg_neighbors": out.nnz / n_items,
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Small-workload benchmark preset for similaripy')
-    parser.add_argument('--rounds', type=int, default=3, help='Timed rounds (default: 3)')
-    parser.add_argument('--cases', nargs='+', default=SMOKE_CASES,
-                        help='Case names, or "all" (default: smoke set)')
-    parser.add_argument('--warmup', type=int, default=1, help='Warm-up rounds (default: 1)')
-    parser.add_argument('--reps', type=int, default=21,
-                        help='Calls per timing, median taken (default: 21)')
-    parser.add_argument('--threads', type=int, default=0, help='Threads for serial cases, 0=auto')
-    parser.add_argument('--tag', type=str, default=None, help='Report filename tag')
-    parser.add_argument('--note', type=str, default=None, help='Note attached to the report')
-    parser.add_argument('--output-dir', type=str, default='bench_results')
-    parser.add_argument('--format-output', default='csr', choices=['csr', 'coo'],
-                        help='Output format passed to every call (default: csr)')
+    parser = argparse.ArgumentParser(description="Small-workload benchmark preset for similaripy")
+    parser.add_argument("--rounds", type=int, default=3, help="Timed rounds (default: 3)")
+    parser.add_argument("--cases", nargs="+", default=SMOKE_CASES, help='Case names, or "all" (default: smoke set)')
+    parser.add_argument("--warmup", type=int, default=1, help="Warm-up rounds (default: 1)")
+    parser.add_argument("--reps", type=int, default=21, help="Calls per timing, median taken (default: 21)")
+    parser.add_argument("--threads", type=int, default=0, help="Threads for serial cases, 0=auto")
+    parser.add_argument("--tag", type=str, default=None, help="Report filename tag")
+    parser.add_argument("--note", type=str, default=None, help="Note attached to the report")
+    parser.add_argument("--output-dir", type=str, default="bench_results")
+    parser.add_argument(
+        "--format-output",
+        default="csr",
+        choices=["csr", "coo"],
+        help="Output format passed to every call (default: csr)",
+    )
     args = parser.parse_args()
     global FORMAT_OUTPUT
     FORMAT_OUTPUT = args.format_output
@@ -169,8 +170,8 @@ def main():
     X = make_urm().T.tocsr()  # items x users, as in benchmark_similarity
     assert X.indices.dtype == np.int32
     cases = build_cases(X)
-    concurrency = ['cosine_2x2_serial', 'cosine_2x2_concurrent']
-    if args.cases != ['all']:
+    concurrency = ["cosine_2x2_serial", "cosine_2x2_concurrent"]
+    if args.cases != ["all"]:
         unknown = set(args.cases) - {name for name, _, _ in cases} - set(concurrency)
         if unknown:
             parser.error(f"unknown cases: {sorted(unknown)}")
@@ -180,41 +181,43 @@ def main():
     measurements = []
     for name, func, kwargs in cases:
         measurements.append((name, lambda f=func, kw=kwargs: measure(f, X, kw, args.threads, args.reps)))
-    for concurrent, name in ((False, 'cosine_2x2_serial'), (True, 'cosine_2x2_concurrent')):
+    for concurrent, name in ((False, "cosine_2x2_serial"), (True, "cosine_2x2_concurrent")):
         if name in concurrency:
             measurements.append((name, lambda c=concurrent: measure_concurrent(X, args.reps, c)))
 
     round_results = {key: [] for key, _ in measurements}
     for round_num in range(args.warmup + args.rounds):
         is_warmup = round_num < args.warmup
-        label = 'warmup' if is_warmup else f"round {round_num - args.warmup + 1}/{args.rounds}"
+        label = "warmup" if is_warmup else f"round {round_num - args.warmup + 1}/{args.rounds}"
         for key, run in measurements:
             r = run()
-            print(f"[{label}] {key:<28} total {r['computation_time'] * 1e3:8.2f} ms  "
-                  f"kernel {r['kernel_time'] * 1e3:8.2f} ms")
+            print(
+                f"[{label}] {key:<28} total {r['computation_time'] * 1e3:8.2f} ms  "
+                f"kernel {r['kernel_time'] * 1e3:8.2f} ms"
+            )
             if not is_warmup:
                 round_results[key].append(r)
 
     all_results = {DATASET: {key: aggregate_rounds(rs) for key, rs in round_results.items()}}
-    dataset_info = {DATASET: {'shape': X.shape, 'nnz': X.nnz, 'density': X.nnz / (X.shape[0] * X.shape[1])}}
+    dataset_info = {DATASET: {"shape": X.shape, "nnz": X.nnz, "density": X.nnz / (X.shape[0] * X.shape[1])}}
     config = {
-        'datasets': [DATASET],
-        'similarities': [name for name, _, _ in cases] + concurrency,
-        'k': 100,
-        'shrink': 0,
-        'threshold': 0,
-        'num_threads': args.threads,
-        'block_size': 'auto',
-        'format_output': args.format_output,
-        'rounds': args.rounds,
-        'warmup': args.warmup,
-        'note': args.note,
-        'tag': args.tag,
+        "datasets": [DATASET],
+        "similarities": [name for name, _, _ in cases] + concurrency,
+        "k": 100,
+        "shrink": 0,
+        "threshold": 0,
+        "num_threads": args.threads,
+        "block_size": "auto",
+        "format_output": args.format_output,
+        "rounds": args.rounds,
+        "warmup": args.warmup,
+        "note": args.note,
+        "tag": args.tag,
     }
     sys_info = get_system_info()
 
     print()
-    print(format_summary_table(all_results, sys_info, config['block_size']))
+    print(format_summary_table(all_results, sys_info, config["block_size"]))
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
