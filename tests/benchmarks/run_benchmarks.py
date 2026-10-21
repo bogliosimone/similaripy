@@ -17,7 +17,7 @@ Usage:
     python run_benchmarks.py --dataset movielens --version 25m --k 200 --shrink 10
 
 Requirements:
-    pip install -e ".[bench]"
+    uv sync --group bench
 """
 
 import argparse

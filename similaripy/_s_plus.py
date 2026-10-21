@@ -3,12 +3,18 @@
 """
 
 import time
-from typing import NamedTuple, Union, Optional, List, Literal
+from typing import Any, NamedTuple, Union, Optional, List, Literal
 
 import numpy as np
 import scipy.sparse as sp
 
-from . import _core
+from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
+
+# A caller's sparse input before `_canonical_csr`: any scipy sparse array or
+# matrix, checked at runtime (`sp.issparse`). `Any` for type checkers:
+# scipy-stubs gives sparray/spmatrix no attributes (.shape, .nnz, ...); after
+# the canonical copy the prep works on csr_array.
+SparseInput = Any
 
 # Accumulator block in float32 entries (~1 MB).
 DEFAULT_BLOCK_SIZE = 262144
@@ -82,13 +88,13 @@ class Norms(NamedTuple):
 
 
 def _check_args(
-    matrix1: sp.sparray,
-    matrix2: sp.sparray,
+    matrix1: SparseInput,
+    matrix2: SparseInput,
     weight_depop_matrix1: Union[str, np.ndarray],
     weight_depop_matrix2: Union[str, np.ndarray],
     k: int,
-    filter_cols: Optional[Union[List, np.ndarray, sp.sparray]],
-    target_cols: Optional[Union[List, np.ndarray, sp.sparray]],
+    filter_cols: Optional[Union[List, np.ndarray, SparseInput]],
+    target_cols: Optional[Union[List, np.ndarray, SparseInput]],
     format_output: str,
     weights: dict,
     a1: float,
@@ -138,7 +144,7 @@ def _check_args(
             raise ValueError(f'{name} shape {cols.shape} does not match expected shape {expected_shape}')
     # An empty target_cols would score nothing: None is "all columns". An empty
     # filter_cols excludes nothing, the same as None.
-    if target_cols is not None and (target_cols.nnz if sp.issparse(target_cols) else np.size(target_cols)) == 0:
+    if target_cols is not None and (np.size(target_cols) if isinstance(target_cols, (list, np.ndarray)) else target_cols.nnz) == 0:
         raise ValueError('target_cols is empty: pass None to score all columns')
 
     # Check format_output
@@ -266,7 +272,7 @@ def _one_value(*arrays) -> bool:
 
 # ---- Prep helpers (numpy) ----
 
-def _canonical_csr(matrix: sp.sparray, dtype, num_threads: int) -> sp.csr_array:
+def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> sp.csr_array:
     """
     The call's own canonical copy of `matrix`: CSR, `dtype` values (float32 or
     float64), int32 indices, rows sorted, duplicates summed, no explicit zeros.
@@ -335,7 +341,7 @@ def _col_sums(values: np.ndarray, indices: np.ndarray, n_cols: int) -> np.ndarra
     return np.bincount(indices, weights=values, minlength=n_cols).astype(np.float32)
 
 
-def _depop_weights(weight_spec, sums, p: float, n: int) -> np.ndarray:
+def _depop_weights(weight_spec, sums, p: np.float32, n: int) -> np.ndarray:
     """Depopularization weights (float32): custom array ** p, 'none' (ones) or row/col sums ** p."""
     if not isinstance(weight_spec, str):
         return np.power(np.asarray(weight_spec, dtype=np.float32), p, dtype=np.float32)
@@ -380,8 +386,8 @@ def _keep_columns(m: Csr, keep_mask) -> Csr:
 # ---- Entry point ----
 
 def s_plus(
-    matrix1: sp.sparray,
-    matrix2: Optional[sp.sparray] = None,
+    matrix1: SparseInput,
+    matrix2: Optional[SparseInput] = None,
     weight_depop_matrix1: Union[str, np.ndarray] = 'none',
     weight_depop_matrix2: Union[str, np.ndarray] = 'none',
     p1: float = 0,
@@ -401,8 +407,8 @@ def s_plus(
     threshold: float = 0,
     binary: bool = False,
     target_rows: Optional[Union[list, np.ndarray]] = None,
-    filter_cols: Optional[Union[list, np.ndarray, sp.sparray]] = None,
-    target_cols: Optional[Union[list, np.ndarray, sp.sparray]] = None,
+    filter_cols: Optional[Union[list, np.ndarray, SparseInput]] = None,
+    target_cols: Optional[Union[list, np.ndarray, SparseInput]] = None,
     verbose: bool = False,
     format_output: str = 'csr',
     num_threads: int = 0,

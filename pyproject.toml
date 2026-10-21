@@ -27,7 +27,9 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: 3.15",
+  "Programming Language :: Python :: Free Threading :: 3 - Stable",
   "Programming Language :: Rust",
+  "Typing :: Typed",
 ]
 dependencies = [
     "numpy>=1.23.5",
@@ -84,23 +86,31 @@ environment = { PATH = "$HOME/.cargo/bin:$PATH" }
 select = "*-macosx_x86_64"
 environment = { MACOSX_DEPLOYMENT_TARGET = "10.12" }
 
-[project.optional-dependencies]
+[dependency-groups]
+# Not published (unlike extras): `uv sync --all-groups` (make install-dev), `uv run --group bench …`
+# Exact pins for the linters: their rules and diagnostics change between releases.
+# Bumped by hand (Dependabot isn't set up for Python deps: no committed uv.lock)
+lint = [
+  "ruff==0.17.1",
+  "ty==0.0.90",
+  "scipy-stubs",
+]
 dev = [
+  { include-group = "lint" },
   "maturin",
   "pytest",
-  "build",
-  "tox",
+  "hypothesis",
+  "pre-commit",
+]
+docs = [
   "mkdocs",
   "mkdocs-material",
-  "mkdocs-material-extensions",
-  "mkdocstrings[python]"
+  "mkdocstrings[python]",
 ]
-
 bench = [
   "pandas",
-  "datasets"
+  "datasets",
 ]
-
 notebook = [
   "jupyterlab",
   "matplotlib",
@@ -109,5 +119,8 @@ notebook = [
   "optuna",
   "umap-learn",
   "scikit-learn",
-  "IProgress"
+  "IProgress",
 ]
+
+[tool.ty.src]
+include = ["similaripy"]

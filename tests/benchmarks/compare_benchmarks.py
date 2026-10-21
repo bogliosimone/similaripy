@@ -24,7 +24,7 @@ Usage:
     python compare_benchmarks.py --similarity cosine
 
 Requirements:
-    pip install -e ".[bench]"
+    uv sync --group bench
 """
 
 import argparse

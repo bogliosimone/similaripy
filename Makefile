@@ -4,11 +4,7 @@ install:
 
 .PHONY: install-dev
 install-dev:
-	uv pip install -e '.[dev,bench,notebook]'
-
-.PHONY: test
-test:
-	uv run tox -e py311
+	uv sync --all-groups
 
 .PHONY: test-dev
 test-dev:
@@ -26,23 +22,19 @@ test-miri:
 
 .PHONY: build
 build:
-	uv run tox -e build
-
-.PHONY: wheelcheck
-wheelcheck:
-	uv run tox -e package-test
+	uv build
 
 .PHONY: benchmark-similarity-small
 benchmark-similarity-small:
-	uv run tests/benchmarks/run_benchmarks.py --dataset movielens --version 32m --rounds 1
+	uv run --group bench tests/benchmarks/run_benchmarks.py --dataset movielens --version 32m --rounds 1
 
 .PHONY: benchmark-similarity-medium
 benchmark-similarity-medium:
-	uv run tests/benchmarks/run_benchmarks.py --dataset yambda --version 50m --rounds 1
+	uv run --group bench tests/benchmarks/run_benchmarks.py --dataset yambda --version 50m --rounds 1
 
 .PHONY: benchmark-similarity-large
 benchmark-similarity-large:
-	uv run tests/benchmarks/run_benchmarks.py --dataset yambda --version 500m --rounds 1
+	uv run --group bench tests/benchmarks/run_benchmarks.py --dataset yambda --version 500m --rounds 1
 
 .PHONY: clean
 clean:

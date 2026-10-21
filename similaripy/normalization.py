@@ -1,6 +1,7 @@
-from . import _core
-from ._s_plus import _canonical_csr
+from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
+from ._s_plus import _canonical_csr, SparseInput
 from math import e
+from typing import Optional, Union
 
 import scipy.sparse as sps
 import numpy as np
@@ -14,7 +15,7 @@ _IDF_MODES = ('unary', 'base', 'smooth', 'prob', 'bm25')
 
 # ---- Private helpers ----
 
-def _canonical(X: sps.sparray, axis: int = 1) -> sps.csr_array:
+def _canonical(X: SparseInput, axis: int = 1) -> sps.csr_array:
     """
     The call's own canonical CSR copy of X (axis 1) or X.T (axis 0), see
     `_canonical_csr`: float32/float64 values kept, other value types -> float32;
@@ -32,7 +33,7 @@ def _canonical(X: sps.sparray, axis: int = 1) -> sps.csr_array:
     return _canonical_csr(X.T if axis == 0 else X, dtype, 0)
 
 
-def _transformed(X: sps.sparray, axis: int, op, name: str = None, **kwargs) -> sps.csr_array:
+def _transformed(X: SparseInput, axis: int, op, name: Optional[str] = None, **kwargs) -> sps.csr_array:
     """
     The canonical copy of X with `op` (an in-place `_core` normalization) applied
     to its rows (axis 1) or columns (axis 0); `name`: a term weighting, whose
@@ -43,7 +44,8 @@ def _transformed(X: sps.sparray, axis: int, op, name: str = None, **kwargs) -> s
     if name is not None:
         _check_non_negative(X, name)
     op(data=X.data, indices=X.indices, indptr=X.indptr, shape=X.shape, **kwargs)
-    return X.T.tocsr() if axis == 0 else X
+    # ty 0.0.90 + scipy-stubs mis-resolve csr_array.T (shape-generic overloads)
+    return X.T.tocsr() if axis == 0 else X  # ty: ignore[invalid-attribute-access]
 
 
 def _check_finite(X: sps.csr_array) -> None:
@@ -78,7 +80,7 @@ def _validate_modes(tf_mode: str, idf_mode: str) -> None:
 # ---- Public API ----
 
 def normalize(
-    X: sps.sparray,
+    X: Union[sps.sparray, sps.spmatrix],
     norm: str = 'l2',
     axis: int = 1,
 ) -> sps.csr_array:
@@ -105,7 +107,7 @@ def normalize(
     return _transformed(X, axis, _core.normalize, norm=norm)
 
 
-def binarize(X: sps.sparray) -> sps.csr_array:
+def binarize(X: Union[sps.sparray, sps.spmatrix]) -> sps.csr_array:
     """
     Set every non-zero entry to 1.0 (set semantics): duplicates are summed
     first, then explicit zeros dropped. A negative value is an interaction
@@ -131,7 +133,7 @@ def binarize(X: sps.sparray) -> sps.csr_array:
 
 
 def bm25(
-    X: sps.sparray,
+    X: Union[sps.sparray, sps.spmatrix],
     axis: int = 1,
     k1: float = 1.2,
     b: float = 0.75,
@@ -164,7 +166,7 @@ def bm25(
 
 
 def bm25plus(
-    X: sps.sparray,
+    X: Union[sps.sparray, sps.spmatrix],
     axis: int = 1,
     k1: float = 1.2,
     b: float = 0.75,
@@ -199,7 +201,7 @@ def bm25plus(
 
 
 def tfidf(
-    X: sps.sparray,
+    X: Union[sps.sparray, sps.spmatrix],
     axis: int = 1,
     logbase: float = e,
     tf_mode: str = 'sqrt',
