@@ -616,10 +616,10 @@ def _product_form(p: Params) -> bool:
             and p.stabilized_shrink == 0 and p.bayesian_shrink == 0)
 
 
-def _prescale(m1_arrays, m2_arrays, l, norms) -> None:
+def _prescale(m1_arrays, m2_arrays, l2, norms) -> None:
     """
     For `_product_form` (after `_depop_as_cosine`, so the cosine slots): scales
-    m1 rows by 1 / (l X) and m2 columns by 1 / Y, in place (the call's own
+    m1 rows by 1 / (l2 X) and m2 columns by 1 / Y, in place (the call's own
     copies), so the kernel can run DOT; 0 where a norm is 0 (an empty
     row/column: the kernel scores 0 there too). A scaled value may underflow
     to 0.0: the kernel scores it 0, never a result.
@@ -633,7 +633,7 @@ def _prescale(m1_arrays, m2_arrays, l, norms) -> None:
     m1_data, m1_indptr, m2_data, m2_indices = m1_arrays.data, m1_arrays.indptr, m2_arrays.data, m2_arrays.indices
     X, Y = norms.x_cosine, norms.y_cosine
     with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
-        sx = np.divide(1, np.float32(l) * X, out=np.zeros_like(X), where=X != 0)
+        sx = np.divide(1, np.float32(l2) * X, out=np.zeros_like(X), where=X != 0)
         sy = np.divide(1, Y, out=np.zeros_like(Y), where=Y != 0)
         m1_data *= np.repeat(sx, np.diff(m1_indptr))
         m2_data *= sy[m2_indices]

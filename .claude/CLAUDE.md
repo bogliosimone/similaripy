@@ -64,8 +64,9 @@ Uses **uv** for package management. Built with **maturin**. Requires the Rust to
 
 ### Setup
 ```bash
-# Editable install with dependencies; `uv run` rebuilds it after Rust edits
+# Editable install with every dependency group; `uv run` rebuilds it after Rust edits
 make install-dev
+uv run pre-commit install   # optional: ruff + cargo fmt on each commit
 ```
 
 ### Testing
@@ -73,8 +74,8 @@ make install-dev
 # Local tests (fast, correctness only)
 make test-dev
 
-# Rust core
-cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+# Everything CI's lint, Rust and test jobs run: ruff, ty, cargo fmt/clippy/test, pytest
+make check
 ```
 
 ### Benchmarking
@@ -111,7 +112,7 @@ make benchmark-similarity-small
 - Document performance characteristics of new algorithms
 
 ### Before Submitting Changes
-1. Run `make test-dev` (and the cargo checks for Rust changes) to verify compilation and unit tests
+1. Run `make check` to verify lint, types, compilation and unit tests
 2. Suggest test updates for new features or uncovered bugs
 
 ---

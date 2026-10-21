@@ -1,0 +1,16 @@
+# Fast checks before each commit (`uv run pre-commit install` once); `make check` runs the rest.
+# Local hooks: ruff comes from the lint dependency group, so its pin lives in one place.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --only-group lint ruff check
+        language: system
+        types_or: [python, pyi, jupyter]
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --check
+        language: system
+        types: [rust]
+        pass_filenames: false

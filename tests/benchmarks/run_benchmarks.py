@@ -615,7 +615,7 @@ Examples:
     write_text_report(txt_path, config, dataset_info, all_results, sys_info)
     write_json_report(json_path, config, dataset_info, all_results, sys_info)
 
-    print(f"\nResults saved to:")
+    print("\nResults saved to:")
     print(f"  Text:  {txt_path}")
     print(f"  JSON:  {json_path}")
 
