@@ -11,7 +11,7 @@ pip install similaripy
 Pre-built wheels are available for Python 3.11–3.15 on:
 
 - Linux x86_64 and aarch64 (glibc 2.28+, or musl 1.2+ e.g. Alpine)
-- macOS 11+ (Apple Silicon) and 10.15+ (Intel)
+- macOS 12+ (Apple Silicon) and 10.15+ (Intel)
 - Windows x64
 
 No compiler is needed on these platforms. Elsewhere, pip builds the package from source (see below).

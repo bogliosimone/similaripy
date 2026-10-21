@@ -43,7 +43,7 @@ The shrinkage equations are displayed with the cosine normalization for simplici
 
 | Shrink type | Applies to |
 |-------------|------------|
-| `stabilized` | Every similarity with a denominator: all but `dot_product` and `p3alpha` (there it would divide every score by the same constant). |
+| `stabilized` | Every similarity with a denominator: all but `dot_product`, `p3alpha` and `s_plus` with `l1 = l2 = l3 = 0` (there it would divide every score by the same constant). |
 | `bayesian` | Every similarity (non-negative input only: see [Signed Input](#signed-input)). |
 | `additive` | The cosine norms: `cosine`, `asymmetric_cosine`, `s_plus` with `l2 != 0`. |
 

@@ -7,7 +7,8 @@ to do about it.
 
 ## Install and build
 
-- Wheels cover the same platforms; building from source now needs a Rust
+- Wheels cover the same platforms, on older macOS versions too (Apple Silicon
+  12+, Intel 10.15+; 0.7.0 needed macOS 15); building from source now needs a Rust
   toolchain instead of a C compiler with OpenMP (no `brew install gcc`). See
   [Build from source](installation.md#build-from-source).
 - Minimum versions: numpy `>= 1.23.5` (was 1.22.4), scipy `>= 1.15` (was 1.12).
@@ -34,7 +35,8 @@ to do about it.
 - Parameters are validated, with a `ValueError` instead of a silent result:
   - negative weights (e.g. `l1`, `c1`, `beta`), shrinks or `threshold`,
     `alpha <= 0`, custom
-    popularity arrays that are not finite and `>= 0` (`> 0` where used);
+    popularity arrays that are not finite and `>= 0` (`> 0` on rows/columns
+    with entries);
   - out-of-range ids in `target_rows`, and in `target_cols` / `filter_cols`
     lists (0.7.0 ignored them);
   - an empty `target_cols` (list, array or sparse matrix with no entries),
@@ -49,10 +51,12 @@ to do about it.
     `alpha + beta < 1` on signed input. No default is affected, nor binary or
     0/1 data;
   - NaN or inf values in the normalizations (they used to spread NaN through
-    the row's or column's norm, and `binarize` turned them into `1`).
-  - Norms out of float32 range in `cosine`, `asymmetric_cosine`, `rp3beta`
-    (and `s_plus` with a single cosine or depop term), e.g. data scaled by
-    `1e-25` or `1e19`, raise instead of returning empty rows: rescale the input.
+    the row's or column's norm).
+  - Norms out of float32 range in `cosine` and `asymmetric_cosine` without a
+    shrink (e.g. data scaled by `1e-25` or `1e19`), in
+    `rp3beta` when its `pop^beta` leaves float32 range, and in `s_plus` with a
+    single cosine or depop term, raise instead of returning empty rows: rescale
+    the input. With a shrink, such inputs still return empty rows.
 
 ## Results
 
