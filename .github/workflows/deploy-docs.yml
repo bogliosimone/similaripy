@@ -25,9 +25,10 @@ jobs:
         run: |
           pip install uv
 
-      - name: Install project dev dependencies
+      - name: Install the docs tools
+        # mkdocstrings reads the sources statically: no package build, no Rust
         run: |
-          uv pip install --system '.[dev]'
+          uv pip install --system --group docs
 
       - name: Deploy documentation
         run: |

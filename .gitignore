@@ -8,7 +8,6 @@
 uv.lock
 dist/
 .cache/
-.tox/
 
 # ============================
 # Benchmark Results

@@ -7,7 +7,7 @@ Unified benchmarking system for testing similaripy performance across datasets a
 ### Installation
 
 ```bash
-pip install -e ".[bench]"
+uv sync --group bench
 ```
 
 ### Run Benchmarks
