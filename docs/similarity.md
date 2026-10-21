@@ -89,6 +89,7 @@ of these restrictions apply.
 - All similarity functions run in a **Rust core** on CSR matrices.
 - Computations are fully **multi-threaded** and scale with CPU cores.
 - Supports **CSR** and **COO** sparse matrix formats as output.
+- **Accuracy:** values and sums are float32. On the 500 longest MovieLens 32M rows (14k–103k entries, item-item cosine), 99.996% of the top-100 slots equal an exact float64 computation, and scores are within about `1e-4` relative.
 
 ## Math Equations
 
