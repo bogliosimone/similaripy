@@ -118,20 +118,23 @@ def test_float_bits_independent_of_order_and_duplicates():
     assert np.array_equal(a[1].view(np.int32), b[1].view(np.int32))
 
 
-@pytest.mark.parametrize("block", [None, 7, 0])
+@pytest.mark.parametrize("block", [7, 0])
 def test_batch_matches_single_bits(block):
     rng = np.random.default_rng(4)
     S = sp.random_array((300, 300), density=0.05, rng=rng, format="csr")
     ext = rng.choice(10**9, size=300, replace=False)
-    rec = sim.Recommender(S, item_ids=ext)
+    rec = sim.Recommender(S, item_ids=ext, _block_size=block)
+    one_block = sim.Recommender(S, item_ids=ext, _block_size=0)
     H = sp.random_array((50, 300), density=0.05, rng=rng, format="csr")
     mask = rec.mask(ext[:150])
     for allowed in (None, mask):
-        R = rec.recommend_batch(H, k=10, allowed=allowed, num_threads=2, _block_size=block)
+        R = rec.recommend_batch(H, k=10, allowed=allowed, num_threads=2)
         assert R.shape == H.shape and R.indptr.dtype == np.int32 and R.indices.dtype == np.int32
         for u in range(50):
             a, b = H.indptr[u], H.indptr[u + 1]
             ids, scores = rec.recommend(ext[H.indices[a:b]], H.data[a:b], k=10, allowed=allowed)
+            if allowed is None:  # blocking never changes bits
+                assert np.array_equal(one_block.recommend(ext[H.indices[a:b]], H.data[a:b], k=10)[1], scores)
             row = slice(R.indptr[u], R.indptr[u + 1])
             assert np.array_equal(ext[R.indices[row]], ids)  # best first, not sorted by column
             assert np.array_equal(R.data[row].view(np.int32), scores.view(np.int32))

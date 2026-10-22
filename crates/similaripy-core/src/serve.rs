@@ -118,6 +118,8 @@ pub struct Model {
     indices: Vec<i32>,
     data: Vec<f32>,
     n_active: usize,
+    /// Column block size, 0 = one block (derived at build, never stored).
+    block: usize,
     /// Internal id → S's original column.
     new_to_old: Vec<i32>,
     /// Original column → internal id (`EMPTY`: dropped).
@@ -193,9 +195,17 @@ impl Model {
     /// `new_to_old`: internal id → original id for every kept item, in the
     /// serving order. Items left out must have an empty row and an empty
     /// column. `ext`: external id per original id (unique), None = the ids
-    /// are S's column indices. Copies S once into the internal layout (rows
-    /// reordered, columns renumbered and sorted, on the current rayon pool).
-    pub fn new(s: CsrView, new_to_old: Vec<i32>, ext: Option<Vec<i64>>) -> Result<Self, Error> {
+    /// are S's column indices. `block`: column block size of every request,
+    /// 0 = one block (as the kernel's: under concurrent requests a
+    /// cache-sized accumulator per thread wins, D65). Copies S once into the
+    /// internal layout (rows reordered, columns renumbered and sorted, on the
+    /// current rayon pool).
+    pub fn new(
+        s: CsrView,
+        new_to_old: Vec<i32>,
+        ext: Option<Vec<i64>>,
+        block: usize,
+    ) -> Result<Self, Error> {
         let n = s.n_cols();
         if s.n_rows() != n {
             return invalid("S must be square (item x item)");
@@ -243,6 +253,7 @@ impl Model {
         let ext = ext.map(|e| ExtIds::new(e, &new_to_old)).transpose()?;
         Ok(Self::from_internal(
             next_layout(),
+            block,
             indptr,
             indices,
             data,
@@ -252,8 +263,10 @@ impl Model {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn from_internal(
         layout: u64,
+        block: usize,
         indptr: Vec<i32>,
         indices: Vec<i32>,
         data: Vec<f32>,
@@ -268,6 +281,7 @@ impl Model {
             indices,
             data,
             n_active,
+            block,
             new_to_old,
             dense_in,
             ext,
@@ -295,6 +309,7 @@ impl Model {
         }
         Ok(Self::from_internal(
             self.layout,
+            self.block,
             indptr,
             indices,
             data,
@@ -419,12 +434,10 @@ thread_local! {
 }
 
 /// The top `req.k` items of one history, best first (score desc, then the
-/// more popular item), appended as (internal id, score). `block`: column
-/// block size, 0 = one block.
+/// more popular item), appended as (internal id, score).
 fn recommend_internal(
     model: &Model,
     req: &Request,
-    block: usize,
     out: &mut Vec<(u32, f32)>,
 ) -> Result<(), Error> {
     if let Some(w) = req.weights {
@@ -439,7 +452,7 @@ fn recommend_internal(
         model.check_mask(m)?;
     }
     let mut s = SCRATCH.take().unwrap_or_default();
-    let r = s.run(model, req, block, out);
+    let r = s.run(model, req, out);
     // An error comes from the lookup, before the scratch is touched: clean.
     SCRATCH.set(Some(s));
     r
@@ -448,7 +461,7 @@ fn recommend_internal(
 /// The top `req.k` items of one history, best first (score desc, then the
 /// more popular item), appended to the outputs; ids as the request's
 /// (external ids, or S's column indices). Fewer than k when fewer items
-/// score > 0. Single-request path: one column block (D64 V4).
+/// score > 0.
 pub fn recommend(
     model: &Model,
     req: &Request,
@@ -456,7 +469,7 @@ pub fn recommend(
     scores_out: &mut Vec<f32>,
 ) -> Result<(), Error> {
     let mut out = Vec::with_capacity(req.k.min(model.n_active));
-    recommend_internal(model, req, 0, &mut out)?;
+    recommend_internal(model, req, &mut out)?;
     let ext = match (req.ids, &model.ext) {
         (Ids::External(_), Some(e)) => Some(&e.out),
         _ => None,
@@ -473,9 +486,8 @@ pub type Batch = (Vec<i64>, Vec<i32>, Vec<f32>);
 
 /// One history per row of H (CSR over S's original columns: `indptr` into
 /// `cols` / `weights`), each through the single-request path on the current
-/// rayon pool, so row u equals `recommend` of that history bit for bit (same
-/// `block`). Columns of dropped items are skipped; out of range is an error.
-#[allow(clippy::too_many_arguments)]
+/// rayon pool, so row u equals `recommend` of that history bit for bit.
+/// Columns of dropped items are skipped; out of range is an error.
 pub fn recommend_batch(
     model: &Model,
     indptr: &[i64],
@@ -484,7 +496,6 @@ pub fn recommend_batch(
     k: usize,
     exclude_seen: bool,
     allowed: Option<&ItemMask>,
-    block: usize,
 ) -> Result<Batch, Error> {
     if indptr.first() != Some(&0)
         || indptr.windows(2).any(|w| w[0] > w[1])
@@ -512,7 +523,7 @@ pub fn recommend_batch(
                 unknown: Unknown::Skip,
             };
             let mut out = Vec::with_capacity(cap);
-            recommend_internal(model, &req, block, &mut out).map(|()| out)
+            recommend_internal(model, &req, &mut out).map(|()| out)
         })
         .collect::<Result<_, _>>()?;
     let total: usize = rows.iter().map(Vec::len).sum();
@@ -530,21 +541,15 @@ pub fn recommend_batch(
 }
 
 impl Scratch {
-    fn run(
-        &mut self,
-        m: &Model,
-        req: &Request,
-        block: usize,
-        out: &mut Vec<(u32, f32)>,
-    ) -> Result<(), Error> {
+    fn run(&mut self, m: &Model, req: &Request, out: &mut Vec<(u32, f32)>) -> Result<(), Error> {
         self.hist.clear();
         m.lookup_into(req.ids, req.weights, req.unknown, &mut self.hist)?;
         canonicalize(&mut self.hist);
         self.topk.set_k(req.k.min(m.n_active));
-        let block = if block == 0 || block >= m.n_active {
+        let block = if m.block == 0 || m.block >= m.n_active {
             m.n_active
         } else {
-            block
+            m.block
         };
         if self.sums.len() < block {
             self.sums.resize(block, 0.0);

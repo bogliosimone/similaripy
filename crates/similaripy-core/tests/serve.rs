@@ -48,14 +48,23 @@ fn csr(s: &[Vec<f32>]) -> Csr {
     m
 }
 
+fn build_blocked(
+    s: &[Vec<f32>],
+    new_to_old: &[i32],
+    ext: Option<&[i64]>,
+    block: usize,
+) -> Result<Model, similaripy_core::Error> {
+    let m = csr(s);
+    let view = CsrView::new("S", &m.indptr, &m.indices, &m.data, s.len())?;
+    Model::new(view, new_to_old.to_vec(), ext.map(<[i64]>::to_vec), block)
+}
+
 fn build(
     s: &[Vec<f32>],
     new_to_old: &[i32],
     ext: Option<&[i64]>,
 ) -> Result<Model, similaripy_core::Error> {
-    let m = csr(s);
-    let view = CsrView::new("S", &m.indptr, &m.indices, &m.data, s.len())?;
-    Model::new(view, new_to_old.to_vec(), ext.map(<[i64]>::to_vec))
+    build_blocked(s, new_to_old, ext, 0)
 }
 
 fn model(c: &Case) -> Model {
@@ -293,9 +302,11 @@ proptest! {
         };
         let both: Vec<i32> = hist.iter().chain(&hist).copied().collect();
         let w2 = w.as_ref().map(|w| w.iter().chain(w).copied().collect::<Vec<_>>());
-        let allowed = mask(&c, &m);
         let n = hist.len() as i64;
-        let (bp, bc, bs) = recommend_batch(&m, &[0, n, 2 * n], &both, w2.as_deref(), c.k, c.exclude_seen, allowed.as_ref(), block).unwrap();
+        // On a model with column blocks: same bits as the one-block single path.
+        let mb = build_blocked(&c.s, &c.new_to_old, c.ext.as_deref(), block).unwrap();
+        let allowed = mask(&c, &mb);
+        let (bp, bc, bs) = recommend_batch(&mb, &[0, n, 2 * n], &both, w2.as_deref(), c.k, c.exclude_seen, allowed.as_ref()).unwrap();
         let l = single.0.len();
         prop_assert_eq!(bp, vec![0, l as i64, 2 * l as i64]);
         let as_ext: Vec<i64> = bc.iter().map(|&j| ext_of(&c, j as usize)).collect();
@@ -353,10 +364,9 @@ fn rejects_bad_input() {
         ..r(&[0], None, None, Unknown::Skip)
     };
     assert_eq!(run(&big).unwrap(), (vec![1], vec![1.0]));
-    let (bp, bc, _) =
-        recommend_batch(&m, &[0, 1], &[0], None, usize::MAX / 2, true, None, 0).unwrap();
+    let (bp, bc, _) = recommend_batch(&m, &[0, 1], &[0], None, usize::MAX / 2, true, None).unwrap();
     assert_eq!((bp, bc), (vec![0, 1], vec![1]));
     // Batch: out-of-range columns and a bad CSR are errors.
-    assert!(recommend_batch(&m, &[0, 1], &[3], None, 1, true, None, 0).is_err());
-    assert!(recommend_batch(&m, &[0, 2], &[0], None, 1, true, None, 0).is_err());
+    assert!(recommend_batch(&m, &[0, 1], &[3], None, 1, true, None).is_err());
+    assert!(recommend_batch(&m, &[0, 2], &[0], None, 1, true, None).is_err());
 }

@@ -54,7 +54,7 @@ class Recommender:
         num_threads: threads for the build (0 = all).
     """
 
-    def __init__(self, S, item_ids=None, allowed=None, num_threads: int = 0):
+    def __init__(self, S, item_ids=None, allowed=None, num_threads: int = 0, _block_size=DEFAULT_BLOCK_SIZE):
         S = _canonical_csr(S, np.float32, num_threads)
         n = S.shape[0]
         if S.shape[1] != n:
@@ -75,6 +75,7 @@ class Recommender:
             n=n,
             new_to_old=new_to_old,
             ext=ext,
+            block=_block_size,
             num_threads=num_threads,
         )
         del S
@@ -132,7 +133,7 @@ class Recommender:
         return self._model.recommend(ids, weights, k=k, exclude_seen=exclude_seen, allowed=allowed, unknown=unknown)
 
     def recommend_batch(
-        self, H, k: int = 10, exclude_seen: bool = True, allowed=None, num_threads: int = 0, _block_size=None
+        self, H, k: int = 10, exclude_seen: bool = True, allowed=None, num_threads: int = 0
     ) -> sp.csr_array:
         """
         The top `k` items for every row of H (users x items, columns = S's
@@ -149,7 +150,6 @@ class Recommender:
         if H.ndim != 2 or H.shape[1] != n_cols:
             raise ValueError(f"H must have one column per item of S ({n_cols}), got shape {H.shape}")
         H = _canonical_csr(H, np.float32, num_threads)
-        block = DEFAULT_BLOCK_SIZE if _block_size is None else _block_size
         indptr, cols, scores = self._model.batch(
             H.indptr.astype(np.int64),
             H.indices,
@@ -157,7 +157,6 @@ class Recommender:
             k=k,
             exclude_seen=exclude_seen,
             allowed=allowed,
-            block=block,
             num_threads=num_threads,
         )
         if indptr[-1] <= _INT32_MAX:
@@ -174,6 +173,13 @@ def _from_parts(indptr, indices, data, new_to_old, n_cols, ext):
     rows = np.repeat(new_to_old, np.diff(indptr))
     S = _canonical_csr(sp.coo_array((data, (rows, new_to_old[indices])), shape=(n_cols, n_cols)), np.float32, 0)
     model = _core.ServeModel(
-        indptr=S.indptr, indices=S.indices, data=S.data, n=n_cols, new_to_old=new_to_old, ext=ext, num_threads=0
+        indptr=S.indptr,
+        indices=S.indices,
+        data=S.data,
+        n=n_cols,
+        new_to_old=new_to_old,
+        ext=ext,
+        block=DEFAULT_BLOCK_SIZE,  # derived at load, never stored (Q1)
+        num_threads=0,
     )
     return Recommender._wrap(model)

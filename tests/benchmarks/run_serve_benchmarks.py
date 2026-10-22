@@ -15,7 +15,8 @@ Modes (--mode, several allowed):
   gate     batch (`recommend_batch`) vs the kernel
            (`dot_product(URM, S, filter_cols=URM)`, kernel + output time), same
            weights, --gate-threads (default 1 and 6), ABBA, + top-k overlap
-  block    batch block size: `DEFAULT_BLOCK_SIZE` vs one block per request,
+  block    block size: `DEFAULT_BLOCK_SIZE` vs one block per request (batch
+           = concurrent requests on --gate-threads threads),
            --gate-threads, ABBA
   build    the model build's time and peak memory in a fresh process (S saved
            to --scratch first): max RSS after loading S vs after the build
@@ -40,7 +41,6 @@ from dataset_loaders import load_URM
 from run_recommend_benchmarks import run_once
 
 import similaripy as sim
-from similaripy._s_plus import DEFAULT_BLOCK_SIZE
 
 
 def stats(ns):
@@ -103,14 +103,14 @@ def mode_latency(args, URM, rec, users, rng, report):
     report["latency"] = out
 
 
-def batch_call(rec, URM, k, threads, block=DEFAULT_BLOCK_SIZE):
+def batch_call(rec, URM, k, threads):
     """Times the Rust batch call only (H's prep outside, as the kernel side's
     `kernel + output` excludes its prep)."""
     H = (URM.indptr.astype(np.int64), URM.indices.astype(np.int32), URM.data.astype(np.float32))
 
-    def run(threads=threads, block=block):
+    def run(threads=threads):
         t = time.perf_counter()
-        rec._model.batch(*H, k=k, exclude_seen=True, allowed=None, block=block, num_threads=threads)
+        rec._model.batch(*H, k=k, exclude_seen=True, allowed=None, num_threads=threads)
         return time.perf_counter() - t
 
     return run
@@ -141,12 +141,14 @@ def mode_gate(args, URM, S, rec, report):
     report["gate"] = out
 
 
-def mode_block(args, URM, rec, report):
+def mode_block(args, URM, S, rec, report):
+    """Batch time with `DEFAULT_BLOCK_SIZE` (rec) vs one block (a second model)."""
+    one = sim.Recommender(S, _block_size=0)
     out = {}
     for threads in args.gate_threads:
         cases = {
-            "blocked": batch_call(rec, URM, args.k, threads, DEFAULT_BLOCK_SIZE),
-            "one block": batch_call(rec, URM, args.k, threads, 0),
+            "blocked": batch_call(rec, URM, args.k, threads),
+            "one block": batch_call(one, URM, args.k, threads),
         }
         for f in cases.values():  # warm-up
             f()
@@ -233,7 +235,7 @@ def main():
         elif m == "gate":
             mode_gate(args, URM, S, rec, report)
         elif m == "block":
-            mode_block(args, URM, rec, report)
+            mode_block(args, URM, S, rec, report)
     if args.json:
         with open(args.json, "w") as f:
             json.dump(report, f, indent=2, default=str)

@@ -37,7 +37,7 @@ impl PyModel {
     /// (internal id → original id per kept item, serving order) and `ext`
     /// (external id per original id, None = column indices).
     #[new]
-    #[pyo3(signature = (*, indptr, indices, data, n, new_to_old, ext, num_threads))]
+    #[pyo3(signature = (*, indptr, indices, data, n, new_to_old, ext, block, num_threads))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -47,6 +47,7 @@ impl PyModel {
         n: usize,
         new_to_old: PyReadonlyArray1<'_, i32>,
         ext: Option<PyReadonlyArray1<'_, i64>>,
+        block: usize,
         num_threads: usize,
     ) -> PyResult<Self> {
         let (indptr, indices, data) = (indptr.as_slice()?, indices.as_slice()?, data.as_slice()?);
@@ -54,7 +55,7 @@ impl PyModel {
         let ext = ext.map(|e| e.as_slice().map(<[i64]>::to_vec)).transpose()?;
         py.detach(|| {
             let s = CsrView::new("S", indptr, indices, data, n)?;
-            with_pool(num_threads, || Model::new(s, new_to_old, ext))
+            with_pool(num_threads, || Model::new(s, new_to_old, ext, block))
         })
         .map(Self)
         .map_err(to_py)
@@ -131,7 +132,7 @@ impl PyModel {
 
     /// One history per row of H (CSR over S's original columns). Returns
     /// (indptr, columns, scores) over S's original columns.
-    #[pyo3(signature = (indptr, cols, weights, *, k, exclude_seen, allowed, block, num_threads))]
+    #[pyo3(signature = (indptr, cols, weights, *, k, exclude_seen, allowed, num_threads))]
     #[allow(clippy::too_many_arguments)]
     fn batch<'py>(
         &self,
@@ -142,7 +143,6 @@ impl PyModel {
         k: usize,
         exclude_seen: bool,
         allowed: Option<&PyMask>,
-        block: usize,
         num_threads: usize,
     ) -> PyResult<(Arr<'py, i64>, Arr<'py, i32>, Arr<'py, f32>)> {
         let (indptr, cols) = (indptr.as_slice()?, cols.as_slice()?);
@@ -152,16 +152,7 @@ impl PyModel {
         let (p, c, s) = py
             .detach(|| {
                 with_pool(num_threads, || {
-                    recommend_batch(
-                        model,
-                        indptr,
-                        cols,
-                        weights,
-                        k,
-                        exclude_seen,
-                        allowed,
-                        block,
-                    )
+                    recommend_batch(model, indptr, cols, weights, k, exclude_seen, allowed)
                 })
             })
             .map_err(to_py)?;
