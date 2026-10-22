@@ -210,8 +210,20 @@ def mode_lookup(args, URM, S, users, rng, report):
 
 def mode_gate(args, URM, S, rec, report):
     URM = URM.tocsr()
-    H = {"indptr": URM.indptr.astype(np.int64), "ids": URM.indices.astype(np.int64), "weights": None}
-    out = {}
+    # Same work on both sides: the kernel multiplies by URM's values, so C gets them as weights.
+    H = {
+        "indptr": URM.indptr.astype(np.int64),
+        "ids": URM.indices.astype(np.int64),
+        "weights": URM.data.astype(np.float32),
+    }
+    # Same answer too (outside the timing): share of the kernel's (user, item) results C also returns.
+    K = sim.dot_product(URM, S, k=args.k, filter_cols=URM, verbose=False, format_output="csr")
+    indptr, ids, scores, _ = rec._model.batch(H, k=args.k, exclude_seen=True, variant=variant(), num_threads=0)
+    C = sp.csr_array((scores, ids, indptr), shape=K.shape)
+    overlap = (K != 0).multiply(C != 0).nnz / max(K.nnz, 1)
+    print(f"gate top-k overlap C vs kernel: {overlap:.6f} (kernel nnz {K.nnz:,}, C nnz {C.nnz:,})")
+    out = {"overlap": overlap, "kernel_nnz": int(K.nnz), "c_nnz": int(C.nnz)}
+    del K, C, indptr, ids, scores
     for threads in args.gate_threads:
 
         def kernel(_, threads=threads):

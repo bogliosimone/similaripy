@@ -13,6 +13,7 @@
 //! the losers go when the variants are locked (step 4.2).
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rayon::prelude::*;
 
@@ -72,7 +73,7 @@ pub struct Variant {
     /// Column block size; 0 or `>= n_active` = one block (V4).
     pub block: usize,
     /// Sort the history by internal id and merge duplicates (V8). Off: history
-    /// order, a duplicate adds twice.
+    /// order, a duplicate adds twice (same scores up to f32 rounding).
     pub canonicalize: bool,
     /// Reuse the calling thread's scratch (V5); off: allocate per call.
     pub reuse_scratch: bool,
@@ -93,6 +94,8 @@ impl Default for Variant {
 
 /// A prepared model: owns its arrays, validated once, immutable.
 pub struct Model {
+    /// Unique per process: binds the masks built by this model (G5).
+    id: u64,
     indptr: Vec<i32>,
     indices: Vec<i32>,
     data: Vec<f32>,
@@ -111,6 +114,13 @@ pub struct Model {
     hash_shift: u32,
 }
 
+/// A per-call availability mask: bitset over one model's internal ids. Only
+/// that model accepts it (another model of the same size has another order).
+pub struct ItemMask {
+    model: u64,
+    bits: Vec<u64>,
+}
+
 /// One history.
 pub struct Request<'a> {
     pub ids: &'a [i64],
@@ -118,8 +128,8 @@ pub struct Request<'a> {
     pub weights: Option<&'a [f32]>,
     pub k: usize,
     pub exclude_seen: bool,
-    /// Bitset over internal ids (`Model::mask`); None = all allowed.
-    pub allowed: Option<&'a [u64]>,
+    /// From `Model::mask` of the same model; None = all allowed.
+    pub allowed: Option<&'a ItemMask>,
 }
 
 fn invalid<T>(msg: &str) -> Result<T, Error> {
@@ -212,7 +222,9 @@ impl Model {
             slots[s] = (key, i as u32);
         }
 
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         Ok(Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             indptr,
             indices,
             data,
@@ -243,15 +255,18 @@ impl Model {
         unsafe { CsrView::new_unchecked(&self.indptr, &self.indices, &self.data, self.n) }
     }
 
-    /// The per-call mask: bitset over internal ids, set for the known `ids`.
-    pub fn mask(&self, ids: &[i64], how: Lookup) -> Vec<u64> {
+    /// The per-call mask allowing only the known `ids`.
+    pub fn mask(&self, ids: &[i64], how: Lookup) -> ItemMask {
         let mut bits = vec![0u64; words(self.n)];
         let (mut found, mut probe) = (Vec::new(), Vec::new());
         self.lookup_into(ids, None, how, &mut found, &mut probe);
         for (i, _) in found {
             bits[i as usize / 64] |= 1 << (i % 64);
         }
-        bits
+        ItemMask {
+            model: self.id,
+            bits,
+        }
     }
 
     /// Appends (internal id, weight) for each known id, in input order; unknown
@@ -378,7 +393,7 @@ pub fn recommend(
             return invalid("weights must be finite");
         }
     }
-    if req.allowed.is_some_and(|a| a.len() != words(model.n)) {
+    if req.allowed.is_some_and(|a| a.model != model.id) {
         return invalid("allowed mask was built for another model");
     }
     if !v.reuse_scratch {
@@ -425,7 +440,8 @@ pub fn recommend_batch(
                 exclude_seen,
                 allowed: None,
             };
-            let mut out = (Vec::with_capacity(k), Vec::with_capacity(k));
+            let cap = k.min(model.n_active);
+            let mut out = (Vec::with_capacity(cap), Vec::with_capacity(cap));
             recommend(model, &req, v, &mut out.0, &mut out.1).map(|()| out)
         })
         .collect::<Result<_, _>>()?;
@@ -497,9 +513,10 @@ impl Scratch {
                 }
             },
         );
-        let allowed = req.allowed.unwrap_or(&[]);
+        let allowed = req.allowed.map_or(&[][..], |a| &a.bits);
         // SAFETY: hist ids < n (lookup); sums.len() >= block; seen sized for n
-        // when tested; allowed sized for n (checked in `recommend`).
+        // when tested; allowed built by this model (checked in `recommend`), so
+        // sized for n.
         unsafe { self.accumulate_all(m, block, neg_inf, in_drain, allowed) };
 
         self.cols.clear();
@@ -682,7 +699,9 @@ unsafe fn drain_impl<const SEEN: bool, const MASK: u8>(
 }
 
 /// Sorts by internal id and merges duplicates (weights summed), so the
-/// addition order, and the bits, depend only on the item set (G3).
+/// addition order depends on the item set, not the history order (G3).
+/// Exception: 3+ copies of one id with different weights sum in input order
+/// (f32 addition isn't associative); the same input still gives the same bits.
 fn canonicalize(hist: &mut Vec<(u32, f32)>) {
     hist.sort_unstable_by_key(|&(i, _)| i);
     hist.dedup_by(|b, a| {

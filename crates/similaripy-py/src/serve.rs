@@ -11,7 +11,7 @@ use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use similaripy_core::serve::{
-    Lookup, Mask, Model, Request, Seen, Variant, recommend, recommend_batch,
+    ItemMask, Lookup, Mask, Model, Request, Seen, Variant, recommend, recommend_batch,
 };
 
 use crate::{to_py, with_pool};
@@ -69,7 +69,7 @@ impl PyVariant {
 
 /// A per-call availability mask, bound to the model that built it.
 #[pyclass(frozen, name = "ServeMask", module = "similaripy._core")]
-pub struct PyMask(Vec<u64>);
+pub struct PyMask(ItemMask);
 
 #[pyclass(frozen, name = "ServeModel", module = "similaripy._core")]
 pub struct PyModel(Model);
@@ -139,7 +139,7 @@ impl PyModel {
             .map(|w| w.as_slice().map(<[f32]>::to_vec))
             .transpose()?;
         let (model, v) = (&self.0, &variant.0);
-        let allowed = allowed.map(|a| a.0.as_slice());
+        let allowed = allowed.map(|a| &a.0);
         let (out_ids, out_scores) = py
             .detach(|| {
                 let req = Request {
@@ -149,7 +149,8 @@ impl PyModel {
                     exclude_seen,
                     allowed,
                 };
-                let mut out = (Vec::with_capacity(k), Vec::with_capacity(k));
+                let cap = k.min(model.n_active());
+                let mut out = (Vec::with_capacity(cap), Vec::with_capacity(cap));
                 recommend(model, &req, v, &mut out.0, &mut out.1).map(|()| out)
             })
             .map_err(to_py)?;
@@ -212,7 +213,7 @@ impl PyModel {
         let (indptr, ids) = (history.indptr.as_slice()?, history.ids.as_slice()?);
         let weights = history.weights.as_ref().map(|w| w.as_slice()).transpose()?;
         let (model, v) = (&self.0, &variant.0);
-        let allowed = allowed.map(|a| a.0.as_slice());
+        let allowed = allowed.map(|a| &a.0);
         let ns = py
             .detach(|| {
                 let evict = if cold {

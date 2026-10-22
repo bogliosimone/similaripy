@@ -50,11 +50,14 @@ def _reference(S, ext, history, weights, k, exclude_seen, allowed_ids):
 @pytest.mark.parametrize("variant", VARIANTS)
 @pytest.mark.parametrize("signed", [False, True])
 @pytest.mark.parametrize("external", [False, True])
-def test_matches_dense_reference(variant, signed, external):
-    n = 40
-    S = _S(n, signed, seed=7)
+@pytest.mark.parametrize("n", [40, 150])  # 150: bitsets past one word
+def test_matches_dense_reference(variant, signed, external, n):
+    S = _S(n, signed, seed=7, density=0.3 if n < 100 else 0.08)
     rng = np.random.default_rng(1)
-    ext = rng.choice(10**12, size=n, replace=False).astype(np.int64) if external else np.arange(n)
+    ext = np.arange(n)
+    if external:  # random ids plus the int64 edge keys as real items
+        ext = rng.choice(10**12, size=n, replace=False).astype(np.int64)
+        ext[:3] = [np.iinfo(np.int64).min, np.iinfo(np.int64).max, -1]
     rec = Recommender(S, item_ids=ext if external else None)
     lookup = "eytzinger" if external else "dense"
     v = _core.ServeVariant(lookup=lookup, **variant)
@@ -125,6 +128,8 @@ def test_rejects_bad_input():
         rec.recommend([0, 1], weights=[1.0])
     with pytest.raises(ValueError, match="another model"):
         rec.recommend([0], allowed=Recommender(_S(100, False, seed=1)).mask([0]))
+    with pytest.raises(ValueError, match="another model"):  # same size, other order
+        rec.recommend([0], allowed=Recommender(_S(10, False, seed=2)).mask([0]))
     with pytest.raises(ValueError, match="k must"):
         rec.recommend([0], k=-1)
     with pytest.raises(ValueError, match="unknown lookup"):
@@ -150,3 +155,27 @@ def test_concurrent_calls_identical():
         got = list(ex.map(lambda h: rec.recommend(h, k=10), hists * 4))
     for (gi, gs), (wi, ws) in zip(got, want * 4):
         assert np.array_equal(gi, wi) and np.array_equal(gs, ws)
+
+
+def test_huge_k_is_clamped():
+    rec = Recommender(_S(30, False, seed=3))
+    ids, _ = rec.recommend([0, 1], k=2**62)
+    assert 0 < ids.size <= rec.n_items
+
+
+def test_batch_binding_matches_single():
+    rng = np.random.default_rng(4)
+    rec = Recommender(sp.random_array((300, 300), density=0.05, rng=rng, format="csr"))
+    H = sp.random_array((50, 300), density=0.05, rng=rng, format="csr")
+    hist = {
+        "indptr": H.indptr.astype(np.int64),
+        "ids": H.indices.astype(np.int64),
+        "weights": H.data.astype(np.float32),
+    }
+    v = _core.ServeVariant()
+    indptr, ids, scores, _ = rec._model.batch(hist, k=10, exclude_seen=True, variant=v, num_threads=2)
+    for u in range(50):
+        a, b = H.indptr[u], H.indptr[u + 1]
+        want = rec.recommend(H.indices[a:b], H.data[a:b], k=10, _variant=v)
+        assert np.array_equal(ids[indptr[u] : indptr[u + 1]], want[0])
+        assert np.array_equal(scores[indptr[u] : indptr[u + 1]].view(np.int32), want[1].view(np.int32))

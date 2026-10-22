@@ -5,7 +5,7 @@
 
 use proptest::prelude::*;
 use similaripy_core::serve::{
-    Lookup, Mask, Model, Request, Seen, Variant, recommend, recommend_batch,
+    ItemMask, Lookup, Mask, Model, Request, Seen, Variant, recommend, recommend_batch,
 };
 
 #[derive(Debug, Clone)]
@@ -53,7 +53,8 @@ fn ids(c: &Case) -> Vec<i64> {
 }
 
 fn case(float: bool) -> impl Strategy<Value = Case> {
-    (1usize..12).prop_flat_map(move |n| {
+    // Mostly small; sometimes past 64 items: bitsets span several words.
+    prop_oneof![4 => 1usize..12, 1 => 60usize..90].prop_flat_map(move |n| {
         let cell = if float {
             prop_oneof![3 => Just(0.0f32), 2 => 0.1f32..3.0, 1 => -3.0f32..-0.1].boxed()
         } else {
@@ -87,8 +88,14 @@ fn case(float: bool) -> impl Strategy<Value = Case> {
                     let ext = if identity {
                         (0..n as i64).collect()
                     } else {
+                        // Edge keys as real items (never 0: the unknown id below).
+                        let edge = [i64::MIN, i64::MAX, -1];
                         (0..n as i64)
-                            .map(|i| i * 7_919_000_017 - 3_000_000_000_000)
+                            .map(|i| {
+                                edge.get(i as usize)
+                                    .copied()
+                                    .unwrap_or(i * 7_919_000_017 - 3_000_000_000_000)
+                            })
                             .collect()
                     };
                     let weights = w.map(|w| w[..hist.len()].to_vec());
@@ -133,24 +140,25 @@ fn variant() -> impl Strategy<Value = Variant> {
         )
 }
 
-fn bits(c: &Case) -> Option<Vec<u64>> {
+/// The case's mask, built by the model from the allowed items' external ids.
+fn mask(c: &Case, m: &Model) -> Option<ItemMask> {
     c.allowed.as_ref().map(|a| {
-        let mut b = vec![0u64; a.len().div_ceil(64)];
-        for (i, _) in a.iter().enumerate().filter(|x| *x.1) {
-            b[i / 64] |= 1 << (i % 64);
-        }
-        b
+        let ids: Vec<i64> = (0..a.len())
+            .filter(|&j| a[j])
+            .map(|j| c.ext[c.new_to_old[j] as usize])
+            .collect();
+        m.mask(&ids, Lookup::Binary)
     })
 }
 
 fn run(c: &Case, m: &Model, v: &Variant) -> (Vec<i64>, Vec<f32>) {
-    let (ids, allowed) = (ids(c), bits(c));
+    let (ids, allowed) = (ids(c), mask(c, m));
     let req = Request {
         ids: &ids,
         weights: c.weights.as_deref(),
         k: c.k,
         exclude_seen: c.exclude_seen,
-        allowed: allowed.as_deref(),
+        allowed: allowed.as_ref(),
     };
     let mut out = (vec![], vec![]);
     recommend(m, &req, v, &mut out.0, &mut out.1).unwrap();
@@ -316,7 +324,19 @@ fn rejects_bad_input() {
         )
         .is_err()
     );
-    assert!(recommend(&m, &req(None, Some(&[1, 1])), &v, &mut out.0, &mut out.1).is_err());
+    // A mask from another model of the same size: other internal order.
+    let (indptr2, indices2, data2) = csr(&s);
+    let other = Model::new(indptr2, indices2, data2, &[0, 1], &[0, 1])
+        .unwrap()
+        .mask(&[1], Lookup::Dense);
+    assert!(recommend(&m, &req(None, Some(&other)), &v, &mut out.0, &mut out.1).is_err());
+    let own = m.mask(&[1], Lookup::Dense);
+    assert!(recommend(&m, &req(None, Some(&own)), &v, &mut out.0, &mut out.1).is_ok());
+    assert_eq!(out, (vec![1], vec![1.0]));
+    out = (vec![], vec![]);
+    // A huge k is clamped before anything is allocated.
+    let (bp, bi, _) = recommend_batch(&m, &[0, 1], &[0], None, usize::MAX / 2, true, &v).unwrap();
+    assert_eq!((bp, bi), (vec![0, 1], vec![1]));
     assert!(recommend(&m, &req(None, None), &v, &mut out.0, &mut out.1).is_ok());
     // id 0 = original column 0 = internal 1; its only neighbour is internal 0 = id 1.
     assert_eq!(out, (vec![1], vec![1.0]));
