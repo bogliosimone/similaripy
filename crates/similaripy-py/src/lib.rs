@@ -1,8 +1,10 @@
 //! Python bindings of the Rust core (`similaripy._core`). `similaripy/_s_plus.py`
-//! does the prep and calls `compute`.
+//! does the prep and calls `compute`; `similaripy/_serve.py` builds the serving
+//! model (`serve.rs`).
 
 mod normalize;
 mod progress;
+mod serve;
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -200,7 +202,10 @@ fn compute_similarities<'py>(
 
 /// Runs `f` on the global rayon pool (`num_threads = 0`) or on the calling
 /// thread's cached pool of `num_threads` workers.
-fn with_pool<R>(num_threads: usize, f: impl FnOnce() -> Result<R, Error> + Send) -> Result<R, Error>
+pub(crate) fn with_pool<R>(
+    num_threads: usize,
+    f: impl FnOnce() -> Result<R, Error> + Send,
+) -> Result<R, Error>
 where
     R: Send,
 {
@@ -273,6 +278,9 @@ fn canonicalize<'py, V: Value + Element>(
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
+    m.add_class::<serve::PyModel>()?;
+    m.add_class::<serve::PyVariant>()?;
+    m.add_class::<serve::PyMask>()?;
     m.add_function(wrap_pyfunction!(remap_sort_rows, m)?)?;
     m.add_function(wrap_pyfunction!(canonicalize_rows, m)?)?;
     m.add_class::<ProgressBar>()?;
