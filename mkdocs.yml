@@ -55,12 +55,15 @@ extra_javascript:
 
 nav:
   - Home: index.md
-  - Installation: installation.md
-  - Getting Started: guide.md
-  - Similarities: similarity.md
-  - Normalizations: normalization.md
-  - Migration from 0.7.0: migration.md
-  - Full API Reference:
+  - Getting started:
+      - Installation: installation.md
+      - Quickstart: guide.md
+  - User guide:
+      - Similarities: similarity.md
+      - Normalizations: normalization.md
+      - Signed Input: signed-input.md
+  - API reference:
       - Similarity API: api/similarity.md
       - Normalization API: api/normalization.md
-
+  - About:
+      - Migration from 0.7.0: migration.md

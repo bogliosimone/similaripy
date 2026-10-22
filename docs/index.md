@@ -26,12 +26,13 @@
 
 ## 📚 Guide
 
-- [Installation instructions](installation.md)
-- [Quickstart guide](guide.md)
-- [Quick reference to similarity functions](similarity.md)
-- [Quick reference to normalization functions](normalization.md)
+- [Installation](installation.md)
+- [Quickstart](guide.md)
+- [Similarities](similarity.md)
+- [Normalizations](normalization.md)
+- [Signed Input](signed-input.md)
+- [API reference](api/similarity.md)
 - [Migration from 0.7.0](migration.md)
-- [Full API documentation](api/similarity.md)
 
 ---
 
@@ -39,12 +40,9 @@
 
 SimilariPy achieves high performance through several key optimizations:
 
-- **Rust core**: compiled to native code, multi-threaded with rayon
-- **GIL-free computation**: releases Python's Global Interpreter Lock during the heavy computation (free-threaded Python supported)
-- **CSR-optimized**: direct memory access patterns for the Compressed Sparse Row format
-- **Column-blocked accumulation**: tiles the output columns into cache-sized blocks with popularity-based reordering, reducing L2 cache misses on large matrices
+- **Gustavson's row-wise sparse product**: each output row's scores add up in a dense accumulator, and only the touched columns are read back, with no hashing
+- **Rust core**: native code, multi-threaded with rayon, GIL released during the computation
+- **Cache blocking**: the output columns are split into cache-sized tiles, most popular first, so the accumulator stays in the CPU cache on large matrices
+- **Specialized scoring**: one compiled loop per scoring mode, with no per-candidate branches; cosine and RP3β run as a plain dot product of pre-scaled inputs
+- **Compact types**: float32 values and int32 indices, half the memory traffic of float64/int64
 - **Pre-allocated buffers**: per-thread accumulators and heaps reused across rows, no allocation per row
-- **Float32 precision**: 32-bit values for 2× memory bandwidth (accuracy: see [Similarities](similarity.md#notes))
-- **Top-K filtering**: a heap per row keeps only the best `k` candidates
-
----

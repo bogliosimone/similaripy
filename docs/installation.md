@@ -37,10 +37,13 @@ Then `pip install similaripy` builds the package. The source distribution pins t
 Wheels target a generic CPU baseline. To build for your exact CPU:
 
 ```bash
-RUSTFLAGS="-C target-cpu=native" pip install similaripy --no-binary similaripy --no-cache-dir
+export RUSTFLAGS="-C target-cpu=native"
+pip install similaripy --no-binary similaripy --no-cache-dir
 ```
 
-(PowerShell: `$env:RUSTFLAGS="-C target-cpu=native"` first.) The speedup depends on the CPU and the workload: benchmark it on yours.
+(PowerShell: `$env:RUSTFLAGS="-C target-cpu=native"`)
+
+The speedup depends on the CPU and the workload: benchmark it on yours.
 
 ## Requirements
 
