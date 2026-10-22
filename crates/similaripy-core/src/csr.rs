@@ -91,6 +91,25 @@ impl<'a> CsrView<'a> {
         })
     }
 
+    /// A view over arrays that passed `new` before (an owner that validated
+    /// them once and never changes them).
+    ///
+    /// # Safety
+    /// `new` with the same arguments returned `Ok`.
+    pub(crate) unsafe fn new_unchecked(
+        indptr: &'a [i32],
+        indices: &'a [i32],
+        data: &'a [f32],
+        n_cols: usize,
+    ) -> Self {
+        Self {
+            indptr,
+            indices,
+            data,
+            n_cols,
+        }
+    }
+
     pub fn n_rows(&self) -> usize {
         self.indptr.len() - 1
     }
