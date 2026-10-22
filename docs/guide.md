@@ -1,4 +1,4 @@
-# 📌 Getting Started
+# 📌 Quickstart
 
 SimilariPy provides **high-performance KNN similarity functions** in Python, optimized for sparse matrices.
 
@@ -68,69 +68,9 @@ recommendations = sim.dot_product(
 
 Tips:
 
-- `urm.T` is used to switch from user-item to item-user when training the similarity model.
+- `urm.T` is used to switch from user-item to item-user to train an item-item similarity model.
 - You can use `bm25plus`, `tfidf`, or `normalize` for different pre-processing strategies.
 - All operations are multithreaded and scale with available CPU cores.
-
-## Signed Input
-
-Input values can be negative, e.g. mean-centered ratings (adjusted cosine) or
-explicit dislikes. A score is evidence of similarity: only **positive** scores
-(`>= threshold`) are results; negative scores and scores that cancel to exactly
-`0` are dropped, so a row with only negative scores comes back empty.
-
-```python
-import numpy as np
-
-# Adjusted cosine: center each user's ratings, then item-item cosine
-urm = sps.csr_array(urm, dtype=np.float32)  # a copy; integer ratings can't be centered in place
-counts = np.diff(urm.indptr)
-sums = np.ravel(urm.sum(axis=1))
-means = np.divide(sums, counts, out=np.zeros(urm.shape[0]), where=counts > 0)
-urm.data -= np.repeat(means, counts)
-similarity_matrix = sim.cosine(urm.T, k=50, threshold=1e-6)
-```
-
-- **Dissimilar items** are not returned. To rank them, negate `matrix2`:
-  `sim.cosine(m, -m.T)` keeps the most negative scores, as positives.
-- **`threshold > 0`** is a good idea: sums that should cancel can leave a tiny
-  float32 residue (e.g. `1e-8`) instead of an exact `0`. On float data in any
-  similarity; for `cosine`, `asymmetric_cosine` and `rp3beta` also on integer
-  data (they run as a dot product of pre-scaled inputs, whose rounding doesn't
-  cancel exactly).
-- **Selectors:** `filter_cols` / `target_cols` matrices select the non-zero
-  entries. Pass the raw (or binarized) interaction matrix, not a mean-centered
-  one: a rating equal to the user's mean centers to `0` and would not be
-  filtered.
-- **Range:** values must be finite in float32 (`|x| < 3.4e38`). Sums that
-  overflow float32 give `inf` (kept) or NaN (`inf - inf`, dropped) scores
-  (`ValueError` where noted in the [migration notes](migration.md#api)): rescale very
-  large values first.
-- What each function accepts on signed input is listed in
-  [Similarities](similarity.md#signed-input) and
-  [Normalizations](normalization.md#signed-input).
-
-## Recipes
-
-### Compacting empty rows and columns
-
-Rows and columns without entries still take space in the output and in the
-per-column buffers. To drop them, keep the ids of the non-empty ones as maps
-back to the original ids:
-
-```python
-rows = np.flatnonzero(np.diff(urm.indptr))  # users with entries (urm is CSR)
-cols = np.unique(urm.indices)  # items with entries
-compact = urm[rows][:, cols]
-
-# Compact row i is user rows[i], compact column j is item cols[j]
-item_similarity = sim.cosine(compact.T, k=50)
-neighbours_of_first_item = cols[item_similarity[[0]].indices]
-```
-
-An id missing from `rows` or `cols` has no values, so it has no results either.
-
-Coming from 0.7.0? See [Migration from 0.7.0](migration.md) for every change.
 
 ## In-depth Introduction
 

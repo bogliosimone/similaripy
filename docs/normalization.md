@@ -45,11 +45,8 @@ All normalization functions in SimilariPy share the following parameters:
 
 ## Signed Input
 
-| Function | On signed input |
-|----------|-----------------|
-| `normalize` | Accepted: `'l1'` divides by the sum of `|x|`, `'l2'` by `sqrt(sum of x²)`, `'max'` by the largest `|x|`; signs are kept. |
-| `binarize` | Accepted: a negative value is an interaction too and becomes `1.0`. |
-| `tfidf`, `bm25`, `bm25plus` | `ValueError`: they need term frequencies (a negative one gives a NaN log or a negative document length). Checked after summing duplicates, so a `+1`/`-1` pair (sum `0`) is just dropped. |
+`normalize` and `binarize` accept negative values; `tfidf`, `bm25` and
+`bm25plus` raise a `ValueError`: see [Signed Input](signed-input.md#normalizations).
 
 ## Notes
 

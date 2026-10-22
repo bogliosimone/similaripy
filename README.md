@@ -62,7 +62,7 @@ For more details, check the **[📘 SimilariPy Guide](https://bogliosimone.githu
 SimilariPy is built for speed on large sparse matrices:
 
 - **Rust + rayon** — multi-threaded, GIL-free computation compiled to native code
-- **Cache-optimized** — column-blocked accumulation with popularity reordering minimizes L2 cache misses
+- **Gustavson's sparse product + cache blocking** — row-wise products with a dense accumulator, tiled by columns (most popular first) to stay in the CPU cache
 - **Memory-efficient** — float32 precision, pre-allocated buffers, top-K heap filtering
 
 
