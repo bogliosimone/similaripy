@@ -1,28 +1,27 @@
-"""Serving engine (step 4.1): `Recommender` against a dense float64 reference."""
+"""Serving engine: `Recommender` against a dense float64 reference."""
+
+import pickle
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from similaripy import _core
-from similaripy._serve import Recommender
-
-VARIANTS = [
-    {},
-    {"block": 3},
-    {"seen": "bitset", "mask": "before"},
-    {"seen": "later", "mask": "later", "block": 2, "reuse_scratch": False},
-    {"canonicalize": False},
-]
+import similaripy as sim
 
 
 def _S(n, signed, seed, density=0.3):
+    """Small-integer S (exact sums in float32); the last two items have no
+    column, item 0 has neither a row nor a column (dropped at build)."""
     rng = np.random.default_rng(seed)
     S = sp.random_array((n, n), density=density, rng=rng, format="csr", dtype=np.float64)
-    S.data = np.round(S.data * 3 + 1)  # small integers: exact sums in float32
+    S.data = np.round(S.data * 3 + 1)
     if signed:
         S.data *= rng.choice([-1, 1], size=S.nnz)
-    S = sp.csr_array(S.multiply(np.r_[np.ones(n - 2), 0, 0]))  # two items without a column: ids past n_active
+    keep = np.ones(n)
+    keep[[0, n - 2, n - 1]] = 0
+    S = sp.csr_array(S.multiply(keep))  # columns
+    S = sp.csr_array(sp.diags_array(np.r_[0.0, np.ones(n - 1)]) @ S)  # row 0
     S.eliminate_zeros()
     return S
 
@@ -30,13 +29,15 @@ def _S(n, signed, seed, density=0.3):
 def _reference(S, ext, history, weights, k, exclude_seen, allowed_ids):
     """Top-k of score = h @ S (> 0), ties: more column entries, then lower column."""
     n = S.shape[0]
-    pos = {e: i for i, e in enumerate(ext)}
+    D = S.toarray()
+    counts = np.bincount(S.indices, minlength=n)
+    kept = (np.diff(S.indptr) > 0) | (counts > 0)
+    pos = {e: i for i, e in enumerate(ext) if kept[i]}
     h = np.zeros(n)
     for j, e in enumerate(history):
         if e in pos:
             h[pos[e]] += 1.0 if weights is None else weights[j]
-    scores = h @ S.toarray()
-    counts = np.bincount(S.indices, minlength=n)
+    scores = h @ D
     keep = scores > 0
     if exclude_seen:
         keep[[pos[e] for e in history if e in pos]] = False
@@ -47,135 +48,161 @@ def _reference(S, ext, history, weights, k, exclude_seen, allowed_ids):
     return ext[cols[order]], scores[cols[order]]
 
 
-@pytest.mark.parametrize("variant", VARIANTS)
 @pytest.mark.parametrize("signed", [False, True])
 @pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize("n", [40, 150])  # 150: bitsets past one word
-def test_matches_dense_reference(variant, signed, external, n):
+def test_matches_dense_reference(signed, external, n):
     S = _S(n, signed, seed=7, density=0.3 if n < 100 else 0.08)
     rng = np.random.default_rng(1)
     ext = np.arange(n)
     if external:  # random ids plus the int64 edge keys as real items
         ext = rng.choice(10**12, size=n, replace=False).astype(np.int64)
-        ext[:3] = [np.iinfo(np.int64).min, np.iinfo(np.int64).max, -1]
-    rec = Recommender(S, item_ids=ext if external else None)
-    lookup = "eytzinger" if external else "dense"
-    v = _core.ServeVariant(lookup=lookup, **variant)
+        ext[1:4] = [np.iinfo(np.int64).min, np.iinfo(np.int64).max, -1]
+    rec = sim.Recommender(S, item_ids=ext if external else None)
+    assert rec.n_items == n - 1  # item 0 dropped
     for trial in range(30):
         hist = rng.choice(ext, size=rng.integers(0, 8))
         hist = np.append(hist, hist[:1])  # a duplicate
-        hist = np.append(hist, -5)  # an unknown id
+        hist = np.append(hist, [ext[0], -5 if external else n + 3])  # dropped + unknown
         weights = rng.integers(1, 4, size=hist.size).astype(np.float64) if trial % 2 else None
         allowed_ids = rng.choice(ext, size=n // 2, replace=False) if trial % 3 == 0 else None
         allowed = None if allowed_ids is None else rec.mask(allowed_ids)
         k = int(rng.integers(0, n + 3))
         for exclude_seen in (True, False):
-            got = rec.recommend(hist, weights, k=k, exclude_seen=exclude_seen, allowed=allowed, _variant=v)
+            got = rec.recommend(hist, weights, k=k, exclude_seen=exclude_seen, allowed=allowed)
             want = _reference(S, ext, hist, weights, k, exclude_seen, allowed_ids)
-            if variant.get("mask") == "later" and allowed is not None:
-                # over-fetch then filter: a prefix of the full answer
-                assert np.array_equal(got[0], want[0][: got[0].size])
-            elif variant.get("seen") == "later" and exclude_seen:
-                assert np.array_equal(got[0], want[0][: got[0].size])
-            else:
-                np.testing.assert_array_equal(got[0], want[0])
-                np.testing.assert_allclose(got[1], want[1], rtol=1e-6)
+            np.testing.assert_array_equal(got[0], want[0])
+            np.testing.assert_allclose(got[1], want[1], rtol=1e-6)
+            if allowed_ids is not None:  # baked mask == per-call mask, bits
+                baked = rec.with_allowed(allowed_ids).recommend(hist, weights, k=k, exclude_seen=exclude_seen)
+                assert np.array_equal(baked[0], got[0])
+                assert np.array_equal(baked[1].view(np.int32), got[1].view(np.int32))
 
 
 def test_default_path_and_dtypes():
-    S = _S(30, False, seed=3)
-    rec = Recommender(S)
-    ids, scores = rec.recommend([0, 1, 2], k=5)
+    rec = sim.Recommender(_S(30, False, seed=3))
+    ids, scores = rec.recommend([5, 6, 7], k=5)
     assert ids.dtype == np.int64 and scores.dtype == np.float32
     assert np.all(np.diff(scores) <= 0)
-    assert not np.isin(ids, [0, 1, 2]).any()
+    assert not np.isin(ids, [5, 6, 7]).any()
     assert rec.recommend([], k=5)[0].size == 0
-    assert rec.recommend([0], k=0)[0].size == 0
+    assert rec.recommend([5], k=0)[0].size == 0
+    assert 0 < rec.recommend([5, 6], k=2**62)[0].size <= rec.n_items  # huge k clamped
 
 
-def test_float_bits_independent_of_order_duplicates_and_blocking():
+def test_unknown_ids():
+    rec = sim.Recommender(_S(20, False, seed=2), item_ids=np.arange(100, 120))
+    assert rec.recommend([105, 7], k=3)[0].size == rec.recommend([105], k=3)[0].size
+    with pytest.raises(ValueError, match="unknown item id: 7"):
+        rec.recommend([105, 7], unknown="raise")
+    with pytest.raises(ValueError, match="unknown item id: 100"):  # dropped at build
+        rec.recommend([100], unknown="raise")
+    with pytest.raises(ValueError, match="'skip' or 'raise'"):
+        rec.recommend([105], unknown="ignore")
+
+
+def test_float_bits_independent_of_order_and_duplicates():
     rng = np.random.default_rng(0)
-    S = sp.random_array((200, 200), density=0.1, rng=rng, format="csr")
-    rec = Recommender(S)
+    rec = sim.Recommender(sp.random_array((200, 200), density=0.1, rng=rng, format="csr"))
     hist = rng.choice(200, size=30, replace=False)
     ids, scores = rec.recommend(hist, k=20)
     for other in (
         rec.recommend(hist[::-1], k=20),
         rec.recommend(np.concatenate([hist, hist[:5]]), np.r_[np.full(30, 1.0), np.zeros(5)], k=20),
-        rec.recommend(hist, k=20, _variant=_core.ServeVariant(block=7)),
     ):
         assert np.array_equal(other[0], ids)
         assert np.array_equal(other[1].view(np.int32), scores.view(np.int32))
-    # [a, a] == [a] with weight 2.0
-    two = rec.recommend(np.r_[hist, hist[:1]], k=20)
     w = np.ones(30)
-    w[0] = 2.0
-    assert np.array_equal(two[1].view(np.int32), rec.recommend(hist, w, k=20)[1].view(np.int32))
+    w[0] = 2.0  # [a, a] == [a] with weight 2.0
+    a, b = rec.recommend(np.r_[hist, hist[:1]], k=20), rec.recommend(hist, w, k=20)
+    assert np.array_equal(a[1].view(np.int32), b[1].view(np.int32))
+
+
+@pytest.mark.parametrize("block", [None, 7, 0])
+def test_batch_matches_single_bits(block):
+    rng = np.random.default_rng(4)
+    S = sp.random_array((300, 300), density=0.05, rng=rng, format="csr")
+    ext = rng.choice(10**9, size=300, replace=False)
+    rec = sim.Recommender(S, item_ids=ext)
+    H = sp.random_array((50, 300), density=0.05, rng=rng, format="csr")
+    mask = rec.mask(ext[:150])
+    for allowed in (None, mask):
+        R = rec.recommend_batch(H, k=10, allowed=allowed, num_threads=2, _block_size=block)
+        assert R.shape == H.shape and R.indptr.dtype == np.int32 and R.indices.dtype == np.int32
+        for u in range(50):
+            a, b = H.indptr[u], H.indptr[u + 1]
+            ids, scores = rec.recommend(ext[H.indices[a:b]], H.data[a:b], k=10, allowed=allowed)
+            row = slice(R.indptr[u], R.indptr[u + 1])
+            assert np.array_equal(ext[R.indices[row]], ids)  # best first, not sorted by column
+            assert np.array_equal(R.data[row].view(np.int32), scores.view(np.int32))
+
+
+def test_masks_bound_to_their_build():
+    S = _S(10, False, seed=1)
+    rec = sim.Recommender(S)
+    with pytest.raises(ValueError, match="another model"):
+        rec.recommend([5], allowed=sim.Recommender(_S(100, False, seed=1)).mask([5]))
+    with pytest.raises(ValueError, match="another model"):  # same S, another build
+        rec.recommend([5], allowed=sim.Recommender(S).mask([5]))
+    baked = rec.with_allowed([3, 4, 5, 6])
+    rec.recommend([5], allowed=baked.mask([3]))  # same build: fine both ways
+    baked.recommend([5], allowed=rec.mask([3]))
+    assert set(baked.recommend([5, 6, 7], k=10, exclude_seen=False)[0]) <= {3, 4, 5, 6}
+    assert set(sim.Recommender(S, allowed=[3, 4]).recommend([5, 6, 7], k=10)[0]) <= {3, 4}
+
+
+def test_pickle_round_trip_keeps_layout_and_mask():
+    rng = np.random.default_rng(5)
+    S = _S(80, True, seed=5)
+    ext = rng.choice(10**9, size=80, replace=False)
+    rec = sim.Recommender(S, item_ids=ext).with_allowed(ext[10:60])
+    back = pickle.loads(pickle.dumps(rec))
+    assert back.n_items == rec.n_items
+    for _ in range(20):
+        hist = rng.choice(ext, size=6)
+        a, b = rec.recommend(hist, k=15), back.recommend(hist, k=15)
+        assert np.array_equal(a[0], b[0]) and np.array_equal(a[1].view(np.int32), b[1].view(np.int32))
 
 
 def test_rejects_bad_input():
     S = _S(10, False, seed=1)
     with pytest.raises(ValueError, match="square"):
-        Recommender(sp.random_array((3, 4), density=0.5, format="csr"))
+        sim.Recommender(sp.random_array((3, 4), density=0.5, format="csr"))
     with pytest.raises(ValueError, match="unique"):
-        Recommender(S, item_ids=np.zeros(10))
+        sim.Recommender(S, item_ids=np.zeros(10, dtype=np.int64))
     with pytest.raises(ValueError, match="one id per item"):
-        Recommender(S, item_ids=np.arange(3))
-    rec = Recommender(S)
+        sim.Recommender(S, item_ids=np.arange(3))
+    with pytest.raises(TypeError, match="integer ids"):
+        sim.Recommender(S, item_ids=np.arange(10.0))
+    rec = sim.Recommender(S)
+    with pytest.raises(TypeError, match="integer ids"):
+        rec.recommend([1.9])
     with pytest.raises(ValueError, match="finite"):
-        rec.recommend([0, 1], weights=[1.0, np.nan])
+        rec.recommend([5, 6], weights=[1.0, np.nan])
     with pytest.raises(ValueError, match="len"):
-        rec.recommend([0, 1], weights=[1.0])
-    with pytest.raises(ValueError, match="another model"):
-        rec.recommend([0], allowed=Recommender(_S(100, False, seed=1)).mask([0]))
-    with pytest.raises(ValueError, match="another model"):  # same size, other order
-        rec.recommend([0], allowed=Recommender(_S(10, False, seed=2)).mask([0]))
+        rec.recommend([5, 6], weights=[1.0])
     with pytest.raises(ValueError, match="k must"):
-        rec.recommend([0], k=-1)
-    with pytest.raises(ValueError, match="unknown lookup"):
-        _core.ServeVariant(lookup="nope")
+        rec.recommend([5], k=-1)
+    with pytest.raises(ValueError, match="one column per item"):
+        rec.recommend_batch(sp.random_array((2, 9), density=0.5, format="csr"))
 
 
-def test_caller_matrix_unchanged():
+def test_caller_matrices_unchanged():
     S = _S(20, True, seed=5)
-    before = (S.data.copy(), S.indices.copy(), S.indptr.copy())
-    Recommender(S)
-    assert all(np.array_equal(x, y) for x, y in zip(before, (S.data, S.indices, S.indptr)))
+    H = sp.random_array((5, 20), density=0.3, format="csr", rng=0)
+    before = [(m.data.copy(), m.indices.copy(), m.indptr.copy()) for m in (S, H)]
+    sim.Recommender(S).recommend_batch(H)
+    for m, b in zip((S, H), before):
+        assert all(np.array_equal(x, y) for x, y in zip(b, (m.data, m.indices, m.indptr)))
 
 
 def test_concurrent_calls_identical():
     """One model shared by threads (scratch per OS thread, GIL released)."""
-    from concurrent.futures import ThreadPoolExecutor
-
     rng = np.random.default_rng(2)
-    rec = Recommender(sp.random_array((500, 500), density=0.05, rng=rng, format="csr"))
+    rec = sim.Recommender(sp.random_array((500, 500), density=0.05, rng=rng, format="csr"))
     hists = [rng.choice(500, size=20) for _ in range(64)]
     want = [rec.recommend(h, k=10) for h in hists]
     with ThreadPoolExecutor(8) as ex:
         got = list(ex.map(lambda h: rec.recommend(h, k=10), hists * 4))
     for (gi, gs), (wi, ws) in zip(got, want * 4):
         assert np.array_equal(gi, wi) and np.array_equal(gs, ws)
-
-
-def test_huge_k_is_clamped():
-    rec = Recommender(_S(30, False, seed=3))
-    ids, _ = rec.recommend([0, 1], k=2**62)
-    assert 0 < ids.size <= rec.n_items
-
-
-def test_batch_binding_matches_single():
-    rng = np.random.default_rng(4)
-    rec = Recommender(sp.random_array((300, 300), density=0.05, rng=rng, format="csr"))
-    H = sp.random_array((50, 300), density=0.05, rng=rng, format="csr")
-    hist = {
-        "indptr": H.indptr.astype(np.int64),
-        "ids": H.indices.astype(np.int64),
-        "weights": H.data.astype(np.float32),
-    }
-    v = _core.ServeVariant()
-    indptr, ids, scores, _ = rec._model.batch(hist, k=10, exclude_seen=True, variant=v, num_threads=2)
-    for u in range(50):
-        a, b = H.indptr[u], H.indptr[u + 1]
-        want = rec.recommend(H.indices[a:b], H.data[a:b], k=10, _variant=v)
-        assert np.array_equal(ids[indptr[u] : indptr[u + 1]], want[0])
-        assert np.array_equal(scores[indptr[u] : indptr[u + 1]].view(np.int32), want[1].view(np.int32))

@@ -279,7 +279,6 @@ fn canonicalize<'py, V: Value + Element>(
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
     m.add_class::<serve::PyModel>()?;
-    m.add_class::<serve::PyVariant>()?;
     m.add_class::<serve::PyMask>()?;
     m.add_function(wrap_pyfunction!(remap_sort_rows, m)?)?;
     m.add_function(wrap_pyfunction!(canonicalize_rows, m)?)?;
