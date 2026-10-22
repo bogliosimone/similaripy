@@ -20,6 +20,7 @@ Modes (--mode, several allowed):
   gate      V6: batch C (rayon over users, `ServeModel.batch`) vs the kernel
             (`dot_product(URM, S, filter_cols=URM)`, kernel + output time),
             --gate-threads (default 1 and 6), ABBA
+--groups limits the variants mode (e.g. --groups V4 for Yambda 500M).
 
 Usage:
     python run_serve_benchmarks.py --dataset movielens --version 32m --mode latency variants
@@ -141,10 +142,12 @@ def mode_variants(args, URM, rec, users, rng, report):
     bench(model, hist, args.k, variant())  # warm-up
     out = {}
     for group, cases in VARIANTS.items():
+        if args.groups and group.split()[0] not in args.groups:
+            continue
         res = abba(cases, args.rounds, lambda kw: stats(bench(model, hist, args.k, variant(**kw))))
         out[group] = {n: median_stats(r) for n, r in res.items()}
     n = rec.n_items
-    for hidden in (0.1, 0.5):
+    for hidden in (0.1, 0.5) if not args.groups or "V3" in args.groups else ():
         allowed_ids = rng.choice(n, size=int(n * (1 - hidden)), replace=False)
         mask = rec.mask(allowed_ids)
 
@@ -244,6 +247,7 @@ def main():
     p.add_argument("--evict-mb", type=int, default=48)
     p.add_argument("--lookup-batch", type=int, default=1000)
     p.add_argument("--gate-threads", type=int, nargs="+", default=[1, 6])
+    p.add_argument("--groups", nargs="+", default=None, help="variants mode: only these (V2 V3 V4 V5 V8)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--json", default=None)
     args = p.parse_args()
