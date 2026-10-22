@@ -18,22 +18,43 @@ from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
 from ._s_plus import DEFAULT_BLOCK_SIZE, _canonical_csr
 
 _INT32_MAX = np.iinfo(np.int32).max
+_INT64_MAX = np.iinfo(np.int64).max
 
 
 def _ids(name, ids) -> np.ndarray:
-    """1-d int64 ids; integer input only (a float id is a bug, not an id)."""
+    """A private 1-d int64 copy; integer ids only (a float id is a bug, not
+    an id), uint64 only within int64's range (no silent wrap)."""
     a = np.asarray(ids)
+    if a.ndim > 1:
+        raise ValueError(f"{name} must be 1-d, got shape {a.shape}")
     if a.size == 0:
         return np.empty(0, dtype=np.int64)
     if a.dtype.kind not in "iu":
         raise TypeError(f"{name} must be integer ids, got dtype {a.dtype}")
-    return np.ascontiguousarray(a, dtype=np.int64).ravel()
+    if a.dtype.kind == "u" and a.max() > _INT64_MAX:
+        raise ValueError(f"{name} must fit in int64, got {a.max()}")
+    return np.array(a, dtype=np.int64)
+
+
+def _weights(weights):
+    if weights is None:
+        return None
+    w = np.asarray(weights, dtype=np.float32)
+    if w.ndim > 1:
+        raise ValueError(f"weights must be 1-d, got shape {w.shape}")
+    return np.array(w)
 
 
 def _check_k(k):
     if not isinstance(k, (int, np.integer)) or isinstance(k, bool) or k < 0:
         raise ValueError(f"k must be a non-negative integer, got {k!r}")
-    return int(k)
+    return min(int(k), _INT64_MAX)  # clamped to the item count in Rust
+
+
+def _check_mask(allowed):
+    if allowed is not None and not isinstance(allowed, _core.ServeMask):
+        raise TypeError(f"allowed must be a mask from Recommender.mask(ids), got {type(allowed).__name__}")
+    return allowed
 
 
 class Recommender:
@@ -59,6 +80,8 @@ class Recommender:
         n = S.shape[0]
         if S.shape[1] != n:
             raise ValueError(f"S must be square (item x item), got shape {S.shape}")
+        if not np.isfinite(S.data).all():  # incl. float64 values past float32's range
+            raise ValueError("S must be finite (in float32)")
         ext = None
         if item_ids is not None:
             ext = _ids("item_ids", item_ids)
@@ -128,8 +151,8 @@ class Recommender:
         """
         k = _check_k(k)
         ids = _ids("history", history)
-        if weights is not None:
-            weights = np.ascontiguousarray(weights, dtype=np.float32).ravel()
+        weights = _weights(weights)
+        allowed = _check_mask(allowed)
         return self._model.recommend(ids, weights, k=k, exclude_seen=exclude_seen, allowed=allowed, unknown=unknown)
 
     def recommend_batch(
@@ -146,6 +169,7 @@ class Recommender:
             2^31 results the indptr is int64.
         """
         k = _check_k(k)
+        allowed = _check_mask(allowed)
         n_cols = self._model.n_cols
         if H.ndim != 2 or H.shape[1] != n_cols:
             raise ValueError(f"H must have one column per item of S ({n_cols}), got shape {H.shape}")

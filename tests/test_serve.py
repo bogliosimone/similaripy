@@ -209,3 +209,66 @@ def test_concurrent_calls_identical():
         got = list(ex.map(lambda h: rec.recommend(h, k=10), hists * 4))
     for (gi, gs), (wi, ws) in zip(got, want * 4):
         assert np.array_equal(gi, wi) and np.array_equal(gs, ws)
+
+
+def test_empty_models_and_masks():
+    for S in (sp.csr_array((0, 0)), sp.csr_array((5, 5))):
+        rec = sim.Recommender(S)
+        assert rec.n_items == 0
+        assert rec.recommend([0, 1], k=3)[0].size == 0
+        assert rec.recommend_batch(sp.csr_array((2, S.shape[1]))).nnz == 0
+        assert pickle.loads(pickle.dumps(rec)).n_items == 0
+    rec = sim.Recommender(_S(20, False, seed=6), allowed=[])
+    assert rec.recommend([5, 6, 7], k=5)[0].size == 0
+
+
+def test_zero_as_a_real_external_id():
+    S = _S(10, False, seed=8)
+    ext = np.arange(10) * 7 - 14  # item 2 has id 0
+    rec = sim.Recommender(S, item_ids=ext)
+    D = S.toarray()
+    hist = [ext[j] for j in range(10) if D[j].any()][:3]
+    want = _reference(S, ext, hist, None, 10, True, None)
+    assert np.array_equal(rec.recommend(hist, k=10)[0], want[0])
+    assert np.array_equal(rec.recommend([0], k=10)[0], _reference(S, ext, [0], None, 10, True, None)[0])
+
+
+def test_batch_skips_dropped_columns_and_int64_indptr(monkeypatch):
+    S = _S(30, False, seed=9)  # item 0 is dropped
+    rec = sim.Recommender(S)
+    H = sp.csr_array(([1.0, 1.0, 1.0], ([0, 0, 1], [0, 5, 0])), shape=(2, 30))
+    R = rec.recommend_batch(H, k=5)
+    assert np.array_equal(R.indices[R.indptr[0] : R.indptr[1]], rec.recommend([5], k=5)[0])
+    assert R.indptr[2] == R.indptr[1]  # a history of dropped items only
+    import similaripy._serve as serve
+
+    monkeypatch.setattr(serve, "_INT32_MAX", 0)
+    assert rec.recommend_batch(H, k=5).indptr.dtype == np.int64
+
+
+def test_reuse_after_raise():
+    rec = sim.Recommender(_S(30, False, seed=10))
+    want = rec.recommend([5, 6], k=5)
+    with pytest.raises(ValueError, match="unknown"):
+        rec.recommend([5, 6, 999], k=5, unknown="raise")
+    got = rec.recommend([5, 6], k=5)
+    assert np.array_equal(got[0], want[0]) and np.array_equal(got[1], want[1])
+
+
+def test_boundary_types():
+    S = _S(10, False, seed=1)
+    with pytest.raises(ValueError, match="fit in int64"):
+        sim.Recommender(S, item_ids=np.array([2**63] + list(range(9)), dtype=np.uint64))
+    rec = sim.Recommender(S)
+    with pytest.raises(ValueError, match="fit in int64"):
+        rec.recommend([2**63])
+    with pytest.raises(ValueError, match="1-d"):
+        rec.recommend([[5], [6]])
+    with pytest.raises(TypeError, match="Recommender.mask"):
+        rec.recommend([5], allowed=[3, 4])
+    assert rec.recommend(np.array([5, 6], dtype=np.uint32), k=2**70)[0].size > 0
+    bad = sp.csr_array(np.array([[0.0, np.inf], [1.0, 0.0]]))
+    with pytest.raises(ValueError, match="finite"):
+        sim.Recommender(bad)
+    with pytest.raises(ValueError, match="finite"):
+        sim.Recommender(sp.csr_array(np.array([[0.0, 1e300], [1.0, 0.0]])))

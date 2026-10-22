@@ -41,6 +41,7 @@ from dataset_loaders import load_URM
 from run_recommend_benchmarks import run_once
 
 import similaripy as sim
+from similaripy._s_plus import DEFAULT_BLOCK_SIZE, _canonical_csr
 
 
 def stats(ns):
@@ -106,7 +107,8 @@ def mode_latency(args, URM, rec, users, rng, report):
 def batch_call(rec, URM, k, threads):
     """Times the Rust batch call only (H's prep outside, as the kernel side's
     `kernel + output` excludes its prep)."""
-    H = (URM.indptr.astype(np.int64), URM.indices.astype(np.int32), URM.data.astype(np.float32))
+    H = _canonical_csr(URM, np.float32, 0)  # as recommend_batch and the kernel's prep do
+    H = (H.indptr.astype(np.int64), H.indices, H.data)
 
     def run(threads=threads):
         t = time.perf_counter()
@@ -144,6 +146,8 @@ def mode_gate(args, URM, S, rec, report):
 def mode_block(args, URM, S, rec, report):
     """Batch time with `DEFAULT_BLOCK_SIZE` (rec) vs one block (a second model)."""
     one = sim.Recommender(S, _block_size=0)
+    if rec._model.n_active <= DEFAULT_BLOCK_SIZE:
+        print(f"n_active {rec._model.n_active:,} <= block {DEFAULT_BLOCK_SIZE:,}: both models run one block (control)")
     out = {}
     for threads in args.gate_threads:
         cases = {

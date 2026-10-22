@@ -709,8 +709,9 @@ unsafe fn drain_impl<const MASK: bool>(
 
 /// Sorts by internal id and merges duplicates (weights summed), so the
 /// addition order depends on the item set, not the history order (G3).
-/// Exception: 3+ copies of one id with different weights sum in input order
-/// (f32 addition isn't associative); the same input still gives the same bits.
+/// Exception: 3+ copies of one id with different weights sum in an order the
+/// sort picks from the input (f32 addition isn't associative); the same input
+/// still gives the same bits.
 fn canonicalize(hist: &mut Vec<(u32, f32)>) {
     hist.sort_unstable_by_key(|&(i, _)| i);
     hist.dedup_by(|b, a| {
