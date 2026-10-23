@@ -233,45 +233,56 @@ pub(crate) fn write_text(dir: &Path, name: &str, text: &str) -> Result<(), Error
     f.sync_all().map_err(io(&path))
 }
 
-/// Runs `write` into `dir`. A missing or empty `dir` is written in place; a
-/// non-empty one is an error unless `overwrite`, it is a real directory (not
-/// a symlink) and `is_model` says it holds a saved model and nothing else:
-/// then `write` fills a new sibling directory that replaces it by rename, so
-/// readers that mapped the old files keep them. Between the two renames
-/// `dir` doesn't exist (a concurrent load fails): one saver at a time.
+/// Runs `write` into a new sibling directory, then renames it to `dir`, so
+/// `dir` only ever appears complete (a failed or concurrent save never
+/// leaves a partial model there). `dir` may be missing or empty; a
+/// non-empty one is an error unless `overwrite` and `is_model` says it holds
+/// a saved model and nothing else: it is then renamed away first and
+/// removed, so readers that mapped the old files keep them. Between the two
+/// renames `dir` doesn't exist (a concurrent load fails): one saver at a
+/// time. Never through a symlink.
 pub(crate) fn save_dir(
     dir: &Path,
     overwrite: bool,
     is_model: impl Fn(&Path) -> bool,
     write: impl Fn(&Path) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let occupied = dir.exists() && fs::read_dir(dir).map_err(io(dir))?.next().is_some();
-    if !occupied {
-        fs::create_dir_all(dir).map_err(io(dir))?;
-        return write(dir);
-    }
     let exists = |msg: &str| {
         Err(Error::Io(
             std::io::ErrorKind::AlreadyExists,
             format!("{}: {msg}", dir.display()),
         ))
     };
-    if !overwrite {
-        return exists("not empty (overwrite=True replaces a saved model)");
-    }
     if fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
         return exists(
             "a symlink: not replaced (save to a new directory and point the link at it)",
         );
     }
-    if !is_model(dir) {
+    let occupied = dir.exists() && fs::read_dir(dir).map_err(io(dir))?.next().is_some();
+    if occupied && !overwrite {
+        return exists("not empty (overwrite=True replaces a saved model)");
+    }
+    if occupied && !is_model(dir) {
         return exists("not only a saved model: not replaced");
+    }
+    if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).map_err(io(parent))?;
     }
     let new = sibling(dir, "new")?;
     fs::create_dir(&new).map_err(io(&new))?;
     if let Err(e) = write(&new) {
         let _ = fs::remove_dir_all(&new);
         return Err(e);
+    }
+    if !occupied {
+        if dir.exists() {
+            let _ = fs::remove_dir(dir); // empty: only an empty directory goes
+        }
+        if let Err(e) = fs::rename(&new, dir) {
+            let _ = fs::remove_dir_all(&new);
+            return Err(io(dir)(e));
+        }
+        return Ok(());
     }
     let old = sibling(dir, "old")?;
     if let Err(e) = fs::rename(dir, &old) {

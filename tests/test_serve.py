@@ -499,10 +499,13 @@ def test_save_refuses_to_replace_a_symlink(tmp_path):
     assert (tmp_path / "current").is_symlink()
 
 
-def test_concurrent_overwrites_leave_no_temp_dirs(tmp_path):
-    """Two savers on one path aren't supported (some fail), but none leaves a copy behind."""
+@pytest.mark.parametrize("existing", [True, False])
+def test_concurrent_overwrites_leave_no_temp_dirs(tmp_path, existing):
+    """Two savers on one path aren't supported (some fail), but none leaves a
+    copy or a partial model behind: `m` only ever appears complete."""
     a = sim.ItemKNN(_S(20, False, seed=1))
-    a.save(tmp_path / "m")
+    if existing:
+        a.save(tmp_path / "m")
 
     def save():
         try:
