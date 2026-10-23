@@ -391,8 +391,17 @@ def test_save_never_overwrites_by_default(tmp_path):
         b.save(tmp_path / "m")
     mapped = sim.ItemKNN.load(tmp_path / "m")
     want = mapped.recommend([1, 2], k=5)
-    b.save(tmp_path / "m", overwrite=True)  # new files renamed into place
-    assert np.array_equal(mapped.recommend([1, 2], k=5)[0], want[0])  # the old mapping still reads
+    if sys.platform == "win32":
+        # Windows can't rename a directory with mapped files: refused, old model intact
+        with pytest.raises(PermissionError):
+            b.save(tmp_path / "m", overwrite=True)
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["m"]
+        assert np.array_equal(sim.ItemKNN.load(tmp_path / "m", mmap=False).recommend([1, 2], k=5)[0], want[0])
+        del mapped  # unmapped: now it can be replaced
+        b.save(tmp_path / "m", overwrite=True)
+    else:
+        b.save(tmp_path / "m", overwrite=True)  # new files renamed into place
+        assert np.array_equal(mapped.recommend([1, 2], k=5)[0], want[0])  # the old mapping still reads
     assert np.array_equal(sim.ItemKNN.load(tmp_path / "m").recommend([1, 2], k=5)[0], b.recommend([1, 2], k=5)[0])
     assert sorted(p.name for p in tmp_path.iterdir()) == ["m"]  # no temp dirs left
     (tmp_path / "other").mkdir()

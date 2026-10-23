@@ -235,7 +235,9 @@ class ItemKNN:
         `path` must be missing or empty. `overwrite=True` replaces a saved
         model there (a directory holding only a saved model's files, not a
         symlink) with a new directory renamed into place, so processes that
-        mapped the old files keep them (POSIX). Between the two renames the
+        mapped the old files keep them (Linux, macOS; on Windows the replace
+        fails with PermissionError while any process has the model loaded with
+        `mmap=True`, and the old model stays). Between the two renames the
         directory doesn't exist: a `load` at that moment fails, and two savers
         must not overwrite the same path at once. For a live service, save each
         version to a new directory and switch what the workers load (a symlink

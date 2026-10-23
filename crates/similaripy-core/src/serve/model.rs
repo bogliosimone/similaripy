@@ -280,8 +280,10 @@ impl Model {
     /// A missing or empty `dir` is filled; a non-empty one is an error unless
     /// `overwrite` and it holds a saved model and nothing else (not a
     /// symlink), which is then replaced by a new directory (renamed into
-    /// place: processes that mapped the old files keep them; `dir` is briefly
-    /// missing, one saver at a time). `written_by` goes into `meta.json`.
+    /// place: processes that mapped the old files keep them; on Windows the
+    /// rename is refused while any process maps them, and the old model
+    /// stays; `dir` is briefly missing, one saver at a time). `written_by`
+    /// goes into `meta.json`.
     pub fn save(&self, dir: &Path, written_by: &str, overwrite: bool) -> Result<(), Error> {
         let p = self.parts();
         store::save_dir(dir, overwrite, is_saved_model, |d| {
