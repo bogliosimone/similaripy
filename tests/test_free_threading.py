@@ -7,6 +7,7 @@ import pytest
 import scipy.sparse as sp
 
 import similaripy as sim
+from similaripy.serving import ItemKNN
 
 N_THREADS = 8
 ROUNDS = 4
@@ -33,7 +34,7 @@ def _calls(m):
     }
 
 
-_REC = sim.ItemKNN(sim.cosine(_matrix().T, k=50, verbose=False))
+_REC = ItemKNN(sim.cosine(_matrix().T, k=50, verbose=False))
 
 
 @pytest.mark.skipif(not sysconfig.get_config_var("Py_GIL_DISABLED"), reason="free-threaded build only")

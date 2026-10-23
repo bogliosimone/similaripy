@@ -2,7 +2,7 @@
 //! copy at build, no numpy inside, D63). The build reads the caller's S
 //! arrays in place (the core makes them canonical during its one copy). Each
 //! call copies the ids in, runs pure Rust without the GIL and moves the
-//! results out. `similaripy/_serve.py` wraps it as `ItemKNN`.
+//! results out. `similaripy/serving.py` wraps it as `ItemKNN`.
 
 use std::path::PathBuf;
 

@@ -1,7 +1,9 @@
 """
-Serving engine: `ItemKNN`, a prepared item-item model built once from S, then
-top-K recommendations per history (`recommend`) or per row of a user-item
-matrix (`recommend_batch`), in Rust without the GIL.
+Serving engine, the online half: `ItemKNN`, a prepared item-item model built
+once from S (computed offline by the similarity functions, e.g. `sim.cosine`),
+then top-K recommendations per history (`recommend`) or per row of a user-item
+matrix (`recommend_batch`), in Rust without the GIL. One import path:
+`from similaripy.serving import ItemKNN`.
 
 Build: the Rust core reads S's arrays in place (cast here only when their
 dtypes aren't int32/float32) and copies S once into the model, made canonical
@@ -22,6 +24,8 @@ import scipy.sparse as sp
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
 from ._s_plus import _canonical_csr
+
+__all__ = ["ItemKNN"]
 
 _INT32_MAX = np.iinfo(np.int32).max
 _INT64_MAX = np.iinfo(np.int64).max

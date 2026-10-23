@@ -1,5 +1,5 @@
 //! Python bindings of the Rust core (`similaripy._core`). `similaripy/_s_plus.py`
-//! does the prep and calls `compute`; `similaripy/_serve.py` builds the serving
+//! does the prep and calls `compute`; `similaripy/serving.py` builds the serving
 //! model (`serve.rs`).
 
 mod normalize;

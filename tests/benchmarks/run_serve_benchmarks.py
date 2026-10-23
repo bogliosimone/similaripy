@@ -1,5 +1,5 @@
 """
-Serving-engine benchmark: `similaripy.ItemKNN` latency, batch vs the
+Serving-engine benchmark: `similaripy.serving.ItemKNN` latency, batch vs the
 kernel, batch block size, and the model build's memory.
 
 S = cosine(URM.T, k=--model-k) (or --model rp3beta), built once, not timed.
@@ -42,6 +42,7 @@ from run_recommend_benchmarks import run_once
 
 import similaripy as sim
 from similaripy._s_plus import DEFAULT_BLOCK_SIZE, _canonical_csr
+from similaripy.serving import ItemKNN
 
 
 def stats(ns):
@@ -145,7 +146,7 @@ def mode_gate(args, URM, S, rec, report):
 
 def mode_block(args, URM, S, rec, report):
     """Batch time with `DEFAULT_BLOCK_SIZE` (rec) vs one block (a second model)."""
-    one = sim.ItemKNN(S, block_size=None)
+    one = ItemKNN(S, block_size=None)
     if rec._model.n_active <= DEFAULT_BLOCK_SIZE:
         print(f"n_active {rec._model.n_active:,} <= block {DEFAULT_BLOCK_SIZE:,}: both models run one block (control)")
     out = {}
@@ -167,13 +168,14 @@ BUILD_CHILD = """
 import resource, sys, time
 import scipy.sparse as sp
 import similaripy as sim
+from similaripy.serving import ItemKNN
 def rss():
     r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return r / 2**20 if sys.platform == "darwin" else r / 2**10
 S = sp.load_npz(sys.argv[1]).tocsr()
 before = rss()
 t = time.perf_counter()
-rec = sim.ItemKNN(S)
+rec = ItemKNN(S)
 print(f"{time.perf_counter() - t:.3f} {before:.0f} {rss():.0f} {S.nnz}")
 """
 
@@ -225,7 +227,7 @@ def main():
     if "build" in args.mode:
         mode_build(args, S, report)
     t = time.perf_counter()
-    rec = sim.ItemKNN(S)
+    rec = ItemKNN(S)
     print(
         f"URM {URM.shape} nnz {URM.nnz:,}; S ({args.model}) nnz {S.nnz:,} in {t_s:.1f}s; "
         f"model build {time.perf_counter() - t:.2f}s, {rec.n_items:,} items; max RSS {rss_mb():.0f} MB"

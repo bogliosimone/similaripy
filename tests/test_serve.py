@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-import similaripy as sim
+from similaripy.serving import ItemKNN
 
 
 def _S(n, signed, seed, density=0.3):
@@ -60,7 +60,7 @@ def test_matches_dense_reference(signed, external, n):
     if external:  # random ids plus the int64 edge keys as real items
         ext = rng.choice(10**12, size=n, replace=False).astype(np.int64)
         ext[1:4] = [np.iinfo(np.int64).min, np.iinfo(np.int64).max, -1]
-    rec = sim.ItemKNN(S, item_ids=ext if external else None)
+    rec = ItemKNN(S, item_ids=ext if external else None)
     assert rec.n_items == n - 1  # item 0 dropped
     for trial in range(30):
         hist = rng.choice(ext, size=rng.integers(0, 8))
@@ -77,7 +77,7 @@ def test_matches_dense_reference(signed, external, n):
             np.testing.assert_allclose(got[1], want[1], rtol=1e-6)
             if allowed_ids is not None:  # trimmed S == view's default mask == per-call mask, bits
                 for other in (
-                    sim.ItemKNN(S, item_ids=ext if external else None, candidate_items=allowed_ids),
+                    ItemKNN(S, item_ids=ext if external else None, candidate_items=allowed_ids),
                     rec.view(allowed_items=allowed_ids),
                 ):
                     r = other.recommend(hist, weights, k=k, exclude_seen=exclude_seen)
@@ -86,7 +86,7 @@ def test_matches_dense_reference(signed, external, n):
 
 
 def test_default_path_and_dtypes():
-    rec = sim.ItemKNN(_S(30, False, seed=3))
+    rec = ItemKNN(_S(30, False, seed=3))
     ids, scores = rec.recommend([5, 6, 7], k=5)
     assert ids.dtype == np.int64 and scores.dtype == np.float32
     assert np.all(np.diff(scores) <= 0)
@@ -97,7 +97,7 @@ def test_default_path_and_dtypes():
 
 
 def test_unknown_ids():
-    rec = sim.ItemKNN(_S(20, False, seed=2), item_ids=np.arange(100, 120))
+    rec = ItemKNN(_S(20, False, seed=2), item_ids=np.arange(100, 120))
     assert rec.recommend([105, 7], k=3)[0].size == rec.recommend([105], k=3)[0].size
     with pytest.raises(ValueError, match="unknown item id: 7"):
         rec.recommend([105, 7], unknown="raise")
@@ -109,7 +109,7 @@ def test_unknown_ids():
 
 def test_float_bits_independent_of_order_and_duplicates():
     rng = np.random.default_rng(0)
-    rec = sim.ItemKNN(sp.random_array((200, 200), density=0.1, rng=rng, format="csr"))
+    rec = ItemKNN(sp.random_array((200, 200), density=0.1, rng=rng, format="csr"))
     hist = rng.choice(200, size=30, replace=False)
     ids, scores = rec.recommend(hist, k=20)
     for other in (
@@ -129,8 +129,8 @@ def test_batch_matches_single_bits(block):
     rng = np.random.default_rng(4)
     S = sp.random_array((300, 300), density=0.05, rng=rng, format="csr")
     ext = rng.choice(10**9, size=300, replace=False)
-    rec = sim.ItemKNN(S, item_ids=ext, block_size=block)
-    one_block = sim.ItemKNN(S, item_ids=ext, block_size=None)
+    rec = ItemKNN(S, item_ids=ext, block_size=block)
+    one_block = ItemKNN(S, item_ids=ext, block_size=None)
     H = sp.random_array((50, 300), density=0.05, rng=rng, format="csr")
     mask = rec.mask(ext[:150])
     for allowed in (None, mask):
@@ -148,21 +148,21 @@ def test_batch_matches_single_bits(block):
 
 def test_masks_bound_to_their_build():
     S = _S(10, False, seed=1)
-    rec = sim.ItemKNN(S)
+    rec = ItemKNN(S)
     with pytest.raises(ValueError, match="another model"):
-        rec.recommend([5], allowed=sim.ItemKNN(_S(100, False, seed=1)).mask([5]))
+        rec.recommend([5], allowed=ItemKNN(_S(100, False, seed=1)).mask([5]))
     with pytest.raises(ValueError, match="another model"):  # same S, another build
-        rec.recommend([5], allowed=sim.ItemKNN(S).mask([5]))
+        rec.recommend([5], allowed=ItemKNN(S).mask([5]))
     view = rec.view(allowed_items=[3, 4, 5, 6])
     rec.recommend([5], allowed=view.mask([3]))  # same build: fine both ways
     view.recommend([5], allowed=rec.mask([3]))
     assert set(view.recommend([5, 6, 7], k=10, exclude_seen=False)[0]) <= {3, 4, 5, 6}
-    assert set(sim.ItemKNN(S, candidate_items=[3, 4]).recommend([5, 6, 7], k=10)[0]) <= {3, 4}
+    assert set(ItemKNN(S, candidate_items=[3, 4]).recommend([5, 6, 7], k=10)[0]) <= {3, 4}
 
 
 def test_view_shares_s_and_combines_masks():
     S = _S(60, False, seed=12)
-    rec = sim.ItemKNN(S)
+    rec = ItemKNN(S)
     hist = [5, 6, 7, 8]
     full = rec.recommend(hist, k=60, exclude_seen=False)[0]
     a, b = list(range(0, 60, 2)), list(range(0, 60, 3))
@@ -176,24 +176,24 @@ def test_view_shares_s_and_combines_masks():
     ]
     assert np.array_equal(va.view(allowed_items=None).recommend(hist, k=60, exclude_seen=False)[0], full)
     # candidate_items trims for good: a view can't widen past it
-    trimmed = sim.ItemKNN(S, candidate_items=a)
+    trimmed = ItemKNN(S, candidate_items=a)
     assert set(trimmed.view(allowed_items=None).recommend(hist, k=60, exclude_seen=False)[0]) <= set(a)
 
 
 def test_block_size_validation():
     S = _S(10, False, seed=1)
     for ok in ("auto", None, 1, 1000):
-        sim.ItemKNN(S, block_size=ok)
+        ItemKNN(S, block_size=ok)
     for bad in (0, -1, "big", 1.5, True):
         with pytest.raises(ValueError, match="block_size"):
-            sim.ItemKNN(S, block_size=bad)
+            ItemKNN(S, block_size=bad)
 
 
 def test_pickle_round_trip_keeps_layout_and_mask():
     rng = np.random.default_rng(5)
     S = _S(80, True, seed=5)
     ext = rng.choice(10**9, size=80, replace=False)
-    rec = sim.ItemKNN(S, item_ids=ext, candidate_items=ext[5:70], block_size=None).view(allowed_items=ext[10:60])
+    rec = ItemKNN(S, item_ids=ext, candidate_items=ext[5:70], block_size=None).view(allowed_items=ext[10:60])
     back = pickle.loads(pickle.dumps(rec))
     assert back.n_items == rec.n_items and back._model.parts()[-1] is None  # block size as given
     for _ in range(20):
@@ -205,14 +205,14 @@ def test_pickle_round_trip_keeps_layout_and_mask():
 def test_rejects_bad_input():
     S = _S(10, False, seed=1)
     with pytest.raises(ValueError, match="square"):
-        sim.ItemKNN(sp.random_array((3, 4), density=0.5, format="csr"))
+        ItemKNN(sp.random_array((3, 4), density=0.5, format="csr"))
     with pytest.raises(ValueError, match="unique"):
-        sim.ItemKNN(S, item_ids=np.zeros(10, dtype=np.int64))
+        ItemKNN(S, item_ids=np.zeros(10, dtype=np.int64))
     with pytest.raises(ValueError, match="one id per item"):
-        sim.ItemKNN(S, item_ids=np.arange(3))
+        ItemKNN(S, item_ids=np.arange(3))
     with pytest.raises(TypeError, match="integer ids"):
-        sim.ItemKNN(S, item_ids=np.arange(10.0))
-    rec = sim.ItemKNN(S)
+        ItemKNN(S, item_ids=np.arange(10.0))
+    rec = ItemKNN(S)
     with pytest.raises(TypeError, match="integer ids"):
         rec.recommend([1.9])
     with pytest.raises(ValueError, match="finite"):
@@ -229,7 +229,7 @@ def test_caller_matrices_unchanged():
     S = _S(20, True, seed=5)
     H = sp.random_array((5, 20), density=0.3, format="csr", rng=0)
     before = [(m.data.copy(), m.indices.copy(), m.indptr.copy()) for m in (S, H)]
-    sim.ItemKNN(S).recommend_batch(H)
+    ItemKNN(S).recommend_batch(H)
     for m, b in zip((S, H), before):
         assert all(np.array_equal(x, y) for x, y in zip(b, (m.data, m.indices, m.indptr)))
 
@@ -238,7 +238,7 @@ def test_any_input_form_same_model():
     """Duplicates, explicit zeros, unsorted rows, other formats and dtypes:
     the same model as the canonical float32 CSR, array for array."""
     S = _S(40, True, seed=9)
-    want = sim.ItemKNN(S)._model.parts()
+    want = ItemKNN(S)._model.parts()
     coo = S.tocoo()
     # each entry as two exact halves, shuffled, plus explicit zeros
     rows = np.concatenate([coo.row, coo.row, [0, 3]])
@@ -251,7 +251,7 @@ def test_any_input_form_same_model():
     assert not raw_csr.has_canonical_format
     raw_coo = sp.coo_array((vals, (rows, cols)), shape=S.shape)
     for m in (raw_csr, raw_coo, S.tocsc(), S.astype(np.float64), sp.csr_matrix(S)):
-        got = sim.ItemKNN(m)._model.parts()
+        got = ItemKNN(m)._model.parts()
         for a, b in zip(got[:5], want[:5]):
             assert np.array_equal(a, b)
 
@@ -260,12 +260,12 @@ def test_any_input_form_same_model():
 def test_concurrent_calls_identical(tmp_path, mapped):
     """One model shared by threads (scratch per OS thread, GIL released), built or mapped from disk."""
     rng = np.random.default_rng(2)
-    rec = sim.ItemKNN(sp.random_array((500, 500), density=0.05, rng=rng, format="csr"))
+    rec = ItemKNN(sp.random_array((500, 500), density=0.05, rng=rng, format="csr"))
     hists = [rng.choice(500, size=20) for _ in range(64)]
     want = [rec.recommend(h, k=10) for h in hists]
     if mapped:
         rec.save(tmp_path / "m")
-        rec = sim.ItemKNN.load(tmp_path / "m")
+        rec = ItemKNN.load(tmp_path / "m")
     with ThreadPoolExecutor(8) as ex:
         got = list(ex.map(lambda h: rec.recommend(h, k=10), hists * 4))
     for (gi, gs), (wi, ws) in zip(got, want * 4):
@@ -274,19 +274,19 @@ def test_concurrent_calls_identical(tmp_path, mapped):
 
 def test_empty_models_and_masks():
     for S in (sp.csr_array((0, 0)), sp.csr_array((5, 5))):
-        rec = sim.ItemKNN(S)
+        rec = ItemKNN(S)
         assert rec.n_items == 0
         assert rec.recommend([0, 1], k=3)[0].size == 0
         assert rec.recommend_batch(sp.csr_array((2, S.shape[1]))).nnz == 0
         assert pickle.loads(pickle.dumps(rec)).n_items == 0
-    rec = sim.ItemKNN(_S(20, False, seed=6), candidate_items=[])
+    rec = ItemKNN(_S(20, False, seed=6), candidate_items=[])
     assert rec.recommend([5, 6, 7], k=5)[0].size == 0
 
 
 def test_zero_as_a_real_external_id():
     S = _S(10, False, seed=8)
     ext = np.arange(10) * 7 - 14  # item 2 has id 0
-    rec = sim.ItemKNN(S, item_ids=ext)
+    rec = ItemKNN(S, item_ids=ext)
     D = S.toarray()
     hist = [ext[j] for j in range(10) if D[j].any()][:3]
     want = _reference(S, ext, hist, None, 10, True, None)
@@ -296,19 +296,19 @@ def test_zero_as_a_real_external_id():
 
 def test_batch_skips_dropped_columns_and_int64_indptr(monkeypatch):
     S = _S(30, False, seed=9)  # item 0 is dropped
-    rec = sim.ItemKNN(S)
+    rec = ItemKNN(S)
     H = sp.csr_array(([1.0, 1.0, 1.0], ([0, 0, 1], [0, 5, 0])), shape=(2, 30))
     R = rec.recommend_batch(H, k=5)
     assert np.array_equal(R.indices[R.indptr[0] : R.indptr[1]], rec.recommend([5], k=5)[0])
     assert R.indptr[2] == R.indptr[1]  # a history of dropped items only
-    import similaripy._serve as serve
+    import similaripy.serving as serve
 
     monkeypatch.setattr(serve, "_INT32_MAX", 0)
     assert rec.recommend_batch(H, k=5).indptr.dtype == np.int64
 
 
 def test_reuse_after_raise():
-    rec = sim.ItemKNN(_S(30, False, seed=10))
+    rec = ItemKNN(_S(30, False, seed=10))
     want = rec.recommend([5, 6], k=5)
     with pytest.raises(ValueError, match="unknown"):
         rec.recommend([5, 6, 999], k=5, unknown="raise")
@@ -319,8 +319,8 @@ def test_reuse_after_raise():
 def test_boundary_types():
     S = _S(10, False, seed=1)
     with pytest.raises(ValueError, match="fit in int64"):
-        sim.ItemKNN(S, item_ids=np.array([2**63] + list(range(9)), dtype=np.uint64))
-    rec = sim.ItemKNN(S)
+        ItemKNN(S, item_ids=np.array([2**63] + list(range(9)), dtype=np.uint64))
+    rec = ItemKNN(S)
     with pytest.raises(ValueError, match="fit in int64"):
         rec.recommend([2**63])
     with pytest.raises(ValueError, match="1-d"):
@@ -330,9 +330,9 @@ def test_boundary_types():
     assert rec.recommend(np.array([5, 6], dtype=np.uint32), k=2**70)[0].size > 0
     bad = sp.csr_array(np.array([[0.0, np.inf], [1.0, 0.0]]))
     with pytest.raises(ValueError, match="finite"):
-        sim.ItemKNN(bad)
+        ItemKNN(bad)
     with pytest.raises(ValueError, match="finite"):
-        sim.ItemKNN(sp.csr_array(np.array([[0.0, 1e300], [1.0, 0.0]])))
+        ItemKNN(sp.csr_array(np.array([[0.0, 1e300], [1.0, 0.0]])))
 
 
 def _bits(a):
@@ -348,10 +348,10 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
     S = _S(80, True, seed=11) @ sp.diags_array(keep)  # items 3-5: no column
     S = sp.diags_array(np.r_[np.ones(5), 0, np.ones(74)]) @ S  # item 5: no row either (dropped)
     ext = rng.choice(10**12, size=80, replace=False)
-    rec = sim.ItemKNN(S, item_ids=ext, candidate_items=ext[2:75], block_size=block_size).view(allowed_items=ext[5:60])
+    rec = ItemKNN(S, item_ids=ext, candidate_items=ext[2:75], block_size=block_size).view(allowed_items=ext[5:60])
     assert rec.n_items <= 79  # item 5 dropped
     rec.save(tmp_path / "m")
-    back = sim.ItemKNN.load(tmp_path / "m", mmap=mmap)
+    back = ItemKNN.load(tmp_path / "m", mmap=mmap)
     for a, b in zip(rec._model.parts(), back._model.parts()):
         assert a == b if not isinstance(a, np.ndarray) else np.array_equal(a, b)
     assert back._model.parts()[-1] == block_size
@@ -376,33 +376,33 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
 def test_load_files_written_by_numpy(tmp_path):
     """Headers as numpy writes them (padding for growth): load reads them."""
     S = _S(30, False, seed=12)
-    rec = sim.ItemKNN(S)
+    rec = ItemKNN(S)
     rec.save(tmp_path / "m")
     for f in (tmp_path / "m").glob("*.npy"):
         np.save(f, np.load(f))
-    back = sim.ItemKNN.load(tmp_path / "m")
+    back = ItemKNN.load(tmp_path / "m")
     assert np.array_equal(back.recommend([1, 2, 3])[0], rec.recommend([1, 2, 3])[0])
 
 
 def test_save_never_overwrites_by_default(tmp_path):
-    a, b = sim.ItemKNN(_S(20, False, seed=1)), sim.ItemKNN(_S(20, False, seed=2))
+    a, b = ItemKNN(_S(20, False, seed=1)), ItemKNN(_S(20, False, seed=2))
     a.save(tmp_path / "m")
     with pytest.raises(FileExistsError, match="overwrite"):
         b.save(tmp_path / "m")
-    mapped = sim.ItemKNN.load(tmp_path / "m")
+    mapped = ItemKNN.load(tmp_path / "m")
     want = mapped.recommend([1, 2], k=5)
     if sys.platform == "win32":
         # Windows can't rename a directory with mapped files: refused, old model intact
         with pytest.raises(PermissionError):
             b.save(tmp_path / "m", overwrite=True)
         assert sorted(p.name for p in tmp_path.iterdir()) == ["m"]
-        assert np.array_equal(sim.ItemKNN.load(tmp_path / "m", mmap=False).recommend([1, 2], k=5)[0], want[0])
+        assert np.array_equal(ItemKNN.load(tmp_path / "m", mmap=False).recommend([1, 2], k=5)[0], want[0])
         del mapped  # unmapped: now it can be replaced
         b.save(tmp_path / "m", overwrite=True)
     else:
         b.save(tmp_path / "m", overwrite=True)  # new files renamed into place
         assert np.array_equal(mapped.recommend([1, 2], k=5)[0], want[0])  # the old mapping still reads
-    assert np.array_equal(sim.ItemKNN.load(tmp_path / "m").recommend([1, 2], k=5)[0], b.recommend([1, 2], k=5)[0])
+    assert np.array_equal(ItemKNN.load(tmp_path / "m").recommend([1, 2], k=5)[0], b.recommend([1, 2], k=5)[0])
     assert sorted(p.name for p in tmp_path.iterdir()) == ["m"]  # no temp dirs left
     (tmp_path / "other").mkdir()
     (tmp_path / "other" / "keep.txt").write_text("x")
@@ -476,22 +476,22 @@ def _swap_first_row(a):
 )
 def test_load_rejects_corrupted_files(tmp_path, corrupt, error):
     S = _S(40, False, seed=13)
-    rec = sim.ItemKNN(S, item_ids=np.arange(40) * 3 + 1).view(allowed_items=np.arange(10) * 3 + 1)
+    rec = ItemKNN(S, item_ids=np.arange(40) * 3 + 1).view(allowed_items=np.arange(10) * 3 + 1)
     d = tmp_path / "m"
     rec.save(d)
     corrupt(d)
     for mmap in (True, False):
         if isinstance(error, str):
             with pytest.raises(ValueError, match=error):
-                sim.ItemKNN.load(d, mmap=mmap)
+                ItemKNN.load(d, mmap=mmap)
         else:
             with pytest.raises(error):
-                sim.ItemKNN.load(d, mmap=mmap)
+                ItemKNN.load(d, mmap=mmap)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
 def test_save_refuses_to_replace_a_symlink(tmp_path):
-    a = sim.ItemKNN(_S(20, False, seed=1))
+    a = ItemKNN(_S(20, False, seed=1))
     a.save(tmp_path / "v1")
     (tmp_path / "current").symlink_to(tmp_path / "v1", target_is_directory=True)
     with pytest.raises(FileExistsError, match="symlink"):
@@ -503,7 +503,7 @@ def test_save_refuses_to_replace_a_symlink(tmp_path):
 def test_concurrent_overwrites_leave_no_temp_dirs(tmp_path, existing):
     """Two savers on one path aren't supported (some fail), but none leaves a
     copy or a partial model behind: `m` only ever appears complete."""
-    a = sim.ItemKNN(_S(20, False, seed=1))
+    a = ItemKNN(_S(20, False, seed=1))
     if existing:
         a.save(tmp_path / "m")
 
@@ -516,7 +516,7 @@ def test_concurrent_overwrites_leave_no_temp_dirs(tmp_path, existing):
     with ThreadPoolExecutor(8) as ex:
         list(ex.map(lambda _: save(), range(16)))
     assert sorted(p.name for p in tmp_path.iterdir()) == ["m"]
-    assert sim.ItemKNN.load(tmp_path / "m").n_items == a.n_items
+    assert ItemKNN.load(tmp_path / "m").n_items == a.n_items
 
 
 def test_strided_and_float64_coo_input():
@@ -528,11 +528,11 @@ def test_strided_and_float64_coo_input():
     order = np.argsort(rows, kind="stable")
     indptr = np.r_[0, np.cumsum(np.bincount(rows, minlength=30))]
     raw_csr = sp.csr_array((vals[order], cols[order], indptr), shape=(30, 30))  # duplicates kept
-    want = sim.ItemKNN(raw_csr)._model.parts()
+    want = ItemKNN(raw_csr)._model.parts()
     coo = sp.coo_array((vals, (rows, cols)), shape=(30, 30))
     d2, i2 = np.repeat(vals[order], 2), np.repeat(cols[order], 2)
     strided = sp.csr_array((d2[::2], i2[::2], indptr), shape=(30, 30))
     for m in (coo, strided):
-        got = sim.ItemKNN(m)._model.parts()
+        got = ItemKNN(m)._model.parts()
         for a, b in zip(got[:5], want[:5]):
             assert np.array_equal(a, b)
