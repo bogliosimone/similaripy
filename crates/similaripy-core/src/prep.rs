@@ -2,7 +2,7 @@
 //! kernel's column renumbering + per-row sort.
 
 use crate::Error;
-use crate::csr::check_indptr;
+use crate::csr::{CsrView, check_indptr};
 use crate::normalize::Value;
 
 /// Entries per sequential leaf; rows of ~100 entries sort in L1.
@@ -135,6 +135,39 @@ pub(crate) fn canonical_row<V: Value>(
         }
     }
     kept
+}
+
+/// Per row of `s` its canonical length, per column its canonical entry count
+/// (`canonical_row` on each row in one small buffer: one sequential O(nnz)
+/// pass, no copy of `s`).
+pub(crate) fn canonical_counts(s: &CsrView) -> (Vec<u32>, Vec<u32>) {
+    let (mut lens, mut counts) = (vec![0u32; s.n_rows()], vec![0u32; s.n_cols()]);
+    let (mut cols, mut vals, mut pairs) = (Vec::new(), Vec::new(), Vec::new());
+    for (r, len) in lens.iter_mut().enumerate() {
+        let k = canonical_copy(s.arrays(), r, &mut cols, &mut vals, &mut pairs);
+        *len = k as u32;
+        for &c in &cols[..k] {
+            counts[c as usize] += 1;
+        }
+    }
+    (lens, counts)
+}
+
+/// Row `r` of (indptr, indices, data) made canonical (`canonical_row`) in
+/// `cols`/`vals`; returns its length.
+pub(crate) fn canonical_copy(
+    (indptr, indices, data): (&[i32], &[i32], &[f32]),
+    r: usize,
+    cols: &mut Vec<i32>,
+    vals: &mut Vec<f32>,
+    pairs: &mut Vec<(i32, f32)>,
+) -> usize {
+    let (a, b) = (indptr[r] as usize, indptr[r + 1] as usize);
+    cols.clear();
+    cols.extend_from_slice(&indices[a..b]);
+    vals.clear();
+    vals.extend_from_slice(&data[a..b]);
+    canonical_row(cols, vals, pairs)
 }
 
 /// Sorts every row of a leaf by column, carrying the values; sorted rows are skipped.
