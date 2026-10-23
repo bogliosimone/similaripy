@@ -19,7 +19,11 @@ use similaripy_core::normalize::Value;
 use similaripy_core::{CsrPattern, CsrView, Error, Inputs, Norms, Params, compute};
 
 pub(crate) fn to_py(e: Error) -> PyErr {
-    PyValueError::new_err(e.to_string())
+    match e {
+        // FileNotFoundError, FileExistsError, ... as Python's own
+        Error::Io(kind, msg) => std::io::Error::new(kind, msg).into(),
+        e => PyValueError::new_err(e.to_string()),
+    }
 }
 
 thread_local! {

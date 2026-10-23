@@ -16,6 +16,7 @@
 //! 4.1 (`reports/step4-explore.md` in the planning notes, D64).
 
 use std::cell::Cell;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -24,12 +25,17 @@ use rayon::prelude::*;
 use crate::csr::CsrView;
 use crate::kernel::{accumulate, lower_bound};
 use crate::prep::{LEAF_NNZ, canonical_row, par_leaves, sort_rows};
+use crate::store::{self, Buf};
 use crate::topk::TopK;
 use crate::{DEFAULT_BLOCK_SIZE, Error};
 
 /// As the similarity functions' default threshold 0: negative scores never
 /// enter the top-K, 0.0 ones are dropped by `TopK`.
 const THRESHOLD: f32 = 0.0;
+/// Saved model format (`meta.json`): a version reads every format up to its
+/// own; bump it when the files change meaning (Q1).
+const FORMAT: u64 = 1;
+const KIND: &str = "ItemKNN";
 /// No internal id (a dropped item) / an empty hash slot.
 const EMPTY: u32 = u32::MAX;
 
@@ -58,7 +64,7 @@ unsafe fn bit(bits: &[u64], i: usize) -> bool {
 /// load <= 0.5 (~2 ns per lookup, D64).
 struct ExtIds {
     /// External id per original column, dropped items too (`parts`).
-    by_col: Vec<i64>,
+    by_col: Buf<i64>,
     /// External id per internal id.
     out: Vec<i64>,
     /// (external id, internal id); internal `EMPTY` = free slot.
@@ -67,14 +73,15 @@ struct ExtIds {
 }
 
 impl ExtIds {
-    fn new(by_col: Vec<i64>, new_to_old: &[i32]) -> Result<Self, Error> {
-        let mut sorted = by_col.clone();
+    fn new(by_col: Buf<i64>, new_to_old: &[i32]) -> Result<Self, Error> {
+        let mut sorted = by_col.to_vec();
         sorted.sort_unstable();
         if sorted.windows(2).any(|w| w[0] == w[1]) {
             return invalid("item_ids must be unique");
         }
         drop(sorted);
-        let out: Vec<i64> = new_to_old.iter().map(|&c| by_col[c as usize]).collect();
+        let b: &[i64] = &by_col;
+        let out: Vec<i64> = new_to_old.iter().map(|&c| b[c as usize]).collect();
         let cap = (2 * out.len()).next_power_of_two().max(2);
         let shift = 64 - cap.trailing_zeros();
         let mut slots = vec![(0i64, EMPTY); cap];
@@ -116,16 +123,16 @@ pub struct Core {
     /// Shared by the models of one build (views, `trimmed`: same internal
     /// ids), so a mask works on all of them and on no other model.
     layout: u64,
-    indptr: Vec<i32>,
-    indices: Vec<i32>,
-    data: Vec<f32>,
+    indptr: Buf<i32>,
+    indices: Buf<i32>,
+    data: Buf<f32>,
     n_active: usize,
     /// As given (saved, pickled).
     block_size: BlockSize,
     /// Column block size of a request, 0 = one block (`block_size` resolved).
     block: usize,
     /// Internal id → S's original column.
-    new_to_old: Vec<i32>,
+    new_to_old: Buf<i32>,
     /// Original column → internal id (`EMPTY`: dropped).
     dense_in: Vec<u32>,
     /// None: ids are S's column indices.
@@ -321,12 +328,12 @@ impl Model {
         drop(dense_in);
         let core = Core::from_arrays(
             next_layout(),
-            indptr,
-            indices,
-            data,
-            new_to_old,
+            indptr.into(),
+            indices.into(),
+            data.into(),
+            new_to_old.into(),
             n,
-            ext,
+            ext.map(Buf::from),
             block_size,
         )?;
         Ok(Self {
@@ -350,14 +357,141 @@ impl Model {
     ) -> Result<Self, Error> {
         let core = Core::from_arrays(
             next_layout(),
-            indptr,
-            indices,
-            data,
-            new_to_old,
+            indptr.into(),
+            indices.into(),
+            data.into(),
+            new_to_old.into(),
+            n_cols,
+            ext.map(Buf::from),
+            block_size,
+        )?;
+        if allowed
+            .as_ref()
+            .is_some_and(|a| a.len() != words(core.n_items()))
+        {
+            return invalid("allowed: one bit per item expected");
+        }
+        Ok(Self {
+            core: Arc::new(core),
+            allowed,
+        })
+    }
+
+    /// Saves the model in `dir`: one `.npy` per array (S in internal ids,
+    /// `new_to_old`, `item_ids` = the external id per original column, and
+    /// `allowed` = the default mask's bits) plus `meta.json`, written last.
+    /// A missing or empty `dir` is filled; a non-empty one is an error unless
+    /// `overwrite` and it holds a saved model, which is then replaced by a
+    /// new directory (renamed into place: processes that mapped the old
+    /// files keep them). `written_by` goes into `meta.json`.
+    pub fn save(&self, dir: &Path, written_by: &str, overwrite: bool) -> Result<(), Error> {
+        let p = self.parts();
+        store::save_dir(dir, overwrite, |d| {
+            store::write(d, "indptr", p.indptr)?;
+            store::write(d, "indices", p.indices)?;
+            store::write(d, "data", p.data)?;
+            store::write(d, "new_to_old", p.new_to_old)?;
+            if let Some(e) = p.ext {
+                store::write(d, "item_ids", e)?;
+            }
+            if let Some(a) = p.allowed {
+                store::write(d, "allowed", a)?;
+            }
+            let block_size = match p.block_size {
+                BlockSize::Auto => serde_json::json!("auto"),
+                BlockSize::Off => serde_json::Value::Null,
+                BlockSize::Size(n) => serde_json::json!(n),
+            };
+            let meta = serde_json::json!({
+                "format": FORMAT,
+                "kind": KIND,
+                "written_by": written_by,
+                "value_dtype": "float32",
+                "n_items": p.new_to_old.len(),
+                "n_cols": p.n_cols,
+                "nnz": p.data.len(),
+                "item_ids": p.ext.is_some(),
+                "allowed": p.allowed.is_some(),
+                "block_size": block_size,
+            });
+            let path = d.join("meta.json");
+            let text = serde_json::to_string_pretty(&meta).expect("plain JSON values") + "\n";
+            std::fs::write(&path, text).map_err(store::io(&path))
+        })
+    }
+
+    /// A model saved by `save` (this format version or an older one),
+    /// mapped (`mmap`: the arrays stay in the page cache, shared by every
+    /// process that maps them; the files must not change meanwhile) or read
+    /// into memory, and checked as a build's output (O(nnz), which also pages
+    /// in a mapped S). A new build for masks.
+    pub fn load(dir: &Path, mmap: bool) -> Result<Self, Error> {
+        let path = dir.join("meta.json");
+        let text = std::fs::read_to_string(&path).map_err(store::io(&path))?;
+        let bad = |m: String| Error::InvalidInput(format!("{}: {m}", path.display()));
+        let meta: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| bad(e.to_string()))?;
+        let field = |k: &str| meta.get(k).ok_or_else(|| bad(format!("no {k:?}")));
+        let uint = |k: &str| {
+            field(k)?
+                .as_u64()
+                .ok_or_else(|| bad(format!("{k:?} must be an integer >= 0")))
+        };
+        let flag = |k: &str| {
+            field(k)?
+                .as_bool()
+                .ok_or_else(|| bad(format!("{k:?} must be true or false")))
+        };
+        let format = uint("format")?;
+        if format > FORMAT {
+            return Err(bad(format!(
+                "saved by a newer similaripy (model format {format}); this version reads formats up to {FORMAT}: upgrade similaripy"
+            )));
+        }
+        if format == 0 || field("kind")? != KIND {
+            return Err(bad(format!("not a saved {KIND} model")));
+        }
+        match field("value_dtype")?.as_str() {
+            Some("float32") => {}
+            v => {
+                return Err(bad(format!(
+                    "value dtype {v:?} not supported by this version: upgrade similaripy"
+                )));
+            }
+        }
+        let block_size = match field("block_size")? {
+            serde_json::Value::Null => BlockSize::Off,
+            v if v == "auto" => BlockSize::Auto,
+            v => match v.as_u64() {
+                Some(n) if n > 0 => BlockSize::Size(n as usize),
+                _ => {
+                    return Err(bad(format!(
+                        "block_size must be \"auto\", null or an integer > 0, got {v}"
+                    )));
+                }
+            },
+        };
+        let n_cols =
+            usize::try_from(uint("n_cols")?).map_err(|_| bad("n_cols too large".into()))?;
+        let ext = flag("item_ids")?
+            .then(|| store::read::<i64>(dir, "item_ids", mmap))
+            .transpose()?;
+        let allowed = flag("allowed")?
+            .then(|| store::read::<u64>(dir, "allowed", false).map(Buf::into_vec))
+            .transpose()?;
+        let core = Core::from_arrays(
+            next_layout(),
+            store::read(dir, "indptr", mmap)?,
+            store::read(dir, "indices", mmap)?,
+            store::read(dir, "data", mmap)?,
+            store::read(dir, "new_to_old", mmap)?,
             n_cols,
             ext,
             block_size,
         )?;
+        if (core.n_items() as u64, core.data.len() as u64) != (uint("n_items")?, uint("nnz")?) {
+            return Err(bad("n_items / nnz don't match the arrays".into()));
+        }
         if allowed
             .as_ref()
             .is_some_and(|a| a.len() != words(core.n_items()))
@@ -402,7 +536,7 @@ impl Model {
             data: &self.data,
             new_to_old: &self.new_to_old,
             n_cols: self.dense_in.len(),
-            ext: self.ext.as_ref().map(|e| e.by_col.as_slice()),
+            ext: self.ext.as_ref().map(|e| &e.by_col[..]),
             allowed: self.allowed.as_deref(),
             block_size: self.block_size,
         }
@@ -469,36 +603,37 @@ impl Core {
     #[allow(clippy::too_many_arguments)]
     fn from_arrays(
         layout: u64,
-        indptr: Vec<i32>,
-        indices: Vec<i32>,
-        data: Vec<f32>,
-        new_to_old: Vec<i32>,
+        indptr: Buf<i32>,
+        indices: Buf<i32>,
+        data: Buf<f32>,
+        new_to_old: Buf<i32>,
         n_cols: usize,
-        ext: Option<Vec<i64>>,
+        ext: Option<Buf<i64>>,
         block_size: BlockSize,
     ) -> Result<Self, Error> {
         let block = block_size.resolve()?;
         let dense_in = dense_in(&new_to_old, n_cols)?;
         let n = new_to_old.len();
-        let s = CsrView::new("S", &indptr, &indices, &data, n)?;
+        let (ip, ix, d): (&[i32], &[i32], &[f32]) = (&indptr, &indices, &data);
+        let s = CsrView::new("S", ip, ix, d, n)?;
         if s.n_rows() != n {
             return invalid("S must have one row per item");
         }
-        if indptr.windows(2).any(|w| {
-            !indices[w[0] as usize..w[1] as usize]
+        if ip.windows(2).any(|w| {
+            !ix[w[0] as usize..w[1] as usize]
                 .windows(2)
                 .all(|p| p[0] < p[1])
         }) {
             return invalid("S rows must be sorted, without duplicate columns");
         }
-        if !data.iter().all(|v| v.is_finite()) {
+        if !d.iter().all(|v| v.is_finite()) {
             return invalid("S must be finite (in float32)");
         }
         if ext.as_ref().is_some_and(|e| e.len() != n_cols) {
             return invalid(format!("item_ids must have one id per item ({n_cols})"));
         }
+        let n_active = ix.iter().max().map_or(0, |&c| c as usize + 1);
         let ext = ext.map(|e| ExtIds::new(e, &new_to_old)).transpose()?;
-        let n_active = indices.iter().max().map_or(0, |&c| c as usize + 1);
         Ok(Self {
             layout,
             indptr,
@@ -515,25 +650,26 @@ impl Core {
 
     fn trimmed(&self, allowed: &ItemMask) -> Result<Self, Error> {
         self.check_mask(allowed)?;
-        let mut indptr = Vec::with_capacity(self.indptr.len());
+        let (ip, ix, d): (&[i32], &[i32], &[f32]) = (&self.indptr, &self.indices, &self.data);
+        let mut indptr = Vec::with_capacity(ip.len());
         indptr.push(0i32);
         let (mut indices, mut data) = (Vec::new(), Vec::new());
-        for w in self.indptr.windows(2) {
+        for w in ip.windows(2) {
             for p in w[0] as usize..w[1] as usize {
-                let c = self.indices[p];
+                let c = ix[p];
                 // SAFETY: c < n_items, the mask's size (same layout).
                 if unsafe { bit(&allowed.bits, c as usize) } {
                     indices.push(c);
-                    data.push(self.data[p]);
+                    data.push(d[p]);
                 }
             }
             indptr.push(indices.len() as i32);
         }
         Self::from_arrays(
             self.layout,
-            indptr,
-            indices,
-            data,
+            indptr.into(),
+            indices.into(),
+            data.into(),
             self.new_to_old.clone(),
             self.n_cols(),
             self.ext.as_ref().map(|e| e.by_col.clone()),
@@ -685,8 +821,9 @@ pub fn recommend(
         (Ids::External(_), Some(e)) => Some(&e.out),
         _ => None,
     };
+    let new_to_old: &[i32] = &model.new_to_old;
     for (c, v) in out {
-        ids_out.push(ext.map_or(i64::from(model.new_to_old[c as usize]), |e| e[c as usize]));
+        ids_out.push(ext.map_or(i64::from(new_to_old[c as usize]), |e| e[c as usize]));
         scores_out.push(v);
     }
     Ok(())
@@ -741,9 +878,10 @@ pub fn recommend_batch(
     let mut out_indptr = Vec::with_capacity(rows.len() + 1);
     out_indptr.push(0i64);
     let (mut out_cols, mut out_scores) = (Vec::with_capacity(total), Vec::with_capacity(total));
+    let new_to_old: &[i32] = &model.new_to_old;
     for row in rows {
         for (c, v) in row {
-            out_cols.push(model.new_to_old[c as usize]);
+            out_cols.push(new_to_old[c as usize]);
             out_scores.push(v);
         }
         out_indptr.push(out_cols.len() as i64);

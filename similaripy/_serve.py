@@ -217,6 +217,36 @@ class ItemKNN:
             indptr = indptr.astype(np.int32)
         return sp.csr_array((scores, cols, indptr), shape=(H.shape[0], n_cols))
 
+    def save(self, path, overwrite: bool = False) -> None:
+        """
+        Saves the model to the directory `path`: one `.npy` file per array
+        (`numpy.load` opens them) and `meta.json`, for `ItemKNN.load` in this
+        or any later 1.x version. Saved as is: the view's availability mask,
+        `block_size` as given.
+
+        `path` must be missing or empty. `overwrite=True` replaces a saved
+        model there with a new directory, renamed into place, so processes
+        that mapped the old files keep them. Never change a saved model's files
+        in place: a process mapping them would crash.
+        """
+        from . import __version__
+
+        self._model.save(path, f"similaripy {__version__}", overwrite)
+
+    @classmethod
+    def load(cls, path, mmap: bool = True) -> "ItemKNN":
+        """
+        A model saved by `save`, checked before use.
+
+        `mmap=True` maps the arrays read-only: they stay in the OS page cache,
+        shared by every process that loads the same files (one copy of S for
+        all workers of a server), and loading is fast. `mmap=False` reads them
+        into memory (e.g. on a network file system). Masks of the saved model
+        don't apply to the loaded one; pickling a mapped model copies its
+        arrays.
+        """
+        return cls._wrap(_core.ServeModel.load(path, mmap))
+
     def __reduce__(self):
         # Same-version pickles only (Q1): the model's arrays, re-checked on
         # load (as a saved model); block size as given, default mask kept.

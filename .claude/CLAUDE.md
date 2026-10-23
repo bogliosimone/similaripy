@@ -27,6 +27,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
   - [normalize.rs](crates/similaripy-core/src/normalize.rs) - Normalizations, in place over CSR data
   - [csr.rs](crates/similaripy-core/src/csr.rs), [topk.rs](crates/similaripy-core/src/topk.rs) - CSR views, top-K heap
   - [serve.rs](crates/similaripy-core/src/serve.rs) - Serving engine: owned model, one history per call, batch = rayon over the same function
+  - [store.rs](crates/similaripy-core/src/store.rs) - Saved models: `.npy` reader/writer, mapped (`memmap2`) or owned arrays, directory replace
 - **Bindings** ([crates/similaripy-py](crates/similaripy-py)): PyO3 module `similaripy._core`
   - [lib.rs](crates/similaripy-py/src/lib.rs) - kernel + prep bindings, thread pools; [normalize.rs](crates/similaripy-py/src/normalize.rs) - dtype dispatch; [progress.rs](crates/similaripy-py/src/progress.rs) - progress bar; [serve.rs](crates/similaripy-py/src/serve.rs) - `ServeModel` / `ServeMask`
 

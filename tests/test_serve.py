@@ -1,5 +1,6 @@
 """Serving engine: `ItemKNN` against a dense float64 reference."""
 
+import json
 import pickle
 from concurrent.futures import ThreadPoolExecutor
 
@@ -254,12 +255,16 @@ def test_any_input_form_same_model():
             assert np.array_equal(a, b)
 
 
-def test_concurrent_calls_identical():
-    """One model shared by threads (scratch per OS thread, GIL released)."""
+@pytest.mark.parametrize("mapped", [False, True])
+def test_concurrent_calls_identical(tmp_path, mapped):
+    """One model shared by threads (scratch per OS thread, GIL released), built or mapped from disk."""
     rng = np.random.default_rng(2)
     rec = sim.ItemKNN(sp.random_array((500, 500), density=0.05, rng=rng, format="csr"))
     hists = [rng.choice(500, size=20) for _ in range(64)]
     want = [rec.recommend(h, k=10) for h in hists]
+    if mapped:
+        rec.save(tmp_path / "m")
+        rec = sim.ItemKNN.load(tmp_path / "m")
     with ThreadPoolExecutor(8) as ex:
         got = list(ex.map(lambda h: rec.recommend(h, k=10), hists * 4))
     for (gi, gs), (wi, ws) in zip(got, want * 4):
@@ -327,3 +332,137 @@ def test_boundary_types():
         sim.ItemKNN(bad)
     with pytest.raises(ValueError, match="finite"):
         sim.ItemKNN(sp.csr_array(np.array([[0.0, 1e300], [1.0, 0.0]])))
+
+
+def _bits(a):
+    return a.view(np.int32) if a.dtype == np.float32 else a
+
+
+@pytest.mark.parametrize("mmap", [True, False])
+@pytest.mark.parametrize("block_size", ["auto", None, 7])
+def test_save_load_round_trip(tmp_path, mmap, block_size):
+    rng = np.random.default_rng(11)
+    keep = np.ones(80)
+    keep[[3, 4, 5]] = 0
+    S = _S(80, True, seed=11) @ sp.diags_array(keep)  # items 3-5: no column
+    S = sp.diags_array(np.r_[np.ones(5), 0, np.ones(74)]) @ S  # item 5: no row either (dropped)
+    ext = rng.choice(10**12, size=80, replace=False)
+    rec = sim.ItemKNN(S, item_ids=ext, candidate_items=ext[2:75], block_size=block_size).view(allowed_items=ext[5:60])
+    assert rec.n_items <= 79  # item 5 dropped
+    rec.save(tmp_path / "m")
+    back = sim.ItemKNN.load(tmp_path / "m", mmap=mmap)
+    for a, b in zip(rec._model.parts(), back._model.parts()):
+        assert a == b if not isinstance(a, np.ndarray) else np.array_equal(a, b)
+    assert back._model.parts()[-1] == block_size
+    for _ in range(20):
+        hist = rng.choice(ext, size=8)
+        a, b = rec.recommend(hist, k=15), back.recommend(hist, k=15)
+        assert np.array_equal(a[0], b[0]) and np.array_equal(_bits(a[1]), _bits(b[1]))
+    H = sp.random_array((6, 80), density=0.1, format="csr", rng=1)
+    assert (rec.recommend_batch(H, k=5) != back.recommend_batch(H, k=5)).nnz == 0
+    with pytest.raises(ValueError, match="another model"):
+        back.recommend(ext[:3], allowed=rec.mask(ext[:10]))
+    # plain .npy + JSON: inspectable without similaripy
+    meta = json.loads((tmp_path / "m" / "meta.json").read_text())
+    assert meta["format"] == 1 and meta["n_items"] == back.n_items and meta["block_size"] == block_size
+    assert np.array_equal(np.load(tmp_path / "m" / "item_ids.npy"), ext)
+    # pickling a loaded (mapped) model copies its arrays
+    assert (
+        pickle.loads(pickle.dumps(back)).recommend(ext[:4], k=3)[0].tolist() == back.recommend(ext[:4], k=3)[0].tolist()
+    )
+
+
+def test_load_files_written_by_numpy(tmp_path):
+    """Headers as numpy writes them (padding for growth): load reads them."""
+    S = _S(30, False, seed=12)
+    rec = sim.ItemKNN(S)
+    rec.save(tmp_path / "m")
+    for f in (tmp_path / "m").glob("*.npy"):
+        np.save(f, np.load(f))
+    back = sim.ItemKNN.load(tmp_path / "m")
+    assert np.array_equal(back.recommend([1, 2, 3])[0], rec.recommend([1, 2, 3])[0])
+
+
+def test_save_never_overwrites_by_default(tmp_path):
+    a, b = sim.ItemKNN(_S(20, False, seed=1)), sim.ItemKNN(_S(20, False, seed=2))
+    a.save(tmp_path / "m")
+    with pytest.raises(FileExistsError, match="overwrite"):
+        b.save(tmp_path / "m")
+    mapped = sim.ItemKNN.load(tmp_path / "m")
+    want = mapped.recommend([1, 2], k=5)
+    b.save(tmp_path / "m", overwrite=True)  # new files renamed into place
+    assert np.array_equal(mapped.recommend([1, 2], k=5)[0], want[0])  # the old mapping still reads
+    assert np.array_equal(sim.ItemKNN.load(tmp_path / "m").recommend([1, 2], k=5)[0], b.recommend([1, 2], k=5)[0])
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["m"]  # no temp dirs left
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "keep.txt").write_text("x")
+    with pytest.raises(FileExistsError, match="not a saved model"):
+        a.save(tmp_path / "other", overwrite=True)
+    assert (tmp_path / "other" / "keep.txt").exists()
+    (tmp_path / "empty").mkdir()
+    a.save(tmp_path / "empty")  # an empty directory is fine
+
+
+def _corrupt(d, name, fn):
+    np.save(d / f"{name}.npy", fn(np.load(d / f"{name}.npy")))
+
+
+def _meta(d, **kw):
+    meta = json.loads((d / "meta.json").read_text())
+    meta.update(kw)
+    (d / "meta.json").write_text(json.dumps(meta))
+
+
+def _swap_first_row(a):
+    a = a.copy()
+    a[[0, 1]] = a[[1, 0]]
+    return a
+
+
+@pytest.mark.parametrize(
+    "corrupt, error",
+    [
+        (lambda d: (d / "indices.npy").unlink(), FileNotFoundError),
+        (lambda d: (d / "meta.json").unlink(), FileNotFoundError),
+        (lambda d: (d / "data.npy").write_bytes((d / "data.npy").read_bytes()[:-4]), "file size"),
+        (lambda d: (d / "data.npy").write_bytes((d / "data.npy").read_bytes() + b"\0" * 4), "file size"),
+        (lambda d: (d / "data.npy").write_bytes(b"not numpy at all"), "npy"),
+        (lambda d: _corrupt(d, "indices", lambda a: a.astype(np.int64)), "<i4"),
+        (lambda d: _corrupt(d, "data", lambda a: a.astype(">f4")), "<f4"),
+        (lambda d: _corrupt(d, "data", lambda a: np.asfortranarray(np.stack([a, a], axis=1))), "<f4"),
+        (lambda d: np.save(d / "data.npy", np.array([1.0] * 3, dtype=object), allow_pickle=True), "<f4"),
+        (lambda d: _corrupt(d, "indptr", lambda a: np.r_[a[0], a[2], a[1], a[3:]]), "monotone"),
+        (lambda d: _corrupt(d, "indptr", lambda a: a[:-1]), "indptr"),
+        (lambda d: _corrupt(d, "indices", lambda a: np.r_[999, a[1:]].astype(np.int32)), "range"),
+        (lambda d: _corrupt(d, "indices", _swap_first_row), "sorted"),
+        (lambda d: _corrupt(d, "indices", lambda a: np.r_[a[1], a[1:]].astype(np.int32)), "sorted"),
+        (lambda d: _corrupt(d, "data", lambda a: np.r_[np.float32(np.nan), a[1:]]), "finite"),
+        (lambda d: _corrupt(d, "new_to_old", lambda a: np.r_[a[1], a[1:]].astype(np.int32)), "distinct"),
+        (lambda d: _corrupt(d, "new_to_old", lambda a: np.r_[-1, a[1:]].astype(np.int32)), "distinct"),
+        (lambda d: _corrupt(d, "item_ids", lambda a: np.r_[a[1], a[1:]]), "unique"),
+        (lambda d: _corrupt(d, "item_ids", lambda a: a[:-1]), "one id per item"),
+        (lambda d: _corrupt(d, "allowed", lambda a: np.r_[a, a]), "one bit per item"),
+        (lambda d: (d / "meta.json").write_text("{not json"), "meta.json"),
+        (lambda d: _meta(d, format=2), "newer"),
+        (lambda d: _meta(d, format="1"), "integer"),
+        (lambda d: _meta(d, kind="UserKNN"), "not a saved"),
+        (lambda d: _meta(d, value_dtype="bfloat16"), "value dtype"),
+        (lambda d: _meta(d, n_items=3), "match"),
+        (lambda d: _meta(d, n_cols=10), "distinct"),
+        (lambda d: _meta(d, block_size=0), "block_size"),
+        (lambda d: _meta(d, allowed=False, item_ids=None), "true or false"),
+    ],
+)
+def test_load_rejects_corrupted_files(tmp_path, corrupt, error):
+    S = _S(40, False, seed=13)
+    rec = sim.ItemKNN(S, item_ids=np.arange(40) * 3 + 1).view(allowed_items=np.arange(10) * 3 + 1)
+    d = tmp_path / "m"
+    rec.save(d)
+    corrupt(d)
+    for mmap in (True, False):
+        if isinstance(error, str):
+            with pytest.raises(ValueError, match=error):
+                sim.ItemKNN.load(d, mmap=mmap)
+        else:
+            with pytest.raises(error):
+                sim.ItemKNN.load(d, mmap=mmap)

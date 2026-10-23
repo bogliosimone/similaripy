@@ -12,6 +12,9 @@ workspace = true
 
 [dependencies]
 rayon = "1.12"
+# Saved models: `load(mmap=True)` maps the arrays; `meta.json`
+memmap2 = "0.9.11"
+serde_json = "1.0.154"
 
 [dev-dependencies]
 proptest = "1.12"

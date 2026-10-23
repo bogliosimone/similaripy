@@ -4,6 +4,8 @@
 //! call copies the ids in, runs pure Rust without the GIL and moves the
 //! results out. `similaripy/_serve.py` wraps it as `ItemKNN`.
 
+use std::path::PathBuf;
+
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -118,6 +120,26 @@ impl PyModel {
         })
         .map(Self)
         .map_err(to_py)
+    }
+
+    /// See `Model::save`.
+    fn save(
+        &self,
+        py: Python<'_>,
+        path: PathBuf,
+        written_by: &str,
+        overwrite: bool,
+    ) -> PyResult<()> {
+        py.detach(|| self.0.save(&path, written_by, overwrite))
+            .map_err(to_py)
+    }
+
+    /// See `Model::load`.
+    #[staticmethod]
+    fn load(py: Python<'_>, path: PathBuf, mmap: bool) -> PyResult<Self> {
+        py.detach(|| Model::load(&path, mmap))
+            .map(Self)
+            .map_err(to_py)
     }
 
     #[getter]

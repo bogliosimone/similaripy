@@ -474,7 +474,7 @@ fn rejects_bad_input() {
 }
 
 /// Owned parts of a model, to corrupt one field at a time.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 struct Owned {
     indptr: Vec<i32>,
     indices: Vec<i32>,
@@ -563,4 +563,75 @@ fn from_parts_checks_every_invariant() {
     o.n_cols = 5;
     o.ext.as_mut().unwrap().push(14);
     assert!(o.load().is_ok());
+}
+
+fn tmp(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("similaripy-test-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+#[test]
+fn save_load_round_trip_overwrite_and_versions() {
+    let s = vec![
+        vec![0.0, 1.0, 2.0, 0.0],
+        vec![1.0, 0.0, 0.5, 0.0],
+        vec![0.0, 3.0, 0.0, 0.0],
+        vec![0.0; 4],
+    ];
+    let m = build_blocked(&s, &[1, 0, 2], Some(&[10, 11, 12, 13]), 2).unwrap();
+    let v = m
+        .view(Some(
+            &m.mask(Ids::External(&[11, 12]), Unknown::Skip).unwrap(),
+        ))
+        .unwrap();
+    let dir = tmp("model");
+    v.save(&dir, "test", false).unwrap();
+    let rec = |m: &Model| {
+        let mut out = (vec![], vec![]);
+        let r = Request {
+            ids: Ids::External(&[10]),
+            weights: None,
+            k: 5,
+            exclude_seen: true,
+            allowed: None,
+            unknown: Unknown::Raise,
+        };
+        recommend(m, &r, &mut out.0, &mut out.1).unwrap();
+        out
+    };
+    // Miri can't map files; plain reads run under it
+    for mmap in [false, true].into_iter().filter(|&m| !(cfg!(miri) && m)) {
+        let back = Model::load(&dir, mmap).unwrap();
+        assert_eq!(Owned::of(&back), Owned::of(&v));
+        assert_eq!(rec(&back), rec(&v));
+        // a trimmed model of a mapped one (shared mapped arrays, owned S)
+        let t = back
+            .trimmed(&back.mask(Ids::External(&[11]), Unknown::Skip).unwrap())
+            .unwrap();
+        assert_eq!(Owned::of(&t).new_to_old, vec![1, 0, 2]);
+    }
+    // never into a non-empty directory unless it holds a saved model and overwrite
+    assert!(v.save(&dir, "test", false).is_err());
+    m.save(&dir, "test", true).unwrap();
+    assert_eq!(Owned::of(&Model::load(&dir, false).unwrap()).allowed, None);
+    let other = tmp("other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("keep.txt"), "x").unwrap();
+    assert!(v.save(&other, "test", true).is_err());
+    assert!(other.join("keep.txt").exists());
+    // Q1: a newer format is a clear error, an unknown value dtype too
+    let meta = std::fs::read_to_string(dir.join("meta.json")).unwrap();
+    for (from, to, says) in [
+        ("\"format\": 1", "\"format\": 2", "newer"),
+        ("\"float32\"", "\"bfloat16\"", "value dtype"),
+        ("\"nnz\": 5", "\"nnz\": 4", "match"),
+    ] {
+        assert!(meta.contains(from), "{from}");
+        std::fs::write(dir.join("meta.json"), meta.replace(from, to)).unwrap();
+        let e = Model::load(&dir, false).err().unwrap().to_string();
+        assert!(e.contains(says), "{e}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&other).unwrap();
 }
