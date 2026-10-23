@@ -7,8 +7,8 @@ use crate::Error;
 use crate::store::Buf;
 
 #[inline(always)]
-fn hash(key: i64, shift: u32) -> usize {
-    ((key as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> shift) as usize
+fn hash(key: i64, mult: u64, shift: u32) -> usize {
+    ((key as u64).wrapping_mul(mult) >> shift) as usize
 }
 
 /// External int64 ids: open addressing, multiply-shift hash, linear probing,
@@ -20,6 +20,9 @@ pub(super) struct ExtIds {
     pub(super) out: Vec<i64>,
     /// (external id, internal id); internal `EMPTY` = free slot.
     slots: Vec<(i64, u32)>,
+    /// Random odd multiplier per table: ids crafted to collide under a
+    /// fixed one (a saved model from elsewhere) would make probing quadratic.
+    mult: u64,
     shift: u32,
 }
 
@@ -35,9 +38,10 @@ impl ExtIds {
         let out: Vec<i64> = new_to_old.iter().map(|&c| b[c as usize]).collect();
         let cap = (2 * out.len()).next_power_of_two().max(2);
         let shift = 64 - cap.trailing_zeros();
+        let mult = std::hash::BuildHasher::hash_one(&std::hash::RandomState::new(), 0u8) | 1;
         let mut slots = vec![(0i64, EMPTY); cap];
         for (internal, &key) in out.iter().enumerate() {
-            let mut s = hash(key, shift);
+            let mut s = hash(key, mult, shift);
             while slots[s].1 != EMPTY {
                 s = (s + 1) & (cap - 1);
             }
@@ -47,6 +51,7 @@ impl ExtIds {
             by_col,
             out,
             slots,
+            mult,
             shift,
         })
     }
@@ -54,7 +59,7 @@ impl ExtIds {
     #[inline]
     fn get(&self, id: i64) -> Option<u32> {
         let mask = self.slots.len() - 1;
-        let mut s = hash(id, self.shift);
+        let mut s = hash(id, self.mult, self.shift);
         loop {
             let (key, v) = self.slots[s];
             if v == EMPTY {
@@ -177,5 +182,42 @@ impl Core {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Ids crafted to share one slot under the old fixed multiplier
+    // (k_i = i * C^-1 mod 2^64): a random multiplier spreads them.
+    #[test]
+    fn crafted_ids_dont_pile_up() {
+        const C: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut inv = C; // Newton: inv = C^-1 mod 2^64
+        for _ in 0..6 {
+            inv = inv.wrapping_mul(2u64.wrapping_sub(C.wrapping_mul(inv)));
+        }
+        assert_eq!(C.wrapping_mul(inv), 1);
+        let n: usize = if cfg!(miri) { 64 } else { 4096 };
+        let keys: Vec<i64> = (1..=n as u64).map(|i| i.wrapping_mul(inv) as i64).collect();
+        let order: Vec<i32> = (0..n as i32).collect();
+        let ids = ExtIds::new(keys.clone().into(), &order).unwrap();
+        let mask = ids.slots.len() - 1;
+        let max_probe = keys
+            .iter()
+            .map(|&k| {
+                let home = hash(k, ids.mult, ids.shift);
+                let at = ids.slots.iter().position(|s| s.0 == k).unwrap();
+                (at.wrapping_sub(home)) & mask
+            })
+            .max()
+            .unwrap();
+        assert!(max_probe < 64, "max probe {max_probe}");
+        assert!(
+            keys.iter()
+                .enumerate()
+                .all(|(i, &k)| ids.get(k) == Some(i as u32))
+        );
     }
 }

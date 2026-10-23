@@ -2,6 +2,7 @@
 
 import json
 import pickle
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -396,9 +397,19 @@ def test_save_never_overwrites_by_default(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["m"]  # no temp dirs left
     (tmp_path / "other").mkdir()
     (tmp_path / "other" / "keep.txt").write_text("x")
-    with pytest.raises(FileExistsError, match="not a saved model"):
+    with pytest.raises(FileExistsError, match="not only a saved model"):
         a.save(tmp_path / "other", overwrite=True)
     assert (tmp_path / "other" / "keep.txt").exists()
+    # never deletes anything but a saved model: extra files, a foreign meta.json
+    (tmp_path / "m" / "NOTES.txt").write_text("mine")
+    with pytest.raises(FileExistsError, match="not only a saved model"):
+        a.save(tmp_path / "m", overwrite=True)
+    assert (tmp_path / "m" / "NOTES.txt").exists()
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / "meta.json").write_text('{"name": "another tool"}')
+    with pytest.raises(FileExistsError, match="not only a saved model"):
+        a.save(tmp_path / "proj", overwrite=True)
+    assert (tmp_path / "proj" / "meta.json").exists()
     (tmp_path / "empty").mkdir()
     a.save(tmp_path / "empty")  # an empty directory is fine
 
@@ -448,7 +459,8 @@ def _swap_first_row(a):
         (lambda d: _meta(d, kind="UserKNN"), "not a saved"),
         (lambda d: _meta(d, value_dtype="bfloat16"), "value dtype"),
         (lambda d: _meta(d, n_items=3), "match"),
-        (lambda d: _meta(d, n_cols=10), "distinct"),
+        (lambda d: _meta(d, n_cols=10), "one id per item"),
+        (lambda d: _meta(d, n_cols=10**12), "one id per item"),  # checked before allocating
         (lambda d: _meta(d, block_size=0), "block_size"),
         (lambda d: _meta(d, allowed=False, item_ids=None), "true or false"),
     ],
@@ -466,3 +478,49 @@ def test_load_rejects_corrupted_files(tmp_path, corrupt, error):
         else:
             with pytest.raises(error):
                 sim.ItemKNN.load(d, mmap=mmap)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_save_refuses_to_replace_a_symlink(tmp_path):
+    a = sim.ItemKNN(_S(20, False, seed=1))
+    a.save(tmp_path / "v1")
+    (tmp_path / "current").symlink_to(tmp_path / "v1", target_is_directory=True)
+    with pytest.raises(FileExistsError, match="symlink"):
+        a.save(tmp_path / "current", overwrite=True)
+    assert (tmp_path / "current").is_symlink()
+
+
+def test_concurrent_overwrites_leave_no_temp_dirs(tmp_path):
+    """Two savers on one path aren't supported (some fail), but none leaves a copy behind."""
+    a = sim.ItemKNN(_S(20, False, seed=1))
+    a.save(tmp_path / "m")
+
+    def save():
+        try:
+            a.save(tmp_path / "m", overwrite=True)
+        except OSError:
+            pass
+
+    with ThreadPoolExecutor(8) as ex:
+        list(ex.map(lambda _: save(), range(16)))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["m"]
+    assert sim.ItemKNN.load(tmp_path / "m").n_items == a.n_items
+
+
+def test_strided_and_float64_coo_input():
+    """Non-contiguous arrays are fine; COO float64 duplicates are cast before
+    they are summed, as for CSR input: same model either way."""
+    rng = np.random.default_rng(3)
+    rows, cols = rng.integers(0, 30, 400), rng.integers(0, 30, 400)
+    vals = rng.random(400) * 1e3  # not exact in float32
+    order = np.argsort(rows, kind="stable")
+    indptr = np.r_[0, np.cumsum(np.bincount(rows, minlength=30))]
+    raw_csr = sp.csr_array((vals[order], cols[order], indptr), shape=(30, 30))  # duplicates kept
+    want = sim.ItemKNN(raw_csr)._model.parts()
+    coo = sp.coo_array((vals, (rows, cols)), shape=(30, 30))
+    d2, i2 = np.repeat(vals[order], 2), np.repeat(cols[order], 2)
+    strided = sp.csr_array((d2[::2], i2[::2], indptr), shape=(30, 30))
+    for m in (coo, strided):
+        got = sim.ItemKNN(m)._model.parts()
+        for a, b in zip(got[:5], want[:5]):
+            assert np.array_equal(a, b)

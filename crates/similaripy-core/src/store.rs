@@ -211,6 +211,9 @@ pub(crate) fn read<T: Pod>(dir: &Path, name: &str, mmap: bool) -> Result<Buf<T>,
         // SAFETY: a read-only map. The file must not change while mapped:
         // saves never rewrite a file in place (documented for other writers).
         let map = unsafe { Mmap::map(&f) }.map_err(io(&path))?;
+        if map.len() < end {
+            return Err(bad(&path, "file changed while loading"));
+        }
         if cast::<T>(&map[start..end]).is_none() {
             return Err(bad(&path, "data not aligned"));
         }
@@ -222,13 +225,24 @@ pub(crate) fn read<T: Pod>(dir: &Path, name: &str, mmap: bool) -> Result<Buf<T>,
     }
 }
 
+/// Writes `text` as `dir/name`; never replaces an existing file.
+pub(crate) fn write_text(dir: &Path, name: &str, text: &str) -> Result<(), Error> {
+    let path = dir.join(name);
+    let mut f = File::create_new(&path).map_err(io(&path))?;
+    f.write_all(text.as_bytes()).map_err(io(&path))?;
+    f.sync_all().map_err(io(&path))
+}
+
 /// Runs `write` into `dir`. A missing or empty `dir` is written in place; a
-/// non-empty one is an error unless `overwrite` and it holds a saved model
-/// (`meta.json`): then `write` fills a new sibling directory that replaces
-/// it by rename, so readers that mapped the old files keep them.
+/// non-empty one is an error unless `overwrite`, it is a real directory (not
+/// a symlink) and `is_model` says it holds a saved model and nothing else:
+/// then `write` fills a new sibling directory that replaces it by rename, so
+/// readers that mapped the old files keep them. Between the two renames
+/// `dir` doesn't exist (a concurrent load fails): one saver at a time.
 pub(crate) fn save_dir(
     dir: &Path,
     overwrite: bool,
+    is_model: impl Fn(&Path) -> bool,
     write: impl Fn(&Path) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let occupied = dir.exists() && fs::read_dir(dir).map_err(io(dir))?.next().is_some();
@@ -245,8 +259,13 @@ pub(crate) fn save_dir(
     if !overwrite {
         return exists("not empty (overwrite=True replaces a saved model)");
     }
-    if !dir.join("meta.json").is_file() {
-        return exists("not a saved model (no meta.json): not replaced");
+    if fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        return exists(
+            "a symlink: not replaced (save to a new directory and point the link at it)",
+        );
+    }
+    if !is_model(dir) {
+        return exists("not only a saved model: not replaced");
     }
     let new = sibling(dir, "new")?;
     fs::create_dir(&new).map_err(io(&new))?;
@@ -255,9 +274,16 @@ pub(crate) fn save_dir(
         return Err(e);
     }
     let old = sibling(dir, "old")?;
-    fs::rename(dir, &old).map_err(io(dir))?;
+    if let Err(e) = fs::rename(dir, &old) {
+        let _ = fs::remove_dir_all(&new);
+        return Err(io(dir)(e));
+    }
     if let Err(e) = fs::rename(&new, dir) {
-        let _ = fs::rename(&old, dir);
+        // Another saver got in between: leave its model, drop both copies.
+        let _ = fs::remove_dir_all(&new);
+        if fs::rename(&old, dir).is_err() {
+            let _ = fs::remove_dir_all(&old);
+        }
         return Err(io(dir)(e));
     }
     fs::remove_dir_all(&old).map_err(|e| {

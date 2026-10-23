@@ -18,6 +18,43 @@ use crate::{DEFAULT_BLOCK_SIZE, Error};
 /// own; bump it when the files change meaning (Q1).
 const FORMAT: u64 = 1;
 const KIND: &str = "ItemKNN";
+/// Every file a saved model may have.
+const FILES: [&str; 7] = [
+    "meta.json",
+    "indptr.npy",
+    "indices.npy",
+    "data.npy",
+    "new_to_old.npy",
+    "item_ids.npy",
+    "allowed.npy",
+];
+
+fn check_square(s: &CsrView) -> Result<(), Error> {
+    if s.n_rows() != s.n_cols() {
+        return invalid("S must be square (item x item)");
+    }
+    if s.n_cols() > i32::MAX as usize {
+        return invalid("more than 2^31 - 1 items");
+    }
+    Ok(())
+}
+
+/// A saved model and nothing else (`overwrite` replaces only that): a
+/// `meta.json` of this kind, model files only.
+fn is_saved_model(dir: &Path) -> bool {
+    let kind = std::fs::read_to_string(dir.join("meta.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|m| m.get("kind").is_some_and(|k| k == KIND));
+    kind && std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.into_iter().all(|e| {
+            e.is_ok_and(|e| {
+                e.file_type().is_ok_and(|t| t.is_file())
+                    && FILES.contains(&e.file_name().to_string_lossy().as_ref())
+            })
+        })
+    })
+}
 
 /// The immutable part of a model: S in the internal layout and the id maps,
 /// validated once, shared by every `view` of it (no copy of S). Built only by
@@ -111,9 +148,7 @@ impl Model {
     /// S's column indices. No default mask. Peak memory: the model's own
     /// arrays plus O(n) (no canonical copy of S).
     pub fn new(s: CsrView, ext: Option<Vec<i64>>, block_size: BlockSize) -> Result<Self, Error> {
-        if s.n_rows() != s.n_cols() {
-            return invalid("S must be square (item x item)");
-        }
+        check_square(&s)?;
         let (lens, counts) = canonical_counts(&s);
         let mut order: Vec<i32> = (0..s.n_cols() as i32).collect();
         order.sort_by_key(|&c| std::cmp::Reverse(counts[c as usize])); // stable: ties to the lower column
@@ -130,9 +165,7 @@ impl Model {
         ext: Option<Vec<i64>>,
         block_size: BlockSize,
     ) -> Result<Self, Error> {
-        if s.n_rows() != s.n_cols() {
-            return invalid("S must be square (item x item)");
-        }
+        check_square(&s)?;
         let (lens, counts) = canonical_counts(&s);
         Self::build(s, &lens, &counts, new_to_old, ext, block_size)
     }
@@ -245,12 +278,13 @@ impl Model {
     /// `new_to_old`, `item_ids` = the external id per original column, and
     /// `allowed` = the default mask's bits) plus `meta.json`, written last.
     /// A missing or empty `dir` is filled; a non-empty one is an error unless
-    /// `overwrite` and it holds a saved model, which is then replaced by a
-    /// new directory (renamed into place: processes that mapped the old
-    /// files keep them). `written_by` goes into `meta.json`.
+    /// `overwrite` and it holds a saved model and nothing else (not a
+    /// symlink), which is then replaced by a new directory (renamed into
+    /// place: processes that mapped the old files keep them; `dir` is briefly
+    /// missing, one saver at a time). `written_by` goes into `meta.json`.
     pub fn save(&self, dir: &Path, written_by: &str, overwrite: bool) -> Result<(), Error> {
         let p = self.parts();
-        store::save_dir(dir, overwrite, |d| {
+        store::save_dir(dir, overwrite, is_saved_model, |d| {
             store::write(d, "indptr", p.indptr)?;
             store::write(d, "indices", p.indices)?;
             store::write(d, "data", p.data)?;
@@ -278,9 +312,8 @@ impl Model {
                 "allowed": p.allowed.is_some(),
                 "block_size": block_size,
             });
-            let path = d.join("meta.json");
             let text = serde_json::to_string_pretty(&meta).expect("plain JSON values") + "\n";
-            std::fs::write(&path, text).map_err(store::io(&path))
+            store::write_text(d, "meta.json", &text)
         })
     }
 
@@ -288,7 +321,9 @@ impl Model {
     /// mapped (`mmap`: the arrays stay in the page cache, shared by every
     /// process that maps them; the files must not change meanwhile) or read
     /// into memory, and checked as a build's output (O(nnz), which also pages
-    /// in a mapped S). A new build for masks.
+    /// in a mapped S). A new build for masks. A corrupted file is an error,
+    /// never an out-of-bounds read; resource exhaustion (a `meta.json` asking
+    /// for billions of items) is not guarded: load files you trust.
     pub fn load(dir: &Path, mmap: bool) -> Result<Self, Error> {
         let path = dir.join("meta.json");
         let text = std::fs::read_to_string(&path).map_err(store::io(&path))?;
@@ -423,6 +458,10 @@ impl Core {
         block_size: BlockSize,
     ) -> Result<Self, Error> {
         let block = block_size.resolve()?;
+        // Before `dense_in` allocates n_cols slots (n_cols may come from a file).
+        if ext.as_ref().is_some_and(|e| e.len() != n_cols) {
+            return invalid(format!("item_ids must have one id per item ({n_cols})"));
+        }
         let dense_in = dense_in(&new_to_old, n_cols)?;
         let n = new_to_old.len();
         let (ip, ix, d): (&[i32], &[i32], &[f32]) = (&indptr, &indices, &data);
@@ -439,9 +478,6 @@ impl Core {
         }
         if !d.iter().all(|v| v.is_finite()) {
             return invalid("S must be finite (in float32)");
-        }
-        if ext.as_ref().is_some_and(|e| e.len() != n_cols) {
-            return invalid(format!("item_ids must have one id per item ({n_cols})"));
         }
         let n_active = ix.iter().max().map_or(0, |&c| c as usize + 1);
         let ext = ext.map(|e| ExtIds::new(e, &new_to_old)).transpose()?;

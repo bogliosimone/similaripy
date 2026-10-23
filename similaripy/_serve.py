@@ -64,16 +64,24 @@ def _check_mask(allowed):
     return allowed
 
 
-def _csr_arrays(S):
-    """S's CSR arrays as int32 / float32, copied only when the dtype differs
-    (the build reads them in place and never changes them)."""
+def _csr_arrays(S, num_threads):
+    """S's CSR arrays as contiguous int32 / float32, copied only when the
+    dtype or layout differs (the build reads them in place and never changes
+    them). Other formats take the similarity functions' route
+    (`_canonical_csr`: one copy, values cast before duplicates are summed), so
+    the model doesn't depend on the input format."""
     if S.nnz > _INT32_MAX:
         raise ValueError(f"S must have at most {_INT32_MAX} non-zeros")
-    S = S.tocsr()  # no copy for CSR input
+    if S.format != "csr":
+        S = _canonical_csr(S, np.float32, num_threads)
     nnz = int(S.indptr[-1])
     with np.errstate(over="ignore"):  # inf: rejected by the build's finite check
-        data = S.data[:nnz].astype(np.float32, copy=False)
-    return S.indptr.astype(np.int32, copy=False), S.indices[:nnz].astype(np.int32, copy=False), data
+        data = np.ascontiguousarray(S.data[:nnz], dtype=np.float32)
+    return (
+        np.ascontiguousarray(S.indptr, dtype=np.int32),
+        np.ascontiguousarray(S.indices[:nnz], dtype=np.int32),
+        data,
+    )
 
 
 class ItemKNN:
@@ -109,7 +117,7 @@ class ItemKNN:
         n = S.shape[0]
         if S.ndim != 2 or S.shape[1] != n:
             raise ValueError(f"S must be square (item x item), got shape {S.shape}")
-        indptr, indices, data = _csr_arrays(S)
+        indptr, indices, data = _csr_arrays(S, num_threads)
         ext = None
         if item_ids is not None:
             ext = _ids("item_ids", item_ids)
@@ -225,9 +233,20 @@ class ItemKNN:
         `block_size` as given.
 
         `path` must be missing or empty. `overwrite=True` replaces a saved
-        model there with a new directory, renamed into place, so processes
-        that mapped the old files keep them. Never change a saved model's files
-        in place: a process mapping them would crash.
+        model there (a directory holding only a saved model's files, not a
+        symlink) with a new directory renamed into place, so processes that
+        mapped the old files keep them (POSIX). Between the two renames the
+        directory doesn't exist: a `load` at that moment fails, and two savers
+        must not overwrite the same path at once. For a live service, save each
+        version to a new directory and switch what the workers load (a symlink
+        or config you flip); never change a saved model's files in place, a
+        process mapping them would crash.
+
+        The files: `indptr`, `indices`, `data` (S in internal ids, rows sorted),
+        `new_to_old` (internal id -> S's column), optional `item_ids` (id per
+        column) and `allowed` (uint64 bitset), each a 1-d little-endian `.npy`
+        with numpy's header layout (as `np.save` writes it); `meta.json` holds
+        the format version, `value_dtype`, sizes and `block_size`.
         """
         from . import __version__
 
@@ -244,6 +263,10 @@ class ItemKNN:
         into memory (e.g. on a network file system). Masks of the saved model
         don't apply to the loaded one; pickling a mapped model copies its
         arrays.
+
+        The check makes a corrupted file an error, never an out-of-bounds read,
+        but it doesn't guard against resource exhaustion (e.g. a `meta.json`
+        asking for billions of items): load files you trust.
         """
         return cls._wrap(_core.ServeModel.load(path, mmap))
 
