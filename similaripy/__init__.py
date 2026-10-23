@@ -5,7 +5,7 @@ try:
 except PackageNotFoundError:
     __version__ = "unknown"
 
-from ._serve import Recommender
+from ._serve import ItemKNN
 from .normalization import binarize, bm25, bm25plus, normalize, tfidf
 from .similarity import (
     asymmetric_cosine,
@@ -20,7 +20,7 @@ from .similarity import (
 )
 
 __all__ = [
-    "Recommender",
+    "ItemKNN",
     "__version__",
     "asymmetric_cosine",
     "binarize",

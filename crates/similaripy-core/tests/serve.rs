@@ -271,18 +271,36 @@ proptest! {
     fn bits_batch_blocks_baked_mask_and_order(c in case(true), block in 0usize..6) {
         let m = model(&c);
         let want = run(&c, &m);
-        // Baked mask (with_allowed) == per-call mask, bit for bit (same layout).
+        // Trimmed S and a view's default mask == the per-call mask, bit for
+        // bit (same layout); view + per-call mask == the per-call AND.
         if let Some(a) = mask(&c, &m) {
-            let baked = m.with_allowed(&a).unwrap();
             let ids = ids(&c);
-            let mut out = (vec![], vec![]);
-            recommend(&baked, &req(&c, &ids, None, Unknown::Skip), &mut out.0, &mut out.1).unwrap();
-            prop_assert_eq!(&out.0, &want.0);
-            prop_assert_eq!(bits(&out.1), bits(&want.1));
-            // The baked model accepts masks of its build.
-            let mut again = (vec![], vec![]);
-            recommend(&baked, &req(&c, &ids, Some(&a), Unknown::Skip), &mut again.0, &mut again.1).unwrap();
-            prop_assert_eq!(again.0, want.0.clone());
+            let go = |model: &Model, allowed: Option<&ItemMask>| {
+                let mut out = (vec![], vec![]);
+                recommend(model, &req(&c, &ids, allowed, Unknown::Skip), &mut out.0, &mut out.1).unwrap();
+                out
+            };
+            let trimmed = m.trimmed(&a).unwrap();
+            let view = m.view(Some(&a)).unwrap();
+            for got in [go(&trimmed, None), go(&view, None), go(&trimmed, Some(&a)), go(&view, Some(&a))] {
+                prop_assert_eq!(&got.0, &want.0);
+                prop_assert_eq!(bits(&got.1), bits(&want.1));
+            }
+            // A view of a view replaces the mask: None widens back to all.
+            let wide = go(&view.view(None).unwrap(), None);
+            prop_assert_eq!(&wide.0, &go(&m, None).0);
+            // Default mask a AND per-call mask "even original ids".
+            let even: Vec<i64> = (0..c.s.len()).filter(|j| j % 2 == 0).map(|j| ext_of(&c, j)).collect();
+            let both: Vec<i64> = (0..c.s.len())
+                .filter(|&j| j % 2 == 0 && c.allowed.as_ref().is_some_and(|al| al[j]))
+                .map(|j| ext_of(&c, j))
+                .collect();
+            let b = m.mask(Ids::External(&even), Unknown::Skip).unwrap();
+            let ab = m.mask(Ids::External(&both), Unknown::Skip).unwrap();
+            let got = go(&view, Some(&b));
+            let and = go(&m, Some(&ab));
+            prop_assert_eq!(&got.0, &and.0);
+            prop_assert_eq!(bits(&got.1), bits(&and.1));
         }
         // History order doesn't change bits (weights 1.0: duplicates sum exactly).
         if c.weights.is_none() {
@@ -352,7 +370,8 @@ fn rejects_bad_input() {
         .mask(Ids::External(&[1]), Unknown::Skip)
         .unwrap();
     assert!(run(&r(&[0], None, Some(&other), Unknown::Skip)).is_err());
-    assert!(m.with_allowed(&other).is_err());
+    assert!(m.trimmed(&other).is_err());
+    assert!(m.view(Some(&other)).is_err());
     let own = m.mask(Ids::External(&[1]), Unknown::Skip).unwrap();
     assert_eq!(
         run(&r(&[0], None, Some(&own), Unknown::Skip)).unwrap(),

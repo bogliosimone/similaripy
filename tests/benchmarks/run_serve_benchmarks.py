@@ -1,5 +1,5 @@
 """
-Serving-engine benchmark: `similaripy.Recommender` latency, batch vs the
+Serving-engine benchmark: `similaripy.ItemKNN` latency, batch vs the
 kernel, batch block size, and the model build's memory.
 
 S = cosine(URM.T, k=--model-k) (or --model rp3beta), built once, not timed.
@@ -145,7 +145,7 @@ def mode_gate(args, URM, S, rec, report):
 
 def mode_block(args, URM, S, rec, report):
     """Batch time with `DEFAULT_BLOCK_SIZE` (rec) vs one block (a second model)."""
-    one = sim.Recommender(S, _block_size=0)
+    one = sim.ItemKNN(S, block_size=None)
     if rec._model.n_active <= DEFAULT_BLOCK_SIZE:
         print(f"n_active {rec._model.n_active:,} <= block {DEFAULT_BLOCK_SIZE:,}: both models run one block (control)")
     out = {}
@@ -173,7 +173,7 @@ def rss():
 S = sp.load_npz(sys.argv[1]).tocsr()
 before = rss()
 t = time.perf_counter()
-rec = sim.Recommender(S)
+rec = sim.ItemKNN(S)
 print(f"{time.perf_counter() - t:.3f} {before:.0f} {rss():.0f} {S.nnz}")
 """
 
@@ -225,7 +225,7 @@ def main():
     if "build" in args.mode:
         mode_build(args, S, report)
     t = time.perf_counter()
-    rec = sim.Recommender(S)
+    rec = sim.ItemKNN(S)
     print(
         f"URM {URM.shape} nnz {URM.nnz:,}; S ({args.model}) nnz {S.nnz:,} in {t_s:.1f}s; "
         f"model build {time.perf_counter() - t:.2f}s, {rec.n_items:,} items; max RSS {rss_mb():.0f} MB"

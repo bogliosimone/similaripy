@@ -20,7 +20,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
   - [similarity.py](similaripy/similarity.py) - Similarity functions (cosine, jaccard, s_plus, etc.)
   - [_s_plus.py](similaripy/_s_plus.py) - numpy prep (copies, sorting, column filters), kernel call, output build
   - [normalization.py](similaripy/normalization.py) - Normalization functions (BM25, TF-IDF, etc.)
-  - [_serve.py](similaripy/_serve.py) - `Recommender`: prepared item-item model (layout chosen here), `recommend` / `recommend_batch`
+  - [_serve.py](similaripy/_serve.py) - `ItemKNN`: prepared item-item model (layout chosen here), `view` masks, `recommend` / `recommend_batch`
 
 - **Rust core** ([crates/similaripy-core](crates/similaripy-core)): pure Rust, no Python
   - [kernel.rs](crates/similaripy-core/src/kernel.rs) - S-Plus kernel (single-block and blocked paths, rayon)
@@ -91,7 +91,7 @@ make benchmark-similarity-small
 - [tests/test_s_plus_prep.py](tests/test_s_plus_prep.py) - validation, canonicalization, layout, output build, regressions
 - [tests/test_normalization.py](tests/test_normalization.py), [tests/test_progress_bar.py](tests/test_progress_bar.py)
 - [tests/test_free_threading.py](tests/test_free_threading.py) - concurrent calls, identical bits across threads and blocking
-- [tests/test_serve.py](tests/test_serve.py) - `Recommender` vs a dense float64 reference, masks, unknown ids, batch == single bits, pickle
+- [tests/test_serve.py](tests/test_serve.py) - `ItemKNN` vs a dense float64 reference, masks and views, unknown ids, batch == single bits, pickle
 - [crates/similaripy-core/tests/serve.rs](crates/similaripy-core/tests/serve.rs) - serving proptest vs an f64 reference, bit-identity claims
 - [crates/similaripy-core/tests/reference.rs](crates/similaripy-core/tests/reference.rs) - kernel proptest vs an f64 reference, `validate` errors; unit tests in each module
 

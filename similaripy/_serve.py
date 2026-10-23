@@ -1,7 +1,7 @@
 """
-Serving engine: a prepared model built once from an item-item S, then top-K
-recommendations per history (`recommend`) or per row of a user-item matrix
-(`recommend_batch`), in Rust without the GIL.
+Serving engine: `ItemKNN`, a prepared item-item model built once from S, then
+top-K recommendations per history (`recommend`) or per row of a user-item
+matrix (`recommend_batch`), in Rust without the GIL.
 
 Build: the canonical copy of S (`_canonical_csr`); items with neither a row
 nor a column are dropped; the rest get internal ids in popularity order
@@ -9,13 +9,18 @@ nor a column are dropped; the rest get internal ids in popularity order
 lower column), rows and columns alike, so a history item's internal id is both
 its row and its column. The Rust model copies S once into that layout; the
 canonical copy is freed after the build.
+
+Availability, three levels: `candidate_items` at build trims S (permanent
+until rebuilt); `view(allowed_items=...)` gives a model sharing S with a
+default mask (cheap to change: make a new view, swap the reference); a mask
+per call (`allowed=`). The two masks combine with AND.
 """
 
 import numpy as np
 import scipy.sparse as sp
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
-from ._s_plus import DEFAULT_BLOCK_SIZE, _canonical_csr
+from ._s_plus import DEFAULT_BLOCK_SIZE, _canonical_csr, _is_int
 
 _INT32_MAX = np.iinfo(np.int32).max
 _INT64_MAX = np.iinfo(np.int64).max
@@ -53,13 +58,24 @@ def _check_k(k):
 
 def _check_mask(allowed):
     if allowed is not None and not isinstance(allowed, _core.ServeMask):
-        raise TypeError(f"allowed must be a mask from Recommender.mask(ids), got {type(allowed).__name__}")
+        raise TypeError(f"allowed must be a mask from ItemKNN.mask(ids), got {type(allowed).__name__}")
     return allowed
 
 
-class Recommender:
+def _block(block_size) -> int:
+    """As the similarity functions' `block_size`: 'auto', None (no blocking) or an int > 0."""
+    if isinstance(block_size, str) and block_size == "auto":
+        return DEFAULT_BLOCK_SIZE
+    if block_size is None:
+        return 0
+    if _is_int(block_size) and block_size > 0:
+        return int(block_size)
+    raise ValueError(f"block_size must be 'auto', None (no blocking) or an integer > 0, got {block_size!r}")
+
+
+class ItemKNN:
     """
-    Top-K items for a history from an item-item similarity matrix S.
+    Item-based KNN recommendations from an item-item similarity matrix S.
 
     `score[j] = sum_i w_i * S[i, j]` over the history items `i`; the best `k`
     items with a positive score, best first (ties: the item with more entries
@@ -70,12 +86,21 @@ class Recommender:
         S: square sparse item-item matrix (e.g. `sim.cosine(URM.T, k=100)`).
         item_ids: one unique int64 id per item (column of S); None = the ids
             are S's column indices.
-        allowed: only these item ids may be recommended (baked into the
-            model, see `with_allowed`); None = all.
+        candidate_items: only these items can ever be recommended: the other
+            columns are dropped from the model (less memory and work; changing
+            it means a rebuild). Histories still use every item. For items
+            that are never available, `target_cols` when computing S is
+            better: it keeps k available neighbours per item. None = all.
+        block_size: column block size of every request, as the similarity
+            functions': 'auto' (the library's choice), None (no blocking) or
+            an int > 0. Results are the same; blocking is faster under
+            concurrent requests, no blocking for a lone request on an idle
+            machine.
         num_threads: threads for the build (0 = all).
     """
 
-    def __init__(self, S, item_ids=None, allowed=None, num_threads: int = 0, _block_size=DEFAULT_BLOCK_SIZE):
+    def __init__(self, S, item_ids=None, candidate_items=None, block_size="auto", num_threads: int = 0):
+        block = _block(block_size)
         S = _canonical_csr(S, np.float32, num_threads)
         n = S.shape[0]
         if S.shape[1] != n:
@@ -98,18 +123,20 @@ class Recommender:
             n=n,
             new_to_old=new_to_old,
             ext=ext,
-            block=_block_size,
+            block=block,
             num_threads=num_threads,
         )
         del S
-        if allowed is not None:
-            model = model.with_allowed(model.mask(_ids("allowed", allowed), "skip"))
+        if candidate_items is not None:
+            model = model.trimmed(model.mask(_ids("candidate_items", candidate_items), "skip"))
         self._model = model
+        self._block_size = block_size
 
     @classmethod
-    def _wrap(cls, model):
+    def _wrap(cls, model, block_size):
         rec = cls.__new__(cls)
         rec._model = model
+        rec._block_size = block_size
         return rec
 
     @property
@@ -119,19 +146,27 @@ class Recommender:
 
     def mask(self, ids, unknown: str = "skip"):
         """
-        A reusable per-call availability mask: only `ids` may be recommended.
-        Valid for this model and the models `with_allowed` derives from it.
+        A reusable availability mask allowing only `ids`, for `recommend(...,
+        allowed=mask)` or `recommend_batch`. Valid for every model of this
+        build (its views included).
         """
         return self._model.mask(_ids("ids", ids), unknown)
 
-    def with_allowed(self, ids, unknown: str = "skip") -> "Recommender":
+    def view(self, allowed_items=None, unknown: str = "skip") -> "ItemKNN":
         """
-        A new model that only recommends `ids` (their columns of S are kept,
-        the others dropped: no per-call cost). Histories still use every
-        item. Calling it on a model that already has `allowed` narrows it
-        further; to widen again, call it on the unrestricted model.
+        The same model with `allowed_items` as its default availability: S is
+        shared (no copy), only a bitset of one bit per item is new, so it is
+        cheap to change often. Combined with a per-call `allowed` mask by AND.
+        A view of a view replaces the default (None = everything allowed).
+
+        To update availability in a running service, build the new view and
+        swap the reference; requests in flight keep the model they started
+        with::
+
+            state["model"] = state["model"].view(allowed_items=available_ids)
         """
-        return self._wrap(self._model.with_allowed(self.mask(ids, unknown)))
+        mask = None if allowed_items is None else self.mask(allowed_items, unknown)
+        return self._wrap(self._model.view(mask), self._block_size)
 
     def recommend(self, history, weights=None, k: int = 10, exclude_seen: bool = True, allowed=None, unknown="skip"):
         """
@@ -143,7 +178,7 @@ class Recommender:
             weights: one finite weight per id (None = all 1.0).
             k: results wanted; fewer when fewer items score > 0.
             exclude_seen: never recommend a history item.
-            allowed: a mask from `mask(ids)`.
+            allowed: a mask from `mask(ids)`, ANDed with the view's default.
             unknown: ids not in the model: 'skip' or 'raise' (ValueError).
 
         Returns:
@@ -188,11 +223,15 @@ class Recommender:
         return sp.csr_array((scores, cols, indptr), shape=(H.shape[0], n_cols))
 
     def __reduce__(self):
-        # Same-version pickles only (Q1): the arrays, rebuilt and re-checked on load.
-        return (_from_parts, self._model.parts())
+        # Same-version pickles only (Q1): the arrays, rebuilt and re-checked on
+        # load; block size as given ('auto' re-derived), default mask kept.
+        return (
+            _from_parts,
+            (*self._model.parts(), self._model.allowed_internal(), self._block_size, type(self)),
+        )
 
 
-def _from_parts(indptr, indices, data, new_to_old, n_cols, ext):
+def _from_parts(indptr, indices, data, new_to_old, n_cols, ext, allowed_internal, block_size, cls=ItemKNN):
     """A model from `ServeModel.parts()`: S back in its original ids, same layout."""
     rows = np.repeat(new_to_old, np.diff(indptr))
     S = _canonical_csr(sp.coo_array((data, (rows, new_to_old[indices])), shape=(n_cols, n_cols)), np.float32, 0)
@@ -203,7 +242,11 @@ def _from_parts(indptr, indices, data, new_to_old, n_cols, ext):
         n=n_cols,
         new_to_old=new_to_old,
         ext=ext,
-        block=DEFAULT_BLOCK_SIZE,  # derived at load, never stored (Q1)
+        block=_block(block_size),
         num_threads=0,
     )
-    return Recommender._wrap(model)
+    rec = cls._wrap(model, block_size)
+    if allowed_internal is not None:
+        cols = new_to_old[allowed_internal]
+        rec = rec.view(allowed_items=cols if ext is None else ext[cols])
+    return rec

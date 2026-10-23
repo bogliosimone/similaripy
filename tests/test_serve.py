@@ -1,4 +1,4 @@
-"""Serving engine: `Recommender` against a dense float64 reference."""
+"""Serving engine: `ItemKNN` against a dense float64 reference."""
 
 import pickle
 from concurrent.futures import ThreadPoolExecutor
@@ -58,7 +58,7 @@ def test_matches_dense_reference(signed, external, n):
     if external:  # random ids plus the int64 edge keys as real items
         ext = rng.choice(10**12, size=n, replace=False).astype(np.int64)
         ext[1:4] = [np.iinfo(np.int64).min, np.iinfo(np.int64).max, -1]
-    rec = sim.Recommender(S, item_ids=ext if external else None)
+    rec = sim.ItemKNN(S, item_ids=ext if external else None)
     assert rec.n_items == n - 1  # item 0 dropped
     for trial in range(30):
         hist = rng.choice(ext, size=rng.integers(0, 8))
@@ -73,14 +73,18 @@ def test_matches_dense_reference(signed, external, n):
             want = _reference(S, ext, hist, weights, k, exclude_seen, allowed_ids)
             np.testing.assert_array_equal(got[0], want[0])
             np.testing.assert_allclose(got[1], want[1], rtol=1e-6)
-            if allowed_ids is not None:  # baked mask == per-call mask, bits
-                baked = rec.with_allowed(allowed_ids).recommend(hist, weights, k=k, exclude_seen=exclude_seen)
-                assert np.array_equal(baked[0], got[0])
-                assert np.array_equal(baked[1].view(np.int32), got[1].view(np.int32))
+            if allowed_ids is not None:  # trimmed S == view's default mask == per-call mask, bits
+                for other in (
+                    sim.ItemKNN(S, item_ids=ext if external else None, candidate_items=allowed_ids),
+                    rec.view(allowed_items=allowed_ids),
+                ):
+                    r = other.recommend(hist, weights, k=k, exclude_seen=exclude_seen)
+                    assert np.array_equal(r[0], got[0])
+                    assert np.array_equal(r[1].view(np.int32), got[1].view(np.int32))
 
 
 def test_default_path_and_dtypes():
-    rec = sim.Recommender(_S(30, False, seed=3))
+    rec = sim.ItemKNN(_S(30, False, seed=3))
     ids, scores = rec.recommend([5, 6, 7], k=5)
     assert ids.dtype == np.int64 and scores.dtype == np.float32
     assert np.all(np.diff(scores) <= 0)
@@ -91,7 +95,7 @@ def test_default_path_and_dtypes():
 
 
 def test_unknown_ids():
-    rec = sim.Recommender(_S(20, False, seed=2), item_ids=np.arange(100, 120))
+    rec = sim.ItemKNN(_S(20, False, seed=2), item_ids=np.arange(100, 120))
     assert rec.recommend([105, 7], k=3)[0].size == rec.recommend([105], k=3)[0].size
     with pytest.raises(ValueError, match="unknown item id: 7"):
         rec.recommend([105, 7], unknown="raise")
@@ -103,7 +107,7 @@ def test_unknown_ids():
 
 def test_float_bits_independent_of_order_and_duplicates():
     rng = np.random.default_rng(0)
-    rec = sim.Recommender(sp.random_array((200, 200), density=0.1, rng=rng, format="csr"))
+    rec = sim.ItemKNN(sp.random_array((200, 200), density=0.1, rng=rng, format="csr"))
     hist = rng.choice(200, size=30, replace=False)
     ids, scores = rec.recommend(hist, k=20)
     for other in (
@@ -118,13 +122,13 @@ def test_float_bits_independent_of_order_and_duplicates():
     assert np.array_equal(a[1].view(np.int32), b[1].view(np.int32))
 
 
-@pytest.mark.parametrize("block", [7, 0])
+@pytest.mark.parametrize("block", [7, None])
 def test_batch_matches_single_bits(block):
     rng = np.random.default_rng(4)
     S = sp.random_array((300, 300), density=0.05, rng=rng, format="csr")
     ext = rng.choice(10**9, size=300, replace=False)
-    rec = sim.Recommender(S, item_ids=ext, _block_size=block)
-    one_block = sim.Recommender(S, item_ids=ext, _block_size=0)
+    rec = sim.ItemKNN(S, item_ids=ext, block_size=block)
+    one_block = sim.ItemKNN(S, item_ids=ext, block_size=None)
     H = sp.random_array((50, 300), density=0.05, rng=rng, format="csr")
     mask = rec.mask(ext[:150])
     for allowed in (None, mask):
@@ -142,25 +146,54 @@ def test_batch_matches_single_bits(block):
 
 def test_masks_bound_to_their_build():
     S = _S(10, False, seed=1)
-    rec = sim.Recommender(S)
+    rec = sim.ItemKNN(S)
     with pytest.raises(ValueError, match="another model"):
-        rec.recommend([5], allowed=sim.Recommender(_S(100, False, seed=1)).mask([5]))
+        rec.recommend([5], allowed=sim.ItemKNN(_S(100, False, seed=1)).mask([5]))
     with pytest.raises(ValueError, match="another model"):  # same S, another build
-        rec.recommend([5], allowed=sim.Recommender(S).mask([5]))
-    baked = rec.with_allowed([3, 4, 5, 6])
-    rec.recommend([5], allowed=baked.mask([3]))  # same build: fine both ways
-    baked.recommend([5], allowed=rec.mask([3]))
-    assert set(baked.recommend([5, 6, 7], k=10, exclude_seen=False)[0]) <= {3, 4, 5, 6}
-    assert set(sim.Recommender(S, allowed=[3, 4]).recommend([5, 6, 7], k=10)[0]) <= {3, 4}
+        rec.recommend([5], allowed=sim.ItemKNN(S).mask([5]))
+    view = rec.view(allowed_items=[3, 4, 5, 6])
+    rec.recommend([5], allowed=view.mask([3]))  # same build: fine both ways
+    view.recommend([5], allowed=rec.mask([3]))
+    assert set(view.recommend([5, 6, 7], k=10, exclude_seen=False)[0]) <= {3, 4, 5, 6}
+    assert set(sim.ItemKNN(S, candidate_items=[3, 4]).recommend([5, 6, 7], k=10)[0]) <= {3, 4}
+
+
+def test_view_shares_s_and_combines_masks():
+    S = _S(60, False, seed=12)
+    rec = sim.ItemKNN(S)
+    hist = [5, 6, 7, 8]
+    full = rec.recommend(hist, k=60, exclude_seen=False)[0]
+    a, b = list(range(0, 60, 2)), list(range(0, 60, 3))
+    va = rec.view(allowed_items=a)
+    # default AND per call
+    got = va.recommend(hist, k=60, exclude_seen=False, allowed=va.mask(b))[0]
+    assert list(got) == [i for i in full if i % 6 == 0]
+    # a view of a view replaces the default; None widens back to all
+    assert list(va.view(allowed_items=b).recommend(hist, k=60, exclude_seen=False)[0]) == [
+        i for i in full if i % 3 == 0
+    ]
+    assert np.array_equal(va.view(allowed_items=None).recommend(hist, k=60, exclude_seen=False)[0], full)
+    # candidate_items trims for good: a view can't widen past it
+    trimmed = sim.ItemKNN(S, candidate_items=a)
+    assert set(trimmed.view(allowed_items=None).recommend(hist, k=60, exclude_seen=False)[0]) <= set(a)
+
+
+def test_block_size_validation():
+    S = _S(10, False, seed=1)
+    for ok in ("auto", None, 1, 1000):
+        sim.ItemKNN(S, block_size=ok)
+    for bad in (0, -1, "big", 1.5, True):
+        with pytest.raises(ValueError, match="block_size"):
+            sim.ItemKNN(S, block_size=bad)
 
 
 def test_pickle_round_trip_keeps_layout_and_mask():
     rng = np.random.default_rng(5)
     S = _S(80, True, seed=5)
     ext = rng.choice(10**9, size=80, replace=False)
-    rec = sim.Recommender(S, item_ids=ext).with_allowed(ext[10:60])
+    rec = sim.ItemKNN(S, item_ids=ext, candidate_items=ext[5:70], block_size=None).view(allowed_items=ext[10:60])
     back = pickle.loads(pickle.dumps(rec))
-    assert back.n_items == rec.n_items
+    assert back.n_items == rec.n_items and back._block_size is None
     for _ in range(20):
         hist = rng.choice(ext, size=6)
         a, b = rec.recommend(hist, k=15), back.recommend(hist, k=15)
@@ -170,14 +203,14 @@ def test_pickle_round_trip_keeps_layout_and_mask():
 def test_rejects_bad_input():
     S = _S(10, False, seed=1)
     with pytest.raises(ValueError, match="square"):
-        sim.Recommender(sp.random_array((3, 4), density=0.5, format="csr"))
+        sim.ItemKNN(sp.random_array((3, 4), density=0.5, format="csr"))
     with pytest.raises(ValueError, match="unique"):
-        sim.Recommender(S, item_ids=np.zeros(10, dtype=np.int64))
+        sim.ItemKNN(S, item_ids=np.zeros(10, dtype=np.int64))
     with pytest.raises(ValueError, match="one id per item"):
-        sim.Recommender(S, item_ids=np.arange(3))
+        sim.ItemKNN(S, item_ids=np.arange(3))
     with pytest.raises(TypeError, match="integer ids"):
-        sim.Recommender(S, item_ids=np.arange(10.0))
-    rec = sim.Recommender(S)
+        sim.ItemKNN(S, item_ids=np.arange(10.0))
+    rec = sim.ItemKNN(S)
     with pytest.raises(TypeError, match="integer ids"):
         rec.recommend([1.9])
     with pytest.raises(ValueError, match="finite"):
@@ -194,7 +227,7 @@ def test_caller_matrices_unchanged():
     S = _S(20, True, seed=5)
     H = sp.random_array((5, 20), density=0.3, format="csr", rng=0)
     before = [(m.data.copy(), m.indices.copy(), m.indptr.copy()) for m in (S, H)]
-    sim.Recommender(S).recommend_batch(H)
+    sim.ItemKNN(S).recommend_batch(H)
     for m, b in zip((S, H), before):
         assert all(np.array_equal(x, y) for x, y in zip(b, (m.data, m.indices, m.indptr)))
 
@@ -202,7 +235,7 @@ def test_caller_matrices_unchanged():
 def test_concurrent_calls_identical():
     """One model shared by threads (scratch per OS thread, GIL released)."""
     rng = np.random.default_rng(2)
-    rec = sim.Recommender(sp.random_array((500, 500), density=0.05, rng=rng, format="csr"))
+    rec = sim.ItemKNN(sp.random_array((500, 500), density=0.05, rng=rng, format="csr"))
     hists = [rng.choice(500, size=20) for _ in range(64)]
     want = [rec.recommend(h, k=10) for h in hists]
     with ThreadPoolExecutor(8) as ex:
@@ -213,19 +246,19 @@ def test_concurrent_calls_identical():
 
 def test_empty_models_and_masks():
     for S in (sp.csr_array((0, 0)), sp.csr_array((5, 5))):
-        rec = sim.Recommender(S)
+        rec = sim.ItemKNN(S)
         assert rec.n_items == 0
         assert rec.recommend([0, 1], k=3)[0].size == 0
         assert rec.recommend_batch(sp.csr_array((2, S.shape[1]))).nnz == 0
         assert pickle.loads(pickle.dumps(rec)).n_items == 0
-    rec = sim.Recommender(_S(20, False, seed=6), allowed=[])
+    rec = sim.ItemKNN(_S(20, False, seed=6), candidate_items=[])
     assert rec.recommend([5, 6, 7], k=5)[0].size == 0
 
 
 def test_zero_as_a_real_external_id():
     S = _S(10, False, seed=8)
     ext = np.arange(10) * 7 - 14  # item 2 has id 0
-    rec = sim.Recommender(S, item_ids=ext)
+    rec = sim.ItemKNN(S, item_ids=ext)
     D = S.toarray()
     hist = [ext[j] for j in range(10) if D[j].any()][:3]
     want = _reference(S, ext, hist, None, 10, True, None)
@@ -235,7 +268,7 @@ def test_zero_as_a_real_external_id():
 
 def test_batch_skips_dropped_columns_and_int64_indptr(monkeypatch):
     S = _S(30, False, seed=9)  # item 0 is dropped
-    rec = sim.Recommender(S)
+    rec = sim.ItemKNN(S)
     H = sp.csr_array(([1.0, 1.0, 1.0], ([0, 0, 1], [0, 5, 0])), shape=(2, 30))
     R = rec.recommend_batch(H, k=5)
     assert np.array_equal(R.indices[R.indptr[0] : R.indptr[1]], rec.recommend([5], k=5)[0])
@@ -247,7 +280,7 @@ def test_batch_skips_dropped_columns_and_int64_indptr(monkeypatch):
 
 
 def test_reuse_after_raise():
-    rec = sim.Recommender(_S(30, False, seed=10))
+    rec = sim.ItemKNN(_S(30, False, seed=10))
     want = rec.recommend([5, 6], k=5)
     with pytest.raises(ValueError, match="unknown"):
         rec.recommend([5, 6, 999], k=5, unknown="raise")
@@ -258,17 +291,17 @@ def test_reuse_after_raise():
 def test_boundary_types():
     S = _S(10, False, seed=1)
     with pytest.raises(ValueError, match="fit in int64"):
-        sim.Recommender(S, item_ids=np.array([2**63] + list(range(9)), dtype=np.uint64))
-    rec = sim.Recommender(S)
+        sim.ItemKNN(S, item_ids=np.array([2**63] + list(range(9)), dtype=np.uint64))
+    rec = sim.ItemKNN(S)
     with pytest.raises(ValueError, match="fit in int64"):
         rec.recommend([2**63])
     with pytest.raises(ValueError, match="1-d"):
         rec.recommend([[5], [6]])
-    with pytest.raises(TypeError, match="Recommender.mask"):
+    with pytest.raises(TypeError, match="ItemKNN.mask"):
         rec.recommend([5], allowed=[3, 4])
     assert rec.recommend(np.array([5, 6], dtype=np.uint32), k=2**70)[0].size > 0
     bad = sp.csr_array(np.array([[0.0, np.inf], [1.0, 0.0]]))
     with pytest.raises(ValueError, match="finite"):
-        sim.Recommender(bad)
+        sim.ItemKNN(bad)
     with pytest.raises(ValueError, match="finite"):
-        sim.Recommender(sp.csr_array(np.array([[0.0, 1e300], [1.0, 0.0]])))
+        sim.ItemKNN(sp.csr_array(np.array([[0.0, 1e300], [1.0, 0.0]])))

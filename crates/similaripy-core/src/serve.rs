@@ -15,6 +15,7 @@
 //! 4.1 (`reports/step4-explore.md` in the planning notes, D64).
 
 use std::cell::Cell;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rayon::prelude::*;
@@ -109,10 +110,11 @@ impl ExtIds {
     }
 }
 
-/// A prepared model: owns its arrays, validated once, immutable.
-pub struct Model {
-    /// Shared by the models `with_allowed` derives (same internal ids), so a
-    /// per-call mask works on all of them and on no other model.
+/// The immutable part of a model: S in the internal layout and the id maps,
+/// validated once, shared by every `view` of it (no copy of S).
+pub struct Core {
+    /// Shared by the models of one build (views, `trimmed`: same internal
+    /// ids), so a mask works on all of them and on no other model.
     layout: u64,
     indptr: Vec<i32>,
     indices: Vec<i32>,
@@ -126,6 +128,23 @@ pub struct Model {
     dense_in: Vec<u32>,
     /// None: ids are S's column indices.
     ext: Option<ExtIds>,
+}
+
+/// A prepared model: a shared `Core` plus an optional default availability
+/// mask (`view`), ANDed with a per-call mask. Immutable: to change the mask,
+/// make a new view and swap the reference (in-flight requests keep theirs).
+pub struct Model {
+    core: Arc<Core>,
+    /// Bitset over internal ids; None = all allowed.
+    allowed: Option<Vec<u64>>,
+}
+
+impl std::ops::Deref for Model {
+    type Target = Core;
+
+    fn deref(&self) -> &Core {
+        &self.core
+    }
 }
 
 /// The ids of one request.
@@ -169,7 +188,7 @@ pub struct Request<'a> {
     /// Never recommend a history item.
     pub exclude_seen: bool,
     /// From `Model::mask` of this model or of one sharing its build
-    /// (`with_allowed`); None = all allowed.
+    /// (views, `trimmed`); None = all allowed.
     pub allowed: Option<&'a ItemMask>,
     pub unknown: Unknown,
 }
@@ -191,6 +210,51 @@ fn next_layout() -> u64 {
 }
 
 impl Model {
+    /// See `Core::new`; no default mask.
+    pub fn new(
+        s: CsrView,
+        new_to_old: Vec<i32>,
+        ext: Option<Vec<i64>>,
+        block: usize,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            core: Arc::new(Core::new(s, new_to_old, ext, block)?),
+            allowed: None,
+        })
+    }
+
+    /// The same model (S shared, no copy) with `allowed` as its default
+    /// mask (None: all allowed). A view of a view replaces the mask, it
+    /// doesn't narrow it.
+    pub fn view(&self, allowed: Option<&ItemMask>) -> Result<Self, Error> {
+        if let Some(m) = allowed {
+            self.check_mask(m)?;
+        }
+        Ok(Self {
+            core: Arc::clone(&self.core),
+            allowed: allowed.map(|m| m.bits.clone()),
+        })
+    }
+
+    /// A model whose S keeps only the `allowed` items' columns (S · diag(m),
+    /// a copy): they can never be recommended, and their entries cost no
+    /// memory or work. Rows, layout and ids unchanged, so masks keep working;
+    /// rows of hidden items still count (their history signal stays). The
+    /// default mask is kept.
+    pub fn trimmed(&self, allowed: &ItemMask) -> Result<Self, Error> {
+        Ok(Self {
+            core: Arc::new(self.core.trimmed(allowed)?),
+            allowed: self.allowed.clone(),
+        })
+    }
+
+    /// The default mask's bits (pickling), None = all allowed.
+    pub fn allowed_bits(&self) -> Option<&[u64]> {
+        self.allowed.as_deref()
+    }
+}
+
+impl Core {
     /// From S (n × n over the original ids; rows sorted, no duplicates) and
     /// `new_to_old`: internal id → original id for every kept item, in the
     /// serving order. Items left out must have an empty row and an empty
@@ -200,7 +264,7 @@ impl Model {
     /// cache-sized accumulator per thread wins, D65). Copies S once into the
     /// internal layout (rows reordered, columns renumbered and sorted, on the
     /// current rayon pool).
-    pub fn new(
+    fn new(
         s: CsrView,
         new_to_old: Vec<i32>,
         ext: Option<Vec<i64>>,
@@ -288,10 +352,7 @@ impl Model {
         }
     }
 
-    /// A model with only the `allowed` items' columns (S · diag(m)); rows,
-    /// layout and ids unchanged (Q4), so per-call masks keep working. Rows of
-    /// hidden items still count: their history signal stays.
-    pub fn with_allowed(&self, allowed: &ItemMask) -> Result<Self, Error> {
+    fn trimmed(&self, allowed: &ItemMask) -> Result<Self, Error> {
         self.check_mask(allowed)?;
         let mut indptr = Vec::with_capacity(self.indptr.len());
         indptr.push(0i32);
@@ -554,9 +615,9 @@ impl Scratch {
         if self.sums.len() < block {
             self.sums.resize(block, 0.0);
         }
-        let allowed = req.allowed.map(|a| a.bits.as_slice());
-        // SAFETY: hist ids < n_items (lookup); sums.len() >= block; allowed
-        // from this layout (checked by the caller), so sized for n_items.
+        let allowed = Masks(m.allowed.as_deref(), req.allowed.map(|a| a.bits.as_slice()));
+        // SAFETY: hist ids < n_items (lookup); sums.len() >= block; masks of
+        // this layout (checked by the caller / `view`), so sized for n_items.
         unsafe { self.accumulate_all(m, block, req.exclude_seen, allowed) };
         self.cols.clear();
         self.vals.clear();
@@ -577,7 +638,7 @@ impl Scratch {
         m: &Model,
         block: usize,
         exclude_seen: bool,
-        allowed: Option<&[u64]>,
+        allowed: Masks,
     ) {
         let s = m.s();
         let n_active = m.n_active;
@@ -664,34 +725,40 @@ impl Scratch {
     /// Touched + `offset` < n_items; `allowed` sized for n_items.
     // Out of line, as the kernel's drain (tests/benchmarks/README.md).
     #[inline(never)]
-    unsafe fn drain(&mut self, offset: usize, allowed: Option<&[u64]>) {
+    unsafe fn drain(&mut self, offset: usize, allowed: Masks) {
+        let (sums, touched, topk) = (&mut self.sums, &self.touched, &mut self.topk);
         // SAFETY: forwarded.
         unsafe {
             match allowed {
-                None => {
-                    drain_impl::<false>(&mut self.sums, &self.touched, &mut self.topk, offset, &[])
+                Masks(None, None) => drain_impl::<0>(sums, touched, topk, offset, &[], &[]),
+                Masks(Some(a), None) | Masks(None, Some(a)) => {
+                    drain_impl::<1>(sums, touched, topk, offset, a, &[])
                 }
-                Some(a) => {
-                    drain_impl::<true>(&mut self.sums, &self.touched, &mut self.topk, offset, a)
-                }
+                Masks(Some(a), Some(b)) => drain_impl::<2>(sums, touched, topk, offset, a, b),
             }
         }
         self.touched.clear();
     }
 }
 
-/// DOT drain: score = sum; the mask bit is tested only for scores that pass
-/// the floor (most never do: <= 1% cost, D64).
+/// The default mask and the per-call mask (each None = all allowed).
+#[derive(Clone, Copy)]
+struct Masks<'a>(Option<&'a [u64]>, Option<&'a [u64]>);
+
+/// DOT drain: score = sum; `MASKS` masks (0, 1 in `a`, 2 in `a` and `b`)
+/// are tested only for scores that pass the floor (most never do: <= 1%
+/// cost, D64).
 ///
 /// # Safety
 /// As `Scratch::drain`.
 #[inline(always)]
-unsafe fn drain_impl<const MASK: bool>(
+unsafe fn drain_impl<const MASKS: u8>(
     sums: &mut [f32],
     touched: &[u32],
     topk: &mut TopK,
     offset: usize,
-    allowed: &[u64],
+    a: &[u64],
+    b: &[u64],
 ) {
     let mut floor = topk.floor(THRESHOLD);
     for &local in touched {
@@ -699,7 +766,7 @@ unsafe fn drain_impl<const MASK: bool>(
         unsafe {
             let val = std::mem::take(sums.get_unchecked_mut(local as usize));
             let col = offset + local as usize;
-            if val >= floor && (!MASK || bit(allowed, col)) {
+            if val >= floor && (MASKS == 0 || (bit(a, col) && (MASKS == 1 || bit(b, col)))) {
                 topk.push(col as i32, val);
                 floor = topk.floor(THRESHOLD);
             }

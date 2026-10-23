@@ -33,7 +33,7 @@ def _calls(m):
     }
 
 
-_REC = sim.Recommender(sim.cosine(_matrix().T, k=50, verbose=False))
+_REC = sim.ItemKNN(sim.cosine(_matrix().T, k=50, verbose=False))
 
 
 @pytest.mark.skipif(not sysconfig.get_config_var("Py_GIL_DISABLED"), reason="free-threaded build only")

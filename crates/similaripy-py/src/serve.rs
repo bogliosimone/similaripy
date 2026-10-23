@@ -1,7 +1,7 @@
 //! Serving bindings: `ServeModel` owns the core `Model` (Rust buffers, one
 //! copy at build, no numpy inside, D63). Each call copies the ids in, runs
 //! pure Rust without the GIL and moves the results out. `similaripy/_serve.py`
-//! does the prep and wraps it as `Recommender`.
+//! does the prep and wraps it as `ItemKNN`.
 
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
@@ -23,8 +23,8 @@ fn unknown(s: &str) -> PyResult<Unknown> {
     }
 }
 
-/// A per-call availability mask, valid for the model that built it and the
-/// models `with_allowed` derives from the same build.
+/// An availability mask, valid for every model of the build that made it
+/// (views, trimmed models) and rejected elsewhere.
 #[pyclass(frozen, name = "ServeMask", module = "similaripy._core")]
 pub struct PyMask(ItemMask);
 
@@ -88,10 +88,27 @@ impl PyModel {
             .map_err(to_py)
     }
 
-    fn with_allowed(&self, py: Python<'_>, allowed: &PyMask) -> PyResult<Self> {
-        py.detach(|| self.0.with_allowed(&allowed.0))
+    /// A copy whose S keeps only the `allowed` items' columns.
+    fn trimmed(&self, py: Python<'_>, allowed: &PyMask) -> PyResult<Self> {
+        py.detach(|| self.0.trimmed(&allowed.0))
             .map(Self)
             .map_err(to_py)
+    }
+
+    /// The same model (S shared) with `allowed` as its default mask.
+    #[pyo3(signature = (allowed))]
+    fn view(&self, allowed: Option<&PyMask>) -> PyResult<Self> {
+        self.0.view(allowed.map(|a| &a.0)).map(Self).map_err(to_py)
+    }
+
+    /// The default mask's allowed internal ids (pickling), None = all.
+    fn allowed_internal<'py>(&self, py: Python<'py>) -> Option<Arr<'py, i32>> {
+        self.0.allowed_bits().map(|bits| {
+            let ids: Vec<i32> = (0..self.0.n_items() as i32)
+                .filter(|&i| (bits[i as usize / 64] >> (i % 64)) & 1 != 0)
+                .collect();
+            ids.into_pyarray(py)
+        })
     }
 
     #[pyo3(signature = (ids, weights, *, k, exclude_seen, allowed, unknown))]
