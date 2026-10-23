@@ -5,7 +5,9 @@
 
 use proptest::prelude::*;
 use similaripy_core::CsrView;
-use similaripy_core::serve::{Ids, ItemMask, Model, Request, Unknown, recommend, recommend_batch};
+use similaripy_core::serve::{
+    BlockSize, Ids, ItemMask, Model, Request, Unknown, recommend, recommend_batch,
+};
 
 #[derive(Debug, Clone)]
 struct Case {
@@ -56,7 +58,65 @@ fn build_blocked(
 ) -> Result<Model, similaripy_core::Error> {
     let m = csr(s);
     let view = CsrView::new("S", &m.indptr, &m.indices, &m.data, s.len())?;
-    Model::new(view, new_to_old.to_vec(), ext.map(<[i64]>::to_vec), block)
+    let block = if block == 0 {
+        BlockSize::Off
+    } else {
+        BlockSize::Size(block)
+    };
+    Model::with_order(view, new_to_old.to_vec(), ext.map(<[i64]>::to_vec), block)
+}
+
+/// S as a caller may give it: rows reversed, each entry split into two halves
+/// (exact), an explicit zero and a pair that cancels at column 0.
+fn messy(s: &[Vec<f32>]) -> Csr {
+    let mut m = Csr {
+        indptr: vec![0],
+        indices: vec![],
+        data: vec![],
+    };
+    for row in s {
+        for (c, &v) in row.iter().enumerate().rev() {
+            if v != 0.0 {
+                m.indices.extend([c as i32, c as i32]);
+                m.data.extend([v / 2.0, v / 2.0]);
+            }
+        }
+        m.indices.push(0);
+        m.data.push(0.0);
+        if row[0] == 0.0 {
+            m.indices.extend([0, 0]);
+            m.data.extend([1.5, -1.5]);
+        }
+        m.indptr.push(m.indices.len() as i32);
+    }
+    m
+}
+
+/// Popularity order: descending column count, ties to the lower column;
+/// items with no row and no column left out.
+fn popularity(s: &[Vec<f32>]) -> Vec<i32> {
+    let n = s.len();
+    let count = |j: usize| s.iter().filter(|r| r[j] != 0.0).count();
+    let mut order: Vec<i32> = (0..n as i32).collect();
+    order.sort_by_key(|&j| std::cmp::Reverse(count(j as usize)));
+    order.retain(|&j| count(j as usize) > 0 || s[j as usize].iter().any(|&v| v != 0.0));
+    order
+}
+
+/// A model rebuilt from its own parts (the pickle / load path).
+fn from_own_parts(m: &Model) -> Model {
+    let p = m.parts();
+    Model::from_parts(
+        p.indptr.to_vec(),
+        p.indices.to_vec(),
+        p.data.to_vec(),
+        p.new_to_old.to_vec(),
+        p.n_cols,
+        p.ext.map(<[i64]>::to_vec),
+        p.allowed.map(<[u64]>::to_vec),
+        p.block_size,
+    )
+    .unwrap()
 }
 
 fn build(
@@ -333,6 +393,29 @@ proptest! {
         prop_assert_eq!(bits(&bs[..l]), bits(&single.1));
         prop_assert_eq!(bits(&bs[l..]), bits(&single.1));
     }
+
+    // `new` on S as a caller may give it == the canonical S in popularity
+    // order, array for array; a model rebuilt from its parts answers the same.
+    #[test]
+    fn raw_input_popularity_and_parts(c in case(true)) {
+        let raw = messy(&c.s);
+        let view = CsrView::new("S", &raw.indptr, &raw.indices, &raw.data, c.s.len()).unwrap();
+        let m = Model::new(view, c.ext.clone(), BlockSize::Auto).unwrap();
+        let want = build(&c.s, &popularity(&c.s), c.ext.as_deref()).unwrap();
+        let (p, q) = (m.parts(), want.parts());
+        prop_assert_eq!((p.indptr, p.indices, p.new_to_old, p.n_cols), (q.indptr, q.indices, q.new_to_old, q.n_cols));
+        prop_assert_eq!(bits(p.data), bits(q.data));
+        prop_assert_eq!(p.ext, q.ext);
+        let c2 = Case { new_to_old: popularity(&c.s), ..c.clone() };
+        let got = run(&c2, &m);
+        let view = match mask(&c2, &m) { Some(a) => m.view(Some(&a)).unwrap(), None => m.view(None).unwrap() };
+        let back = from_own_parts(&view);
+        prop_assert_eq!(back.parts().allowed, view.parts().allowed);
+        prop_assert_eq!(back.parts().block_size, BlockSize::Auto);
+        let again = run(&Case { allowed: None, ..c2.clone() }, &back);
+        prop_assert_eq!(&again.0, &got.0);
+        prop_assert_eq!(bits(&again.1), bits(&got.1));
+    }
 }
 
 #[test]
@@ -388,4 +471,96 @@ fn rejects_bad_input() {
     // Batch: out-of-range columns and a bad CSR are errors.
     assert!(recommend_batch(&m, &[0, 1], &[3], None, 1, true, None).is_err());
     assert!(recommend_batch(&m, &[0, 2], &[0], None, 1, true, None).is_err());
+}
+
+/// Owned parts of a model, to corrupt one field at a time.
+#[derive(Clone)]
+struct Owned {
+    indptr: Vec<i32>,
+    indices: Vec<i32>,
+    data: Vec<f32>,
+    new_to_old: Vec<i32>,
+    n_cols: usize,
+    ext: Option<Vec<i64>>,
+    allowed: Option<Vec<u64>>,
+    block_size: BlockSize,
+}
+
+impl Owned {
+    fn of(m: &Model) -> Self {
+        let p = m.parts();
+        Self {
+            indptr: p.indptr.to_vec(),
+            indices: p.indices.to_vec(),
+            data: p.data.to_vec(),
+            new_to_old: p.new_to_old.to_vec(),
+            n_cols: p.n_cols,
+            ext: p.ext.map(<[i64]>::to_vec),
+            allowed: p.allowed.map(<[u64]>::to_vec),
+            block_size: p.block_size,
+        }
+    }
+
+    fn load(self) -> Result<Model, similaripy_core::Error> {
+        Model::from_parts(
+            self.indptr,
+            self.indices,
+            self.data,
+            self.new_to_old,
+            self.n_cols,
+            self.ext,
+            self.allowed,
+            self.block_size,
+        )
+    }
+}
+
+#[test]
+fn from_parts_checks_every_invariant() {
+    // 3 kept items of 4 (item 3 dropped), one row with two entries.
+    let s = vec![
+        vec![0.0, 1.0, 2.0, 0.0],
+        vec![1.0, 0.0, 0.0, 0.0],
+        vec![0.0, 3.0, 0.0, 0.0],
+        vec![0.0; 4],
+    ];
+    let m = build(&s, &[1, 0, 2], Some(&[10, 11, 12, 13])).unwrap();
+    let a = m.mask(Ids::External(&[11]), Unknown::Skip).unwrap();
+    let good = Owned::of(&m.view(Some(&a)).unwrap());
+    assert!(good.clone().load().is_ok());
+    assert_eq!(good.indptr, vec![0, 1, 3, 4]); // row of item 0 = internal 1
+    let bad = |f: &dyn Fn(&mut Owned)| {
+        let mut o = good.clone();
+        f(&mut o);
+        o.load().is_err()
+    };
+    assert!(bad(&|o| o.indptr[0] = 1));
+    assert!(bad(&|o| o.indptr[1] = 4)); // not monotone
+    assert!(bad(&|o| *o.indptr.last_mut().unwrap() = 3)); // != nnz
+    assert!(bad(&|o| {
+        o.indptr.pop();
+    })); // one row per item
+    assert!(bad(&|o| o.indices[0] = 3)); // column >= n_items
+    assert!(bad(&|o| o.indices[0] = -1));
+    assert!(bad(&|o| o.indices.swap(1, 2))); // unsorted row
+    assert!(bad(&|o| o.indices[2] = o.indices[1])); // duplicate column
+    assert!(bad(&|o| {
+        o.data.pop();
+    }));
+    assert!(bad(&|o| o.data[0] = f32::INFINITY));
+    assert!(bad(&|o| o.data[0] = f32::NAN));
+    assert!(bad(&|o| o.new_to_old[0] = o.new_to_old[1])); // not distinct
+    assert!(bad(&|o| o.new_to_old[0] = 4)); // >= n_cols
+    assert!(bad(&|o| o.new_to_old[0] = -1));
+    assert!(bad(&|o| o.n_cols = 2)); // new_to_old past n_cols
+    assert!(bad(&|o| o.n_cols = usize::MAX)); // no huge allocation
+    assert!(bad(&|o| o.ext.as_mut().unwrap().truncate(3)));
+    assert!(bad(&|o| o.ext.as_mut().unwrap()[0] = 13)); // duplicate id
+    assert!(bad(&|o| o.allowed.as_mut().unwrap().push(0))); // one bit per item
+    assert!(bad(&|o| o.block_size = BlockSize::Size(0)));
+    // Not a corruption: an extra empty item at the end (no row, no column).
+    let mut o = good.clone();
+    o.n_cols = 5;
+    o.ext.as_mut().unwrap().push(14);
+    assert!(o.load().is_ok());
 }

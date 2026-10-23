@@ -277,6 +277,7 @@ fn canonicalize<'py, V: Value + Element>(
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("DEFAULT_BLOCK_SIZE", similaripy_core::DEFAULT_BLOCK_SIZE)?;
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
     m.add_class::<serve::PyModel>()?;
     m.add_class::<serve::PyMask>()?;

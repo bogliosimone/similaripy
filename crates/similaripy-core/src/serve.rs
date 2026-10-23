@@ -1,10 +1,11 @@
 //! Serving: the top-K items for one history from a prepared item-item model S.
 //!
-//! The model is S renumbered once: items with neither a row nor a column are
-//! dropped, the rest get internal ids in popularity order (chosen by
-//! `similaripy/_serve.py`), rows and columns alike, so a history item's
-//! internal id is both its row and its column. Columns with entries come
-//! first, so the accumulator covers `0..n_active`.
+//! The model is S made canonical and renumbered in one copy: items with
+//! neither a row nor a column are dropped, the rest get internal ids in
+//! popularity order (descending column count, ties to the lower column), rows
+//! and columns alike, so a history item's internal id is both its row and its
+//! column. Columns with entries come first, so the accumulator covers
+//! `0..n_active`.
 //!
 //! A request: ids → internal ids (dense gather or hash, `Ids`), history sorted
 //! with duplicates merged, the history's own slots pre-set to `-inf` (never
@@ -20,11 +21,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rayon::prelude::*;
 
-use crate::Error;
 use crate::csr::CsrView;
 use crate::kernel::{accumulate, lower_bound};
-use crate::prep::remap_sort_rows;
+use crate::prep::{LEAF_NNZ, canonical_row, par_leaves, sort_rows};
 use crate::topk::TopK;
+use crate::{DEFAULT_BLOCK_SIZE, Error};
 
 /// As the similarity functions' default threshold 0: negative scores never
 /// enter the top-K, 0.0 ones are dropped by `TopK`.
@@ -55,7 +56,6 @@ unsafe fn bit(bits: &[u64], i: usize) -> bool {
 
 /// External int64 ids: open addressing, multiply-shift hash, linear probing,
 /// load <= 0.5 (~2 ns per lookup, D64).
-#[derive(Clone)]
 struct ExtIds {
     /// External id per original column, dropped items too (`parts`).
     by_col: Vec<i64>,
@@ -120,7 +120,9 @@ pub struct Core {
     indices: Vec<i32>,
     data: Vec<f32>,
     n_active: usize,
-    /// Column block size, 0 = one block (derived at build, never stored).
+    /// As given (saved, pickled).
+    block_size: BlockSize,
+    /// Column block size of a request, 0 = one block (`block_size` resolved).
     block: usize,
     /// Internal id → S's original column.
     new_to_old: Vec<i32>,
@@ -193,8 +195,33 @@ pub struct Request<'a> {
     pub unknown: Unknown,
 }
 
-/// The arrays a model is rebuilt from (pickling): S in internal ids, the
-/// layout, S's original item count and the external ids.
+/// Column block size of every request, as the similarity functions'
+/// `block_size`. Kept as given (saved, pickled): `Auto` follows the library's
+/// choice of the version that loads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockSize {
+    /// `DEFAULT_BLOCK_SIZE`.
+    Auto,
+    /// One block (no blocking): for a lone request on an idle machine.
+    Off,
+    /// Entries per block, > 0.
+    Size(usize),
+}
+
+impl BlockSize {
+    fn resolve(self) -> Result<usize, Error> {
+        match self {
+            BlockSize::Auto => Ok(DEFAULT_BLOCK_SIZE),
+            BlockSize::Off => Ok(0),
+            BlockSize::Size(0) => invalid("block_size must be > 0"),
+            BlockSize::Size(n) => Ok(n),
+        }
+    }
+}
+
+/// What a model is made of (pickling, saving): S in internal ids, the
+/// layout, S's original item count, the external ids, the default mask and
+/// the block size as given; `Model::from_parts` takes the same back.
 pub struct Parts<'a> {
     pub indptr: &'a [i32],
     pub indices: &'a [i32],
@@ -202,6 +229,9 @@ pub struct Parts<'a> {
     pub new_to_old: &'a [i32],
     pub n_cols: usize,
     pub ext: Option<&'a [i64]>,
+    /// Bitset over internal ids, None = all allowed.
+    pub allowed: Option<&'a [u64]>,
+    pub block_size: BlockSize,
 }
 
 fn next_layout() -> u64 {
@@ -210,16 +240,133 @@ fn next_layout() -> u64 {
 }
 
 impl Model {
-    /// See `Core::new`; no default mask.
-    pub fn new(
+    /// From S (n × n CSR over the original ids, as given: unsorted rows,
+    /// duplicates and zeros are fine; read, never changed), in popularity
+    /// order. `ext`: external id per original id (unique), None = the ids are
+    /// S's column indices. No default mask. Peak memory: the model's own
+    /// arrays plus O(n) (no canonical copy of S).
+    pub fn new(s: CsrView, ext: Option<Vec<i64>>, block_size: BlockSize) -> Result<Self, Error> {
+        let (lens, counts) = canonical_counts(&s)?;
+        let mut order: Vec<i32> = (0..s.n_cols() as i32).collect();
+        order.sort_by_key(|&c| std::cmp::Reverse(counts[c as usize])); // stable: ties to the lower column
+        order.retain(|&c| lens[c as usize] > 0 || counts[c as usize] > 0);
+        Self::build(s, &lens, &counts, order, ext, block_size)
+    }
+
+    /// As `new`, in a given serving order: `new_to_old` = internal id →
+    /// original id for every kept item; items left out must have no entries
+    /// (once S is canonical).
+    pub fn with_order(
         s: CsrView,
         new_to_old: Vec<i32>,
         ext: Option<Vec<i64>>,
-        block: usize,
+        block_size: BlockSize,
     ) -> Result<Self, Error> {
+        let (lens, counts) = canonical_counts(&s)?;
+        Self::build(s, &lens, &counts, new_to_old, ext, block_size)
+    }
+
+    /// The one copy of S: each row made canonical in a small per-thread
+    /// buffer (as in `canonical_counts`), columns renumbered, sorted.
+    fn build(
+        s: CsrView,
+        lens: &[u32],
+        counts: &[u32],
+        new_to_old: Vec<i32>,
+        ext: Option<Vec<i64>>,
+        block_size: BlockSize,
+    ) -> Result<Self, Error> {
+        let n = s.n_cols();
+        let dense_in = dense_in(&new_to_old, n)?;
+        if (0..n).any(|i| dense_in[i] == EMPTY && (lens[i] > 0 || counts[i] > 0)) {
+            return invalid("new_to_old leaves out an item with entries");
+        }
+        let mut indptr = Vec::with_capacity(new_to_old.len() + 1);
+        indptr.push(0i32);
+        let mut total = 0usize;
+        for &old in &new_to_old {
+            total += lens[old as usize] as usize;
+            indptr.push(total as i32); // <= S's nnz, an i32
+        }
+        let (mut indices, mut data) = (vec![0i32; total], vec![0f32; total]);
+        let (src_ptr, src_cols, src_vals) = s.arrays();
+        par_leaves(
+            &indptr,
+            &mut indices,
+            &mut data,
+            LEAF_NNZ,
+            &|row0, ip, out_c, out_v| {
+                let base = ip[0] as usize;
+                let (mut cols, mut vals, mut pairs) = (Vec::new(), Vec::new(), Vec::new());
+                for (i, w) in ip.windows(2).enumerate() {
+                    let old = new_to_old[row0 + i] as usize;
+                    let k = canonical_copy(
+                        (src_ptr, src_cols, src_vals),
+                        old,
+                        &mut cols,
+                        &mut vals,
+                        &mut pairs,
+                    );
+                    let (a, z) = (w[0] as usize - base, w[1] as usize - base);
+                    // Same row, same steps as in `canonical_counts`.
+                    assert_eq!(k, z - a, "S changed during the build");
+                    for (j, (&c, &v)) in cols[..k].iter().zip(&vals).enumerate() {
+                        out_c[a + j] = dense_in[c as usize] as i32;
+                        out_v[a + j] = v;
+                    }
+                }
+                sort_rows(ip, out_c, out_v);
+            },
+        );
+        drop(dense_in);
+        let core = Core::from_arrays(
+            next_layout(),
+            indptr,
+            indices,
+            data,
+            new_to_old,
+            n,
+            ext,
+            block_size,
+        )?;
         Ok(Self {
-            core: Arc::new(Core::new(s, new_to_old, ext, block)?),
+            core: Arc::new(core),
             allowed: None,
+        })
+    }
+
+    /// A model from `parts` (pickling, loading), checked as a build's output.
+    /// A new build for masks: masks of the original are rejected.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        indptr: Vec<i32>,
+        indices: Vec<i32>,
+        data: Vec<f32>,
+        new_to_old: Vec<i32>,
+        n_cols: usize,
+        ext: Option<Vec<i64>>,
+        allowed: Option<Vec<u64>>,
+        block_size: BlockSize,
+    ) -> Result<Self, Error> {
+        let core = Core::from_arrays(
+            next_layout(),
+            indptr,
+            indices,
+            data,
+            new_to_old,
+            n_cols,
+            ext,
+            block_size,
+        )?;
+        if allowed
+            .as_ref()
+            .is_some_and(|a| a.len() != words(core.n_items()))
+        {
+            return invalid("allowed: one bit per item expected");
+        }
+        Ok(Self {
+            core: Arc::new(core),
+            allowed,
         })
     }
 
@@ -248,108 +395,122 @@ impl Model {
         })
     }
 
-    /// The default mask's bits (pickling), None = all allowed.
-    pub fn allowed_bits(&self) -> Option<&[u64]> {
-        self.allowed.as_deref()
+    pub fn parts(&self) -> Parts<'_> {
+        Parts {
+            indptr: &self.indptr,
+            indices: &self.indices,
+            data: &self.data,
+            new_to_old: &self.new_to_old,
+            n_cols: self.dense_in.len(),
+            ext: self.ext.as_ref().map(|e| e.by_col.as_slice()),
+            allowed: self.allowed.as_deref(),
+            block_size: self.block_size,
+        }
     }
 }
 
-impl Core {
-    /// From S (n × n over the original ids; rows sorted, no duplicates) and
-    /// `new_to_old`: internal id → original id for every kept item, in the
-    /// serving order. Items left out must have an empty row and an empty
-    /// column. `ext`: external id per original id (unique), None = the ids
-    /// are S's column indices. `block`: column block size of every request,
-    /// 0 = one block (as the kernel's: under concurrent requests a
-    /// cache-sized accumulator per thread wins, D65). Copies S once into the
-    /// internal layout (rows reordered, columns renumbered and sorted, on the
-    /// current rayon pool).
-    fn new(
-        s: CsrView,
-        new_to_old: Vec<i32>,
-        ext: Option<Vec<i64>>,
-        block: usize,
-    ) -> Result<Self, Error> {
-        let n = s.n_cols();
-        if s.n_rows() != n {
-            return invalid("S must be square (item x item)");
-        }
-        if ext.as_ref().is_some_and(|e| e.len() != n) {
-            return invalid(format!("item_ids must have one id per item ({n})"));
-        }
-        let mut dense_in = vec![EMPTY; n];
-        for (new, &old) in new_to_old.iter().enumerate() {
-            match usize::try_from(old).ok().and_then(|o| dense_in.get_mut(o)) {
-                Some(d) if *d == EMPTY => *d = new as u32,
-                _ => return invalid("new_to_old must list distinct item ids"),
-            }
-        }
-        let (src_indptr, src_indices, src_data) = s.arrays();
-        if src_indices.iter().any(|&c| dense_in[c as usize] == EMPTY)
-            || (0..n).any(|r| dense_in[r] == EMPTY && src_indptr[r] != src_indptr[r + 1])
-        {
-            return invalid("new_to_old leaves out an item with entries");
-        }
-        // Rows in internal order, then columns renumbered and sorted.
-        let mut indptr = Vec::with_capacity(new_to_old.len() + 1);
-        indptr.push(0i32);
-        let mut indices = Vec::with_capacity(src_indices.len());
-        let mut data = Vec::with_capacity(src_data.len());
-        for &old in &new_to_old {
-            let (a, b) = (
-                src_indptr[old as usize] as usize,
-                src_indptr[old as usize + 1] as usize,
-            );
-            indices.extend_from_slice(&src_indices[a..b]);
-            data.extend_from_slice(&src_data[a..b]);
-            indptr.push(indices.len() as i32);
-        }
-        let forward: Vec<i32> = dense_in.iter().map(|&d| d as i32).collect();
-        remap_sort_rows(&indptr, &mut indices, Some(&mut data), &forward)?;
-        drop(forward);
-        if indptr.windows(2).any(|w| {
-            indices[w[0] as usize..w[1] as usize]
-                .windows(2)
-                .any(|p| p[0] == p[1])
-        }) {
-            return invalid("S rows must not have duplicate columns");
-        }
-        let ext = ext.map(|e| ExtIds::new(e, &new_to_old)).transpose()?;
-        Ok(Self::from_internal(
-            next_layout(),
-            block,
-            indptr,
-            indices,
-            data,
-            new_to_old,
-            dense_in,
-            ext,
-        ))
+/// Original id → internal id (`EMPTY`: dropped); `new_to_old` must list
+/// distinct ids < `n_cols`.
+fn dense_in(new_to_old: &[i32], n_cols: usize) -> Result<Vec<u32>, Error> {
+    if n_cols > i32::MAX as usize {
+        return invalid("more than 2^31 - 1 items");
     }
+    let mut dense_in = vec![EMPTY; n_cols];
+    for (new, &old) in new_to_old.iter().enumerate() {
+        match usize::try_from(old).ok().and_then(|o| dense_in.get_mut(o)) {
+            Some(d) if *d == EMPTY => *d = new as u32,
+            _ => return invalid("new_to_old must list distinct item ids"),
+        }
+    }
+    Ok(dense_in)
+}
 
+/// Pass 1 of the build: per original row its canonical length, per column
+/// its canonical entry count (sequential: one O(nnz) pass, rows reused in
+/// one small buffer).
+fn canonical_counts(s: &CsrView) -> Result<(Vec<u32>, Vec<u32>), Error> {
+    let n = s.n_cols();
+    if s.n_rows() != n {
+        return invalid("S must be square (item x item)");
+    }
+    let (mut lens, mut counts) = (vec![0u32; n], vec![0u32; n]);
+    let (mut cols, mut vals, mut pairs) = (Vec::new(), Vec::new(), Vec::new());
+    for (r, len) in lens.iter_mut().enumerate() {
+        let k = canonical_copy(s.arrays(), r, &mut cols, &mut vals, &mut pairs);
+        *len = k as u32;
+        for &c in &cols[..k] {
+            counts[c as usize] += 1;
+        }
+    }
+    Ok((lens, counts))
+}
+
+/// Row `r` of S made canonical (`canonical_row`) in `cols`/`vals`; returns
+/// its length.
+fn canonical_copy(
+    (indptr, indices, data): (&[i32], &[i32], &[f32]),
+    r: usize,
+    cols: &mut Vec<i32>,
+    vals: &mut Vec<f32>,
+    pairs: &mut Vec<(i32, f32)>,
+) -> usize {
+    let (a, b) = (indptr[r] as usize, indptr[r + 1] as usize);
+    cols.clear();
+    cols.extend_from_slice(&indices[a..b]);
+    vals.clear();
+    vals.extend_from_slice(&data[a..b]);
+    canonical_row(cols, vals, pairs)
+}
+
+impl Core {
+    /// The internal layout, checked once whatever made it (a build, a pickle,
+    /// a saved model): every invariant the unchecked reads rely on, plus
+    /// finite values. O(nnz).
     #[allow(clippy::too_many_arguments)]
-    fn from_internal(
+    fn from_arrays(
         layout: u64,
-        block: usize,
         indptr: Vec<i32>,
         indices: Vec<i32>,
         data: Vec<f32>,
         new_to_old: Vec<i32>,
-        dense_in: Vec<u32>,
-        ext: Option<ExtIds>,
-    ) -> Self {
+        n_cols: usize,
+        ext: Option<Vec<i64>>,
+        block_size: BlockSize,
+    ) -> Result<Self, Error> {
+        let block = block_size.resolve()?;
+        let dense_in = dense_in(&new_to_old, n_cols)?;
+        let n = new_to_old.len();
+        let s = CsrView::new("S", &indptr, &indices, &data, n)?;
+        if s.n_rows() != n {
+            return invalid("S must have one row per item");
+        }
+        if indptr.windows(2).any(|w| {
+            !indices[w[0] as usize..w[1] as usize]
+                .windows(2)
+                .all(|p| p[0] < p[1])
+        }) {
+            return invalid("S rows must be sorted, without duplicate columns");
+        }
+        if !data.iter().all(|v| v.is_finite()) {
+            return invalid("S must be finite (in float32)");
+        }
+        if ext.as_ref().is_some_and(|e| e.len() != n_cols) {
+            return invalid(format!("item_ids must have one id per item ({n_cols})"));
+        }
+        let ext = ext.map(|e| ExtIds::new(e, &new_to_old)).transpose()?;
         let n_active = indices.iter().max().map_or(0, |&c| c as usize + 1);
-        Self {
+        Ok(Self {
             layout,
             indptr,
             indices,
             data,
             n_active,
+            block_size,
             block,
             new_to_old,
             dense_in,
             ext,
-        }
+        })
     }
 
     fn trimmed(&self, allowed: &ItemMask) -> Result<Self, Error> {
@@ -368,16 +529,16 @@ impl Core {
             }
             indptr.push(indices.len() as i32);
         }
-        Ok(Self::from_internal(
+        Self::from_arrays(
             self.layout,
-            self.block,
             indptr,
             indices,
             data,
             self.new_to_old.clone(),
-            self.dense_in.clone(),
-            self.ext.clone(),
-        ))
+            self.n_cols(),
+            self.ext.as_ref().map(|e| e.by_col.clone()),
+            self.block_size,
+        )
     }
 
     /// Items with an internal id (S's items minus those dropped at build).
@@ -393,17 +554,6 @@ impl Core {
     /// Columns with entries: the accumulator length.
     pub fn n_active(&self) -> usize {
         self.n_active
-    }
-
-    pub fn parts(&self) -> Parts<'_> {
-        Parts {
-            indptr: &self.indptr,
-            indices: &self.indices,
-            data: &self.data,
-            new_to_old: &self.new_to_old,
-            n_cols: self.dense_in.len(),
-            ext: self.ext.as_ref().map(|e| e.by_col.as_slice()),
-        }
     }
 
     fn s(&self) -> CsrView<'_> {

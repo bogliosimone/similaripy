@@ -6,7 +6,7 @@ use crate::csr::check_indptr;
 use crate::normalize::Value;
 
 /// Entries per sequential leaf; rows of ~100 entries sort in L1.
-const LEAF_NNZ: usize = 1 << 16;
+pub(crate) const LEAF_NNZ: usize = 1 << 16;
 
 /// Renumbers columns (`c -> forward[c]`) and sorts every row by column,
 /// carrying `data` along (None: the pattern only), in place and in parallel
@@ -45,7 +45,7 @@ fn remap_sort<V: Copy + Send>(
     data: &mut [V],
     forward: &[i32],
 ) {
-    par_leaves(indptr, indices, data, LEAF_NNZ, &|ip, cols, vals| {
+    par_leaves(indptr, indices, data, LEAF_NNZ, &|_, ip, cols, vals| {
         for c in cols.iter_mut() {
             *c = forward[*c as usize];
         }
@@ -85,29 +85,13 @@ fn canonicalize_with_leaf<V: Value>(
         return bad("negative column index");
     }
     // Each row keeps its result at its front; the rest is marked with column -1.
-    par_leaves(indptr, indices, data, leaf, &|ip, cols, vals| {
-        sort_rows(ip, cols, vals);
+    par_leaves(indptr, indices, data, leaf, &|_, ip, cols, vals| {
         let base = ip[0] as usize;
+        let mut pairs = Vec::new();
         for w in ip.windows(2) {
             let (a, z) = (w[0] as usize - base, w[1] as usize - base);
-            let (cols, vals) = (&mut cols[a..z], &mut vals[a..z]);
-            let mut n = 0; // entries kept so far, sums still open
-            for j in 0..cols.len() {
-                if n > 0 && cols[n - 1] == cols[j] {
-                    vals[n - 1] = vals[n - 1] + vals[j];
-                } else {
-                    (cols[n], vals[n]) = (cols[j], vals[j]);
-                    n += 1;
-                }
-            }
-            let mut kept = 0;
-            for j in 0..n {
-                if vals[j] != V::ZERO {
-                    (cols[kept], vals[kept]) = (cols[j], vals[j]);
-                    kept += 1;
-                }
-            }
-            cols[kept..].fill(-1);
+            let kept = canonical_row(&mut cols[a..z], &mut vals[a..z], &mut pairs);
+            cols[a + kept..z].fill(-1);
         }
     });
     let mut new_indptr = Vec::with_capacity(indptr.len());
@@ -124,31 +108,82 @@ fn canonicalize_with_leaf<V: Value>(
     Ok(new_indptr)
 }
 
+/// One row made canonical in place, as scipy's `sum_duplicates` +
+/// `eliminate_zeros`: sorted by column, duplicates summed (in sorted order),
+/// zeros dropped. Returns the kept length; the result is at the front.
+/// `pairs`: scratch reused across rows.
+pub(crate) fn canonical_row<V: Value>(
+    cols: &mut [i32],
+    vals: &mut [V],
+    pairs: &mut Vec<(i32, V)>,
+) -> usize {
+    sort_row(cols, vals, pairs);
+    let mut n = 0; // entries kept so far, sums still open
+    for j in 0..cols.len() {
+        if n > 0 && cols[n - 1] == cols[j] {
+            vals[n - 1] = vals[n - 1] + vals[j];
+        } else {
+            (cols[n], vals[n]) = (cols[j], vals[j]);
+            n += 1;
+        }
+    }
+    let mut kept = 0;
+    for j in 0..n {
+        if vals[j] != V::ZERO {
+            (cols[kept], vals[kept]) = (cols[j], vals[j]);
+            kept += 1;
+        }
+    }
+    kept
+}
+
 /// Sorts every row of a leaf by column, carrying the values; sorted rows are skipped.
-fn sort_rows<V: Copy>(indptr: &[i32], indices: &mut [i32], data: &mut [V]) {
+pub(crate) fn sort_rows<V: Copy>(indptr: &[i32], indices: &mut [i32], data: &mut [V]) {
     let base = indptr[0] as usize;
     let mut pairs: Vec<(i32, V)> = Vec::new();
     for w in indptr.windows(2) {
         let (a, z) = (w[0] as usize - base, w[1] as usize - base);
-        let (cols, vals) = (&mut indices[a..z], &mut data[a..z]);
-        if cols.is_sorted() {
-            continue;
-        }
-        pairs.clear();
-        pairs.extend(cols.iter().copied().zip(vals.iter().copied()));
-        pairs.sort_unstable_by_key(|p| p.0);
-        for ((c, v), (pc, pv)) in cols.iter_mut().zip(vals.iter_mut()).zip(&pairs) {
-            (*c, *v) = (*pc, *pv);
-        }
+        sort_row(&mut indices[a..z], &mut data[a..z], &mut pairs);
     }
 }
 
-/// Runs `f(indptr, indices, data)` on leaves of whole rows, in parallel. Splits
-/// by entries (as `normalize::par_rows`), so skewed rows balance; a leaf's
-/// `indptr` slice is absolute, its `indices`/`data` start at `indptr[0]`.
-fn par_leaves<V: Send, F>(indptr: &[i32], indices: &mut [i32], data: &mut [V], leaf: usize, f: &F)
-where
-    F: Fn(&[i32], &mut [i32], &mut [V]) + Sync,
+fn sort_row<V: Copy>(cols: &mut [i32], vals: &mut [V], pairs: &mut Vec<(i32, V)>) {
+    if cols.is_sorted() {
+        return;
+    }
+    pairs.clear();
+    pairs.extend(cols.iter().copied().zip(vals.iter().copied()));
+    pairs.sort_unstable_by_key(|p| p.0);
+    for ((c, v), (pc, pv)) in cols.iter_mut().zip(vals.iter_mut()).zip(pairs.iter()) {
+        (*c, *v) = (*pc, *pv);
+    }
+}
+
+/// Runs `f(first_row, indptr, indices, data)` on leaves of whole rows, in
+/// parallel. Splits by entries (as `normalize::par_rows`), so skewed rows
+/// balance; a leaf's `indptr` slice is absolute, its `indices`/`data` start at
+/// `indptr[0]`.
+pub(crate) fn par_leaves<V: Send, F>(
+    indptr: &[i32],
+    indices: &mut [i32],
+    data: &mut [V],
+    leaf: usize,
+    f: &F,
+) where
+    F: Fn(usize, &[i32], &mut [i32], &mut [V]) + Sync,
+{
+    par_leaves_from(0, indptr, indices, data, leaf, f);
+}
+
+fn par_leaves_from<V: Send, F>(
+    row0: usize,
+    indptr: &[i32],
+    indices: &mut [i32],
+    data: &mut [V],
+    leaf: usize,
+    f: &F,
+) where
+    F: Fn(usize, &[i32], &mut [i32], &mut [V]) + Sync,
 {
     let n = indptr.len() - 1;
     let base = indptr[0] as usize;
@@ -159,11 +194,11 @@ where
         let (il, ir) = indices.split_at_mut(at);
         let (dl, dr) = data.split_at_mut(at);
         rayon::join(
-            || par_leaves(&indptr[..=mid], il, dl, leaf, f),
-            || par_leaves(&indptr[mid..], ir, dr, leaf, f),
+            || par_leaves_from(row0, &indptr[..=mid], il, dl, leaf, f),
+            || par_leaves_from(row0 + mid, &indptr[mid..], ir, dr, leaf, f),
         );
     } else {
-        f(indptr, indices, data);
+        f(row0, indptr, indices, data);
     }
 }
 
@@ -196,7 +231,7 @@ mod tests {
             let identity: Vec<i32> = (0..20).collect();
             remap_sort_rows(&indptr, &mut pattern, None, if remap { &forward } else { &identity }).unwrap();
             // small leaves exercise the parallel split
-            par_leaves(&indptr, &mut indices, &mut data, leaf, &|ip, c, d| {
+            par_leaves(&indptr, &mut indices, &mut data, leaf, &|_, ip, c, d| {
                 if remap {
                     for x in c.iter_mut() {
                         *x = forward[*x as usize];
@@ -258,6 +293,26 @@ mod tests {
                 prop_assert_eq!(got, want);
             }
         }
+    }
+
+    // Each leaf's first row index matches its slices, however the rows split.
+    #[test]
+    fn par_leaves_first_row() {
+        let indptr: Vec<i32> = vec![0, 1, 1, 3, 4, 6, 6, 7];
+        let mut indices = vec![0; 7];
+        // value = row of the entry
+        let mut data: Vec<usize> = vec![0, 2, 2, 3, 4, 4, 6];
+        let seen = std::sync::Mutex::new(vec![false; 7]);
+        par_leaves(&indptr, &mut indices, &mut data, 0, &|row0, ip, _, d| {
+            let base = ip[0] as usize;
+            for (i, w) in ip.windows(2).enumerate() {
+                seen.lock().unwrap()[row0 + i] = true;
+                for &r in &d[w[0] as usize - base..w[1] as usize - base] {
+                    assert_eq!(r, row0 + i);
+                }
+            }
+        });
+        assert!(seen.into_inner().unwrap().iter().all(|&s| s));
     }
 
     #[test]

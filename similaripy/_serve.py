@@ -3,12 +3,13 @@ Serving engine: `ItemKNN`, a prepared item-item model built once from S, then
 top-K recommendations per history (`recommend`) or per row of a user-item
 matrix (`recommend_batch`), in Rust without the GIL.
 
-Build: the canonical copy of S (`_canonical_csr`); items with neither a row
-nor a column are dropped; the rest get internal ids in popularity order
+Build: the Rust core reads S's arrays in place (cast here only when their
+dtypes aren't int32/float32) and copies S once into the model, made canonical
+on the way (rows sorted, duplicates summed, zeros dropped). Items with neither
+a row nor a column are dropped; the rest get internal ids in popularity order
 (descending column count, as the kernel's `_popularity_layout`, ties to the
 lower column), rows and columns alike, so a history item's internal id is both
-its row and its column. The Rust model copies S once into that layout; the
-canonical copy is freed after the build.
+its row and its column. Peak memory: S plus the model.
 
 Availability, three levels: `candidate_items` at build trims S (permanent
 until rebuilt); `view(allowed_items=...)` gives a model sharing S with a
@@ -20,7 +21,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
-from ._s_plus import DEFAULT_BLOCK_SIZE, _canonical_csr, _is_int
+from ._s_plus import _canonical_csr
 
 _INT32_MAX = np.iinfo(np.int32).max
 _INT64_MAX = np.iinfo(np.int64).max
@@ -63,15 +64,16 @@ def _check_mask(allowed):
     return allowed
 
 
-def _block(block_size) -> int:
-    """As the similarity functions' `block_size`: 'auto', None (no blocking) or an int > 0."""
-    if isinstance(block_size, str) and block_size == "auto":
-        return DEFAULT_BLOCK_SIZE
-    if block_size is None:
-        return 0
-    if _is_int(block_size) and block_size > 0:
-        return int(block_size)
-    raise ValueError(f"block_size must be 'auto', None (no blocking) or an integer > 0, got {block_size!r}")
+def _csr_arrays(S):
+    """S's CSR arrays as int32 / float32, copied only when the dtype differs
+    (the build reads them in place and never changes them)."""
+    if S.nnz > _INT32_MAX:
+        raise ValueError(f"S must have at most {_INT32_MAX} non-zeros")
+    S = S.tocsr()  # no copy for CSR input
+    nnz = int(S.indptr[-1])
+    with np.errstate(over="ignore"):  # inf: rejected by the build's finite check
+        data = S.data[:nnz].astype(np.float32, copy=False)
+    return S.indptr.astype(np.int32, copy=False), S.indices[:nnz].astype(np.int32, copy=False), data
 
 
 class ItemKNN:
@@ -98,46 +100,38 @@ class ItemKNN:
             concurrent requests, no blocking for a lone request on an idle
             machine.
         num_threads: threads for the build (0 = all).
+
+    S is read in place during the build (not copied first): don't change it
+    from another thread meanwhile.
     """
 
     def __init__(self, S, item_ids=None, candidate_items=None, block_size="auto", num_threads: int = 0):
-        block = _block(block_size)
-        S = _canonical_csr(S, np.float32, num_threads)
         n = S.shape[0]
-        if S.shape[1] != n:
+        if S.ndim != 2 or S.shape[1] != n:
             raise ValueError(f"S must be square (item x item), got shape {S.shape}")
-        if not np.isfinite(S.data).all():  # incl. float64 values past float32's range
-            raise ValueError("S must be finite (in float32)")
+        indptr, indices, data = _csr_arrays(S)
         ext = None
         if item_ids is not None:
             ext = _ids("item_ids", item_ids)
             if ext.shape != (n,):
                 raise ValueError(f"item_ids must have one id per item ({n}), got shape {np.shape(item_ids)}")
-        col_counts = np.bincount(S.indices, minlength=n)
-        keep = (np.diff(S.indptr) > 0) | (col_counts > 0)
-        order = np.argsort(-col_counts, kind="stable")
-        new_to_old = order[keep[order]].astype(np.int32)
         model = _core.ServeModel(
-            indptr=S.indptr,
-            indices=S.indices,
-            data=S.data,
+            indptr=indptr,
+            indices=indices,
+            data=data,
             n=n,
-            new_to_old=new_to_old,
             ext=ext,
-            block=block,
+            block_size=block_size,
             num_threads=num_threads,
         )
-        del S
         if candidate_items is not None:
             model = model.trimmed(model.mask(_ids("candidate_items", candidate_items), "skip"))
         self._model = model
-        self._block_size = block_size
 
     @classmethod
-    def _wrap(cls, model, block_size):
+    def _wrap(cls, model):
         rec = cls.__new__(cls)
         rec._model = model
-        rec._block_size = block_size
         return rec
 
     @property
@@ -167,7 +161,7 @@ class ItemKNN:
             state["model"] = state["model"].view(allowed_items=available_ids)
         """
         mask = None if allowed_items is None else self.mask(allowed_items, unknown)
-        return self._wrap(self._model.view(mask), self._block_size)
+        return self._wrap(self._model.view(mask))
 
     def recommend(self, history, weights=None, k: int = 10, exclude_seen: bool = True, allowed=None, unknown="skip"):
         """
@@ -224,30 +218,10 @@ class ItemKNN:
         return sp.csr_array((scores, cols, indptr), shape=(H.shape[0], n_cols))
 
     def __reduce__(self):
-        # Same-version pickles only (Q1): the arrays, rebuilt and re-checked on
-        # load; block size as given ('auto' re-derived), default mask kept.
-        return (
-            _from_parts,
-            (*self._model.parts(), self._model.allowed_internal(), self._block_size, type(self)),
-        )
+        # Same-version pickles only (Q1): the model's arrays, re-checked on
+        # load (as a saved model); block size as given, default mask kept.
+        return (_from_parts, (type(self), *self._model.parts()))
 
 
-def _from_parts(indptr, indices, data, new_to_old, n_cols, ext, allowed_internal, block_size, cls=ItemKNN):
-    """A model from `ServeModel.parts()`: S back in its original ids, same layout."""
-    rows = np.repeat(new_to_old, np.diff(indptr))
-    S = _canonical_csr(sp.coo_array((data, (rows, new_to_old[indices])), shape=(n_cols, n_cols)), np.float32, 0)
-    model = _core.ServeModel(
-        indptr=S.indptr,
-        indices=S.indices,
-        data=S.data,
-        n=n_cols,
-        new_to_old=new_to_old,
-        ext=ext,
-        block=_block(block_size),
-        num_threads=0,
-    )
-    rec = cls._wrap(model, block_size)
-    if allowed_internal is not None:
-        cols = new_to_old[allowed_internal]
-        rec = rec.view(allowed_items=cols if ext is None else ext[cols])
-    return rec
+def _from_parts(cls, *parts):
+    return cls._wrap(_core.ServeModel.from_parts(*parts))

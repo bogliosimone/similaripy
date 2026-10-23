@@ -10,6 +10,10 @@ mod topk;
 pub use csr::{CsrPattern, CsrView};
 pub use kernel::{Inputs, Norms, Output, Params, compute};
 
+/// Accumulator block in float32 entries (~1 MB): `block_size='auto'` of the
+/// similarity functions and the serving model.
+pub const DEFAULT_BLOCK_SIZE: usize = 262_144;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     InvalidInput(String),

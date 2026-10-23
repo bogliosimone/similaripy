@@ -193,7 +193,7 @@ def test_pickle_round_trip_keeps_layout_and_mask():
     ext = rng.choice(10**9, size=80, replace=False)
     rec = sim.ItemKNN(S, item_ids=ext, candidate_items=ext[5:70], block_size=None).view(allowed_items=ext[10:60])
     back = pickle.loads(pickle.dumps(rec))
-    assert back.n_items == rec.n_items and back._block_size is None
+    assert back.n_items == rec.n_items and back._model.parts()[-1] is None  # block size as given
     for _ in range(20):
         hist = rng.choice(ext, size=6)
         a, b = rec.recommend(hist, k=15), back.recommend(hist, k=15)
@@ -230,6 +230,28 @@ def test_caller_matrices_unchanged():
     sim.ItemKNN(S).recommend_batch(H)
     for m, b in zip((S, H), before):
         assert all(np.array_equal(x, y) for x, y in zip(b, (m.data, m.indices, m.indptr)))
+
+
+def test_any_input_form_same_model():
+    """Duplicates, explicit zeros, unsorted rows, other formats and dtypes:
+    the same model as the canonical float32 CSR, array for array."""
+    S = _S(40, True, seed=9)
+    want = sim.ItemKNN(S)._model.parts()
+    coo = S.tocoo()
+    # each entry as two exact halves, shuffled, plus explicit zeros
+    rows = np.concatenate([coo.row, coo.row, [0, 3]])
+    cols = np.concatenate([coo.col, coo.col, [1, 2]])
+    vals = np.concatenate([coo.data / 2, coo.data / 2, [0.0, 0.0]])
+    order = np.random.default_rng(1).permutation(rows.size)
+    order = order[np.argsort(rows[order], kind="stable")]  # rows grouped, columns shuffled
+    indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=40))])
+    raw_csr = sp.csr_array((vals[order], cols[order], indptr), shape=S.shape)  # scipy keeps duplicates as given
+    assert not raw_csr.has_canonical_format
+    raw_coo = sp.coo_array((vals, (rows, cols)), shape=S.shape)
+    for m in (raw_csr, raw_coo, S.tocsc(), S.astype(np.float64), sp.csr_matrix(S)):
+        got = sim.ItemKNN(m)._model.parts()
+        for a, b in zip(got[:5], want[:5]):
+            assert np.array_equal(a, b)
 
 
 def test_concurrent_calls_identical():
