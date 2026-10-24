@@ -37,6 +37,7 @@ impl PartialOrd for Entry {
     }
 }
 
+#[derive(Default)]
 pub struct TopK {
     k: usize,
     heap: BinaryHeap<Reverse<Entry>>,
@@ -77,6 +78,14 @@ impl TopK {
         }
     }
 
+    /// Sets k for the next row (serving reuses one `TopK` across requests with
+    /// different k). The heap must be empty, as after a drain.
+    pub fn set_k(&mut self, k: usize) {
+        debug_assert!(self.heap.is_empty(), "TopK::set_k on a non-empty heap");
+        self.k = k;
+        self.heap.reserve(k);
+    }
+
     /// The lowest score `push` can still accept, for a caller that only pushes
     /// scores `>= threshold`: `threshold` while the heap fills, then the root's
     /// score (which is `>= threshold`), `+inf` for k == 0. Lets the caller keep
@@ -101,12 +110,7 @@ impl TopK {
         cols: &mut [i32],
         values: &mut [f32],
     ) -> usize {
-        // The heap's own buffer, sorted in place and handed back empty: no allocation.
-        let mut kept = std::mem::take(&mut self.heap).into_vec();
-        // Per kept entry, not per candidate: a +-0.0 is a cancelled sum (signed
-        // input) or an f32 underflow, never evidence, and may duplicate a column
-        // kept above it.
-        kept.retain(|Reverse(e)| e.score != 0.0);
+        let mut kept = self.take_kept();
         if let Some(map) = col_map {
             for Reverse(e) in &mut kept {
                 e.col = map[e.col as usize];
@@ -118,9 +122,35 @@ impl TopK {
             *v = e.score;
         }
         let n = kept.len();
+        self.give_back(kept);
+        n
+    }
+
+    /// Appends the kept (col, score) pairs with a non-zero score best first
+    /// (score desc, col asc) to `cols` / `values` and empties the heap.
+    pub fn drain_by_score(&mut self, cols: &mut Vec<i32>, values: &mut Vec<f32>) {
+        let mut kept = self.take_kept();
+        // Reverse(e) ascending = e descending = best first.
+        kept.sort_unstable();
+        cols.extend(kept.iter().map(|Reverse(e)| e.col));
+        values.extend(kept.iter().map(|Reverse(e)| e.score));
+        self.give_back(kept);
+    }
+
+    /// The heap's own buffer without its +-0.0 entries; `give_back` returns it
+    /// empty, so draining allocates nothing.
+    fn take_kept(&mut self) -> Vec<Reverse<Entry>> {
+        let mut kept = std::mem::take(&mut self.heap).into_vec();
+        // Per kept entry, not per candidate: a +-0.0 is a cancelled sum (signed
+        // input) or an f32 underflow, never evidence, and may duplicate a column
+        // kept above it.
+        kept.retain(|Reverse(e)| e.score != 0.0);
+        kept
+    }
+
+    fn give_back(&mut self, mut kept: Vec<Reverse<Entry>>) {
         kept.clear();
         self.heap = BinaryHeap::from(kept);
-        n
     }
 }
 
@@ -153,6 +183,23 @@ mod tests {
         assert_eq!((cols, vals), ([5, 6, 7], [3.0, 2.0, 1.0]));
         t.push(4, 1.0); // empty again, same capacity
         assert_eq!(kept(&mut t, 3), vec![(4, 1.0)]);
+    }
+
+    #[test]
+    fn drain_by_score_orders_best_first_and_set_k_reuses() {
+        let mut t = TopK::new(3);
+        for (c, s) in [(4, 1.0), (1, 3.0), (2, 1.0), (0, 0.0)] {
+            t.push(c, s);
+        }
+        let (mut cols, mut vals) = (vec![], vec![]);
+        t.drain_by_score(&mut cols, &mut vals);
+        assert_eq!((cols, vals), (vec![1, 2, 4], vec![3.0, 1.0, 1.0]));
+        t.set_k(1);
+        t.push(7, 2.0);
+        t.push(3, 2.0);
+        let (mut cols, mut vals) = (vec![], vec![]);
+        t.drain_by_score(&mut cols, &mut vals);
+        assert_eq!((cols, vals), (vec![3], vec![2.0]));
     }
 
     #[test]

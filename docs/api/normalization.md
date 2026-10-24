@@ -1,3 +1,4 @@
+`similaripy.normalization`; every function is also at the top level (`sim.bm25`).
 
 ??? info "Binarize"
     ::: similaripy.normalization.binarize

@@ -16,8 +16,8 @@ from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
 # the canonical copy the prep works on csr_array.
 SparseInput = Any
 
-# Accumulator block in float32 entries (~1 MB).
-DEFAULT_BLOCK_SIZE = 262144
+# Accumulator block in float32 entries (~1 MB), defined in the Rust core.
+DEFAULT_BLOCK_SIZE: int = _core.DEFAULT_BLOCK_SIZE
 
 PROGRESS_BAR_REFRESH_RATE = 3  # Hz
 PROGRESS_BAR_WIDTH = 25

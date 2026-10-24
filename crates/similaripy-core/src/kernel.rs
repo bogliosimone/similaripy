@@ -736,7 +736,7 @@ unsafe fn drain_impl<const POW: bool, const MODE: u8>(
 /// # Safety
 /// Every `c - offset` is `< sums.len()`.
 #[inline(always)]
-unsafe fn accumulate(
+pub(crate) unsafe fn accumulate(
     sums: &mut [f32],
     touched: &mut Vec<u32>,
     c_cols: &[i32],
@@ -773,7 +773,7 @@ unsafe fn accumulate(
 /// probe's load. Matters once m2 rows miss to DRAM (Yambda 500M; see
 /// tests/benchmarks/README.md, "Codegen-sensitive hot loops").
 #[inline]
-fn lower_bound(s: &[i32], x: i32) -> usize {
+pub(crate) fn lower_bound(s: &[i32], x: i32) -> usize {
     let (mut lo, mut len) = (0, s.len());
     while len > 0 {
         let half = len / 2;

@@ -20,13 +20,17 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
   - [similarity.py](similaripy/similarity.py) - Similarity functions (cosine, jaccard, s_plus, etc.)
   - [_s_plus.py](similaripy/_s_plus.py) - numpy prep (copies, sorting, column filters), kernel call, output build
   - [normalization.py](similaripy/normalization.py) - Normalization functions (BM25, TF-IDF, etc.)
+  - [serving.py](similaripy/serving.py) - `ItemKNN` (one import path: `similaripy.serving`): thin wrapper (the Rust core builds the model), `view` masks, `recommend` / `recommend_batch`, `save` / `load`
 
 - **Rust core** ([crates/similaripy-core](crates/similaripy-core)): pure Rust, no Python
   - [kernel.rs](crates/similaripy-core/src/kernel.rs) - S-Plus kernel (single-block and blocked paths, rayon)
   - [normalize.rs](crates/similaripy-core/src/normalize.rs) - Normalizations, in place over CSR data
+  - [prep.rs](crates/similaripy-core/src/prep.rs) - Canonical rows (`canonical_row`, shared by the Python prep and the serving build), renumber + sort
   - [csr.rs](crates/similaripy-core/src/csr.rs), [topk.rs](crates/similaripy-core/src/topk.rs) - CSR views, top-K heap
+  - [serve.rs](crates/similaripy-core/src/serve.rs) - Serving engine, in [serve/](crates/similaripy-core/src/serve): `model.rs` (build, the one check `Core::from_arrays`, save/load, views), `ids.rs` (id maps, masks), `request.rs` (one history per call, batch = rayon over the same function)
+  - [store.rs](crates/similaripy-core/src/store.rs) - Saved models: `.npy` reader/writer, mapped (`memmap2`) or owned arrays, directory replace
 - **Bindings** ([crates/similaripy-py](crates/similaripy-py)): PyO3 module `similaripy._core`
-  - [lib.rs](crates/similaripy-py/src/lib.rs) - kernel + prep bindings, thread pools; [normalize.rs](crates/similaripy-py/src/normalize.rs) - dtype dispatch; [progress.rs](crates/similaripy-py/src/progress.rs) - progress bar
+  - [lib.rs](crates/similaripy-py/src/lib.rs) - kernel + prep bindings, thread pools; [normalize.rs](crates/similaripy-py/src/normalize.rs) - dtype dispatch; [progress.rs](crates/similaripy-py/src/progress.rs) - progress bar; [serve.rs](crates/similaripy-py/src/serve.rs) - `ServeModel` / `ServeMask`
 
 **Config:**
 - [pyproject.toml](pyproject.toml) - Dependencies, build config (`[tool.maturin]`)
@@ -89,6 +93,8 @@ make benchmark-similarity-small
 - [tests/test_s_plus_prep.py](tests/test_s_plus_prep.py) - validation, canonicalization, layout, output build, regressions
 - [tests/test_normalization.py](tests/test_normalization.py), [tests/test_progress_bar.py](tests/test_progress_bar.py)
 - [tests/test_free_threading.py](tests/test_free_threading.py) - concurrent calls, identical bits across threads and blocking
+- [tests/test_serve.py](tests/test_serve.py) - `ItemKNN` vs a dense float64 reference, masks and views, unknown ids, batch == single bits, pickle, save/load round trips + corrupted files
+- [crates/similaripy-core/tests/serve.rs](crates/similaripy-core/tests/serve.rs) - serving proptest vs an f64 reference, bit-identity claims
 - [crates/similaripy-core/tests/reference.rs](crates/similaripy-core/tests/reference.rs) - kernel proptest vs an f64 reference, `validate` errors; unit tests in each module
 
 ---

@@ -1,3 +1,6 @@
+"""Similarity functions: top-K item-item (or user-user) similarity matrices
+from sparse inputs. Also at the top level (`sim.cosine`, as in 0.x)."""
+
 from typing import Literal
 
 import numpy as np
@@ -6,6 +9,18 @@ from scipy.sparse import coo_array, csr_array, sparray, spmatrix
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
 from ._s_plus import _check_scalar, _col_sums
 from ._s_plus import s_plus as _s_plus
+
+__all__ = [
+    "asymmetric_cosine",
+    "cosine",
+    "dice",
+    "dot_product",
+    "jaccard",
+    "p3alpha",
+    "rp3beta",
+    "s_plus",
+    "tversky",
+]
 
 
 def dot_product(

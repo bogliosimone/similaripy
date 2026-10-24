@@ -66,6 +66,16 @@ recommendations = sim.dot_product(
 )
 ```
 
+To serve the model online (one history per call, GIL-free, saved and
+memory-mapped by every worker), see [Serving](serving.md):
+
+```python
+from similaripy.serving import ItemKNN
+
+model = ItemKNN(similarity_matrix.T)   # the same scores as dot_product above
+ids, scores = model.recommend([3, 17, 42], k=10)
+```
+
 Tips:
 
 - `urm.T` is used to switch from user-item to item-user to train an item-item similarity model.

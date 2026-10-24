@@ -7,6 +7,7 @@ import pytest
 import scipy.sparse as sp
 
 import similaripy as sim
+from similaripy.serving import ItemKNN
 
 N_THREADS = 8
 ROUNDS = 4
@@ -26,7 +27,14 @@ def _calls(m):
         "s_plus": lambda: sim.s_plus(m, k=50, verbose=False, num_threads=2),
         "bm25": lambda: sim.bm25(m),
         "normalize": lambda: sim.normalize(m),
+        # serving: one shared model, batch on 2 threads and on the global pool
+        "recommend_batch": lambda: _REC.recommend_batch(m, k=20, num_threads=2),
+        "recommend_batch_all_threads": lambda: _REC.recommend_batch(m, k=20),
+        "recommend": lambda: sp.csr_array(np.bincount(_REC.recommend(m.indices[:40], k=20)[0], minlength=500)[None, :]),
     }
+
+
+_REC = ItemKNN(sim.cosine(_matrix().T, k=50, verbose=False))
 
 
 @pytest.mark.skipif(not sysconfig.get_config_var("Py_GIL_DISABLED"), reason="free-threaded build only")
