@@ -146,6 +146,17 @@ def test_batch_matches_single_bits(block):
             assert np.array_equal(R.data[row].view(np.int32), scores.view(np.int32))
 
 
+def test_batch_drops_zero_weights_from_the_history():
+    # H is canonical first: an explicit zero or a sum that cancels isn't seen,
+    # unlike recommend(), which excludes every history id it's given.
+    rec = ItemKNN(sp.csr_array(np.array([[0, 1, 2], [1, 0, 1], [2, 1, 0]], dtype=np.float32)))
+    zero = sp.csr_array((np.array([1.0, 0.0]), np.array([0, 1]), np.array([0, 2])), shape=(1, 3))
+    cancel = sp.csr_array((np.array([1.0, 1.0, -1.0]), np.array([0, 1, 1]), np.array([0, 3])), shape=(1, 3))
+    for H in (zero, cancel):
+        assert rec.recommend_batch(H, k=3).indices.tolist() == [2, 1]  # best first
+    assert rec.recommend([0, 1], [1.0, 0.0], k=3)[0].tolist() == [2]
+
+
 def test_masks_bound_to_their_build():
     S = _S(10, False, seed=1)
     rec = ItemKNN(S)

@@ -291,8 +291,19 @@ pub(crate) fn save_dir(
     }
     if let Err(e) = fs::rename(&new, dir) {
         // Another saver got in between: leave its model, drop both copies.
+        // Nothing at `dir` and the old model can't go back: keep it.
         let _ = fs::remove_dir_all(&new);
         if fs::rename(&old, dir).is_err() {
+            if !dir.exists() {
+                return Err(Error::Io(
+                    e.kind(),
+                    format!(
+                        "not saved to {}; the replaced model is left at {}: {e}",
+                        dir.display(),
+                        old.display()
+                    ),
+                ));
+            }
             let _ = fs::remove_dir_all(&old);
         }
         return Err(io(dir)(e));

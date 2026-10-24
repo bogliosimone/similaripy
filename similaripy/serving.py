@@ -202,9 +202,12 @@ class ItemKNN:
     ) -> sp.csr_array:
         """
         The top `k` items for every row of H (users x items, columns = S's
-        columns, values = weights), as `recommend` per row: row u equals
-        `recommend(H[u].indices, H[u].data, ...)` bit for bit, ids given as
-        S's column indices.
+        columns, values = weights), as `recommend` per row. H is made
+        canonical first (duplicates summed, zeros dropped): an explicit zero
+        or entries that cancel to zero are not part of the history, so
+        `exclude_seen` doesn't exclude them. On canonical H, row u equals
+        `recommend(item_ids[H[u].indices], H[u].data, ...)` bit for bit
+        (`H[u].indices` without `item_ids`).
 
         Returns:
             csr_array (H rows x S columns), each row sorted best first. Past
@@ -242,8 +245,9 @@ class ItemKNN:
         mapped the old files keep them (Linux, macOS; on Windows the replace
         fails with PermissionError while any process has the model loaded with
         `mmap=True`, and the old model stays). Between the two renames the
-        directory doesn't exist: a `load` at that moment fails, and two savers
-        must not overwrite the same path at once. For a live service, save each
+        directory doesn't exist: a `load` at that moment fails, two savers
+        must not overwrite the same path at once, and nothing else may write
+        into the directory meanwhile (its files are replaced). For a live service, save each
         version to a new directory and switch what the workers load (a symlink
         or config you flip); never change a saved model's files in place, a
         process mapping them would crash.

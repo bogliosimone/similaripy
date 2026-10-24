@@ -85,7 +85,7 @@ pub fn recommend(
     ids_out: &mut Vec<i64>,
     scores_out: &mut Vec<f32>,
 ) -> Result<(), Error> {
-    let mut out = Vec::with_capacity(req.k.min(model.n_active));
+    let mut out = Vec::new();
     recommend_internal(model, req, &mut out)?;
     let ext = match (req.ids, &model.ext) {
         (Ids::External(_), Some(e)) => Some(&e.out),
@@ -125,7 +125,6 @@ pub fn recommend_batch(
     if cols.iter().any(|&c| c < 0 || c as usize >= model.n_cols()) {
         return invalid("history: column index out of range");
     }
-    let cap = k.min(model.n_active);
     let rows: Vec<Vec<(u32, f32)>> = (0..indptr.len() - 1)
         .into_par_iter()
         // Small tasks: request cost varies 100x across users.
@@ -140,7 +139,9 @@ pub fn recommend_batch(
                 allowed,
                 unknown: Unknown::Skip,
             };
-            let mut out = Vec::with_capacity(cap);
+            // Sized by the row's one exact-size `extend`, not k: every row
+            // stays alive until the batch ends (k ~ n_items x many users).
+            let mut out = Vec::new();
             recommend_internal(model, &req, &mut out).map(|()| out)
         })
         .collect::<Result<_, _>>()?;
