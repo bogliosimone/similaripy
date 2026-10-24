@@ -97,6 +97,17 @@ recommendations = sim.dot_product(
 For a more in-depth, end-to-end example with SimilariPy, see the notebook:
 **[MovieLens 32M Item-Item Recommender](https://github.com/bogliosimone/similaripy/blob/master/notebooks/movielens32m_item_item_recommender.ipynb)**.
 
+## 🛎️ Serving
+
+`similaripy.serving.ItemKNN` serves a similarity matrix online: build it once, save it, load it in every worker (memory-mapped, one copy shared by all processes) and get the top-k items of a history in tens to hundreds of microseconds, GIL-free. See **[Serving](https://bogliosimone.github.io/similaripy/serving/)**.
+
+```python
+from similaripy.serving import ItemKNN
+
+model = ItemKNN(similarity_matrix.T)   # the same scores as dot_product above; model.save(path) / ItemKNN.load(path)
+ids, scores = model.recommend([3, 17, 42], k=10)
+```
+
 ## 📦 Installation
 
 SimilariPy can be installed from PyPI with:
