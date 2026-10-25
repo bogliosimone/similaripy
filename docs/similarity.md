@@ -2,6 +2,10 @@
 
 Similarity functions compute `matrix1 × matrix2` on sparse matrices and keep the top-k values of each row, from vector-based or graph-based scores. All of them are multi-threaded and GIL-free.
 
+```python
+import similaripy as sim   # sim.cosine, sim.rp3beta, ... (also in similaripy.similarity)
+```
+
 ## Similarities
 
 | Function           | Description |
