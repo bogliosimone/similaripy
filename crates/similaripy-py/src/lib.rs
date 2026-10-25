@@ -1,8 +1,10 @@
 //! Python bindings of the Rust core (`similaripy._core`). `similaripy/_s_plus.py`
-//! does the prep and calls `compute`.
+//! does the prep and calls `compute`; `similaripy/serving.py` builds the serving
+//! model (`serve.rs`).
 
 mod normalize;
 mod progress;
+mod serve;
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -17,7 +19,11 @@ use similaripy_core::normalize::Value;
 use similaripy_core::{CsrPattern, CsrView, Error, Inputs, Norms, Params, compute};
 
 pub(crate) fn to_py(e: Error) -> PyErr {
-    PyValueError::new_err(e.to_string())
+    match e {
+        // FileNotFoundError, FileExistsError, ... as Python's own
+        Error::Io(kind, msg) => std::io::Error::new(kind, msg).into(),
+        e => PyValueError::new_err(e.to_string()),
+    }
 }
 
 thread_local! {
@@ -200,7 +206,10 @@ fn compute_similarities<'py>(
 
 /// Runs `f` on the global rayon pool (`num_threads = 0`) or on the calling
 /// thread's cached pool of `num_threads` workers.
-fn with_pool<R>(num_threads: usize, f: impl FnOnce() -> Result<R, Error> + Send) -> Result<R, Error>
+pub(crate) fn with_pool<R>(
+    num_threads: usize,
+    f: impl FnOnce() -> Result<R, Error> + Send,
+) -> Result<R, Error>
 where
     R: Send,
 {
@@ -272,7 +281,9 @@ fn canonicalize<'py, V: Value + Element>(
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("DEFAULT_BLOCK_SIZE", similaripy_core::DEFAULT_BLOCK_SIZE)?;
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
+    m.add_class::<serve::PyModel>()?;
     m.add_function(wrap_pyfunction!(remap_sort_rows, m)?)?;
     m.add_function(wrap_pyfunction!(canonicalize_rows, m)?)?;
     m.add_class::<ProgressBar>()?;

@@ -100,6 +100,9 @@ accepts them with a few rules per function: see [Signed Input](signed-input.md).
       raise a `ValueError` past 2^31 - 1 entries, as the similarities.
     - New: `similaripy.binarize(X)`, the `binary=True` of the similarities as a
       separate step.
+    - New: `similaripy.serving.ItemKNN`, an online engine over a similarity
+      matrix (save / load with mmap, include / exclude rules): see
+      [Serving](serving.md).
     - `num_threads=0` (the default) runs on one shared pool: concurrent calls
       queue on it instead of oversubscribing the cores as OpenMP did.
       `num_threads=n` uses a pool cached per calling thread, so concurrent

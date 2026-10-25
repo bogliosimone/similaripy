@@ -1,3 +1,6 @@
+"""Normalizations and weightings of sparse matrices (row/column norms,
+TF-IDF, BM25, binarize). Also at the top level (`sim.bm25`, as in 0.x)."""
+
 from math import e
 
 import numpy as np
@@ -5,6 +8,8 @@ import scipy.sparse as sps
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
 from ._s_plus import SparseInput, _canonical_csr
+
+__all__ = ["binarize", "bm25", "bm25plus", "normalize", "tfidf"]
 
 # ---- Valid mode strings ----
 _NORMALIZATIONS = ("l1", "l2", "max")

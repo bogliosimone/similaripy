@@ -91,12 +91,36 @@ impl<'a> CsrView<'a> {
         })
     }
 
+    /// A view over arrays that passed `new` before (an owner that validated
+    /// them once and never changes them).
+    ///
+    /// # Safety
+    /// `new` with the same arguments returned `Ok`.
+    pub(crate) unsafe fn new_unchecked(
+        indptr: &'a [i32],
+        indices: &'a [i32],
+        data: &'a [f32],
+        n_cols: usize,
+    ) -> Self {
+        Self {
+            indptr,
+            indices,
+            data,
+            n_cols,
+        }
+    }
+
     pub fn n_rows(&self) -> usize {
         self.indptr.len() - 1
     }
 
     pub fn n_cols(&self) -> usize {
         self.n_cols
+    }
+
+    /// (indptr, indices, data).
+    pub(crate) fn arrays(&self) -> (&'a [i32], &'a [i32], &'a [f32]) {
+        (self.indptr, self.indices, self.data)
     }
 
     pub fn indices_sorted(&self) -> bool {
@@ -108,7 +132,7 @@ impl<'a> CsrView<'a> {
     /// # Safety
     /// `r < self.n_rows()`.
     #[inline(always)]
-    pub unsafe fn row_unchecked(&self, r: usize) -> (&'a [i32], &'a [f32]) {
+    pub(crate) unsafe fn row_unchecked(&self, r: usize) -> (&'a [i32], &'a [f32]) {
         // SAFETY: caller contract, forwarded.
         unsafe {
             let (start, end) = self.row_span_unchecked(r);
@@ -121,7 +145,7 @@ impl<'a> CsrView<'a> {
     /// # Safety
     /// `r < self.n_rows()`.
     #[inline(always)]
-    pub unsafe fn row_span_unchecked(&self, r: usize) -> (usize, usize) {
+    pub(crate) unsafe fn row_span_unchecked(&self, r: usize) -> (usize, usize) {
         // SAFETY: r + 1 < len(indptr).
         unsafe { row_span(self.indptr, r) }
     }
@@ -131,7 +155,7 @@ impl<'a> CsrView<'a> {
     /// # Safety
     /// `start <= end <= nnz`, e.g. a sub-span of `row_span_unchecked`.
     #[inline(always)]
-    pub unsafe fn span_unchecked(&self, start: usize, end: usize) -> (&'a [i32], &'a [f32]) {
+    pub(crate) unsafe fn span_unchecked(&self, start: usize, end: usize) -> (&'a [i32], &'a [f32]) {
         // SAFETY: caller contract; len(data) == len(indices) (`new`).
         unsafe {
             (
@@ -184,7 +208,7 @@ impl<'a> CsrPattern<'a> {
     /// # Safety
     /// `r < self.n_rows()`.
     #[inline(always)]
-    pub unsafe fn row_unchecked(&self, r: usize) -> &'a [i32] {
+    pub(crate) unsafe fn row_unchecked(&self, r: usize) -> &'a [i32] {
         // SAFETY: same invariant as `CsrView::row_unchecked`.
         unsafe {
             let (start, end) = row_span(self.indptr, r);
