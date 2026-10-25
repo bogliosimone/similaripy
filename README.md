@@ -14,7 +14,7 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.2583851.svg)](https://doi.org/10.5281/zenodo.2583851)
 
 
-High-performance KNN similarity functions in Python, optimized for sparse matrices.
+High-performance KNN similarity functions in Python, optimized for sparse matrices, and an engine to serve item-item recommendations.
 
 SimilariPy is primarily designed for Recommender Systems and Information Retrieval (IR) tasks, but can be applied to other domains as well.
 
@@ -57,6 +57,16 @@ All functions return a new canonical CSR matrix (multi-threaded Rust core); the 
 
 For more details, check the **[📘 SimilariPy Guide](https://bogliosimone.github.io/similaripy/)**.
 
+## 🛎️ Serving
+
+`similaripy.serving.ItemKNN` serves an item-item model online, in your own item ids:
+
+- **Fast** – the top-k items of a history in tens to hundreds of microseconds, GIL-free; many histories in parallel.
+- **Multi-process** – save once, load memory-mapped in every worker: one copy of the model for all of them.
+- **Availability rules** – include or exclude items for all requests (a view) or per request.
+
+See **[Serving](https://bogliosimone.github.io/similaripy/serving/)**.
+
 ## ⚡ Performance
 
 SimilariPy is built for speed on large sparse matrices:
@@ -73,9 +83,10 @@ Here’s a minimal example to get you up and running with SimilariPy:
 ```python
 import similaripy as sim
 import scipy.sparse as sps
+from similaripy.serving import ItemKNN
 
 # Create a random User-Rating Matrix (URM)
-urm = sps.random_array((1000, 2000), density=0.025)
+urm = sps.random_array((1000, 2000), density=0.025, format="csr")
 
 # Normalize the URM using BM25
 urm = sim.normalization.bm25(urm)
@@ -83,30 +94,16 @@ urm = sim.normalization.bm25(urm)
 # Train an item-item cosine similarity model
 similarity_matrix = sim.cosine(urm.T, k=50, verbose=True)  # verbose: progress bar
 
-# Compute recommendations for user 1, 14, 8
-# filtering out already-seen items
-recommendations = sim.dot_product(
-    urm,
-    similarity_matrix.T,
-    k=100,
-    target_rows=[1, 14, 8],
-    filter_cols=urm,
-)
+# Serve it: the top 100 items for users 1, 14 and 8, already-seen items excluded
+model = ItemKNN(similarity_matrix.T)
+users = [1, 14, 8]
+histories = [urm[[u]].indices for u in users]
+weights = [urm[[u]].data for u in users]
+ids, scores = model.recommend_batch(histories, weights=weights, k=100)
 ```
 
 For a more in-depth, end-to-end example with SimilariPy, see the notebook:
 **[MovieLens 32M Item-Item Recommender](https://github.com/bogliosimone/similaripy/blob/master/notebooks/movielens32m_item_item_recommender.ipynb)**.
-
-## 🛎️ Serving
-
-`similaripy.serving.ItemKNN` serves a similarity matrix online: build it once, save it, load it in every worker (memory-mapped, one copy shared by all processes) and get the top-k items of a history in tens to hundreds of microseconds, GIL-free. See **[Serving](https://bogliosimone.github.io/similaripy/serving/)**.
-
-```python
-from similaripy.serving import ItemKNN
-
-model = ItemKNN(similarity_matrix.T)   # the same scores as dot_product above; model.save(path) / ItemKNN.load(path)
-ids, scores = model.recommend([3, 17, 42], k=10)
-```
 
 ## 📦 Installation
 

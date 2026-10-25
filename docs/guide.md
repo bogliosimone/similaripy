@@ -4,7 +4,7 @@ SimilariPy provides **high-performance KNN similarity functions** in Python, opt
 
 Primarily designed for Recommender Systems and Information Retrieval (IR) tasks, but can be applied to other domains as well.
 
-The package also includes a set of normalization functions useful for pre-processing data before the similarity computation.
+The package also includes a set of normalization functions useful for pre-processing data before the similarity computation, and `ItemKNN`, an engine to serve item-item recommendations.
 
 ## Similarity Functions
 
@@ -45,9 +45,10 @@ Here’s a minimal example to get you up and running with SimilariPy:
 ```python
 import similaripy as sim
 import scipy.sparse as sps
+from similaripy.serving import ItemKNN
 
 # Create a random User-Rating Matrix (URM)
-urm = sps.random_array((1000, 2000), density=0.025)
+urm = sps.random_array((1000, 2000), density=0.025, format="csr")
 
 # Normalize the URM using BM25
 urm = sim.normalization.bm25(urm)
@@ -55,25 +56,12 @@ urm = sim.normalization.bm25(urm)
 # Train an item-item cosine similarity model
 similarity_matrix = sim.cosine(urm.T, k=50, verbose=True)  # verbose: progress bar
 
-# Compute recommendations for user 1, 14, 8
-# filtering out already-seen items
-recommendations = sim.dot_product(
-    urm,
-    similarity_matrix.T,
-    k=100,
-    target_rows=[1, 14, 8],
-    filter_cols=urm,
-)
-```
-
-To serve the model online (one history per call, GIL-free, saved and
-memory-mapped by every worker), see [Serving](serving.md):
-
-```python
-from similaripy.serving import ItemKNN
-
-model = ItemKNN(similarity_matrix.T)   # the same scores as dot_product above
-ids, scores = model.recommend([3, 17, 42], k=10)
+# Serve it: the top 100 items for users 1, 14 and 8, already-seen items excluded
+model = ItemKNN(similarity_matrix.T)
+users = [1, 14, 8]
+histories = [urm[[u]].indices for u in users]
+weights = [urm[[u]].data for u in users]
+ids, scores = model.recommend_batch(histories, weights=weights, k=100)
 ```
 
 Tips:
@@ -81,6 +69,8 @@ Tips:
 - `urm.T` is used to switch from user-item to item-user to train an item-item similarity model.
 - You can use `bm25plus`, `tfidf`, or `normalize` for different pre-processing strategies.
 - All operations are multithreaded and scale with available CPU cores.
+- `ItemKNN` is the serving engine: save it, load it in every worker, one history per call or many at once; see [Serving](serving.md).
+- In an evaluation loop, `sim.dot_product(urm, similarity_matrix.T, k=100, filter_cols=urm)` gives the same scores as one sparse matrix.
 
 ## In-depth Introduction
 

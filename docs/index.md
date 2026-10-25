@@ -11,7 +11,7 @@
 
 ## Welcome to SimilariPy’s documentation!
 
-**SimilariPy** is a Python package that provides high-performance KNN similarity and normalization functions, optimized for sparse matrices.
+**SimilariPy** is a Python package that provides high-performance KNN similarity and normalization functions, optimized for sparse matrices, and an engine to serve item-item recommendations.
 
 ---
 
@@ -21,6 +21,7 @@
 - **Sparse matrix focus**: any SciPy sparse input, CSR or COO output
 - **Wide similarity coverage**: Dot Product, Cosine, Tversky, P3α, RP3β, and more
 - **Flexible normalization**: includes L1, L2, TF-IDF, BM25, BM25+
+- **Serving**: `ItemKNN` answers a history in microseconds, GIL-free, memory-mapped across worker processes, with include / exclude rules
 
 ---
 
@@ -31,6 +32,7 @@
 - [Similarities](similarity.md)
 - [Normalizations](normalization.md)
 - [Signed Input](signed-input.md)
+- [Serving](serving.md)
 - [API reference](api/similarity.md)
 - [Migration from 0.7.0](migration.md)
 

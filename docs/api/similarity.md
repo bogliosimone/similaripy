@@ -1,4 +1,4 @@
-`similaripy.similarity`; every function is also at the top level (`sim.cosine`).
+`similaripy.similarity` (every function is also at the top level: `sim.cosine`)
 
 ??? info "Raw Dot Product"
     ::: similaripy.similarity.dot_product
