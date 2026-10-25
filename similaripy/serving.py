@@ -1,26 +1,27 @@
 """
 Serving engine, the online half: `ItemKNN`, a prepared item-item model built
 once from S (computed offline by the similarity functions, e.g. `sim.cosine`),
-then top-K recommendations per history (`recommend`) or per row of a user-item
-matrix (`recommend_batch`), in Rust without the GIL. One import path:
+then the top-k items of one history (`recommend`) or of many
+(`recommend_batch`), in Rust without the GIL. One import path:
 `from similaripy.serving import ItemKNN`.
+
+Everything is in the caller's item ids (`item_ids`, or S's column indices
+without them); ids the model doesn't have are ignored. The internal layout
+(items in popularity order, items with no row and no column dropped) never
+shows.
 
 Build: the Rust core reads S's arrays in place (cast here only when their
 dtypes aren't int32/float32) and copies S once into the model, made canonical
-on the way (rows sorted, duplicates summed, zeros dropped). Items with neither
-a row nor a column are dropped; the rest get internal ids in popularity order
-(descending column count, as the kernel's `_popularity_layout`, ties to the
-lower column), rows and columns alike, so a history item's internal id is both
-its row and its column. Peak memory: S plus the model.
+on the way (rows sorted, duplicates summed, zeros dropped). Peak memory: S
+plus the model.
 
 Availability, three levels: `candidate_items` at build trims S (permanent
-until rebuilt); `view(allowed_items=...)` gives a model sharing S with a
-default mask (cheap to change: make a new view, swap the reference); a mask
-per call (`allowed=`). The two masks combine with AND.
+until rebuilt); `view(include=, exclude=)` gives a model sharing S with a
+default mask (cheap to change: make a new view, swap the reference);
+`include=` / `exclude=` per call. They combine with AND.
 """
 
 import numpy as np
-import scipy.sparse as sp
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
 from ._s_plus import _canonical_csr
@@ -47,6 +48,10 @@ def _ids(name, ids) -> np.ndarray:
     return np.array(a, dtype=np.int64)
 
 
+def _opt_ids(name, ids):
+    return None if ids is None else _ids(name, ids)
+
+
 def _weights(weights):
     if weights is None:
         return None
@@ -62,10 +67,21 @@ def _check_k(k):
     return min(int(k), _INT64_MAX)  # clamped to the item count in Rust
 
 
-def _check_mask(allowed):
-    if allowed is not None and not isinstance(allowed, _core.ServeMask):
-        raise TypeError(f"allowed must be a mask from ItemKNN.mask(ids), got {type(allowed).__name__}")
-    return allowed
+def _per_user(name, lists, n=None, convert=None):
+    """One entry per user, flattened: (offsets int64, values, flags of the
+    None entries or None). `n`: the expected user count."""
+    if isinstance(lists, np.ndarray) or not isinstance(lists, (list, tuple)):
+        shared = " (a rule for every user goes in view())" if name in ("include", "exclude") else ""
+        raise TypeError(f"{name} must be a list with one entry per user{shared}, got {type(lists).__name__}")
+    if n is not None and len(lists) != n:
+        raise ValueError(f"{name} must have one entry per user ({n}), got {len(lists)}")
+    convert = convert or (lambda x: _ids(name, x))
+    arrays = [None if x is None else convert(x) for x in lists]
+    none = np.fromiter((a is None for a in arrays), bool, len(arrays))
+    lens = np.fromiter((0 if a is None else a.size for a in arrays), np.int64, len(arrays))
+    parts = [a for a in arrays if a is not None and a.size]
+    flat = np.concatenate(parts) if parts else convert([])
+    return np.r_[0, np.cumsum(lens)].astype(np.int64), flat, (none if none.any() else None)
 
 
 def _csr_arrays(S, num_threads):
@@ -94,8 +110,9 @@ class ItemKNN:
 
     `score[j] = sum_i w_i * S[i, j]` over the history items `i`; the best `k`
     items with a positive score, best first (ties: the item with more entries
-    in its column of S, then the lower column). The model is immutable and
-    safe to share across threads; each call releases the GIL.
+    in its column of S, then the lower column). Ids are yours (`item_ids`)
+    everywhere; ids the model doesn't have are ignored. The model is
+    immutable and safe to share across threads; each call releases the GIL.
 
     Args:
         S: square sparse item-item matrix (e.g. `sim.cosine(URM.T, k=100)`).
@@ -117,7 +134,7 @@ class ItemKNN:
     from another thread meanwhile.
     """
 
-    def __init__(self, S, item_ids=None, candidate_items=None, block_size="auto", num_threads: int = 0):
+    def __init__(self, S, *, item_ids=None, candidate_items=None, block_size="auto", num_threads: int = 0):
         n = S.shape[0]
         if S.ndim != 2 or S.shape[1] != n:
             raise ValueError(f"S must be square (item x item), got shape {S.shape}")
@@ -137,7 +154,7 @@ class ItemKNN:
             num_threads=num_threads,
         )
         if candidate_items is not None:
-            model = model.trimmed(model.mask(_ids("candidate_items", candidate_items), "skip"))
+            model = model.trimmed(_ids("candidate_items", candidate_items))
         self._model = model
 
     @classmethod
@@ -147,136 +164,161 @@ class ItemKNN:
         return rec
 
     @property
-    def n_items(self) -> int:
-        """Items in the model (S's items minus those with no row and no column)."""
-        return self._model.n_items
+    def item_ids(self) -> np.ndarray:
+        """The id of each item (column of S), read-only: the `item_ids` given,
+        or `arange(n)` without them."""
+        ids = getattr(self, "_item_ids", None)
+        if ids is None:
+            ids = self._model.item_ids()
+            if ids is None:
+                ids = np.arange(self._model.n_cols, dtype=np.int64)
+            ids.flags.writeable = False
+            self._item_ids = ids
+        return ids
 
-    def mask(self, ids, unknown: str = "skip"):
+    def view(self, *, include=None, exclude=None) -> "ItemKNN":
         """
-        A reusable availability mask allowing only `ids`, for `recommend(...,
-        allowed=mask)` or `recommend_batch`. Valid for every model of this
-        build (its views included).
-        """
-        return self._model.mask(_ids("ids", ids), unknown)
-
-    def view(self, allowed_items=None, unknown: str = "skip") -> "ItemKNN":
-        """
-        The same model with `allowed_items` as its default availability: S is
-        shared (no copy), only a bitset of one bit per item is new, so it is
-        cheap to change often. Combined with a per-call `allowed` mask by AND.
-        A view of a view replaces the default (None = everything allowed).
+        The same model with a default availability: only the `include` items
+        (None = all) minus the `exclude` items. S is shared (no copy), only a
+        bitset of one bit per item is new, so it is cheap to change often.
+        Combined with the per-call `include` / `exclude` by AND. A view of a
+        view replaces both rules (`view()` = no rules).
 
         To update availability in a running service, build the new view and
         swap the reference; requests in flight keep the model they started
         with::
 
-            state["model"] = state["model"].view(allowed_items=available_ids)
+            state["model"] = base.view(include=available_ids)
         """
-        mask = None if allowed_items is None else self.mask(allowed_items, unknown)
-        return self._wrap(self._model.view(mask))
+        return self._wrap(self._model.view(_opt_ids("include", include), _opt_ids("exclude", exclude)))
 
-    def recommend(self, history, weights=None, k: int = 10, exclude_seen: bool = True, allowed=None, unknown="skip"):
+    def recommend(
+        self,
+        history,
+        *,
+        weights=None,
+        k: int = 10,
+        exclude_seen: bool = True,
+        include=None,
+        exclude=None,
+        sorted: bool = True,
+    ):
         """
         The top `k` items for one history.
 
         Args:
-            history: item ids. Order and duplicates don't matter (a duplicate
-                adds its weight).
+            history: item ids. Order doesn't matter; a duplicate adds its
+                weight.
             weights: one finite weight per id (None = all 1.0).
             k: results wanted; fewer when fewer items score > 0.
             exclude_seen: never recommend a history item.
-            allowed: a mask from `mask(ids)`, ANDed with the view's default.
-            unknown: ids not in the model: 'skip' or 'raise' (ValueError).
+            include: only these items can be recommended (None = all).
+            exclude: never recommend these items.
+            sorted: best first; False returns the same items in an
+                unspecified order (no final sort: a few % faster at k in the
+                thousands, nothing at k ~ 100).
 
         Returns:
-            (ids int64, scores float32), best first.
+            (ids int64, scores float32).
         """
         k = _check_k(k)
-        ids = _ids("history", history)
-        weights = _weights(weights)
-        allowed = _check_mask(allowed)
-        return self._model.recommend(ids, weights, k=k, exclude_seen=exclude_seen, allowed=allowed, unknown=unknown)
-
-    def recommend_batch(
-        self, H, k: int = 10, exclude_seen: bool = True, allowed=None, num_threads: int = 0
-    ) -> sp.csr_array:
-        """
-        The top `k` items for every row of H (users x items, columns = S's
-        columns, values = weights), as `recommend` per row. H is made
-        canonical first (duplicates summed, zeros dropped): an explicit zero
-        or entries that cancel to zero are not part of the history, so
-        `exclude_seen` doesn't exclude them. On canonical H, row u equals
-        `recommend(item_ids[H[u].indices], H[u].data, ...)` bit for bit
-        (`H[u].indices` without `item_ids`).
-
-        Returns:
-            csr_array (H rows x S columns), each row sorted best first. Past
-            2^31 results the indptr is int64.
-        """
-        k = _check_k(k)
-        allowed = _check_mask(allowed)
-        n_cols = self._model.n_cols
-        if H.ndim != 2 or H.shape[1] != n_cols:
-            raise ValueError(f"H must have one column per item of S ({n_cols}), got shape {H.shape}")
-        H = _canonical_csr(H, np.float32, num_threads)
-        indptr, cols, scores = self._model.batch(
-            H.indptr.astype(np.int64),
-            H.indices,
-            H.data,
+        return self._model.recommend(
+            _ids("history", history),
+            _weights(weights),
             k=k,
             exclude_seen=exclude_seen,
-            allowed=allowed,
+            include=_opt_ids("include", include),
+            exclude=_opt_ids("exclude", exclude),
+            sorted=sorted,
+        )
+
+    def recommend_batch(
+        self,
+        histories,
+        *,
+        weights=None,
+        k: int = 10,
+        exclude_seen: bool = True,
+        include=None,
+        exclude=None,
+        sorted: bool = True,
+        num_threads: int = 0,
+    ):
+        """
+        `recommend` for many histories at once, in parallel: element u of the
+        result equals `recommend(histories[u], weights=weights[u], ...)` bit
+        for bit.
+
+        Args:
+            histories: a list with one array of item ids per user.
+            weights, include, exclude: None, or a list with one entry per user
+                (an entry may be None). A rule for every user goes in
+                `view()`.
+            k, exclude_seen, sorted: as `recommend`, for every user.
+            num_threads: 0 = all cores (one shared pool), n = n threads.
+
+        Returns:
+            (ids, scores): two lists with one array per user.
+        """
+        k = _check_k(k)
+        offsets, ids, _ = _per_user("histories", histories)
+        n = len(offsets) - 1
+        w = None
+        if weights is not None:
+            w_offsets, w, none = _per_user("weights", weights, n, convert=_weights)
+            sizes, given = np.diff(offsets), ~none if none is not None else np.ones(n, bool)
+            if not np.array_equal(np.diff(w_offsets)[given], sizes[given]):
+                raise ValueError("weights: one weight per history id expected")
+            if not given.all():  # None entries: weight 1.0
+                full = np.ones(ids.size, dtype=np.float32)
+                full[np.repeat(given, sizes)] = w
+                w = full
+        inc = (None, None, None) if include is None else _per_user("include", include, n)
+        exc = (None, None, None) if exclude is None else _per_user("exclude", exclude, n)
+        out_offsets, out_ids, out_scores = self._model.batch(
+            offsets,
+            ids,
+            w,
+            inc[0],
+            inc[1],
+            inc[2],
+            exc[0],
+            exc[1],
+            k=k,
+            exclude_seen=exclude_seen,
+            sorted=sorted,
             num_threads=num_threads,
         )
-        if indptr[-1] <= _INT32_MAX:
-            indptr = indptr.astype(np.int32)
-        return sp.csr_array((scores, cols, indptr), shape=(H.shape[0], n_cols))
+        if n == 0:  # np.split would give one empty piece
+            return [], []
+        cuts = out_offsets[1:-1]
+        return np.split(out_ids, cuts), np.split(out_scores, cuts)
 
-    def save(self, path, overwrite: bool = False) -> None:
+    def save(self, path, *, overwrite: bool = False) -> None:
         """
-        Saves the model to the directory `path`: one `.npy` file per array
-        (`numpy.load` opens them) and `meta.json`, for `ItemKNN.load` in this
-        or any later 1.x version. Saved as is: the view's availability mask,
-        `block_size` as given.
+        Saves the model to the directory `path`, which must be missing or
+        empty, for `ItemKNN.load` in this or any later 1.x version (the view's
+        rules and `block_size` included). `overwrite=True` replaces a model
+        saved there; processes that loaded the old one keep it.
 
-        `path` must be missing or empty. `overwrite=True` replaces a saved
-        model there (a directory holding only a saved model's files, not a
-        symlink) with a new directory renamed into place, so processes that
-        mapped the old files keep them (Linux, macOS; on Windows the replace
-        fails with PermissionError while any process has the model loaded with
-        `mmap=True`, and the old model stays). Between the two renames the
-        directory doesn't exist: a `load` at that moment fails, two savers
-        must not overwrite the same path at once, and nothing else may write
-        into the directory meanwhile (its files are replaced). For a live service, save each
-        version to a new directory and switch what the workers load (a symlink
-        or config you flip); never change a saved model's files in place, a
-        process mapping them would crash.
-
-        The files: `indptr`, `indices`, `data` (S in internal ids, rows sorted),
-        `new_to_old` (internal id -> S's column), optional `item_ids` (id per
-        column) and `allowed` (uint64 bitset), each a 1-d little-endian `.npy`
-        with numpy's header layout (as `np.save` writes it); `meta.json` holds
-        the format version, `value_dtype`, sizes and `block_size`.
+        Never change a saved model's files: for a live service, save each
+        version to a new directory and switch what the workers load. Details
+        and the file format: the Serving guide.
         """
         from . import __version__
 
         self._model.save(path, f"similaripy {__version__}", overwrite)
 
     @classmethod
-    def load(cls, path, mmap: bool = True) -> "ItemKNN":
+    def load(cls, path, *, mmap: bool = True) -> "ItemKNN":
         """
         A model saved by `save`, checked before use.
 
-        `mmap=True` maps the arrays read-only: they stay in the OS page cache,
-        shared by every process that loads the same files (one copy of S for
-        all workers of a server), and loading is fast. `mmap=False` reads them
-        into memory (e.g. on a network file system). Masks of the saved model
-        don't apply to the loaded one; pickling a mapped model copies its
-        arrays.
-
-        The check makes a corrupted file an error, never an out-of-bounds read,
-        but it doesn't guard against resource exhaustion (e.g. a `meta.json`
-        asking for billions of items): load files you trust.
+        `mmap=True` maps the files read-only: one copy in the OS page cache,
+        shared by every process that loads them, and fast to load.
+        `mmap=False` reads them into memory (e.g. on a network file system).
+        Load files you trust: the check makes a corrupted file an error, not
+        a crash, but doesn't guard against resource exhaustion.
         """
         return cls._wrap(_core.ServeModel.load(path, mmap))
 

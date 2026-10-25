@@ -127,11 +127,14 @@ impl TopK {
     }
 
     /// Appends the kept (col, score) pairs with a non-zero score best first
-    /// (score desc, col asc) to `cols` / `values` and empties the heap.
-    pub fn drain_by_score(&mut self, cols: &mut Vec<i32>, values: &mut Vec<f32>) {
+    /// (score desc, col asc; `sorted = false`: heap order, the same pairs) to
+    /// `cols` / `values` and empties the heap.
+    pub fn drain_by_score(&mut self, cols: &mut Vec<i32>, values: &mut Vec<f32>, sorted: bool) {
         let mut kept = self.take_kept();
-        // Reverse(e) ascending = e descending = best first.
-        kept.sort_unstable();
+        if sorted {
+            // Reverse(e) ascending = e descending = best first.
+            kept.sort_unstable();
+        }
         cols.extend(kept.iter().map(|Reverse(e)| e.col));
         values.extend(kept.iter().map(|Reverse(e)| e.score));
         self.give_back(kept);
@@ -192,13 +195,13 @@ mod tests {
             t.push(c, s);
         }
         let (mut cols, mut vals) = (vec![], vec![]);
-        t.drain_by_score(&mut cols, &mut vals);
+        t.drain_by_score(&mut cols, &mut vals, true);
         assert_eq!((cols, vals), (vec![1, 2, 4], vec![3.0, 1.0, 1.0]));
         t.set_k(1);
         t.push(7, 2.0);
         t.push(3, 2.0);
         let (mut cols, mut vals) = (vec![], vec![]);
-        t.drain_by_score(&mut cols, &mut vals);
+        t.drain_by_score(&mut cols, &mut vals, true);
         assert_eq!((cols, vals), (vec![3], vec![2.0]));
     }
 

@@ -7,24 +7,24 @@
 //! column. Columns with entries come first, so the accumulator covers
 //! `0..n_active`.
 //!
-//! A request: ids → internal ids (dense gather or hash, `Ids`), history sorted
-//! with duplicates merged, the history's own slots pre-set to `-inf` (never
-//! touched, never drained), `scores = h · S` accumulated, then drained through
-//! the per-call mask (tested only after the floor reject) into a top-K, best
-//! first, internal → caller's ids. Batch = rayon over users calling the same
-//! function, so a user gets the same bits from both. Choices measured in step
-//! 4.1 (`reports/step4-explore.md` in the planning notes, D64).
+//! A request: the caller's ids → internal ids (dense gather or hash; unknown
+//! ids ignored), history sorted with duplicates merged, the slots of seen and
+//! excluded items pre-set to `-inf` (never touched, never drained),
+//! `scores = h · S` accumulated, then drained through the view's mask and the
+//! request's include bits (tested only after the floor reject) into a top-K,
+//! best first, internal → caller's ids. Batch = rayon over users calling the
+//! same function, so a user gets the same bits from both. Choices measured in
+//! step 4.1 (`reports/step4-explore.md` in the planning notes, D64); API D69.
 //!
-//! Files: `model` (build, the one check, save/load, views), `ids` (id maps,
-//! masks), `request` (one history, batch).
+//! Files: `model` (build, the one check, save/load, views), `ids` (id maps),
+//! `request` (one history, batch).
 
 mod ids;
 mod model;
 mod request;
 
-pub use ids::{Ids, ItemMask, Unknown};
 pub use model::{BlockSize, Core, Model, Parts};
-pub use request::{Batch, Request, recommend, recommend_batch};
+pub use request::{Batch, BatchRequest, Lists, Request, recommend, recommend_batch};
 
 use crate::Error;
 

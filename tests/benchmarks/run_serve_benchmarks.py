@@ -108,12 +108,12 @@ def mode_latency(args, URM, rec, users, rng, report):
 def batch_call(rec, URM, k, threads):
     """Times the Rust batch call only (H's prep outside, as the kernel side's
     `kernel + output` excludes its prep)."""
-    H = _canonical_csr(URM, np.float32, 0)  # as recommend_batch and the kernel's prep do
-    H = (H.indptr.astype(np.int64), H.indices, H.data)
+    H = _canonical_csr(URM, np.float32, 0)  # as the kernel's prep does
+    H = (H.indptr.astype(np.int64), H.indices.astype(np.int64), H.data)  # ids = columns (no item_ids)
 
     def run(threads=threads):
         t = time.perf_counter()
-        rec._model.batch(*H, k=k, exclude_seen=True, allowed=None, num_threads=threads)
+        rec._model.batch(*H, None, None, None, None, None, k=k, exclude_seen=True, sorted=True, num_threads=threads)
         return time.perf_counter() - t
 
     return run
@@ -122,7 +122,12 @@ def batch_call(rec, URM, k, threads):
 def mode_gate(args, URM, S, rec, report):
     out = {}
     K = sim.dot_product(URM, S, k=args.k, filter_cols=URM, verbose=False, format_output="csr")
-    C = rec.recommend_batch(URM, k=args.k)
+    H = _canonical_csr(URM, np.float32, 0)
+    offsets, ids, scores = rec._model.batch(
+        H.indptr.astype(np.int64), H.indices.astype(np.int64), H.data, None, None, None, None, None,
+        k=args.k, exclude_seen=True, sorted=True, num_threads=0,
+    )
+    C = sp.csr_array((scores, ids, offsets), shape=URM.shape)
     overlap = (K != 0).multiply(C != 0).nnz / max(K.nnz, 1)
     print(f"top-k overlap batch vs kernel: {overlap:.6f} (kernel nnz {K.nnz:,}, batch nnz {C.nnz:,})")
     out["overlap"] = overlap
@@ -230,7 +235,7 @@ def main():
     rec = ItemKNN(S)
     print(
         f"URM {URM.shape} nnz {URM.nnz:,}; S ({args.model}) nnz {S.nnz:,} in {t_s:.1f}s; "
-        f"model build {time.perf_counter() - t:.2f}s, {rec.n_items:,} items; max RSS {rss_mb():.0f} MB"
+        f"model build {time.perf_counter() - t:.2f}s, {rec._model.n_active:,} items with similarities; max RSS {rss_mb():.0f} MB"
     )
     rng = np.random.default_rng(args.seed)
     users = rng.choice(URM.shape[0], size=args.requests)  # resampled, random order

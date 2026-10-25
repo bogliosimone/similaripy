@@ -11,22 +11,12 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{
-    BlockSize, Ids, ItemMask, Model, Request, Unknown, recommend, recommend_batch,
+    BatchRequest, BlockSize, Lists, Model, Request, recommend, recommend_batch,
 };
 
 use crate::{to_py, with_pool};
 
 type Arr<'py, T> = Bound<'py, PyArray1<T>>;
-
-fn unknown(s: &str) -> PyResult<Unknown> {
-    match s {
-        "skip" => Ok(Unknown::Skip),
-        "raise" => Ok(Unknown::Raise),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown must be 'skip' or 'raise', got {s:?}"
-        ))),
-    }
-}
 
 /// 'auto', None (no blocking) or an int > 0, as the similarity functions'.
 fn block_size(v: &Bound<'_, PyAny>) -> PyResult<BlockSize> {
@@ -53,10 +43,19 @@ fn block_size_py(py: Python<'_>, b: BlockSize) -> PyResult<Py<PyAny>> {
     })
 }
 
-/// An availability mask, valid for every model of the build that made it
-/// (views, trimmed models) and rejected elsewhere.
-#[pyclass(frozen, name = "ServeMask", module = "similaripy._core")]
-pub struct PyMask(ItemMask);
+type Ids<'py> = Option<PyReadonlyArray1<'py, i64>>;
+
+fn lists<'a>(offsets: Option<&'a [i64]>, ids: Option<&'a [i64]>) -> Option<Lists<'a>> {
+    offsets
+        .zip(ids)
+        .map(|(offsets, ids)| Lists { offsets, ids })
+}
+
+fn slice<'a, T: numpy::Element>(
+    a: &'a Option<PyReadonlyArray1<'_, T>>,
+) -> PyResult<Option<&'a [T]>> {
+    Ok(a.as_ref().map(|a| a.as_slice()).transpose()?)
+}
 
 #[pyclass(frozen, name = "ServeModel", module = "similaripy._core")]
 pub struct PyModel(Model);
@@ -143,46 +142,36 @@ impl PyModel {
     }
 
     #[getter]
-    fn n_items(&self) -> usize {
-        self.0.n_items()
-    }
-
-    #[getter]
     fn n_cols(&self) -> usize {
         self.0.n_cols()
     }
 
+    /// Items with similarities (internal; the benchmark harness reports it).
     #[getter]
     fn n_active(&self) -> usize {
         self.0.n_active()
     }
 
-    fn mask(
-        &self,
-        py: Python<'_>,
-        ids: PyReadonlyArray1<'_, i64>,
-        unknown: &str,
-    ) -> PyResult<PyMask> {
-        let (ids, u) = (ids.as_slice()?, self::unknown(unknown)?);
-        py.detach(|| self.0.mask(Ids::External(ids), u))
-            .map(PyMask)
-            .map_err(to_py)
+    /// A copy of the external id per item; None: the ids are column indices.
+    fn item_ids<'py>(&self, py: Python<'py>) -> Option<Arr<'py, i64>> {
+        self.0.item_ids().map(|e| PyArray1::from_slice(py, e))
     }
 
-    /// A copy whose S keeps only the `allowed` items' columns.
-    fn trimmed(&self, py: Python<'_>, allowed: &PyMask) -> PyResult<Self> {
-        py.detach(|| self.0.trimmed(&allowed.0))
-            .map(Self)
-            .map_err(to_py)
+    /// A copy whose S keeps only the `candidates`' columns.
+    fn trimmed(&self, py: Python<'_>, candidates: PyReadonlyArray1<'_, i64>) -> PyResult<Self> {
+        let ids = candidates.as_slice()?;
+        py.detach(|| self.0.trimmed(ids)).map(Self).map_err(to_py)
     }
 
-    /// The same model (S shared) with `allowed` as its default mask.
-    #[pyo3(signature = (allowed))]
-    fn view(&self, allowed: Option<&PyMask>) -> PyResult<Self> {
-        self.0.view(allowed.map(|a| &a.0)).map(Self).map_err(to_py)
+    /// The same model (S shared) with `include` minus `exclude` as its
+    /// default mask.
+    #[pyo3(signature = (include, exclude))]
+    fn view(&self, py: Python<'_>, include: Ids<'_>, exclude: Ids<'_>) -> PyResult<Self> {
+        let (include, exclude) = (slice(&include)?, slice(&exclude)?);
+        Ok(Self(py.detach(|| self.0.view(include, exclude))))
     }
 
-    #[pyo3(signature = (ids, weights, *, k, exclude_seen, allowed, unknown))]
+    #[pyo3(signature = (ids, weights, *, k, exclude_seen, include, exclude, sorted))]
     #[allow(clippy::too_many_arguments)]
     fn recommend<'py>(
         &self,
@@ -191,26 +180,22 @@ impl PyModel {
         weights: Option<PyReadonlyArray1<'_, f32>>,
         k: usize,
         exclude_seen: bool,
-        allowed: Option<&PyMask>,
-        unknown: &str,
+        include: Ids<'_>,
+        exclude: Ids<'_>,
+        sorted: bool,
     ) -> PyResult<(Arr<'py, i64>, Arr<'py, f32>)> {
-        let ids = ids.as_slice()?.to_vec();
-        let weights = weights
-            .map(|w| w.as_slice().map(<[f32]>::to_vec))
-            .transpose()?;
-        let u = self::unknown(unknown)?;
+        let req = Request {
+            ids: ids.as_slice()?,
+            weights: slice(&weights)?,
+            k,
+            exclude_seen,
+            include: slice(&include)?,
+            exclude: slice(&exclude)?,
+            sorted,
+        };
         let model = &self.0;
-        let allowed = allowed.map(|a| &a.0);
         let (out_ids, out_scores) = py
             .detach(|| {
-                let req = Request {
-                    ids: Ids::External(&ids),
-                    weights: weights.as_deref(),
-                    k,
-                    exclude_seen,
-                    allowed,
-                    unknown: u,
-                };
                 let mut out = (Vec::new(), Vec::new());
                 recommend(model, &req, &mut out.0, &mut out.1).map(|()| out)
             })
@@ -218,33 +203,48 @@ impl PyModel {
         Ok((out_ids.into_pyarray(py), out_scores.into_pyarray(py)))
     }
 
-    /// One history per row of H (CSR over S's original columns). Returns
-    /// (indptr, columns, scores) over S's original columns.
-    #[pyo3(signature = (indptr, cols, weights, *, k, exclude_seen, allowed, num_threads))]
+    /// One history per user, flat (`offsets` into `ids` / `weights`), and
+    /// optional per-user include / exclude lists the same way. Returns
+    /// (offsets, ids, scores), one list per user.
+    #[pyo3(signature = (
+        offsets, ids, weights, include_offsets, include_ids, no_include, exclude_offsets, exclude_ids,
+        *, k, exclude_seen, sorted, num_threads
+    ))]
     #[allow(clippy::too_many_arguments)]
     fn batch<'py>(
         &self,
         py: Python<'py>,
-        indptr: PyReadonlyArray1<'_, i64>,
-        cols: PyReadonlyArray1<'_, i32>,
+        offsets: PyReadonlyArray1<'_, i64>,
+        ids: PyReadonlyArray1<'_, i64>,
         weights: Option<PyReadonlyArray1<'_, f32>>,
+        include_offsets: Ids<'_>,
+        include_ids: Ids<'_>,
+        no_include: Option<PyReadonlyArray1<'_, bool>>,
+        exclude_offsets: Ids<'_>,
+        exclude_ids: Ids<'_>,
         k: usize,
         exclude_seen: bool,
-        allowed: Option<&PyMask>,
+        sorted: bool,
         num_threads: usize,
-    ) -> PyResult<(Arr<'py, i64>, Arr<'py, i32>, Arr<'py, f32>)> {
-        let (indptr, cols) = (indptr.as_slice()?, cols.as_slice()?);
-        let weights = weights.as_ref().map(|w| w.as_slice()).transpose()?;
+    ) -> PyResult<(Arr<'py, i64>, Arr<'py, i64>, Arr<'py, f32>)> {
+        let b = BatchRequest {
+            histories: Lists {
+                offsets: offsets.as_slice()?,
+                ids: ids.as_slice()?,
+            },
+            weights: slice(&weights)?,
+            k,
+            exclude_seen,
+            include: lists(slice(&include_offsets)?, slice(&include_ids)?),
+            no_include: slice(&no_include)?,
+            exclude: lists(slice(&exclude_offsets)?, slice(&exclude_ids)?),
+            sorted,
+        };
         let model = &self.0;
-        let allowed = allowed.map(|a| &a.0);
-        let (p, c, s) = py
-            .detach(|| {
-                with_pool(num_threads, || {
-                    recommend_batch(model, indptr, cols, weights, k, exclude_seen, allowed)
-                })
-            })
+        let (o, i, s) = py
+            .detach(|| with_pool(num_threads, || recommend_batch(model, &b)))
             .map_err(to_py)?;
-        Ok((p.into_pyarray(py), c.into_pyarray(py), s.into_pyarray(py)))
+        Ok((o.into_pyarray(py), i.into_pyarray(py), s.into_pyarray(py)))
     }
 
     /// Copies of what the model is made of (pickling), the arguments of

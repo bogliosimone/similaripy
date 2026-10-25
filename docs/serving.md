@@ -2,15 +2,15 @@
 
 `ItemKNN` serves an item-item model online: you compute the similarity matrix
 S offline with any similarity function, build the model once, then ask for the
-top-k items of one history (`recommend`) or of every row of a user-item matrix
-(`recommend_batch`). Requests run in Rust without the GIL, on the calling
-thread.
+top-k items of one history (`recommend`) or of many at once
+(`recommend_batch`). Everything is in your item ids. Requests run in Rust
+without the GIL, on the calling thread.
 
 ```python
 from similaripy.serving import ItemKNN
 ```
 
-## Offline → save → online
+## Offline → Save → Online
 
 ```python
 import similaripy as sim
@@ -26,41 +26,53 @@ ids, scores = model.recommend(history, k=20)       # history: item ids
 ids, scores = model.recommend(history, weights=w, k=20)
 ```
 
-- `item_ids` gives each column of S your own int64 id; histories and results
-  use them. Without it the ids are S's column indices.
+- `item_ids` gives each column of S your own int64 id; histories, results
+  and rules use them (`model.item_ids` returns them). Without it the ids are
+  S's column indices.
 - `score[j] = sum_i w_i * S[i, j]` over the history items `i` (weights 1.0 by
-  default): the best `k` items with a positive score, best first. History
-  items are excluded (`exclude_seen=True`). The history's order doesn't
-  change the result (a duplicate id adds its weight); ids the model doesn't
-  know are skipped (`unknown='raise'` for a `ValueError`).
+  default): the best `k` items with a positive score, best first
+  (`sorted=False` skips the final sort). History items are excluded
+  (`exclude_seen=True`). The history's order doesn't change the result (a
+  duplicate id adds its weight); ids the model doesn't have are ignored.
 - The model is immutable: it never changes after the build, so one instance
   can be shared by any number of threads.
 
-`recommend_batch(URM, k=...)` returns the same results for every row of a
-user-item matrix at once, as a CSR matrix over S's columns (column ids, not
-`item_ids`: map them with `item_ids[R.indices]`). Row `u` equals
-`recommend` of that row bit for bit, and the whole matrix equals
-`sim.dot_product(URM, S, k=k, filter_cols=URM)` up to float rounding. The
-matrix is made canonical first: an explicit zero (or entries that cancel to
-zero) is not part of the history, so it isn't excluded as seen.
+### Many histories at once
+
+`recommend_batch` takes a list of histories and returns two lists, in
+parallel: element `u` equals `recommend(histories[u], ...)` bit for bit.
+`weights`, `include` and `exclude` take one entry per user (an entry may be
+`None`); the other options apply to every user.
+
+```python
+ids, scores = model.recommend_batch(histories, weights=weights, k=20)
+for user, (i, s) in zip(users, zip(ids, scores)):
+    cache[user] = (i, s)                       # e.g. precomputed recommendations
+```
+
+From a user-item matrix (rows = users, columns = S's columns), and in chunks
+when there are millions of users:
+
+```python
+histories = np.split(item_ids[URM.indices], URM.indptr[1:-1])   # item_ids[...]: your ids
+weights = np.split(URM.data, URM.indptr[1:-1])
+for a in range(0, len(histories), 100_000):
+    ids, scores = model.recommend_batch(histories[a:a + 100_000], weights=weights[a:a + 100_000], k=20)
+```
+
+The results equal `sim.dot_product(URM, S, k=k, filter_cols=URM)` up to float
+rounding.
 
 ### Which orientation of S
 
 `sim.cosine(URM.T, k=100)` keeps the top 100 items per row: row `i` holds item
-`i`'s most similar items. Both orientations are valid models, and either can
-score better on your data:
-
-| Model | Scores item `j` from | Work per request |
-|---|---|---|
-| `ItemKNN(S)` | the neighbours of each history item | at most `len(history) × k` entries |
-| `ItemKNN(S.T)` | `j`'s own neighbours that are in the history | unbounded: a popular item is in many top-k lists |
-
-`ItemKNN(S)` is the top-N formulation of Deshpande & Karypis (2004);
-`ItemKNN(S.T)` is the neighbourhood of the predicted item, as in Sarwar et al.
-(2001).
-
-`ItemKNN(S.T)` equals `sim.dot_product(URM, S.T, filter_cols=URM)`, the form in
-the [Quickstart](guide.md#example).
+`i`'s most similar items. `ItemKNN(S)` scores a candidate from the neighbours
+of each history item; `ItemKNN(S.T)` from the candidate's own neighbours in
+the history (the [Quickstart](guide.md#example)'s
+`dot_product(URM, S.T, filter_cols=URM)`). Which one scores better depends on
+the dataset and the similarity: evaluate both. `ItemKNN(S)` has steadier
+latency: each history item adds at most `k` entries, while a row of `S.T` can
+be long (a popular item is in many top-k lists).
 
 ### In a fit / recommend evaluation loop
 
@@ -78,11 +90,13 @@ class ItemKNNRecommender:
         return self
 
     def recommend(self, URM, k=10):
-        return self.model.recommend_batch(URM, k=k)   # CSR, users x items
+        histories = np.split(URM.indices, URM.indptr[1:-1])
+        weights = np.split(URM.data, URM.indptr[1:-1])
+        return self.model.recommend_batch(histories, weights=weights, k=k)   # (ids, scores) per user
 
 
 rec = ItemKNNRecommender(sim.rp3beta, k=100, alpha=0.8, beta=0.3).fit(URM_train)
-R = rec.recommend(URM_train, k=20)
+ids, scores = rec.recommend(URM_train, k=20)
 ```
 
 ## In a threaded service
@@ -115,29 +129,28 @@ Three levels, from permanent to per request. They combine with AND.
 | Level | How | Cost | Use for |
 |---|---|---|---|
 | Build | `ItemKNN(S, candidate_items=ids)` | rebuild to change | items that are never recommended (e.g. a huge catalogue with many dead items): they are dropped from the model, histories still use them |
-| View | `model.view(allowed_items=ids)` | one bit per item, S shared | availability that changes during the day (stock, region) |
-| Call | `model.recommend(h, allowed=mask)` with `mask = model.mask(ids)` | one bit per item, per mask | per user or per request rules |
+| View | `model.view(include=ids, exclude=ids)` | one bit per item, S shared | rules shared by every request that change during the day (stock, region) |
+| Call | `model.recommend(h, include=ids, exclude=ids)` | proportional to the ids | per user or per request rules (e.g. items already shown) |
+
+`include` = only these items can be recommended, `exclude` = never these.
 
 ```python
-it = model.view(allowed_items=available["IT"])   # shares S with model
-ok = it.mask(user_allowed_ids)                   # reusable across calls
-ids, scores = it.recommend(history, k=20, allowed=ok)
+it = model.view(include=available["IT"])                  # shares S with model
+ids, scores = it.recommend(history, k=20, exclude=already_shown)
 ```
 
-- A view of a view replaces the default mask (`allowed_items=None` allows
-  everything again). Masks work on every model of the same build (its views
-  included) and are rejected by any other.
+- A view of a view replaces both rules (`view()` = no rules).
 - To update availability in a running service, build the new view and swap
   the reference; requests in flight finish on the model they started with:
 
     ```python
-    state["model"] = state["model"].view(allowed_items=available_ids)
+    state["model"] = base.view(include=available_ids)
     ```
 
 - For items that are never available and S can be recomputed, prefer
   `target_cols` when computing S (see [Similarities](similarity.md#common-parameters)):
   each item then keeps `k` neighbours that can all be recommended, while
-  `candidate_items` and masks only remove neighbours from the top-k it
+  `candidate_items` and the rules only remove neighbours from the top-k it
   already has.
 
 ## Saving and loading
@@ -160,10 +173,10 @@ any later 1.x version, and checks it before use.
   writing a new directory and renaming it into place: processes that mapped
   the old files keep them. Between the two renames the directory is briefly
   missing (a `load` then fails), only one process may save to a path at a
-  time, and nothing else may write into the directory meanwhile. On Windows the replace fails with `PermissionError` while any process
-  has the model loaded with `mmap=True`; the old model stays.
-- What is saved: the view's default mask and `block_size` as given. Masks of
-  the saved model don't apply to the loaded one: make new ones.
+  time, and nothing else may write into the directory meanwhile. On Windows
+  the replace fails with `PermissionError` while any process has the model
+  loaded with `mmap=True`; the old model stays.
+- What is saved: the view's rules and `block_size` as given.
 - Pickling works (same similaripy version only); pickling a mapped model
   copies its arrays into the pickle.
 - The load check turns a corrupted file into an error, never an
@@ -181,7 +194,7 @@ written last:
 | `indptr.npy`, `indices.npy`, `data.npy` | S in internal ids (rows sorted), `data` float32 |
 | `new_to_old.npy` | internal id → column of S |
 | `item_ids.npy` | optional: your id per column of S |
-| `allowed.npy` | optional: the view's default mask, a uint64 bitset over internal ids |
+| `allowed.npy` | optional: the view's rules, a uint64 bitset over internal ids |
 | `meta.json` | format version and sizes |
 
 ```json

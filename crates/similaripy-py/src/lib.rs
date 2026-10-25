@@ -284,7 +284,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DEFAULT_BLOCK_SIZE", similaripy_core::DEFAULT_BLOCK_SIZE)?;
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
     m.add_class::<serve::PyModel>()?;
-    m.add_class::<serve::PyMask>()?;
     m.add_function(wrap_pyfunction!(remap_sort_rows, m)?)?;
     m.add_function(wrap_pyfunction!(canonicalize_rows, m)?)?;
     m.add_class::<ProgressBar>()?;

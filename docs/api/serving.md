@@ -1,12 +1,12 @@
-`from similaripy.serving import ItemKNN`. See [Serving](../serving.md) for the guide.
+`similaripy.serving`
 
-::: similaripy.serving.ItemKNN
-    options:
-      members:
-        - n_items
-        - recommend
-        - recommend_batch
-        - mask
-        - view
-        - save
-        - load
+??? info "ItemKNN"
+    ::: similaripy.serving.ItemKNN
+        options:
+          members:
+            - item_ids
+            - recommend
+            - recommend_batch
+            - view
+            - save
+            - load

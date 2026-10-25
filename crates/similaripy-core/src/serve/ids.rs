@@ -1,5 +1,4 @@
-//! Id maps (external int64 ids → internal ids, dense or hashed) and
-//! availability masks.
+//! Id maps: the caller's int64 ids → internal ids (dense or hashed).
 
 use super::model::Core;
 use super::{EMPTY, invalid, words};
@@ -73,38 +72,6 @@ impl ExtIds {
     }
 }
 
-/// The ids of one request.
-#[derive(Clone, Copy)]
-pub enum Ids<'a> {
-    /// The model's external ids (S's column indices if it has none).
-    External(&'a [i64]),
-    /// S's column indices (batch histories).
-    Columns(&'a [i32]),
-}
-
-impl Ids<'_> {
-    pub(super) fn len(&self) -> usize {
-        match self {
-            Ids::External(x) => x.len(),
-            Ids::Columns(x) => x.len(),
-        }
-    }
-}
-
-/// What to do with ids the model doesn't have (never seen, or dropped at
-/// build: no row and no column).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Unknown {
-    Skip,
-    Raise,
-}
-
-/// A per-call availability mask: bitset over one layout's internal ids.
-pub struct ItemMask {
-    pub(super) layout: u64,
-    pub(super) bits: Vec<u64>,
-}
-
 /// Original id → internal id (`EMPTY`: dropped); `new_to_old` must list
 /// distinct ids < `n_cols`.
 pub(super) fn dense_in(new_to_old: &[i32], n_cols: usize) -> Result<Vec<u32>, Error> {
@@ -122,66 +89,43 @@ pub(super) fn dense_in(new_to_old: &[i32], n_cols: usize) -> Result<Vec<u32>, Er
 }
 
 impl Core {
-    pub(super) fn check_mask(&self, m: &ItemMask) -> Result<(), Error> {
-        if m.layout != self.layout {
-            return invalid("allowed mask was built by another model");
+    /// The internal id of a caller's id (an external id, or S's column index
+    /// without them); None for ids the model doesn't have.
+    #[inline]
+    pub(super) fn internal(&self, id: i64) -> Option<u32> {
+        match &self.ext {
+            Some(ext) => ext.get(id),
+            None => match usize::try_from(id).ok().and_then(|c| self.dense_in.get(c)) {
+                Some(&d) if d != EMPTY => Some(d),
+                _ => None,
+            },
         }
-        Ok(())
     }
 
-    /// A per-call mask allowing only `ids` (unknown ids: as `unknown`).
-    pub fn mask(&self, ids: Ids, unknown: Unknown) -> Result<ItemMask, Error> {
-        let mut found = Vec::new();
-        self.lookup_into(ids, None, unknown, &mut found)?;
-        let mut bits = vec![0u64; words(self.n_items())];
-        for (i, _) in found {
-            bits[i as usize / 64] |= 1 << (i % 64);
-        }
-        Ok(ItemMask {
-            layout: self.layout,
-            bits,
-        })
-    }
-
-    /// Appends (internal id, weight) per known id, in input order.
+    /// Appends (internal id, weight) per known id, in input order; ids the
+    /// model doesn't have are skipped.
     pub(super) fn lookup_into(
         &self,
-        ids: Ids,
+        ids: &[i64],
         weights: Option<&[f32]>,
-        unknown: Unknown,
         out: &mut Vec<(u32, f32)>,
-    ) -> Result<(), Error> {
-        let w = |i: usize| weights.map_or(1.0, |w| w[i]);
-        let dense = |id: i64| match usize::try_from(id).ok().and_then(|c| self.dense_in.get(c)) {
-            Some(&d) if d != EMPTY => Some(d),
-            _ => None,
-        };
-        let mut push = |i: usize, id: i64, found: Option<u32>| match found {
-            Some(d) => {
-                out.push((d, w(i)));
-                Ok(())
-            }
-            None if unknown == Unknown::Skip => Ok(()),
-            None => invalid(format!("unknown item id: {id}")),
-        };
-        match (ids, &self.ext) {
-            (Ids::External(ids), Some(ext)) => {
-                for (i, &id) in ids.iter().enumerate() {
-                    push(i, id, ext.get(id))?;
-                }
-            }
-            (Ids::External(ids), None) => {
-                for (i, &id) in ids.iter().enumerate() {
-                    push(i, id, dense(id))?;
-                }
-            }
-            (Ids::Columns(ids), _) => {
-                for (i, &id) in ids.iter().enumerate() {
-                    push(i, i64::from(id), dense(i64::from(id)))?;
-                }
+    ) {
+        for (i, &id) in ids.iter().enumerate() {
+            if let Some(d) = self.internal(id) {
+                out.push((d, weights.map_or(1.0, |w| w[i])));
             }
         }
-        Ok(())
+    }
+
+    /// A bitset over internal ids with the known `ids` set.
+    pub(super) fn bits_of(&self, ids: &[i64]) -> Vec<u64> {
+        let mut bits = vec![0u64; words(self.n_items())];
+        for &id in ids {
+            if let Some(i) = self.internal(id) {
+                bits[i as usize / 64] |= 1 << (i % 64);
+            }
+        }
+        bits
     }
 }
 

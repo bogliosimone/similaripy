@@ -5,9 +5,8 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::ids::{ExtIds, ItemMask, dense_in};
+use super::ids::{ExtIds, dense_in};
 use super::{EMPTY, bit, invalid, words};
 use crate::csr::CsrView;
 use crate::prep::{LEAF_NNZ, canonical_copy, canonical_counts, par_leaves, sort_rows};
@@ -61,9 +60,6 @@ fn is_saved_model(dir: &Path) -> bool {
 /// `Core::from_arrays` (the one check): the unchecked reads in `request`
 /// rely on it, so the fields are visible inside `serve` only.
 pub struct Core {
-    /// Shared by the models of one build (views, `trimmed`: same internal
-    /// ids), so a mask works on all of them and on no other model.
-    pub(super) layout: u64,
     pub(super) indptr: Buf<i32>,
     pub(super) indices: Buf<i32>,
     pub(super) data: Buf<f32>,
@@ -81,8 +77,9 @@ pub struct Core {
 }
 
 /// A prepared model: a shared `Core` plus an optional default availability
-/// mask (`view`), ANDed with a per-call mask. Immutable: to change the mask,
-/// make a new view and swap the reference (in-flight requests keep theirs).
+/// mask (`view`), ANDed with a request's include / exclude. Immutable: to
+/// change the mask, make a new view and swap the reference (in-flight
+/// requests keep theirs).
 pub struct Model {
     pub(super) core: Arc<Core>,
     /// Bitset over internal ids; None = all allowed.
@@ -134,11 +131,6 @@ pub struct Parts<'a> {
     /// Bitset over internal ids, None = all allowed.
     pub allowed: Option<&'a [u64]>,
     pub block_size: BlockSize,
-}
-
-fn next_layout() -> u64 {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 impl Model {
@@ -224,7 +216,6 @@ impl Model {
         );
         drop(dense_in);
         let core = Core::from_arrays(
-            next_layout(),
             indptr.into(),
             indices.into(),
             data.into(),
@@ -240,7 +231,6 @@ impl Model {
     }
 
     /// A model from `parts` (pickling, loading), checked as a build's output.
-    /// A new build for masks: masks of the original are rejected.
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         indptr: Vec<i32>,
@@ -253,7 +243,6 @@ impl Model {
         block_size: BlockSize,
     ) -> Result<Self, Error> {
         let core = Core::from_arrays(
-            next_layout(),
             indptr.into(),
             indices.into(),
             data.into(),
@@ -323,7 +312,7 @@ impl Model {
     /// mapped (`mmap`: the arrays stay in the page cache, shared by every
     /// process that maps them; the files must not change meanwhile) or read
     /// into memory, and checked as a build's output (O(nnz), which also pages
-    /// in a mapped S). A new build for masks. A corrupted file is an error,
+    /// in a mapped S). A corrupted file is an error,
     /// never an out-of-bounds read; resource exhaustion (a `meta.json` asking
     /// for billions of items) is not guarded: load files you trust.
     pub fn load(dir: &Path, mmap: bool) -> Result<Self, Error> {
@@ -381,7 +370,6 @@ impl Model {
             .then(|| store::read::<u64>(dir, "allowed", false).map(Buf::into_vec))
             .transpose()?;
         let core = Core::from_arrays(
-            next_layout(),
             store::read(dir, "indptr", mmap)?,
             store::read(dir, "indices", mmap)?,
             store::read(dir, "data", mmap)?,
@@ -405,27 +393,35 @@ impl Model {
         })
     }
 
-    /// The same model (S shared, no copy) with `allowed` as its default
-    /// mask (None: all allowed). A view of a view replaces the mask, it
-    /// doesn't narrow it.
-    pub fn view(&self, allowed: Option<&ItemMask>) -> Result<Self, Error> {
-        if let Some(m) = allowed {
-            self.check_mask(m)?;
-        }
-        Ok(Self {
+    /// The same model (S shared, no copy) whose default mask allows the
+    /// `include` ids (None: all) minus the `exclude` ids (None: none). A view
+    /// of a view replaces the mask, it doesn't narrow it. Unknown ids are
+    /// ignored.
+    pub fn view(&self, include: Option<&[i64]>, exclude: Option<&[i64]>) -> Self {
+        let allowed = (include.is_some() || exclude.is_some()).then(|| {
+            let mut bits = match include {
+                Some(ids) => self.bits_of(ids),
+                None => vec![u64::MAX; words(self.n_items())],
+            };
+            for (b, x) in bits.iter_mut().zip(self.bits_of(exclude.unwrap_or(&[]))) {
+                *b &= !x;
+            }
+            bits
+        });
+        Self {
             core: Arc::clone(&self.core),
-            allowed: allowed.map(|m| m.bits.clone()),
-        })
+            allowed,
+        }
     }
 
-    /// A model whose S keeps only the `allowed` items' columns (S · diag(m),
-    /// a copy): they can never be recommended, and their entries cost no
-    /// memory or work. Rows, layout and ids unchanged, so masks keep working;
-    /// rows of hidden items still count (their history signal stays). The
-    /// default mask is kept.
-    pub fn trimmed(&self, allowed: &ItemMask) -> Result<Self, Error> {
+    /// A model whose S keeps only the `candidates`' columns (S · diag(m), a
+    /// copy): the others can never be recommended, and their entries cost no
+    /// memory or work. Rows, layout and ids unchanged (rows of the other
+    /// items still count: their history signal stays). Unknown ids are
+    /// ignored; the default mask is kept.
+    pub fn trimmed(&self, candidates: &[i64]) -> Result<Self, Error> {
         Ok(Self {
-            core: Arc::new(self.core.trimmed(allowed)?),
+            core: Arc::new(self.core.trimmed(&self.bits_of(candidates))?),
             allowed: self.allowed.clone(),
         })
     }
@@ -450,7 +446,6 @@ impl Core {
     /// finite values. O(nnz).
     #[allow(clippy::too_many_arguments)]
     fn from_arrays(
-        layout: u64,
         indptr: Buf<i32>,
         indices: Buf<i32>,
         data: Buf<f32>,
@@ -484,7 +479,6 @@ impl Core {
         let n_active = ix.iter().max().map_or(0, |&c| c as usize + 1);
         let ext = ext.map(|e| ExtIds::new(e, &new_to_old)).transpose()?;
         Ok(Self {
-            layout,
             indptr,
             indices,
             data,
@@ -497,8 +491,7 @@ impl Core {
         })
     }
 
-    fn trimmed(&self, allowed: &ItemMask) -> Result<Self, Error> {
-        self.check_mask(allowed)?;
+    fn trimmed(&self, allowed: &[u64]) -> Result<Self, Error> {
         let (ip, ix, d): (&[i32], &[i32], &[f32]) = (&self.indptr, &self.indices, &self.data);
         let mut indptr = Vec::with_capacity(ip.len());
         indptr.push(0i32);
@@ -506,8 +499,8 @@ impl Core {
         for w in ip.windows(2) {
             for p in w[0] as usize..w[1] as usize {
                 let c = ix[p];
-                // SAFETY: c < n_items, the mask's size (same layout).
-                if unsafe { bit(&allowed.bits, c as usize) } {
+                // SAFETY: c < n_items, the mask's size (`bits_of`).
+                if unsafe { bit(allowed, c as usize) } {
                     indices.push(c);
                     data.push(d[p]);
                 }
@@ -515,7 +508,6 @@ impl Core {
             indptr.push(indices.len() as i32);
         }
         Self::from_arrays(
-            self.layout,
             indptr.into(),
             indices.into(),
             data.into(),
@@ -531,9 +523,15 @@ impl Core {
         self.new_to_old.len()
     }
 
-    /// S's original item count (columns of batch histories).
+    /// S's original item count (the caller's items).
     pub fn n_cols(&self) -> usize {
         self.dense_in.len()
+    }
+
+    /// The external id per original item; None: the ids are S's column
+    /// indices.
+    pub fn item_ids(&self) -> Option<&[i64]> {
+        self.ext.as_ref().map(|e| &e.by_col[..])
     }
 
     /// Columns with entries: the accumulator length.

@@ -1,12 +1,12 @@
 //! Property tests: serving against a naive dense f64 reference. Small
 //! integers keep every sum exact, so results must match exactly; float values
-//! check the bit-identity claims (batch == single for any block size, baked
-//! mask == per-call mask, history order doesn't matter).
+//! check the bit-identity claims (batch == single for any block size, a
+//! trimmed S == a view == a per-call include, history order doesn't matter).
 
 use proptest::prelude::*;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{
-    BlockSize, Ids, ItemMask, Model, Request, Unknown, recommend, recommend_batch,
+    BatchRequest, BlockSize, Lists, Model, Request, recommend, recommend_batch,
 };
 
 #[derive(Debug, Clone)]
@@ -22,8 +22,11 @@ struct Case {
     weights: Option<Vec<f32>>,
     k: usize,
     exclude_seen: bool,
-    /// Allowed flag per original id.
+    /// Include flag per original id (None = no include rule).
     allowed: Option<Vec<bool>>,
+    /// Exclude flag per original id.
+    excluded: Option<Vec<bool>>,
+    sorted: bool,
 }
 
 struct Csr {
@@ -148,13 +151,14 @@ fn ids(c: &Case) -> Vec<i64> {
         .collect()
 }
 
-fn mask(c: &Case, m: &Model) -> Option<ItemMask> {
-    c.allowed.as_ref().map(|a| {
-        let ids: Vec<i64> = (0..a.len())
+/// The ids whose flag is set, plus an id no item has (ignored).
+fn flagged(c: &Case, flags: &Option<Vec<bool>>) -> Option<Vec<i64>> {
+    flags.as_ref().map(|a| {
+        (0..a.len())
             .filter(|&j| a[j])
             .map(|j| ext_of(c, j))
-            .collect();
-        m.mask(Ids::External(&ids), Unknown::Skip).unwrap()
+            .chain([unknown_id(c)])
+            .collect()
     })
 }
 
@@ -194,9 +198,23 @@ fn case(float: bool) -> impl Strategy<Value = Case> {
             0..n + 2,
             prop::bool::ANY,
             prop::option::of(prop::collection::vec(prop::bool::weighted(0.6), n)),
+            prop::option::of(prop::collection::vec(prop::bool::weighted(0.2), n)),
+            prop::bool::weighted(0.8),
         )
             .prop_map(
-                move |(mut s, kind, order, identity, hist, w, k, exclude_seen, allowed)| {
+                move |(
+                    mut s,
+                    kind,
+                    order,
+                    identity,
+                    hist,
+                    w,
+                    k,
+                    exclude_seen,
+                    allowed,
+                    excluded,
+                    sorted,
+                )| {
                     for (i, &t) in kind.iter().enumerate() {
                         for row in &mut s {
                             if t >= 1 {
@@ -238,6 +256,8 @@ fn case(float: bool) -> impl Strategy<Value = Case> {
                         k,
                         exclude_seen,
                         allowed,
+                        excluded,
+                        sorted,
                     }
                 },
             )
@@ -247,30 +267,50 @@ fn case(float: bool) -> impl Strategy<Value = Case> {
 fn req<'a>(
     c: &'a Case,
     ids: &'a [i64],
-    allowed: Option<&'a ItemMask>,
-    unknown: Unknown,
+    include: Option<&'a [i64]>,
+    exclude: Option<&'a [i64]>,
 ) -> Request<'a> {
     Request {
-        ids: Ids::External(ids),
+        ids,
         weights: c.weights.as_deref(),
         k: c.k,
         exclude_seen: c.exclude_seen,
-        allowed,
-        unknown,
+        include,
+        exclude,
+        sorted: c.sorted,
     }
 }
 
-fn run(c: &Case, m: &Model) -> (Vec<i64>, Vec<f32>) {
-    let (ids, allowed) = (ids(c), mask(c, m));
+fn go(
+    c: &Case,
+    m: &Model,
+    include: Option<&[i64]>,
+    exclude: Option<&[i64]>,
+) -> (Vec<i64>, Vec<f32>) {
+    let ids = ids(c);
     let mut out = (vec![], vec![]);
-    recommend(
-        m,
-        &req(c, &ids, allowed.as_ref(), Unknown::Skip),
-        &mut out.0,
-        &mut out.1,
-    )
-    .unwrap();
+    recommend(m, &req(c, &ids, include, exclude), &mut out.0, &mut out.1).unwrap();
     out
+}
+
+fn run(c: &Case, m: &Model) -> (Vec<i64>, Vec<f32>) {
+    let (inc, exc) = (flagged(c, &c.allowed), flagged(c, &c.excluded));
+    go(c, m, inc.as_deref(), exc.as_deref())
+}
+
+/// Unsorted results in the sorted order (ties as `reference`: by position).
+fn by_score(
+    c: &Case,
+    out: (Vec<i64>, Vec<f32>),
+    want: &(Vec<i64>, Vec<f32>),
+) -> (Vec<i64>, Vec<f32>) {
+    if c.sorted {
+        return out;
+    }
+    let mut pairs: Vec<(i64, f32)> = out.0.into_iter().zip(out.1).collect();
+    let pos = |id: i64| want.0.iter().position(|&w| w == id).unwrap_or(usize::MAX);
+    pairs.sort_by_key(|&(id, _)| pos(id));
+    pairs.into_iter().unzip()
 }
 
 /// Top k of score = h · S (> 0) over the original ids; ties: lower internal id.
@@ -297,7 +337,10 @@ fn reference(c: &Case) -> (Vec<i64>, Vec<f32>) {
             )
         })
         .filter(|&(j, s)| {
-            s > 0.0 && !(c.exclude_seen && seen[j]) && c.allowed.as_ref().is_none_or(|a| a[j])
+            s > 0.0
+                && !(c.exclude_seen && seen[j])
+                && c.allowed.as_ref().is_none_or(|a| a[j])
+                && !c.excluded.as_ref().is_some_and(|x| x[j])
         })
         .collect();
     cand.sort_by(|a, b| b.1.total_cmp(&a.1).then(internal(a.0).cmp(&internal(b.0))));
@@ -318,47 +361,40 @@ proptest! {
     #[test]
     fn matches_reference(c in case(false)) {
         let m = model(&c);
-        prop_assert_eq!(run(&c, &m), reference(&c));
-        // unknown='raise' fails exactly when an id is unknown (never seen or dropped).
-        let ids = ids(&c);
-        let any_unknown = c.hist.iter().any(|h| h.is_none_or(|i| !kept(&c, i)));
-        let mut out = (vec![], vec![]);
-        let r = recommend(&m, &req(&c, &ids, None, Unknown::Raise), &mut out.0, &mut out.1);
-        prop_assert_eq!(r.is_err(), any_unknown);
+        let want = reference(&c);
+        prop_assert_eq!(by_score(&c, run(&c, &m), &want), want);
     }
 
     #[test]
-    fn bits_batch_blocks_baked_mask_and_order(c in case(true), block in 0usize..6) {
+    fn bits_batch_blocks_views_and_order(c in case(true), block in 0usize..6) {
+        let c = Case { sorted: true, ..c };
         let m = model(&c);
         let want = run(&c, &m);
-        // Trimmed S and a view's default mask == the per-call mask, bit for
-        // bit (same layout); view + per-call mask == the per-call AND.
-        if let Some(a) = mask(&c, &m) {
-            let ids = ids(&c);
-            let go = |model: &Model, allowed: Option<&ItemMask>| {
-                let mut out = (vec![], vec![]);
-                recommend(model, &req(&c, &ids, allowed, Unknown::Skip), &mut out.0, &mut out.1).unwrap();
-                out
-            };
-            let trimmed = m.trimmed(&a).unwrap();
-            let view = m.view(Some(&a)).unwrap();
-            for got in [go(&trimmed, None), go(&view, None), go(&trimmed, Some(&a)), go(&view, Some(&a))] {
+        let (inc, exc) = (flagged(&c, &c.allowed), flagged(&c, &c.excluded));
+        // A trimmed S and a view == the per-call include / exclude, bit for
+        // bit; view + per-call include == the per-call AND.
+        if let Some(inc) = &inc {
+            let trimmed = m.trimmed(inc).unwrap();
+            let view = m.view(Some(inc), exc.as_deref());
+            for got in [
+                go(&c, &trimmed, None, exc.as_deref()),
+                go(&c, &view, None, None),
+                go(&c, &trimmed, Some(inc), exc.as_deref()),
+                go(&c, &view, Some(inc), exc.as_deref()),
+            ] {
                 prop_assert_eq!(&got.0, &want.0);
                 prop_assert_eq!(bits(&got.1), bits(&want.1));
             }
-            // A view of a view replaces the mask: None widens back to all.
-            let wide = go(&view.view(None).unwrap(), None);
-            prop_assert_eq!(&wide.0, &go(&m, None).0);
-            // Default mask a AND per-call mask "even original ids".
+            // A view of a view replaces the rules: no rules = all.
+            prop_assert_eq!(&go(&c, &view.view(None, None), None, None).0, &go(&c, &m, None, None).0);
+            // View's include AND the per-call include "even original ids".
             let even: Vec<i64> = (0..c.s.len()).filter(|j| j % 2 == 0).map(|j| ext_of(&c, j)).collect();
             let both: Vec<i64> = (0..c.s.len())
                 .filter(|&j| j % 2 == 0 && c.allowed.as_ref().is_some_and(|al| al[j]))
                 .map(|j| ext_of(&c, j))
                 .collect();
-            let b = m.mask(Ids::External(&even), Unknown::Skip).unwrap();
-            let ab = m.mask(Ids::External(&both), Unknown::Skip).unwrap();
-            let got = go(&view, Some(&b));
-            let and = go(&m, Some(&ab));
+            let got = go(&c, &view, Some(&even), None);
+            let and = go(&c, &m, Some(&both), exc.as_deref());
             prop_assert_eq!(&got.0, &and.0);
             prop_assert_eq!(bits(&got.1), bits(&and.1));
         }
@@ -369,29 +405,36 @@ proptest! {
             prop_assert_eq!(&run(&d, &m).0, &want.0);
             prop_assert_eq!(bits(&run(&d, &m).1), bits(&want.1));
         }
-        // Batch of two copies (columns of S, known ids only) == single, any block size.
-        let hist: Vec<i32> = c.hist.iter().flatten().map(|&i| i as i32).collect();
-        let w: Option<Vec<f32>> = c.weights.as_ref().map(|w| {
-            c.hist.iter().zip(w).filter(|(h, _)| h.is_some()).map(|(_, &x)| x).collect()
-        });
-        let single = {
-            let c2 = Case { hist: c.hist.iter().copied().filter(Option::is_some).collect(), weights: w.clone(), ..c.clone() };
-            run(&c2, &m)
-        };
-        let both: Vec<i32> = hist.iter().chain(&hist).copied().collect();
-        let w2 = w.as_ref().map(|w| w.iter().chain(w).copied().collect::<Vec<_>>());
-        let n = hist.len() as i64;
-        // On a model with column blocks: same bits as the one-block single path.
+        // Batch of [history, empty, history] == single, any block size; the
+        // middle user has no include rule (`no_include`) and no history.
+        let ids = ids(&c);
+        let n = ids.len() as i64;
+        let both: Vec<i64> = ids.iter().chain(&ids).copied().collect();
+        let w2 = c.weights.as_ref().map(|w| w.iter().chain(w).copied().collect::<Vec<_>>());
         let mb = build_blocked(&c.s, &c.new_to_old, c.ext.as_deref(), block).unwrap();
-        let allowed = mask(&c, &mb);
-        let (bp, bc, bs) = recommend_batch(&mb, &[0, n, 2 * n], &both, w2.as_deref(), c.k, c.exclude_seen, allowed.as_ref()).unwrap();
-        let l = single.0.len();
-        prop_assert_eq!(bp, vec![0, l as i64, 2 * l as i64]);
-        let as_ext: Vec<i64> = bc.iter().map(|&j| ext_of(&c, j as usize)).collect();
-        prop_assert_eq!(&as_ext[..l], &single.0[..]);
-        prop_assert_eq!(&as_ext[l..], &single.0[..]);
-        prop_assert_eq!(bits(&bs[..l]), bits(&single.1));
-        prop_assert_eq!(bits(&bs[l..]), bits(&single.1));
+        let per_user = |l: &Option<Vec<i64>>| {
+            l.as_ref().map(|l| {
+                let k = l.len() as i64;
+                (vec![0, k, k, 2 * k], l.iter().chain(l).copied().collect::<Vec<_>>())
+            })
+        };
+        let (pi, pe) = (per_user(&inc), per_user(&exc));
+        let (o, got_ids, got_scores) = recommend_batch(&mb, &BatchRequest {
+            histories: Lists { offsets: &[0, n, n, 2 * n], ids: &both },
+            weights: w2.as_deref(),
+            k: c.k,
+            exclude_seen: c.exclude_seen,
+            include: pi.as_ref().map(|(o, i)| Lists { offsets: o, ids: i }),
+            no_include: inc.as_ref().map(|_| &[false, true, false][..]),
+            exclude: pe.as_ref().map(|(o, i)| Lists { offsets: o, ids: i }),
+            sorted: true,
+        }).unwrap();
+        let l = want.0.len();
+        prop_assert_eq!(o, vec![0, l as i64, l as i64, 2 * l as i64]);
+        prop_assert_eq!(&got_ids[..l], &want.0[..]);
+        prop_assert_eq!(&got_ids[l..], &want.0[..]);
+        prop_assert_eq!(bits(&got_scores[..l]), bits(&want.1));
+        prop_assert_eq!(bits(&got_scores[l..]), bits(&want.1));
     }
 
     // `new` on S as a caller may give it == the canonical S in popularity
@@ -408,11 +451,11 @@ proptest! {
         prop_assert_eq!(p.ext, q.ext);
         let c2 = Case { new_to_old: popularity(&c.s), ..c.clone() };
         let got = run(&c2, &m);
-        let view = match mask(&c2, &m) { Some(a) => m.view(Some(&a)).unwrap(), None => m.view(None).unwrap() };
+        let view = m.view(flagged(&c2, &c2.allowed).as_deref(), flagged(&c2, &c2.excluded).as_deref());
         let back = from_own_parts(&view);
         prop_assert_eq!(back.parts().allowed, view.parts().allowed);
         prop_assert_eq!(back.parts().block_size, BlockSize::Auto);
-        let again = run(&Case { allowed: None, ..c2.clone() }, &back);
+        let again = run(&Case { allowed: None, excluded: None, ..c2.clone() }, &back);
         prop_assert_eq!(&again.0, &got.0);
         prop_assert_eq!(bits(&again.1), bits(&got.1));
     }
@@ -432,45 +475,75 @@ fn rejects_bad_input() {
         let mut out = (vec![], vec![]);
         recommend(&m, r, &mut out.0, &mut out.1).map(|()| out)
     };
-    let r = |ids, w, a, u| Request {
-        ids: Ids::External(ids),
+    let r = |ids, w| Request {
+        ids,
         weights: w,
         k: 5,
         exclude_seen: true,
-        allowed: a,
-        unknown: u,
+        include: None,
+        exclude: None,
+        sorted: true,
     };
-    assert!(run(&r(&[0], Some(&[f32::NAN]), None, Unknown::Skip)).is_err());
-    assert!(run(&r(&[0], Some(&[1.0, 2.0]), None, Unknown::Skip)).is_err());
-    assert!(run(&r(&[2], None, None, Unknown::Raise)).is_err()); // dropped = unknown
+    assert!(run(&r(&[0], Some(&[f32::NAN]))).is_err());
+    assert!(run(&r(&[0], Some(&[1.0, 2.0]))).is_err());
+    // Unknown ids (never seen, or dropped: item 2) are ignored, everywhere.
     assert_eq!(
-        run(&r(&[0, 2, -4, 99], None, None, Unknown::Skip)).unwrap(),
+        run(&r(&[0, 2, -4, 99], None)).unwrap(),
         (vec![1], vec![1.0])
     );
-    // A mask from another build of the same S: other layout.
-    let other = build(&s, &[1, 0], None)
-        .unwrap()
-        .mask(Ids::External(&[1]), Unknown::Skip)
-        .unwrap();
-    assert!(run(&r(&[0], None, Some(&other), Unknown::Skip)).is_err());
-    assert!(m.trimmed(&other).is_err());
-    assert!(m.view(Some(&other)).is_err());
-    let own = m.mask(Ids::External(&[1]), Unknown::Skip).unwrap();
+    let inc = Request {
+        include: Some(&[1, 2, 99]),
+        exclude: Some(&[2, -1]),
+        ..r(&[0], None)
+    };
+    assert_eq!(run(&inc).unwrap(), (vec![1], vec![1.0]));
     assert_eq!(
-        run(&r(&[0], None, Some(&own), Unknown::Skip)).unwrap(),
-        (vec![1], vec![1.0])
+        run(&Request {
+            include: Some(&[]),
+            ..r(&[0], None)
+        })
+        .unwrap(),
+        (vec![], vec![])
+    );
+    assert_eq!(
+        run(&Request {
+            exclude: Some(&[1]),
+            ..r(&[0], None)
+        })
+        .unwrap(),
+        (vec![], vec![])
     );
     // A huge k is clamped before anything is allocated.
     let big = Request {
         k: usize::MAX / 2,
-        ..r(&[0], None, None, Unknown::Skip)
+        ..r(&[0], None)
     };
     assert_eq!(run(&big).unwrap(), (vec![1], vec![1.0]));
-    let (bp, bc, _) = recommend_batch(&m, &[0, 1], &[0], None, usize::MAX / 2, true, None).unwrap();
-    assert_eq!((bp, bc), (vec![0, 1], vec![1]));
-    // Batch: out-of-range columns and a bad CSR are errors.
-    assert!(recommend_batch(&m, &[0, 1], &[3], None, 1, true, None).is_err());
-    assert!(recommend_batch(&m, &[0, 2], &[0], None, 1, true, None).is_err());
+    let batch = |offsets: &[i64], ids: &[i64], weights: Option<&[f32]>| {
+        recommend_batch(
+            &m,
+            &BatchRequest {
+                histories: Lists { offsets, ids },
+                weights,
+                k: usize::MAX / 2,
+                exclude_seen: true,
+                include: None,
+                no_include: None,
+                exclude: None,
+                sorted: true,
+            },
+        )
+    };
+    assert_eq!(
+        batch(&[0, 1], &[0], None).unwrap(),
+        (vec![0, 1], vec![1], vec![1.0])
+    );
+    assert_eq!(batch(&[0], &[], None).unwrap(), (vec![0], vec![], vec![]));
+    // Batch structure: offsets must cover the ids, weights align with them.
+    assert!(batch(&[0, 2], &[0], None).is_err());
+    assert!(batch(&[1, 1], &[0], None).is_err());
+    assert!(batch(&[], &[], None).is_err());
+    assert!(batch(&[0, 1], &[0], Some(&[1.0, 2.0])).is_err());
 }
 
 /// Owned parts of a model, to corrupt one field at a time.
@@ -525,8 +598,7 @@ fn from_parts_checks_every_invariant() {
         vec![0.0; 4],
     ];
     let m = build(&s, &[1, 0, 2], Some(&[10, 11, 12, 13])).unwrap();
-    let a = m.mask(Ids::External(&[11]), Unknown::Skip).unwrap();
-    let good = Owned::of(&m.view(Some(&a)).unwrap());
+    let good = Owned::of(&m.view(Some(&[11]), None));
     assert!(good.clone().load().is_ok());
     assert_eq!(good.indptr, vec![0, 1, 3, 4]); // row of item 0 = internal 1
     let bad = |f: &dyn Fn(&mut Owned)| {
@@ -580,22 +652,19 @@ fn save_load_round_trip_overwrite_and_versions() {
         vec![0.0; 4],
     ];
     let m = build_blocked(&s, &[1, 0, 2], Some(&[10, 11, 12, 13]), 2).unwrap();
-    let v = m
-        .view(Some(
-            &m.mask(Ids::External(&[11, 12]), Unknown::Skip).unwrap(),
-        ))
-        .unwrap();
+    let v = m.view(Some(&[11, 12]), None);
     let dir = tmp("model");
     v.save(&dir, "test", false).unwrap();
     let rec = |m: &Model| {
         let mut out = (vec![], vec![]);
         let r = Request {
-            ids: Ids::External(&[10]),
+            ids: &[10],
             weights: None,
             k: 5,
             exclude_seen: true,
-            allowed: None,
-            unknown: Unknown::Raise,
+            include: None,
+            exclude: None,
+            sorted: true,
         };
         recommend(m, &r, &mut out.0, &mut out.1).unwrap();
         out
@@ -606,9 +675,7 @@ fn save_load_round_trip_overwrite_and_versions() {
         assert_eq!(Owned::of(&back), Owned::of(&v));
         assert_eq!(rec(&back), rec(&v));
         // a trimmed model of a mapped one (shared mapped arrays, owned S)
-        let t = back
-            .trimmed(&back.mask(Ids::External(&[11]), Unknown::Skip).unwrap())
-            .unwrap();
+        let t = back.trimmed(&[11]).unwrap();
         assert_eq!(Owned::of(&t).new_to_old, vec![1, 0, 2]);
     }
     // never into a non-empty directory unless it holds a saved model and overwrite
