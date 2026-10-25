@@ -14,11 +14,11 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.2583851.svg)](https://doi.org/10.5281/zenodo.2583851)
 
 
-High-performance KNN similarity functions in Python, optimized for sparse matrices, and an engine to serve item-item recommendations.
+SimilariPy is a high-performance Python package, built in Rust, to compute KNN similarity matrices from sparse data and serve them with low latency.
+
+It also includes normalization functions to pre-process the data.
 
 SimilariPy is primarily designed for Recommender Systems and Information Retrieval (IR) tasks, but can be applied to other domains as well.
-
-The package also includes a set of normalization functions useful for pre-processing data before the similarity computation.
 
 The official documentations is available at **[📘 SimilariPy Guide](https://bogliosimone.github.io/similaripy/)**
 
@@ -29,51 +29,50 @@ All functions run in a multi-threaded Rust core, GIL-free, on sparse CSR matrice
 
 ### Core 
 
-- **Dot Product** – Simple raw inner product between vectors.
-- **Cosine** – Normalized dot product based on L2 norm.
-- **Asymmetric Cosine** – Skewed cosine similarity using an `alpha` parameter.
-- **Jaccard**, **Dice**, **Tversky** – Set-based generalized similarities.
+- **Dot Product**: Simple raw inner product between vectors.
+- **Cosine**, **Asymmetric Cosine**: Normalized dot product, symmetric or skewed by `alpha`.
+- **Jaccard**, **Dice**, **Tversky**: Set-based generalized similarities.
 
 ### Graph-Based
 
-- **P3α** – Graph-based similarity computed through random walk propagation with exponentiation.
-- **RP3β** – Similar to P3α but includes popularity penalization using a `beta` parameter.
+- **P3α**: Graph-based similarity computed through random walk propagation with exponentiation.
+- **RP3β**: Similar to P3α but includes popularity penalization using a `beta` parameter.
 
 ### Advanced 
 
-- **S-Plus** – A hybrid model combining Tversky and Cosine components, with full control over weights and smoothing.
+- **S-Plus**: A hybrid model combining Tversky and Cosine components, with full control over weights and smoothing.
 
 For mathematical definitions and parameter details, see the **[📘 SimilariPy Guide](https://bogliosimone.github.io/similaripy/)**.
+
+## 🛎️ Serving
+
+The serving engine runs item-based KNN models online, in your own item ids:
+
+- **Fast**: recommendations in tens to hundreds of microseconds, GIL-free; many users in parallel.
+- **Multi-process**: save once, load memory-mapped in every worker: one copy of the model for all of them.
+- **Availability rules**: include or exclude items for all requests, per group (e.g. a country, then a package) or per request.
+
+See **[Serving](https://bogliosimone.github.io/similaripy/serving/)**.
 
 ## 🧮 Normalization Functions
 
 SimilariPy provides a suite of normalization functions for sparse matrix pre-processing.  
-All functions return a new canonical CSR matrix (multi-threaded Rust core); the input never changes.
+All functions run in a multi-threaded Rust core, GIL-free, and return a new CSR matrix: the input never changes.
 
-- **L1, L2** – Applies row- or column-wise normalization.
-- **TF-IDF** – Computes TF-IDF weighting with customizable term-frequency and IDF modes.
-- **BM25** – Applies classic BM25 weighting used in information retrieval.
-- **BM25+** – Variant of BM25 with additive smoothing for low-frequency terms.
+- **L1, L2**: Applies row- or column-wise normalization.
+- **TF-IDF**: Computes TF-IDF weighting with customizable term-frequency and IDF modes.
+- **BM25**: Applies classic BM25 weighting used in information retrieval.
+- **BM25+**: Variant of BM25 with additive smoothing for low-frequency terms.
 
 For more details, check the **[📘 SimilariPy Guide](https://bogliosimone.github.io/similaripy/)**.
-
-## 🛎️ Serving
-
-`similaripy.serving.ItemKNN` serves an item-item model online, in your own item ids:
-
-- **Fast** – the top-k items of a history in tens to hundreds of microseconds, GIL-free; many histories in parallel.
-- **Multi-process** – save once, load memory-mapped in every worker: one copy of the model for all of them.
-- **Availability rules** – include or exclude items for all requests (a view) or per request.
-
-See **[Serving](https://bogliosimone.github.io/similaripy/serving/)**.
 
 ## ⚡ Performance
 
 SimilariPy is built for speed on large sparse matrices:
 
-- **Rust + rayon** — multi-threaded, GIL-free computation compiled to native code
-- **Gustavson's sparse product + cache blocking** — row-wise products with a dense accumulator, tiled by columns (most popular first) to stay in the CPU cache
-- **Memory-efficient** — float32 precision, pre-allocated buffers, top-K heap filtering
+- **Rust + rayon**: multi-threaded, GIL-free computation compiled to native code
+- **Gustavson's sparse product + cache blocking**: row-wise products with a dense accumulator, tiled by columns (most popular first) to stay in the CPU cache
+- **Memory-efficient**: float32 precision, pre-allocated buffers, top-K heap filtering
 
 
 ## 🚀 Getting Started
@@ -94,12 +93,17 @@ urm = sim.normalization.bm25(urm)
 # Train an item-item cosine similarity model
 similarity_matrix = sim.cosine(urm.T, k=50, verbose=True)  # verbose: progress bar
 
-# Serve it: the top 100 items for users 1, 14 and 8, already-seen items excluded
+# Build the serving model
 model = ItemKNN(similarity_matrix.T)
-users = [1, 14, 8]
-histories = [urm[[u]].indices for u in users]
-weights = [urm[[u]].data for u in users]
-ids, scores = model.recommend_batch(histories, weights=weights, k=100)
+
+# Offline: the top 10 items for a few test users (e.g. to evaluate them), already-seen items excluded
+test_users = [1, 14, 8]
+histories = [urm[[u]].indices for u in test_users]
+weights = [urm[[u]].data for u in test_users]
+ids, scores = model.recommend_batch(histories, weights=weights, k=10)
+
+# Online: a new user, from the items they interacted with (no retraining)
+ids, scores = model.recommend([3, 17, 256], k=10)
 ```
 
 For a more in-depth, end-to-end example with SimilariPy, see the notebook:
@@ -113,7 +117,7 @@ SimilariPy can be installed from PyPI with:
 pip install similaripy
 ```
 
-Pre-built wheels are available for Python 3.11–3.15 on:
+Pre-built wheels are available for Python 3.11 to 3.15 on:
 
 - Linux x86_64 and aarch64 (glibc 2.28+, or musl 1.2+ e.g. Alpine)
 - macOS 12+ (Apple Silicon) and 10.15+ (Intel)
