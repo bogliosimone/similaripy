@@ -53,4 +53,5 @@ clean:
 
 .PHONY: docs
 docs:
+	rm -rf .cache  # zensical caches API pages by their .md, not the docstrings
 	uv run --only-group docs zensical serve
