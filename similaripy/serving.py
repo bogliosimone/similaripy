@@ -182,7 +182,8 @@ class ItemKNN:
         (None = all) minus the `exclude` items. S is shared (no copy), only a
         bitset of one bit per item is new, so it is cheap to change often.
         Combined with the per-call `include` / `exclude` by AND. A view of a
-        view replaces both rules (`view()` = no rules).
+        view narrows: the parent's rules AND the new ones (e.g. a country
+        view, then a package view of it); to widen, start from the base model.
 
         To update availability in a running service, build the new view and
         swap the reference; requests in flight keep the model they started

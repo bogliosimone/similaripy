@@ -395,10 +395,12 @@ impl Model {
 
     /// The same model (S shared, no copy) whose default mask allows the
     /// `include` ids (None: all) minus the `exclude` ids (None: none). A view
-    /// of a view replaces the mask, it doesn't narrow it. Unknown ids are
-    /// ignored.
+    /// of a view narrows: its mask is the parent's AND the new rules (to
+    /// widen, start from the base model). Unknown ids are ignored.
     pub fn view(&self, include: Option<&[i64]>, exclude: Option<&[i64]>) -> Self {
-        let allowed = (include.is_some() || exclude.is_some()).then(|| {
+        let allowed = if include.is_none() && exclude.is_none() {
+            self.allowed.clone()
+        } else {
             let mut bits = match include {
                 Some(ids) => self.bits_of(ids),
                 None => vec![u64::MAX; words(self.n_items())],
@@ -406,8 +408,13 @@ impl Model {
             for (b, x) in bits.iter_mut().zip(self.bits_of(exclude.unwrap_or(&[]))) {
                 *b &= !x;
             }
-            bits
-        });
+            if let Some(parent) = &self.allowed {
+                for (b, p) in bits.iter_mut().zip(parent) {
+                    *b &= p;
+                }
+            }
+            Some(bits)
+        };
         Self {
             core: Arc::clone(&self.core),
             allowed,

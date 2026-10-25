@@ -209,10 +209,20 @@ def test_view_include_exclude_and_per_call():
     # view include AND per-call include, minus per-call exclude
     got = va.recommend(hist, k=60, exclude_seen=False, include=b, exclude=[12])[0]
     assert list(got) == [i for i in full if i % 6 == 0 and i != 12]
-    # a view's exclude, and a view of a view replaces both rules
-    vx = va.view(exclude=b)
-    assert list(vx.recommend(hist, k=60, exclude_seen=False)[0]) == [i for i in full if i % 3]
-    assert list(vx.view().recommend(hist, k=60, exclude_seen=False)[0]) == full
+    # a view's exclude
+    assert list(rec.view(exclude=b).recommend(hist, k=60, exclude_seen=False)[0]) == [i for i in full if i % 3]
+    # a view of a view narrows (the parent's rules AND the new ones), view() keeps them
+    country = rec.view(include=range(30), exclude=[4])
+    package = country.view(include=range(10, 60, 2))
+    assert list(package.recommend(hist, k=60, exclude_seen=False)[0]) == [
+        i for i in full if 10 <= i < 30 and i % 2 == 0
+    ]
+    assert list(package.view(exclude=[12]).recommend(hist, k=60, exclude_seen=False)[0]) == [
+        i for i in full if 10 <= i < 30 and i % 2 == 0 and i != 12
+    ]
+    assert list(country.view().recommend(hist, k=60, exclude_seen=False)[0]) == [i for i in full if i < 30 and i != 4]
+    # to widen, start from the base model
+    assert list(rec.view().recommend(hist, k=60, exclude_seen=False)[0]) == full
     # candidate_items trims for good: a view can't widen past it
     trimmed = ItemKNN(S, candidate_items=a)
     assert set(trimmed.view().recommend(hist, k=60, exclude_seen=False)[0]) <= set(a)

@@ -385,8 +385,14 @@ proptest! {
                 prop_assert_eq!(&got.0, &want.0);
                 prop_assert_eq!(bits(&got.1), bits(&want.1));
             }
-            // A view of a view replaces the rules: no rules = all.
-            prop_assert_eq!(&go(&c, &view.view(None, None), None, None).0, &go(&c, &m, None, None).0);
+            // A view of a view narrows: no rules = the parent's, more rules
+            // = the parent's AND them (== the same rules per call).
+            prop_assert_eq!(&go(&c, &view.view(None, None), None, None).0, &want.0);
+            let odd: Vec<i64> = (0..c.s.len()).filter(|j| j % 2 == 1).map(|j| ext_of(&c, j)).collect();
+            let got = go(&c, &view.view(None, Some(&odd)), None, None);
+            let and = go(&c, &view, None, Some(&odd));
+            prop_assert_eq!(&got.0, &and.0);
+            prop_assert_eq!(bits(&got.1), bits(&and.1));
             // View's include AND the per-call include "even original ids".
             let even: Vec<i64> = (0..c.s.len()).filter(|j| j % 2 == 0).map(|j| ext_of(&c, j)).collect();
             let both: Vec<i64> = (0..c.s.len())
