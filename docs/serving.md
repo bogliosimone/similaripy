@@ -27,24 +27,25 @@ immutable: one instance can be shared by any number of threads.
 
 ## Methods
 
+Everything is on the `ItemKNN` class: build a `model`, then call its methods.
+
 | Method | Description |
 |--------|-------------|
-| `ItemKNN(S)` | Builds the model from a square item-item matrix S. |
-| `recommend(history)` | The top-k items for one history: `(ids, scores)`. |
-| `recommend_batch(histories)` | `recommend` for a list of histories, in parallel: two lists, one array per user. |
-| `view(include=, exclude=)` | The same model (S shared, no copy) with availability rules for every request. |
-| `save(path)` / `ItemKNN.load(path)` | A saved model, memory-mapped by default. |
-| `item_ids` | The id of each item (column of S). |
+| `model = ItemKNN(S)` | Constructor: builds the model from a square item-item matrix S. |
+| `model.recommend(history)` | The top-k items for one history: `(ids, scores)`. |
+| `model.recommend_batch(histories)` | `recommend` for a list of histories, in parallel: two lists, one array per user. |
+| `model.view(include=, exclude=)` | The same model (S shared, no copy) with availability rules for every request. |
+| `model.save(path)` | Writes the model to a directory. |
+| `model = ItemKNN.load(path)` | Class method: a saved model, memory-mapped by default. |
+| `model.item_ids` | Property: the id of each item (column of S). |
 
 ## Parameters
-
-Everything after the first argument is keyword-only.
 
 **`ItemKNN(S, ...)`**
 
 | Parameter | Description |
 |-----------|-------------|
-| `S` | Square sparse item-item matrix, e.g. `sim.cosine(URM.T, k=100)` or its transpose (see [Which orientation of S](#which-orientation-of-s)). |
+| `S` | Square sparse item-item matrix, e.g. `sim.cosine(URM.T, k=100)` or its transpose (see [Orientation of S](#orientation-of-s)). |
 | `item_ids` | One unique int64 id per item (column of S); histories, results and rules use them. `None` = S's column indices. *(default: `None`)* |
 | `candidate_items` | Only these items can ever be recommended; the others are dropped from the model (histories still use them). Changing it means a rebuild. *(default: `None` = all)* |
 | `block_size` | As in the similarity functions: `'auto'`, `None` (no blocking) or an int > 0. Same results at any value; blocking is faster under concurrent requests, `None` for a lone request on an idle machine. *(default: `'auto'`)* |
@@ -63,22 +64,16 @@ Everything after the first argument is keyword-only.
 | `sorted` | Best first; `False` skips the final sort (a few % faster at k in the thousands). *(default: `True`)* |
 | `num_threads` | Batch only. `0` = all cores (one shared pool), `n` = `n` threads. *(default: `0`)* |
 
-## Single and batch requests
+## Single and batch recommendation
 
-`recommend` serves one user; `recommend_batch` serves a list of users in
-parallel, and its element `u` equals `recommend(histories[u], ...)` bit for
-bit. A rule shared by every user goes in a [view](#availability).
+`recommend` serves one user; `recommend_batch` serves a list of users in parallel.
 
 ```python
 ids, scores = model.recommend(history, weights=w, k=20)              # one user (online)
 ids, scores = model.recommend_batch(histories, weights=ws, k=20)     # many users (offline)
-for user, i, s in zip(users, ids, scores):
-    cache[user] = (i, s)                                             # e.g. precomputed results
 ```
 
-From an interaction log, results in your own ids: `pd.factorize` gives the
-`item_ids` array (`item_ids[j]` = your id for column `j` of S), and the batch
-output is already in those ids. In chunks when there are millions of users:
+Example: batch recommendations from an interaction log, in chunks for millions of users:
 
 ```python
 user_codes, user_ids = pd.factorize(log.user)
@@ -99,21 +94,19 @@ for a in range(0, len(histories), chunk):
     }).to_parquet(f"recs/part-{a // chunk}.parquet")   # one file per chunk
 ```
 
-With `ItemKNN(S)`, the results equal `sim.dot_product(URM, S, k=k, filter_cols=URM)`
-up to float rounding.
-
 ## Availability
 
-Three levels, from permanent to per request. They combine with AND.
+Three levels, from permanent to per request, combined with **AND**:
 
 | Level | How | Cost | Use for |
 |-------|-----|------|---------|
 | Build | `ItemKNN(S, candidate_items=ids)` | rebuild to change | items that are never recommended in this model version (e.g. inactive items in a huge catalogue) |
 | View | `model.view(include=ids, exclude=ids)` | one bit per item, S shared | rules shared by many requests that change during the day (region, stock, package) |
-| Call | `model.recommend(h, include=ids, exclude=ids)` | proportional to the ids | per user or per request rules (e.g. items already shown) |
+| Call | `model.recommend(h, include=ids, exclude=ids)` | proportional to the ids | per user or per request rules (e.g. items shown to the user many times) |
 
 `include` = only these items can be recommended, `exclude` = never these.
-A view of a view narrows: it keeps its parent's rules and adds its own.
+
+Example:
 
 ```python
 # Build, per model version: only the active items can be recommended
@@ -127,139 +120,99 @@ by_country = {c: model.view(include=catalogue[c], exclude=out_of_stock) for c in
 def view_for(country, package):
     return by_country[country].view(include=packages[package])
 
-# Call, per user: the user's own rules
-ids, scores = view_for(country, package).recommend(history, k=20, exclude=already_shown)
+# Call, per user: e.g. items shown many times and never clicked (impressions)
+ids, scores = view_for(country, package).recommend(history, k=20, exclude=ignored_impressions)
 ```
 
-- To widen, start from the base model: `model.view(...)`; `view()` with no
-  rules keeps the parent's.
+- A view of a view narrows: it keeps its parent's rules and adds its own.
+  To widen, start from the base model.
 - To update availability in a running service, build the new views and swap
-  the references (here: rebuild `by_country`, then `view_for.cache_clear()`);
-  requests in flight finish on the model they started with.
-- Each view holds one bit per item (117 KB for 934k items): cache the views
-  you use instead of building one per request.
-- For items that are never available and S can be recomputed, prefer
-  `target_cols` when computing S (see [Similarities](similarity.md#common-parameters)):
-  each item then keeps `k` neighbours that can all be recommended, while
-  `candidate_items` and the rules only remove neighbours from its top-k.
-
-## Which orientation of S
-
-`sim.cosine(URM.T, k=100)` keeps the top 100 items per row: row `i` holds item
-`i`'s most similar items.
-
-- `ItemKNN(S)` scores a candidate from the neighbours of each history item.
-  Steadier latency: each history item adds at most `k` entries.
-- `ItemKNN(S.T)` scores a candidate from its own neighbours in the history
-  (the [Quickstart](guide.md#example)'s `dot_product(URM, S.T, filter_cols=URM)`).
-  A row of `S.T` can be long: a popular item is in many top-k lists.
-
-Which one scores better depends on the dataset and the similarity: evaluate
-both. By similarity family:
-
-| Family | Orientation |
-|--------|-------------|
-| Symmetric (`cosine`, `jaccard`, `dice`, `tversky` with `alpha = beta`, `dot_product`) | Both are valid models. In our tests `S.T` scored better, more so at larger `k`. |
-| Graph (`p3alpha`, `rp3beta`) | Use `S`: `S.T` fixes the popularity penalty at `beta = 1` whatever `beta` you pass, so tune `beta` with `S`. |
-| Asymmetric (`asymmetric_cosine`, `s_plus` and `tversky` with unequal weights) | Rows and columns differ by design: evaluate both. |
-
-## In a threaded service
-
-- Share one model across threads: `recommend` releases the GIL, so threads run
-  requests in parallel (free-threaded Python too).
-- `recommend_batch` uses `num_threads` as the similarity functions do.
-- Long histories dominate the tail latency: cap them (e.g. the 1000 most
-  recent items) if your p99 matters.
-
-`recommend` latency by history cap, Python call, µs (p50 / p99, warm; S =
-`cosine(k=100)`, `k=100`, history excluded; indicative, one Apple M2 Pro):
-
-| History cap | MovieLens 32M (84k items) | Yambda 50M (934k items) |
-|-------------|---------------------------|-------------------------|
-| 50 | 10 / 17 | 26 / 37 |
-| 200 | 13 / 30 | 73 / 91 |
-| 1000 | 13 / 96 | 279 / 369 |
-| none | 13 / 124 | 309 / 1904 |
+  the references. Requests in flight finish on the model they started with.
+- Each view holds one bit per item (e.g. 117 KB for 934k items): cheap, you can
+  cache the views you use instead of building one per request.
+- **Tip:** for items that are never available, if S can be recomputed, pass
+  `target_cols` when computing S: each item then keeps `k` neighbours that can
+  all be recommended, while `candidate_items` and the rules only remove
+  neighbours from its top-k.
 
 ## Saving and loading
 
-`save(path)` writes a directory; `ItemKNN.load(path)` reads it back in this or
-any later 1.x version, and checks it before use. The view's rules and
-`block_size` are saved too.
+`save(path)` writes a directory; `ItemKNN.load(path)` reads it back and checks
+it before use. A view can't be saved: save the base
+model and build views after `load`.
 
 | Option | Description |
 |--------|-------------|
-| `load(path, mmap=True)` | Maps the files read-only: one copy in the OS page cache, shared by every worker process, and fast to load. *(default)* |
-| `load(path, mmap=False)` | Reads the arrays into memory, e.g. on a network file system (NFS). |
+| `load(path, mmap=True)` | Maps the files read-only: one copy shared by every worker process. *(default)* |
+| `load(path, mmap=False)` | Reads the files into memory, e.g. on a network file system (NFS). |
 | `save(path, overwrite=False)` | Refuses a non-empty directory. *(default)* |
-| `save(path, overwrite=True)` | Replaces a saved model: writes a new directory and renames it into place; processes that mapped the old files keep them. |
+| `save(path, overwrite=True)` | Replaces a saved model; processes that loaded the old one keep it. |
 
-- **Never change a saved model's files in place**: a process mapping them
-  would crash. For a live service, save each version to a new directory and
-  switch what the workers load (a symlink or a config you flip).
-- With `mmap=True`, per-process RSS counts the shared pages in every worker:
-  the sum over-counts (on Linux, PSS in `/proc/<pid>/smaps_rollup` splits them).
-- `overwrite=True` replaces only a directory holding a saved model's files
-  (not a symlink). Between the two renames the directory is briefly missing
-  (a `load` then fails); only one process may save to a path at a time. On
-  Windows it fails with `PermissionError` while any process has the model
-  mapped; the old model stays.
-- Pickling works (same similaripy version only); pickling a mapped model
-  copies its arrays into the pickle.
-- The load check turns a corrupted file into an error, never an
-  out-of-bounds read, but it doesn't guard against resource exhaustion (e.g.
-  a `meta.json` asking for billions of items): load files you trust.
+- **Never change a saved model's files in place**: save each version to a new
+  directory and switch what the workers load.
+- **Load files you trust**: a corrupted file is an error, but sizes aren't capped.
 
-### Model file format
+A saved model is a plain directory of `.npy` files plus `meta.json`, readable
+with `np.load`. A model saved by a newer format is a clear "upgrade
+similaripy" error.
 
-A saved model is a directory of 1-d little-endian `.npy` files (numpy's header
-layout, as `np.save` writes it: `np.load` opens each one) and `meta.json`,
-written last:
+## Orientation of S
 
-| File | Content |
-|------|---------|
-| `indptr.npy`, `indices.npy`, `data.npy` | S in internal ids (rows sorted), `data` float32 |
-| `new_to_old.npy` | internal id → column of S |
-| `item_ids.npy` | optional: your id per column of S |
-| `allowed.npy` | optional: the view's rules, a uint64 bitset over internal ids |
-| `meta.json` | format version and sizes |
+A similarity matrix such as `sim.cosine(URM.T, k=100)` keeps the top 100 items per row: row `i` holds item `i`'s most similar items. It can be served in two ways:
 
-```json
-{
-  "allowed": true,
-  "block_size": "auto",
-  "format": 1,
-  "item_ids": true,
-  "kind": "ItemKNN",
-  "n_cols": 500,
-  "n_items": 500,
-  "nnz": 10000,
-  "value_dtype": "float32",
-  "written_by": "similaripy 1.0.0"
-}
-```
+- `ItemKNN(S)` scores a candidate from the neighbours of each history item.
+  Steady latency: each history item adds at most `k` entries.
+- `ItemKNN(S.T)` scores a candidate from its own neighbours in the history.
+  A row of `S.T` can be long: a popular item is in many top-k lists.
 
-- `format`: a version loads every format up to its own; a newer format is a
-  clear "upgrade similaripy" error.
-- `value_dtype`: the type of `data` (`float32` today). It leaves room for
-  quantized models (e.g. bfloat16) in a later format, with the same error on
-  versions that don't know it.
-- Internal ids order items by popularity (entries in their column of S); items
-  with neither a row nor a column in S are not stored.
+Which one scores better depends on the dataset and the similarity: evaluate
+both.
 
-## In an evaluation framework
+A few tips based on the similarity family:
 
-There is no `fit`: computing S (any similarity, any parameters) and serving it
-are separate steps. A framework that wants `fit` / `recommend` needs a few
-lines:
+| Family | Orientation |
+|--------|-------------|
+| Symmetric (`cosine`, `jaccard`, `dice`, `dot_product`) | Both are valid models. In our tests `S.T` scored better, more so at larger `k`. |
+| Asymmetric (`asymmetric_cosine`, `tversky`, `s_plus`) | Transposing swaps the weights: `asymmetric_cosine(alpha).T` scores as `asymmetric_cosine(1 - alpha)`, `tversky(alpha, beta).T` as `tversky(beta, alpha)`, `s_plus` swaps `t1, t2` and `c1, c2`: both valid, tune the weights in the one you pick. |
+| Graph (`p3alpha`, `rp3beta`) | Prefer `S`: with `alpha = 1`, `S.T` scores candidates like `rp3beta` with `beta = 1` whatever `beta` you pass (only the history weights change). Tune `beta` with `S`. |
+
+## Use cases
+
+### Threaded service
+
+When serving the model in a threaded service:
+
+- Share one model across threads: `recommend` releases the GIL, so threads
+  run requests in parallel (free-threaded Python too). Across worker
+  processes, `load` with `mmap=True` shares one copy of S.
+- Long histories dominate the tail latency: cap them if your p99 matters
+  (e.g. the 1000 most recent items).
+
+Example of `recommend` latency by history cap:
+
+| History cap | MovieLens 32M (84k items) | Yambda 50M (934k items) |
+|-------------|---------------------------|-------------------------|
+| 50 | 10 µs / 17 µs | 26 µs / 37 µs |
+| 200 | 13 µs / 30 µs | 73 µs / 91 µs |
+| 1000 | 13 µs / 96 µs | 279 µs / 369 µs |
+| none | 13 µs / 124 µs | 309 µs / 1.9 ms |
+
+p50 / p99 of the Python call, warm; S = `cosine(k=100)`, `k=100`, history
+excluded; indicative, one Apple M2 Pro.
+
+### Evaluation framework
+
+A framework that wants `fit` / `recommend` needs a few lines:
 
 ```python
 class ItemKNNRecommender:
-    def __init__(self, similarity=sim.cosine, **params):
-        self.similarity, self.params = similarity, params
+    def __init__(self, similarity=sim.cosine, transpose=True, **params):
+        # transpose: serve S.T; (see Orientation of S)
+        self.similarity, self.transpose, self.params = similarity, transpose, params
 
     def fit(self, URM):
-        self.model = ItemKNN(self.similarity(URM.T, **self.params).T)
+        S = self.similarity(URM.T, **self.params)
+        self.model = ItemKNN(S.T if self.transpose else S)
         return self
 
     def recommend(self, URM, k=10):
