@@ -1,8 +1,6 @@
 # 🛎️ Serving
 
-`ItemKNN` serves a similarity matrix S computed by any similarity function:
-build the model once, then get the top-k items for a user's history, one user
-per call or a batch of users. Everything is in your own item ids.
+`ItemKNN` serves a similarity matrix S computed by any similarity function.
 
 ```python
 from similaripy.serving import ItemKNN
@@ -78,14 +76,27 @@ for user, i, s in zip(users, ids, scores):
     cache[user] = (i, s)                                             # e.g. precomputed results
 ```
 
-From a user-item matrix (rows = users, columns = S's columns), in chunks when
-there are millions of users:
+From an interaction log, results in your own ids: `pd.factorize` gives the
+`item_ids` array (`item_ids[j]` = your id for column `j` of S), and the batch
+output is already in those ids. In chunks when there are millions of users:
 
 ```python
-histories = np.split(item_ids[URM.indices], URM.indptr[1:-1])   # item_ids[...]: your ids
+user_codes, user_ids = pd.factorize(log.user)
+item_codes, item_ids = pd.factorize(log.item)
+URM = sps.csr_matrix((np.ones(len(log)), (user_codes, item_codes)))   # duplicates summed
+
+model = ItemKNN(sim.cosine(URM.T, k=100).T, item_ids=item_ids)
+
+histories = np.split(item_ids[URM.indices], URM.indptr[1:-1])   # your ids per user
 weights = np.split(URM.data, URM.indptr[1:-1])
-for a in range(0, len(histories), 100_000):
-    ids, scores = model.recommend_batch(histories[a:a + 100_000], weights=weights[a:a + 100_000], k=20)
+chunk = 100_000
+for a in range(0, len(histories), chunk):
+    ids, scores = model.recommend_batch(histories[a:a + chunk], weights=weights[a:a + chunk], k=20)
+    pd.DataFrame({
+        "user": np.repeat(user_ids[a:a + chunk], [len(i) for i in ids]),
+        "item": np.concatenate(ids),
+        "score": np.concatenate(scores),
+    }).to_parquet(f"recs/part-{a // chunk}.parquet")   # one file per chunk
 ```
 
 With `ItemKNN(S)`, the results equal `sim.dot_product(URM, S, k=k, filter_cols=URM)`
@@ -144,8 +155,13 @@ ids, scores = view_for(country, package).recommend(history, k=20, exclude=alread
   A row of `S.T` can be long: a popular item is in many top-k lists.
 
 Which one scores better depends on the dataset and the similarity: evaluate
-both. In our tests `S.T` scored better with cosine, while RP3β with `S.T`
-recommended mostly the rarest items: use `ItemKNN(S)` there.
+both. By similarity family:
+
+| Family | Orientation |
+|--------|-------------|
+| Symmetric (`cosine`, `jaccard`, `dice`, `tversky` with `alpha = beta`, `dot_product`) | Both are valid models. In our tests `S.T` scored better, more so at larger `k`. |
+| Graph (`p3alpha`, `rp3beta`) | Use `S`: `S.T` fixes the popularity penalty at `beta = 1` whatever `beta` you pass, so tune `beta` with `S`. |
+| Asymmetric (`asymmetric_cosine`, `s_plus` and `tversky` with unequal weights) | Rows and columns differ by design: evaluate both. |
 
 ## In a threaded service
 

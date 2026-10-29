@@ -318,14 +318,9 @@ class ItemKNN:
 
     def save(self, path, *, overwrite: bool = False) -> None:
         """
-        Saves the model to the directory `path`, which must be missing or
-        empty, for `ItemKNN.load` in this or any later 1.x version (the view's
-        rules and `block_size` included). `overwrite=True` replaces a model
-        saved there; processes that loaded the old one keep it.
-
-        Never change a saved model's files: for a live service, save each
-        version to a new directory and switch what the workers load. Details
-        and the file format: the Serving guide.
+        Saves the model to the directory `path` (missing or empty;
+        `overwrite=True` replaces a saved model) for `ItemKNN.load` in this or
+        any later 1.x version. Details: the Serving guide.
         """
         from . import __version__
 

@@ -3,7 +3,7 @@
 Normalization functions re-weight a sparse matrix, e.g. BM25 on your input matrix before the similarity computation.
 
 ```python
-import similaripy as sim   # sim.bm25, sim.normalize, ... (also in similaripy.normalization)
+import similaripy as sim   # sim.bm25, sim.normalize, ...
 ```
 
 ## Normalizations
