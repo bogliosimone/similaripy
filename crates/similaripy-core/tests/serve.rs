@@ -660,7 +660,9 @@ fn save_load_round_trip_overwrite_and_versions() {
     let m = build_blocked(&s, &[1, 0, 2], Some(&[10, 11, 12, 13]), 2).unwrap();
     let v = m.view(Some(&[11, 12]), None);
     let dir = tmp("model");
-    v.save(&dir, "test", false).unwrap();
+    let err = v.save(&dir, "test", false).unwrap_err().to_string();
+    assert!(err.contains("save the base model"), "{err}");
+    m.save(&dir, "test", false).unwrap();
     let rec = |m: &Model| {
         let mut out = (vec![], vec![]);
         let r = Request {
@@ -678,20 +680,19 @@ fn save_load_round_trip_overwrite_and_versions() {
     // Miri can't map files; plain reads run under it
     for mmap in [false, true].into_iter().filter(|&m| !(cfg!(miri) && m)) {
         let back = Model::load(&dir, mmap).unwrap();
-        assert_eq!(Owned::of(&back), Owned::of(&v));
-        assert_eq!(rec(&back), rec(&v));
+        assert_eq!(Owned::of(&back), Owned::of(&m));
+        assert_eq!(rec(&back), rec(&m));
         // a trimmed model of a mapped one (shared mapped arrays, owned S)
         let t = back.trimmed(&[11]).unwrap();
         assert_eq!(Owned::of(&t).new_to_old, vec![1, 0, 2]);
     }
     // never into a non-empty directory unless it holds a saved model and overwrite
-    assert!(v.save(&dir, "test", false).is_err());
+    assert!(m.save(&dir, "test", false).is_err());
     m.save(&dir, "test", true).unwrap();
-    assert_eq!(Owned::of(&Model::load(&dir, false).unwrap()).allowed, None);
     let other = tmp("other");
     std::fs::create_dir_all(&other).unwrap();
     std::fs::write(other.join("keep.txt"), "x").unwrap();
-    assert!(v.save(&other, "test", true).is_err());
+    assert!(m.save(&other, "test", true).is_err());
     assert!(other.join("keep.txt").exists());
     // Q1: a newer format is a clear error, an unknown value dtype too
     let meta = std::fs::read_to_string(dir.join("meta.json")).unwrap();

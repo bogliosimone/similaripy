@@ -18,14 +18,13 @@ use crate::{DEFAULT_BLOCK_SIZE, Error};
 const FORMAT: u64 = 1;
 const KIND: &str = "ItemKNN";
 /// Every file a saved model may have.
-const FILES: [&str; 7] = [
+const FILES: [&str; 6] = [
     "meta.json",
     "indptr.npy",
     "indices.npy",
     "data.npy",
     "new_to_old.npy",
     "item_ids.npy",
-    "allowed.npy",
 ];
 
 fn check_square(s: &CsrView) -> Result<(), Error> {
@@ -264,8 +263,9 @@ impl Model {
     }
 
     /// Saves the model in `dir`: one `.npy` per array (S in internal ids,
-    /// `new_to_old`, `item_ids` = the external id per original column, and
-    /// `allowed` = the default mask's bits) plus `meta.json`, written last.
+    /// `new_to_old`, `item_ids` = the external id per original column) plus
+    /// `meta.json`, written last. A view is an error: availability changes
+    /// faster than a model version, so views are built after `load`.
     /// A missing or empty `dir` is filled; a non-empty one is an error unless
     /// `overwrite` and it holds a saved model and nothing else (not a
     /// symlink), which is then replaced by a new directory (renamed into
@@ -274,6 +274,9 @@ impl Model {
     /// stays; `dir` is briefly missing, one saver at a time). `written_by`
     /// goes into `meta.json`.
     pub fn save(&self, dir: &Path, written_by: &str, overwrite: bool) -> Result<(), Error> {
+        if self.allowed.is_some() {
+            return invalid("a view can't be saved: save the base model, build views after load");
+        }
         let p = self.parts();
         store::save_dir(dir, overwrite, is_saved_model, |d| {
             store::write(d, "indptr", p.indptr)?;
@@ -282,9 +285,6 @@ impl Model {
             store::write(d, "new_to_old", p.new_to_old)?;
             if let Some(e) = p.ext {
                 store::write(d, "item_ids", e)?;
-            }
-            if let Some(a) = p.allowed {
-                store::write(d, "allowed", a)?;
             }
             let block_size = match p.block_size {
                 BlockSize::Auto => serde_json::json!("auto"),
@@ -300,7 +300,6 @@ impl Model {
                 "n_cols": p.n_cols,
                 "nnz": p.data.len(),
                 "item_ids": p.ext.is_some(),
-                "allowed": p.allowed.is_some(),
                 "block_size": block_size,
             });
             let text = serde_json::to_string_pretty(&meta).expect("plain JSON values") + "\n";
@@ -366,9 +365,6 @@ impl Model {
         let ext = flag("item_ids")?
             .then(|| store::read::<i64>(dir, "item_ids", mmap))
             .transpose()?;
-        let allowed = flag("allowed")?
-            .then(|| store::read::<u64>(dir, "allowed", false).map(Buf::into_vec))
-            .transpose()?;
         let core = Core::from_arrays(
             store::read(dir, "indptr", mmap)?,
             store::read(dir, "indices", mmap)?,
@@ -381,15 +377,9 @@ impl Model {
         if (core.n_items() as u64, core.data.len() as u64) != (uint("n_items")?, uint("nnz")?) {
             return Err(bad("n_items / nnz don't match the arrays".into()));
         }
-        if allowed
-            .as_ref()
-            .is_some_and(|a| a.len() != words(core.n_items()))
-        {
-            return invalid("allowed: one bit per item expected");
-        }
         Ok(Self {
             core: Arc::new(core),
-            allowed,
+            allowed: None,
         })
     }
 

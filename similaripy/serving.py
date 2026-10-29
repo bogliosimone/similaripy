@@ -320,7 +320,8 @@ class ItemKNN:
         """
         Saves the model to the directory `path` (missing or empty;
         `overwrite=True` replaces a saved model) for `ItemKNN.load` in this or
-        any later 1.x version. Details: the Serving guide.
+        any later 1.x version. A view can't be saved: save the base model and
+        build views after `load`. Details: the Serving guide.
         """
         from . import __version__
 

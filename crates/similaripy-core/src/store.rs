@@ -97,15 +97,6 @@ impl<T> From<Vec<T>> for Buf<T> {
     }
 }
 
-impl<T: Pod> Buf<T> {
-    pub(crate) fn into_vec(self) -> Vec<T> {
-        match self {
-            Buf::Owned(v) => v,
-            Buf::Mapped(..) => self.to_vec(),
-        }
-    }
-}
-
 pub(crate) fn io(path: &Path) -> impl Fn(std::io::Error) -> Error + '_ {
     move |e| Error::Io(e.kind(), format!("{}: {e}", path.display()))
 }
