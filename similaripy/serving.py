@@ -130,7 +130,7 @@ class ItemKNN:
     Args:
         S: square sparse item-item matrix (e.g. `sim.cosine(URM.T, k=100)`).
         item_ids: one unique int64 id per item: `item_ids[j]` is your id for
-            column j of S (e.g. the `item_ids` of `from_interactions`); None =
+            column j of S (e.g. the `item_ids` of `interactions_to_urm`); None =
             the ids are S's column indices.
         candidate_items: only these items can ever be recommended: the other
             columns are dropped from the model (less memory and work; changing

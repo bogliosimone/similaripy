@@ -1,9 +1,9 @@
 """
 From interaction logs to the matrices the similarities and the serving engine
-take: `from_interactions` (logs -> URM + id maps), `time_decay` /
-`rank_decay` (one decay weight per event, offline and for a live history)
-and `to_histories` (URM rows -> `recommend_batch` input). One import path:
-`from similaripy.preprocessing import from_interactions`.
+take: `interactions_to_urm` (log -> URM + id maps), `interactions_to_histories`
+and `urm_to_histories` (log or URM rows -> `recommend_batch` input), and
+`time_decay` / `rank_decay` (one decay weight per event, offline and for a
+live history). One import path: `from similaripy.preprocessing import ...`.
 
 Ids are integers everywhere, with the same rules as `similaripy.serving`
 (strings: map them at your edge, e.g. `pd.factorize`). The caller's arrays
@@ -21,7 +21,7 @@ from numpy.typing import ArrayLike
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
 from .serving import _check_ids, _ids
 
-__all__ = ["from_interactions", "rank_decay", "time_decay", "to_histories"]
+__all__ = ["interactions_to_histories", "interactions_to_urm", "rank_decay", "time_decay", "urm_to_histories"]
 
 _INT32_MAX = np.iinfo(np.int32).max
 # Most stored pairs a URM holds (int32 CSR, until int64 offsets); a constant so tests can lower it.
@@ -87,7 +87,7 @@ def _timestamps(timestamps, n: int) -> np.ndarray:
     return t
 
 
-def from_interactions(
+def interactions_to_urm(
     users: ArrayLike,
     items: ArrayLike,
     values: ArrayLike | None = None,
@@ -163,14 +163,66 @@ def from_interactions(
     return sp.csr_array((data, indices, indptr), shape=(user_ids.size, item_ids.size)), user_ids, item_ids
 
 
-def to_histories(X, item_ids: ArrayLike | None = None) -> tuple[list[np.ndarray], list[np.ndarray]]:
+def interactions_to_histories(
+    users: ArrayLike,
+    items: ArrayLike,
+    weights: ArrayLike | None = None,
+) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
+    """
+    Each user's events as a history for `ItemKNN.recommend_batch`, straight
+    from the log: no matrix, no id mapping (histories are in your item ids;
+    ids the model doesn't have are ignored by `recommend`). E.g. the
+    histories of a holdout set.
+
+    Repeated items stay (`recommend` sums their weights: the same scores as
+    `interactions_to_urm` + `urm_to_histories`); events with weight 0 are
+    dropped, so a `rank_decay(..., shape="step")` also caps the length.
+
+    Example::
+
+        user_ids, histories, weights = interactions_to_histories(test.user, test.item)
+        ids, scores = model.recommend_batch(histories, weights=weights, k=20)  # element u: user_ids[u]
+
+    Args:
+        users, items: one integer id per event.
+        weights: one finite weight per event (None = 1.0 each), e.g. a
+            `time_decay` / `rank_decay`.
+
+    Returns:
+        (user_ids, histories, weights): `user_ids` int64, sorted; two lists
+        with one array per user (int64 item ids in input order, float32
+        weights).
+    """
+    users, items = _check_ids("users", users), _ids("items", items)
+    if users.shape != items.shape:
+        raise ValueError(f"users and items must have the same length, got {users.size} and {items.size}")
+    if weights is None:
+        w = np.ones(users.size, dtype=np.float32)
+    else:
+        w = np.asarray(weights, dtype=np.float32)
+        if w.shape != users.shape:
+            raise ValueError(f"weights must have one value per event, got shape {w.shape}")
+        if not np.isfinite(w).all():
+            raise ValueError("weights must be finite")
+        keep = w != 0
+        if not keep.all():
+            users, items, w = users[keep], items[keep], w[keep]
+    user_ids, codes = _codes("users", users, None)
+    if user_ids.size == 0:
+        return user_ids, [], []
+    order = np.argsort(codes, kind="stable")  # by user, input order within
+    cuts = np.cumsum(np.bincount(codes, minlength=user_ids.size))[:-1]
+    return user_ids, np.split(items[order], cuts), np.split(w[order], cuts)
+
+
+def urm_to_histories(X, item_ids: ArrayLike | None = None) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """
     Each row of X as a history for `ItemKNN.recommend_batch`.
 
     Args:
         X: user-item matrix (e.g. the URM).
         item_ids: your id of each column (the `item_ids` of
-            `from_interactions`); None = column indices (for `ItemKNN(S)`
+            `interactions_to_urm`); None = column indices (for `ItemKNN(S)`
             without `item_ids`).
 
     Returns:
@@ -190,6 +242,8 @@ def to_histories(X, item_ids: ArrayLike | None = None) -> tuple[list[np.ndarray]
         if item_ids.shape != (n_cols,):
             raise ValueError(f"item_ids must have one id per column ({n_cols}), got shape {item_ids.shape}")
         ids = item_ids[X.indices]
+    if X.shape[0] == 0:
+        return [], []
     cuts = X.indptr[1:-1]
     return np.split(ids, cuts), np.split(X.data, cuts)
 
@@ -241,7 +295,7 @@ def time_decay(
 ) -> np.ndarray:
     """
     The decay weight of each event from its age in time: age = reference -
-    timestamp. Multiply the weights into `from_interactions`' values (each
+    timestamp. Multiply the weights into `interactions_to_urm`' values (each
     event weighted by its own age, repeats summed), or pass them to
     `recommend` for a live history: one formula offline and online.
 
@@ -254,7 +308,7 @@ def time_decay(
     Example::
 
         w = time_decay(df.ts, reference=cutoff, scale=30 * 86400)
-        URM, user_ids, item_ids = from_interactions(df.user, df.item, values * w)
+        URM, user_ids, item_ids = interactions_to_urm(df.user, df.item, values * w)
         # online, the same formula
         ids, scores = model.recommend(history, weights=time_decay(history_ts, reference=now, scale=30 * 86400))
 
@@ -332,7 +386,7 @@ def rank_decay(
     Example::
 
         w = rank_decay(df.user, shape="step", scale=200)  # each user's 200 latest events
-        URM, user_ids, item_ids = from_interactions(df.user, df.item, w)
+        URM, user_ids, item_ids = interactions_to_urm(df.user, df.item, w)
 
     Online, a history in arrival order has the same weights on every
     request: compute them once and slice::

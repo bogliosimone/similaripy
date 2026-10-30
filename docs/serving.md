@@ -76,12 +76,12 @@ ids, scores = model.recommend_batch(histories, weights=ws, k=20)     # many user
 Example: batch recommendations from an interaction log, in chunks for millions of users:
 
 ```python
-from similaripy.preprocessing import from_interactions, to_histories
+from similaripy.preprocessing import interactions_to_urm, urm_to_histories
 
-URM, user_ids, item_ids = from_interactions(log.user, log.item)   # repeats summed
+URM, user_ids, item_ids = interactions_to_urm(log.user, log.item)   # repeats summed
 model = ItemKNN(sim.cosine(URM.T, k=100).T, item_ids=item_ids)
 
-histories, weights = to_histories(URM, item_ids)   # your ids per user
+histories, weights = urm_to_histories(URM, item_ids)   # your ids per user
 chunk = 100_000
 for a in range(0, len(histories), chunk):
     ids, scores = model.recommend_batch(histories[a:a + chunk], weights=weights[a:a + chunk], k=20)

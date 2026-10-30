@@ -17,12 +17,12 @@
 
 ## 🔥 Why SimilariPy?
 
-- **Wide similarity coverage**: Dot Product, Cosine, Tversky, P3α, RP3β, and more
-- **Low-latency serving**: recommendations in microseconds, one model shared by every worker process
-- **Availability rules**: include or exclude items for every request, a group of users or one user
-- **Flexible normalization**: L1, L2, TF-IDF, BM25, BM25+
-- **Fast**: a multi-threaded Rust core, GIL-free
-- **Sparse matrix focus**: any SciPy sparse input, CSR or COO output
+- **Wide similarity coverage**: Dot Product, Cosine, Tversky, P3α, RP3β, and more.
+- **Low-latency recommendations**: serving in under a millisecond, one model shared by all workers.
+- **Availability rules**: include or exclude items for every request, a group of users or one user.
+- **Normalization and weighting**: L1, L2, TF-IDF, BM25, BM25+, time/rank-based decay.
+- **Fast**: a multi-threaded Rust core, GIL-free.
+- **Sparse matrix focus**: any SciPy sparse input, CSR or COO output.
 
 ---
 

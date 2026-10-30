@@ -20,7 +20,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
   - [similarity.py](similaripy/similarity.py) - Similarity functions (cosine, jaccard, s_plus, etc.)
   - [_s_plus.py](similaripy/_s_plus.py) - numpy prep (copies, sorting, column filters), kernel call, output build
   - [normalization.py](similaripy/normalization.py) - Normalization functions (BM25, TF-IDF, etc.)
-  - [preprocessing.py](similaripy/preprocessing.py) - Interaction logs → URM + id maps (`from_interactions`), event-level `time_decay` / `rank_decay` (one weight per event, offline and online), `to_histories`; one import path
+  - [preprocessing.py](similaripy/preprocessing.py) - Interaction logs → URM + id maps (`interactions_to_urm`), histories for `recommend_batch` from a log or a URM (`interactions_to_histories`, `urm_to_histories`), event-level `time_decay` / `rank_decay` (one weight per event, offline and online); one import path
   - [serving.py](similaripy/serving.py) - `ItemKNN` (one import path: `similaripy.serving`): thin wrapper (the Rust core builds the model), `view` masks, `recommend` / `recommend_batch`, `save` / `load`
 
 - **Rust core** ([crates/similaripy-core](crates/similaripy-core)): pure Rust, no Python
@@ -92,7 +92,7 @@ make benchmark-similarity-small
 **Test files:**
 - [tests/test_similarity.py](tests/test_similarity.py) - every similarity × shrink type against one dense float64 reference (`_dense_scores`), selectors, signed input
 - [tests/test_s_plus_prep.py](tests/test_s_plus_prep.py) - validation, canonicalization, layout, output build, regressions
-- [tests/test_preprocessing.py](tests/test_preprocessing.py) - `from_interactions` vs a dict reference (duplicates × timestamps × vocabularies), id dtypes, `to_histories` batch == single
+- [tests/test_preprocessing.py](tests/test_preprocessing.py) - `interactions_to_urm` vs a dict reference (duplicates × timestamps × vocabularies), id dtypes, both histories paths (batch == single, log == URM scores)
 - [tests/test_decay.py](tests/test_decay.py) - `time_decay` / `rank_decay` vs a Python reference, offline-weighted URM == online-weighted history
 - [tests/test_normalization.py](tests/test_normalization.py), [tests/test_progress_bar.py](tests/test_progress_bar.py)
 - [tests/test_free_threading.py](tests/test_free_threading.py) - concurrent calls, identical bits across threads and blocking

@@ -62,9 +62,9 @@ Re-weight your data before the similarity computation: normalization functions o
 - **TF-IDF**: Computes TF-IDF weighting with customizable term-frequency and IDF modes.
 - **BM25**: Applies classic BM25 weighting used in information retrieval.
 - **BM25+**: Variant of BM25 with additive smoothing for low-frequency terms.
-- **Time and rank decay**: weight each interaction by its age or recency, the same formula offline and for a live history ([📘 Preprocessing](https://bogliosimone.github.io/similaripy/preprocessing/)).
+- **Time and rank decay**: weight each interaction by its age or recency.
 
-For more details, check the **[📘 Normalizations](https://bogliosimone.github.io/similaripy/normalization/)** guide.
+For more details, check the **[📘 Normalizations](https://bogliosimone.github.io/similaripy/normalization/)** and **[📘 Preprocessing](https://bogliosimone.github.io/similaripy/preprocessing/)** guides.
 
 ## ⚡ Performance
 

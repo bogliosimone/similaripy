@@ -1,5 +1,5 @@
 """`time_decay` / `rank_decay` against a plain-Python reference, and the
-event-level flow (offline weights into `from_interactions`, online into
+event-level flow (offline weights into `interactions_to_urm`, online into
 `recommend`)."""
 
 import datetime
@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 import similaripy as sim
-from similaripy.preprocessing import from_interactions, rank_decay, time_decay
+from similaripy.preprocessing import interactions_to_urm, rank_decay, time_decay
 
 SHAPES = ["exponential", "power", "linear", "step"]
 
@@ -113,10 +113,10 @@ def test_pandas_timestamp_reference():
 
 
 def test_event_level_offline_equals_online():
-    # repeats decay per event: offline (summed by from_interactions) == online (summed by recommend)
+    # repeats decay per event: offline (summed by interactions_to_urm) == online (summed by recommend)
     rng = np.random.default_rng(0)
     users, items, ts = rng.integers(0, 20, 600), rng.integers(0, 40, 600), rng.integers(0, 100, 600)
-    URM, user_ids, item_ids = from_interactions(users, items, time_decay(ts, reference=100, scale=25))
+    URM, user_ids, item_ids = interactions_to_urm(users, items, time_decay(ts, reference=100, scale=25))
     model = sim.serving.ItemKNN(sim.cosine(URM.T, k=10), item_ids=item_ids)
     for u in user_ids[:5]:
         mine = users == u
