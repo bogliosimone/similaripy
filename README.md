@@ -42,7 +42,7 @@ All functions run in a multi-threaded Rust core, GIL-free, on sparse CSR matrice
 
 - **S-Plus**: A hybrid model combining Tversky and Cosine components, with RP3Beta-style depopularization and full control over weights and smoothing.
 
-For mathematical definitions and parameter details, see the **[📘 SimilariPy Guide](https://bogliosimone.github.io/similaripy/)**.
+For more details, check the **[📘 Similarities](https://bogliosimone.github.io/similaripy/similarity/)** guide.
 
 ## 🛎️ Serving
 
@@ -52,7 +52,7 @@ The serving engine runs item-based KNN models online, in your own item ids:
 - **Multi-process**: save once, load memory-mapped in every worker: one copy of the model for all of them.
 - **Availability rules**: include or exclude items for all requests, per group (e.g. a country, then a package) or per request.
 
-See **[Serving](https://bogliosimone.github.io/similaripy/serving/)**.
+For more details, check the **[📘 Serving](https://bogliosimone.github.io/similaripy/serving/)** guide.
 
 ## 🧮 Normalization Functions
 
@@ -64,16 +64,13 @@ All functions run in a multi-threaded Rust core, GIL-free, and return a new CSR 
 - **BM25**: Applies classic BM25 weighting used in information retrieval.
 - **BM25+**: Variant of BM25 with additive smoothing for low-frequency terms.
 
-For more details, check the **[📘 SimilariPy Guide](https://bogliosimone.github.io/similaripy/)**.
+For more details, check the **[📘 Normalizations](https://bogliosimone.github.io/similaripy/normalization/)** guide.
 
 ## ⚡ Performance
 
-SimilariPy is built for speed on large sparse matrices:
-
-- **Rust + rayon**: multi-threaded, GIL-free computation compiled to native code
-- **Gustavson's sparse product + cache blocking**: row-wise products with a dense accumulator, tiled by columns (most popular first) to stay in the CPU cache
-- **Memory-efficient**: float32 precision, pre-allocated buffers, top-K heap filtering
-
+- **Rust core**: native code, multi-threaded with rayon, GIL-free
+- **Gustavson's row-wise product + cache blocking**: a dense accumulator per row, kept in the CPU cache by cache-sized column tiles
+- **Memory-efficient**: float32 values, int32 indices, pre-allocated buffers, top-k heap per row
 
 ## 🚀 Getting Started
 
