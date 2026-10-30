@@ -1,6 +1,8 @@
 """
 From interaction logs to the matrices the similarities and the serving engine
-take. One import path: `from similaripy.preprocessing import from_interactions`.
+take: `from_interactions` (logs -> URM + id maps + timestamps) and
+`to_histories` (URM rows -> `recommend_batch` input). One import path:
+`from similaripy.preprocessing import from_interactions`.
 
 Ids are integers everywhere, with the same rules as `similaripy.serving`
 (strings: map them at your edge, e.g. `pd.factorize`). Cold code: one numpy
@@ -15,7 +17,7 @@ from numpy.typing import ArrayLike
 
 from .serving import _ids
 
-__all__ = ["from_interactions"]
+__all__ = ["from_interactions", "to_histories"]
 
 _INT32_MAX = np.iinfo(np.int32).max
 # Most stored pairs a URM holds (int32 CSR, until int64 offsets); a constant so tests can lower it.
@@ -163,3 +165,35 @@ def from_interactions(
         latest = np.maximum.reduceat(t[order], starts) if starts.size else t
         T = sp.csr_array((latest[stored], indices.copy(), indptr.copy()), shape=shape)
     return URM, user_ids, item_ids, T
+
+
+def to_histories(X, item_ids: ArrayLike | None = None) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """
+    Each row of X as a history for `ItemKNN.recommend_batch`.
+
+    Args:
+        X: user-item matrix (e.g. the URM, or a `rank_decay` of it to keep
+            each user's latest items).
+        item_ids: your id of each column (the `item_ids` of
+            `from_interactions`); None = column indices (for `ItemKNN(S)`
+            without `item_ids`).
+
+    Returns:
+        (histories, weights): two lists with one array per row of X (int64
+        ids, float32 weights = X's values), row u = `user_ids[u]`; views into
+        one copy of X's arrays. Use as
+        `model.recommend_batch(histories, weights=weights)`, in chunks of
+        rows for many users.
+    """
+    X = sp.csr_array(X, dtype=np.float32, copy=True)  # sum_duplicates must not touch the caller's
+    X.sum_duplicates()
+    if item_ids is None:
+        ids = X.indices.astype(np.int64)
+    else:
+        item_ids = _ids("item_ids", item_ids)
+        n_cols = X.shape[1]  # ty: ignore[index-out-of-bounds]  (scipy-stubs: csr_array(X) as 1-d)
+        if item_ids.shape != (n_cols,):
+            raise ValueError(f"item_ids must have one id per column ({n_cols}), got shape {item_ids.shape}")
+        ids = item_ids[X.indices]
+    cuts = X.indptr[1:-1]
+    return np.split(ids, cuts), np.split(X.data, cuts)

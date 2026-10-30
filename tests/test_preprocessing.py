@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 import similaripy as sim
-from similaripy.preprocessing import from_interactions
+from similaripy.preprocessing import from_interactions, to_histories
 
 
 def _reference(users, items, values, timestamps, duplicates, user_ids, item_ids):
@@ -141,3 +141,29 @@ def test_pair_cap(monkeypatch):
     from_interactions([1, 1, 1, 1], [1, 1, 2, 2])  # 4 events, 2 pairs: fine
     with pytest.raises(ValueError, match="at most 2 distinct"):
         from_interactions([1, 1, 2], [1, 2, 1])
+
+
+def test_to_histories_feeds_recommend_batch():
+    rng = np.random.default_rng(1)
+    users, items = rng.integers(0, 40, 800), rng.choice(np.arange(100, 160) * 7, 800)
+    URM, _, item_ids, T = from_interactions(users, items, rng.random(800), timestamps=rng.integers(0, 99, 800))
+    H = sim.rank_decay(URM, T, shape="linear", scale=5)
+    model = sim.serving.ItemKNN(sim.cosine(URM.T, k=20), item_ids=item_ids)
+    histories, weights = to_histories(H, item_ids)
+    assert len(histories) == URM.shape[0]
+    ids, scores = model.recommend_batch(histories, weights=weights, k=10)
+    for u in range(URM.shape[0]):
+        row = H[[u]]
+        one = model.recommend(item_ids[row.indices], weights=row.data, k=10)
+        assert np.array_equal(ids[u], one[0]) and np.array_equal(scores[u], one[1])  # bit for bit
+    # without item_ids: column indices, for ItemKNN(S) without ids
+    histories, _ = to_histories(URM)
+    assert histories[0].tolist() == URM[[0]].indices.tolist() and histories[0].dtype == np.int64
+
+
+def test_to_histories_rejects():
+    URM, _, _, _ = from_interactions([0, 1], [0, 1])
+    with pytest.raises(TypeError, match="integer ids"):
+        to_histories(URM, np.array(["a", "b"]))
+    with pytest.raises(ValueError, match="one id per column"):
+        to_histories(URM, [1])
