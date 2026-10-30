@@ -11,7 +11,7 @@ from similaripy.preprocessing import interactions_to_urm, time_decay   # ...
 
 ## Utilities
 
-### Methods
+### Functions
 
 | Function | Description |
 |----------|-------------|
@@ -47,7 +47,7 @@ from similaripy.preprocessing import interactions_to_urm, time_decay   # ...
 
 ## Weighting
 
-### Methods
+### Functions
 
 | Function | Description |
 |----------|-------------|
@@ -77,7 +77,6 @@ from similaripy.preprocessing import interactions_to_urm, time_decay   # ...
 | `shape` | The decay curve (see [Shapes](#shapes)). *(default: `'exponential'`)* |
 | `exponent` | The power-law `p`, for `shape='power'` only. *(default: `1`)* |
 
-
 ### Shapes
 
 | Shape | Weight | `scale` is |
@@ -92,6 +91,7 @@ from similaripy.preprocessing import interactions_to_urm, time_decay   # ...
 `train` and `test` are your event logs (`user`, `item`, `ts` in epoch seconds), split by time.
 
 ```python
+import similaripy as sim
 from similaripy.preprocessing import interactions_to_histories, interactions_to_urm, time_decay
 from similaripy.serving import ItemKNN
 
@@ -110,17 +110,9 @@ w = time_decay(history_ts, reference=history_ts.max(), scale=30 * 86400)
 ids, scores = model.recommend(history, weights=w)
 ```
 
-## Notes
-
-- **Ids**: integers everywhere, as in `ItemKNN`; gaps are fine. In the URM, row `u` is `user_ids[u]` and column `j` is `item_ids[j]`; histories are in your item ids.
-- **Order of the steps**: the decays weight single events, before the URM (repeats are summed, so old repeats fade); the [normalizations](normalization.md) need the whole matrix, so they come after.
-- **Training and serving**: the same `time_decay` / `rank_decay` call weights a live history, and `recommend` sums repeated ids as the URM does, so the weights match.
-- **Rank decay online**: a history kept in arrival order has the same weights on every request: compute `rank_decay(np.zeros(n, dtype=int), ...)` once and slice the last `len(history)`.
-- **Histories**: events keep the input order; events with weight 0 are dropped, so a `'step'` decay also caps the length.
-- **Limits**: at most 2^31 - 1 distinct (user, item) pairs in a URM; built in the Rust core, multi-threaded.
-
 ## Tips
 
-- **Tuning**: `scale` is a hyperparameter like `k`; `scale=np.inf` is the no-decay baseline. Each trial rebuilds the URM (~1 s on 50M events).
-- **String ids**: map them at the edge with `pd.factorize` and keep the names next to the model: `codes, names = pd.factorize(log.item)`, then `names[ids]`.
-- **Distinct items**: ranks count events; for the latest distinct items, drop repeats first: `log.drop_duplicates(["user", "item"], keep="last")` on a time-sorted log.
+- **String ids** (or unsigned ids beyond int64): map them at the edge with `pd.factorize` and keep the names next to the model: `codes, names = pd.factorize(log.item)`, then `names[ids]`.
+- **Ids**: must be integers everywhere. In the URM, row `u` is `user_ids[u]` and column `j` is `item_ids[j]`; histories are in your item ids.
+- **Weighting and normalization**: the decays weight single events, before the URM (repeats are summed, so old repeats fade); the [normalizations](normalization.md) need the whole matrix, so they come after.
+- **Rank decay online**: a history kept in arrival order has the same weights on every request: compute `table = rank_decay(np.zeros(1000, dtype=int), scale=...)` once, then pass `table[-len(history):]` (histories of at most 1000 events).
