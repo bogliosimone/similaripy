@@ -8,7 +8,7 @@ except PackageNotFoundError:
 # Functions on matrices (0.x API) at the top level; `similaripy.serving`
 # (the online engine) and `similaripy.preprocessing` have one path.
 from . import normalization, preprocessing, serving, similarity
-from .normalization import binarize, bm25, bm25plus, normalize, rank_decay, tfidf, time_decay
+from .normalization import binarize, bm25, bm25plus, normalize, tfidf
 from .similarity import (
     asymmetric_cosine,
     cosine,
@@ -35,12 +35,10 @@ __all__ = [
     "normalize",
     "p3alpha",
     "preprocessing",
-    "rank_decay",
     "rp3beta",
     "s_plus",
     "serving",
     "similarity",
     "tfidf",
-    "time_decay",
     "tversky",
 ]

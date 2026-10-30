@@ -21,5 +21,5 @@ def test_serving_has_one_path():
 
 
 def test_preprocessing_has_one_path():
-    assert preprocessing.__all__ == ["from_interactions", "to_histories"]
-    assert not hasattr(sim, "from_interactions") and not hasattr(sim, "to_histories")
+    assert preprocessing.__all__ == ["from_interactions", "rank_decay", "time_decay", "to_histories"]
+    assert not any(hasattr(sim, name) for name in preprocessing.__all__)

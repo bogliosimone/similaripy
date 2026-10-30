@@ -244,7 +244,7 @@ fn remap_sort_rows(
 }
 
 /// Interaction logs grouped into a canonical CSR (`prep::group_interactions`):
-/// (indptr, indices, data float32, latest timestamps float64 or None).
+/// (indptr, indices, data float32).
 #[pyfunction]
 #[pyo3(signature = (*, rows, cols, values, t, n_rows, n_cols, duplicates))]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -261,7 +261,6 @@ fn group_interactions<'py>(
     Bound<'py, PyArray1<i32>>,
     Bound<'py, PyArray1<i32>>,
     Bound<'py, PyArray1<f32>>,
-    Option<Bound<'py, PyArray1<f64>>>,
 )> {
     use similaripy_core::prep::Duplicates;
     let duplicates = match duplicates {
@@ -288,7 +287,6 @@ fn group_interactions<'py>(
         g.indptr.into_pyarray(py),
         g.indices.into_pyarray(py),
         g.data.into_pyarray(py),
-        g.latest.map(|l| l.into_pyarray(py)),
     ))
 }
 
@@ -339,6 +337,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(group_interactions, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::normalize, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::tfidf, m)?)?;
-    m.add_function(wrap_pyfunction!(normalize::recency_rank, m)?)?;
+    m.add_function(wrap_pyfunction!(normalize::decay_weights, m)?)?;
+    m.add_function(wrap_pyfunction!(normalize::user_ages, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::bm25plus, m)?)
 }

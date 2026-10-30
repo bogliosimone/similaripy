@@ -4,11 +4,11 @@ import numpy as np
 import pytest
 
 import similaripy as sim
-from similaripy.preprocessing import from_interactions, to_histories
+from similaripy.preprocessing import from_interactions, time_decay, to_histories
 
 
 def _reference(users, items, values, timestamps, duplicates, user_ids, item_ids):
-    """{(user, item): (value, latest t)} with the documented rules, events in input order."""
+    """{(user, item): value} with the documented rules, events in input order."""
     pairs = {}
     for e, (u, i) in enumerate(zip(users, items)):
         if (user_ids is not None and u not in user_ids) or (item_ids is not None and i not in item_ids):
@@ -24,15 +24,15 @@ def _reference(users, items, values, timestamps, duplicates, user_ids, item_ids)
         else:
             v = events[0 if duplicates == "first" else -1][2]
         if np.float32(v) != 0:
-            out[pair] = (np.float32(v), max(ev[0] for ev in events))
+            out[pair] = np.float32(v)
     return out
 
 
-def _as_dict(URM, user_ids, item_ids, T):
-    URM, coo = URM.tocoo(), None if T is None else T.tocoo()
+def _as_dict(URM, user_ids, item_ids):
+    URM = URM.tocoo()
     d = {}
-    for k, (r, c, v) in enumerate(zip(URM.row, URM.col, URM.data)):
-        d[(int(user_ids[r]), int(item_ids[c]))] = (v, None if coo is None else coo.data[k])
+    for r, c, v in zip(URM.row, URM.col, URM.data):
+        d[(int(user_ids[r]), int(item_ids[c]))] = v
     return d
 
 
@@ -48,7 +48,7 @@ def test_matches_reference(duplicates, with_t, vocab):
     t = rng.integers(0, 20, n) if with_t else None  # many ties
     uv = np.array([500, 3, 99]) if vocab else None  # unsorted, 99 never seen
     iv = np.array([41, 2, -5, 9, 12]) if vocab else None
-    URM, user_ids, item_ids, T = from_interactions(
+    URM, user_ids, item_ids = from_interactions(
         users, items, values, timestamps=t, duplicates=duplicates, user_ids=uv, item_ids=iv
     )
     if vocab:
@@ -56,24 +56,18 @@ def test_matches_reference(duplicates, with_t, vocab):
     else:
         assert user_ids.tolist() == sorted(set(users.tolist())) and item_ids.tolist() == sorted(set(items.tolist()))
     assert URM.dtype == np.float32 and URM.indices.dtype == np.int32 and URM.has_canonical_format
-    assert (T is None) == (not with_t)
-    if T is not None:
-        assert T.dtype == np.float64
-        assert np.array_equal(T.indptr, URM.indptr) and np.array_equal(T.indices, URM.indices)
     ref = _reference(users, items, values, t, duplicates, uv, iv)
-    got = _as_dict(URM, user_ids, item_ids, T)
+    got = _as_dict(URM, user_ids, item_ids)
     assert got.keys() == ref.keys()
-    for pair, (v, latest) in ref.items():
-        assert got[pair][0] == pytest.approx(v, rel=1e-6)
-        if T is not None:
-            assert got[pair][1] == latest
+    for pair, v in ref.items():
+        assert got[pair] == pytest.approx(v, rel=1e-6)
 
 
 def test_small_example():
     users = [7, 3, 7, 7, 3, 9]
     items = [100, 5, 100, 42, 100, 5]
-    URM, user_ids, item_ids, T = from_interactions(users, items)
-    assert user_ids.tolist() == [3, 7, 9] and item_ids.tolist() == [5, 42, 100] and T is None
+    URM, user_ids, item_ids = from_interactions(users, items)
+    assert user_ids.tolist() == [3, 7, 9] and item_ids.tolist() == [5, 42, 100]
     assert URM.toarray().tolist() == [[1, 0, 1], [0, 1, 2], [1, 0, 0]]
     # feeds ItemKNN in the original item ids
     rec = sim.serving.ItemKNN(sim.cosine(URM.T, k=5), item_ids=item_ids)
@@ -86,31 +80,29 @@ def test_first_last_follow_time_then_input_order():
     last = from_interactions(users, items, values, timestamps=t, duplicates="last")
     first = from_interactions(users, items, values, timestamps=t, duplicates="first")
     assert last[0].data.tolist() == [30.0] and first[0].data.tolist() == [20.0]
-    assert last[3].data.tolist() == [5.0] == first[3].data.tolist()  # T: the latest, whatever duplicates
     no_t = from_interactions(users, items, values, duplicates="first")
     assert no_t[0].data.tolist() == [10.0]
 
 
 def test_zeros_dropped_from_both_matrices():
     # +1/-1 cancel; 1e-50 is 0 in float32
-    URM, _, item_ids, T = from_interactions(
-        [1, 1, 1, 2], [5, 5, 6, 7], [1.0, -1.0, 1e-50, 2.0], timestamps=[0, 1, 2, 3]
-    )
-    assert URM.nnz == 1 == T.nnz and item_ids.tolist() == [5, 6, 7]
-    assert URM.toarray().tolist() == [[0, 0, 0], [0, 0, 2]] and T.data.tolist() == [3.0]
+    URM, _, item_ids = from_interactions([1, 1, 1, 2], [5, 5, 6, 7], [1.0, -1.0, 1e-50, 2.0], timestamps=[0, 1, 2, 3])
+    assert URM.nnz == 1 and item_ids.tolist() == [5, 6, 7]
+    assert URM.toarray().tolist() == [[0, 0, 0], [0, 0, 2]]
 
 
 def test_datetime64_any_unit_as_seconds():
     for unit in ("s", "ms", "us", "ns"):
         t = np.array(["2026-01-01T00:00:00", "2026-01-02T00:00:00"], dtype=f"datetime64[{unit}]")
-        _, _, _, T = from_interactions([1, 1], [1, 2], timestamps=t)
-        assert T.data[1] - T.data[0] == 86400.0
+        # the later event wins under "last", whatever the unit
+        URM, _, _ = from_interactions([1, 1], [1, 1], [1.0, 2.0], timestamps=t[::-1], duplicates="last")
+        assert URM.data.tolist() == [1.0]
 
 
 def test_empty():
-    URM, user_ids, _item_ids, T = from_interactions([], [], timestamps=[])
-    assert URM.shape == (0, 0) and T.shape == (0, 0) and user_ids.dtype == np.int64
-    URM, _, _, _ = from_interactions([], [], item_ids=[4, 5])
+    URM, user_ids, _item_ids = from_interactions([], [], timestamps=[], duplicates="last")
+    assert URM.shape == (0, 0) and user_ids.dtype == np.int64
+    URM, _, _ = from_interactions([], [], item_ids=[4, 5])
     assert URM.shape == (0, 2)
 
 
@@ -146,8 +138,9 @@ def test_pair_cap(monkeypatch):
 def test_to_histories_feeds_recommend_batch():
     rng = np.random.default_rng(1)
     users, items = rng.integers(0, 40, 800), rng.choice(np.arange(100, 160) * 7, 800)
-    URM, _, item_ids, T = from_interactions(users, items, rng.random(800), timestamps=rng.integers(0, 99, 800))
-    H = sim.rank_decay(URM, T, shape="linear", scale=5)
+    t = rng.integers(0, 99, 800)
+    H, _, item_ids = from_interactions(users, items, rng.random(800) * time_decay(t, reference=99, scale=20))
+    URM = H
     model = sim.serving.ItemKNN(sim.cosine(URM.T, k=20), item_ids=item_ids)
     histories, weights = to_histories(H, item_ids)
     assert len(histories) == URM.shape[0]
@@ -162,7 +155,7 @@ def test_to_histories_feeds_recommend_batch():
 
 
 def test_to_histories_rejects():
-    URM, _, _, _ = from_interactions([0, 1], [0, 1])
+    URM, _, _ = from_interactions([0, 1], [0, 1])
     with pytest.raises(TypeError, match="integer ids"):
         to_histories(URM, np.array(["a", "b"]))
     with pytest.raises(ValueError, match="one id per column"):
@@ -174,7 +167,7 @@ def test_to_histories_rejects():
 def test_id_dtypes(dtype, spread):
     users = np.array([3, 1, 3], dtype=dtype) * dtype(spread)
     items = np.array([2, 2, 0], dtype=dtype)
-    URM, user_ids, item_ids, _ = from_interactions(users, items, values=np.array([1.0, 2.0, 3.0])[::1])
+    URM, user_ids, item_ids = from_interactions(users, items, values=np.array([1.0, 2.0, 3.0]))
     assert user_ids.dtype == item_ids.dtype == np.int64
     assert user_ids.tolist() == [spread, 3 * spread] and URM.toarray().tolist() == [[0, 2], [3, 1]]
-    _, _, _, _ = from_interactions(users, items, values=np.arange(6.0)[::2])  # strided values
+    from_interactions(users, items, values=np.arange(6.0)[::2])  # strided values

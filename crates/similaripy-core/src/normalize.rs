@@ -1,5 +1,5 @@
-//! In-place CSR normalizations (l1, l2, max, TF-IDF, BM25+), and the recency
-//! rank of `rank_decay`. Generic over
+//! In-place CSR normalizations (l1, l2, max, TF-IDF, BM25+), and the decay
+//! curve of `decay_weights` (`Decay`, shared with a future server). Generic over
 //! f32/f64 data and i32/i64 indices, since `similaripy.normalization` keeps the
 //! input dtypes.
 //!
@@ -8,6 +8,8 @@
 //! (`tests/benchmarks/check_normalization_parity.py`), not bitwise.
 
 use std::ops::{Add, Div, Mul, Sub};
+
+use rayon::prelude::*;
 
 use crate::Error;
 use crate::csr::check_indptr;
@@ -254,26 +256,161 @@ fn idf<T: Value>(df: T, n_docs: T, mode: IdfMode, lb: T) -> T {
     })
 }
 
-/// The recency rank of each entry within its row (0 = the latest timestamp;
-/// equal timestamps: the lower column first, as rows are sorted by column),
-/// as f64 for the decay weights. Rows in parallel, a small stable sort each.
-pub fn recency_rank(t: &[f64], indptr: &[i32]) -> Result<Vec<f64>, Error> {
-    check_indptr("recency_rank", indptr, t.len())?;
-    if t.iter().any(|x| !x.is_finite()) {
-        return Err(Error::InvalidInput(
-            "recency_rank: timestamps must be finite".into(),
-        ));
+/// A decay curve: the weight of an age (1 at age 0). `scale` > 0 (infinite =
+/// every weight 1). One formula for the decays of a matrix and of a single
+/// history (e.g. a server weighting a live history), so they always match.
+#[derive(Clone, Copy, Debug)]
+pub struct Decay {
+    shape: Shape,
+    scale: f64,
+    /// Power law: 2^(1/p) - 1, so the weight is 0.5 at age = scale for every p.
+    c: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Shape {
+    /// 0.5^(age / scale): scale = half-life.
+    Exponential,
+    /// (1 + (2^(1/p) - 1) age / scale)^-p: half-life scale, longer tail for a smaller p.
+    Power(f64),
+    /// max(0, 1 - age / scale): 0 from age = scale.
+    Linear,
+    /// 1 if age < scale, else 0: a window.
+    Step,
+}
+
+impl Decay {
+    pub fn new(shape: Shape, scale: f64) -> Result<Self, Error> {
+        let bad = |m: String| Err(Error::InvalidInput(m));
+        if scale.is_nan() || scale <= 0.0 {
+            return bad(format!("scale must be > 0 (inf = no decay), got {scale}"));
+        }
+        let c = match shape {
+            Shape::Power(p) if !(p > 0.0 && p.is_finite()) => {
+                return bad(format!("exponent must be > 0, got {p}"));
+            }
+            Shape::Power(p) => (std::f64::consts::LN_2 / p).exp_m1(),
+            _ => 0.0,
+        };
+        Ok(Decay { shape, scale, c })
     }
-    let mut rank = vec![0.0f64; t.len()];
-    par_rows(&mut rank, indptr, &|_, start, row: &mut [f64]| {
-        let ts = &t[start..start + row.len()];
-        let mut order: Vec<usize> = (0..row.len()).collect();
-        order.sort_by(|&a, &b| ts[b].total_cmp(&ts[a])); // stable: ties keep column order
-        for (r, &j) in order.iter().enumerate() {
-            row[j] = r as f64;
+
+    /// The f32 weight of each age (one live history or every event of a log),
+    /// computed in f64. A negative age counts as 0 (clock skew between
+    /// services: never an error on the serving path); NaN / inf is an error.
+    pub fn weights(&self, ages: &[f64]) -> Result<Vec<f32>, Error> {
+        if ages.iter().any(|a| !a.is_finite()) {
+            return Err(Error::InvalidInput("ages must be finite".into()));
+        }
+        Ok(ages
+            .iter()
+            .map(|&a| self.weight(a.max(0.0)) as f32)
+            .collect())
+    }
+
+    /// The weight of `age` (>= 0).
+    pub fn weight(&self, age: f64) -> f64 {
+        let x = age / self.scale;
+        match self.shape {
+            Shape::Exponential => (-x).exp2(),
+            Shape::Power(p) => (1.0 + self.c * x).powf(-p),
+            Shape::Linear => (1.0 - x).max(0.0),
+            Shape::Step => {
+                if x < 1.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+}
+
+/// How `user_ages` measures an event's age within its user's events.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UserAge {
+    /// The user's latest timestamp minus the event's (needs timestamps).
+    SinceLatest,
+    /// The recency rank: 0 = the latest event, by timestamp or, without, by
+    /// input order; equal timestamps: the later row is the more recent.
+    Rank,
+}
+
+/// The age of each event within its user's events (`users`: codes in
+/// `0..n_users`, one per event), in input order. A counting sort by user
+/// (stable), then each user's events in parallel. Peak: ~3 x 8 bytes per event.
+pub fn user_ages(
+    users: &[i32],
+    n_users: usize,
+    t: Option<&[f64]>,
+    kind: UserAge,
+) -> Result<Vec<f64>, Error> {
+    let bad = |m: &str| Err(Error::InvalidInput(format!("user_ages: {m}")));
+    let n = users.len();
+    if t.is_some_and(|t| t.len() != n) {
+        return bad("one timestamp per event");
+    }
+    if t.is_some_and(|t| t.iter().any(|x| !x.is_finite())) {
+        return bad("timestamps must be finite");
+    }
+    if users.iter().any(|&u| u < 0 || u as usize >= n_users) {
+        return bad("user code out of range");
+    }
+    let t = match (t, kind) {
+        (None, UserAge::SinceLatest) => return bad("SinceLatest needs timestamps"),
+        (t, _) => t,
+    };
+    let mut start = vec![0usize; n_users + 1];
+    for &u in users {
+        start[u as usize + 1] += 1;
+    }
+    for u in 0..n_users {
+        start[u + 1] += start[u];
+    }
+    let mut next = start.clone();
+    let mut events = vec![0usize; n]; // event indices grouped by user, input order
+    for (e, &u) in users.iter().enumerate() {
+        events[next[u as usize]] = e;
+        next[u as usize] += 1;
+    }
+    drop(next);
+    let mut grouped = vec![0f64; n]; // ages in `events` order
+    let mut slices = Vec::with_capacity(n_users);
+    let mut rest = grouped.as_mut_slice();
+    for u in 0..n_users {
+        let (head, tail) = rest.split_at_mut(start[u + 1] - start[u]);
+        slices.push((u, head));
+        rest = tail;
+    }
+    slices.into_par_iter().for_each(|(u, out)| {
+        let ev = &events[start[u]..start[u + 1]];
+        match (kind, t) {
+            (UserAge::SinceLatest, Some(t)) => {
+                let latest = ev.iter().map(|&e| t[e]).fold(f64::NEG_INFINITY, f64::max);
+                for (o, &e) in out.iter_mut().zip(ev) {
+                    *o = latest - t[e];
+                }
+            }
+            (UserAge::Rank, None) => {
+                for (k, o) in out.iter_mut().enumerate() {
+                    *o = (ev.len() - 1 - k) as f64;
+                }
+            }
+            (UserAge::Rank, Some(t)) => {
+                let mut order: Vec<usize> = (0..ev.len()).collect();
+                order.sort_by(|&a, &b| t[ev[a]].total_cmp(&t[ev[b]])); // stable: ties keep input order
+                for (k, &j) in order.iter().enumerate() {
+                    out[j] = (ev.len() - 1 - k) as f64;
+                }
+            }
+            (UserAge::SinceLatest, None) => unreachable!(),
         }
     });
-    Ok(rank)
+    let mut ages = vec![0f64; n];
+    for (&e, &a) in events.iter().zip(&grouped) {
+        ages[e] = a;
+    }
+    Ok(ages)
 }
 
 /// `log(logbase)` rounded to the data type, like every stored value.
@@ -368,12 +505,48 @@ mod tests {
     }
 
     #[test]
-    fn recency_rank_latest_first_ties_by_column() {
-        // rows: [5, 9, 9, 1], [], [3]
-        let rank = recency_rank(&[5.0, 9.0, 9.0, 1.0, 3.0], &[0, 4, 4, 5]).unwrap();
-        assert_eq!(rank, [2.0, 0.0, 1.0, 3.0, 0.0]);
-        assert!(recency_rank(&[f64::NAN], &[0, 1]).is_err());
-        assert!(recency_rank(&[1.0], &[0, 2]).is_err());
+    fn decay_curves() {
+        for shape in [
+            Shape::Exponential,
+            Shape::Power(0.5),
+            Shape::Power(3.0),
+            Shape::Linear,
+            Shape::Step,
+        ] {
+            let d = Decay::new(shape, 10.0).unwrap();
+            assert_eq!(d.weight(0.0), 1.0);
+            assert_eq!(Decay::new(shape, f64::INFINITY).unwrap().weight(1e9), 1.0);
+            if let Shape::Exponential | Shape::Power(_) = shape {
+                assert!((d.weight(10.0) - 0.5).abs() < 1e-12);
+            } else {
+                assert_eq!(d.weight(10.0), 0.0); // exclusive horizon
+            }
+        }
+        assert!(Decay::new(Shape::Linear, 0.0).is_err());
+        assert!(Decay::new(Shape::Linear, f64::NAN).is_err());
+        assert!(Decay::new(Shape::Power(0.0), 1.0).is_err());
+    }
+
+    #[test]
+    fn user_ages_latest_and_rank() {
+        // users 1, 0, 1, 1; t 5, 7, 9, 9 (a tie in user 1)
+        let (users, t) = ([1, 0, 1, 1], [5.0, 7.0, 9.0, 9.0]);
+        let since = user_ages(&users, 2, Some(&t), UserAge::SinceLatest).unwrap();
+        assert_eq!(since, [4.0, 0.0, 0.0, 0.0]);
+        let rank = user_ages(&users, 2, Some(&t), UserAge::Rank).unwrap();
+        assert_eq!(rank, [2.0, 0.0, 1.0, 0.0]); // tie: the later row is the more recent
+        let order = user_ages(&users, 2, None, UserAge::Rank).unwrap();
+        assert_eq!(order, [2.0, 0.0, 1.0, 0.0]);
+        assert!(user_ages(&users, 2, None, UserAge::SinceLatest).is_err());
+        assert!(user_ages(&[2], 2, None, UserAge::Rank).is_err());
+    }
+
+    #[test]
+    fn decay_weights_clamp_and_reject() {
+        let d = Decay::new(Shape::Exponential, 10.0).unwrap();
+        assert_eq!(d.weights(&[0.0, 10.0, -5.0]).unwrap(), [1.0, 0.5, 1.0]);
+        assert!(d.weights(&[f64::NAN]).is_err());
+        assert!(d.weights(&[f64::INFINITY]).is_err());
     }
 
     #[test]
