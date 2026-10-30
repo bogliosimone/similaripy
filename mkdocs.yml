@@ -59,11 +59,13 @@ nav:
       - Installation: installation.md
       - Quickstart: guide.md
   - User guide:
+      - Preprocessing: preprocessing.md
       - Similarities: similarity.md
       - Serving: serving.md
       - Normalizations: normalization.md
       - Signed Input: signed-input.md
   - API reference:
+      - similaripy.preprocessing: api/preprocessing.md
       - similaripy.similarity: api/similarity.md
       - similaripy.serving: api/serving.md
       - similaripy.normalization: api/normalization.md
