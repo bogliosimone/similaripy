@@ -60,12 +60,12 @@ nav:
       - Quickstart: guide.md
   - User guide:
       - Similarities: similarity.md
+      - Serving: serving.md
       - Normalizations: normalization.md
       - Signed Input: signed-input.md
-      - Serving: serving.md
   - API reference:
       - similaripy.similarity: api/similarity.md
-      - similaripy.normalization: api/normalization.md
       - similaripy.serving: api/serving.md
+      - similaripy.normalization: api/normalization.md
   - About:
       - Migration from 0.7.0: migration.md

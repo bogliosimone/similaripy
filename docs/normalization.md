@@ -1,6 +1,10 @@
 # 🧮 Normalization Functions
 
-SimilariPy includes several normalization functions designed for sparse matrix pre-processing. All functions return a new CSR matrix (the input never changes): float32 or float64 values as the input (other types become float32), int32 indices, duplicates summed, no explicit zeros.
+Normalization functions re-weight a sparse matrix, e.g. BM25 on your input matrix before the similarity computation.
+
+```python
+import similaripy as sim   # sim.bm25, sim.normalize, ...
+```
 
 ## Normalizations
 
@@ -43,13 +47,8 @@ All normalization functions in SimilariPy share the following parameters:
 | `'prob'`   | log((N - df) / df) |
 | `'bm25'`   | BM25-style IDF weighting |
 
-## Signed Input
-
-`normalize` and `binarize` accept negative values; `tfidf`, `bm25` and
-`bm25plus` raise a `ValueError`: see [Signed Input](signed-input.md#normalizations).
-
 ## Notes
 
-- All normalization functions return a new matrix: use the return value, `X = bm25(X)`.
-- Input values must be finite (NaN or inf raises a `ValueError`), as in the similarity functions.
-- `bm25` and `tfidf` are ideal for text, user-item, or interaction data.
+- **Output**: a new CSR matrix, duplicates summed and explicit zeros dropped; the input never changes: use the return value, `X = bm25(X)`.
+- **Precision**: values keep the input's float type (float32 or float64; other types become float32); inputs must be finite (NaN or inf raises a `ValueError`).
+- **Negative values**: accepted by `normalize` and `binarize`; `tfidf`, `bm25` and `bm25plus` raise a `ValueError`: see [Signed Input](signed-input.md#normalizations).

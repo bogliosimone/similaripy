@@ -209,10 +209,20 @@ def test_view_include_exclude_and_per_call():
     # view include AND per-call include, minus per-call exclude
     got = va.recommend(hist, k=60, exclude_seen=False, include=b, exclude=[12])[0]
     assert list(got) == [i for i in full if i % 6 == 0 and i != 12]
-    # a view's exclude, and a view of a view replaces both rules
-    vx = va.view(exclude=b)
-    assert list(vx.recommend(hist, k=60, exclude_seen=False)[0]) == [i for i in full if i % 3]
-    assert list(vx.view().recommend(hist, k=60, exclude_seen=False)[0]) == full
+    # a view's exclude
+    assert list(rec.view(exclude=b).recommend(hist, k=60, exclude_seen=False)[0]) == [i for i in full if i % 3]
+    # a view of a view narrows (the parent's rules AND the new ones), view() keeps them
+    country = rec.view(include=range(30), exclude=[4])
+    package = country.view(include=range(10, 60, 2))
+    assert list(package.recommend(hist, k=60, exclude_seen=False)[0]) == [
+        i for i in full if 10 <= i < 30 and i % 2 == 0
+    ]
+    assert list(package.view(exclude=[12]).recommend(hist, k=60, exclude_seen=False)[0]) == [
+        i for i in full if 10 <= i < 30 and i % 2 == 0 and i != 12
+    ]
+    assert list(country.view().recommend(hist, k=60, exclude_seen=False)[0]) == [i for i in full if i < 30 and i != 4]
+    # to widen, start from the base model
+    assert list(rec.view().recommend(hist, k=60, exclude_seen=False)[0]) == full
     # candidate_items trims for good: a view can't widen past it
     trimmed = ItemKNN(S, candidate_items=a)
     assert set(trimmed.view().recommend(hist, k=60, exclude_seen=False)[0]) <= set(a)
@@ -385,9 +395,9 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
     S = _S(80, True, seed=11) @ sp.diags_array(keep)  # items 3-5: no column
     S = sp.diags_array(np.r_[np.ones(5), 0, np.ones(74)]) @ S  # item 5: no row either (dropped)
     ext = rng.choice(10**12, size=80, replace=False)
-    rec = ItemKNN(S, item_ids=ext, candidate_items=ext[2:75], block_size=block_size).view(
-        include=ext[5:60], exclude=ext[20:25]
-    )
+    rec = ItemKNN(S, item_ids=ext, candidate_items=ext[2:75], block_size=block_size)
+    with pytest.raises(ValueError, match="save the base model"):
+        rec.view(include=ext[5:60]).save(tmp_path / "v")
     rec.save(tmp_path / "m")
     back = ItemKNN.load(tmp_path / "m", mmap=mmap)
     for a, b in zip(rec._model.parts(), back._model.parts()):
@@ -499,7 +509,6 @@ def _swap_first_row(a):
         (lambda d: _corrupt(d, "new_to_old", lambda a: np.r_[-1, a[1:]].astype(np.int32)), "distinct"),
         (lambda d: _corrupt(d, "item_ids", lambda a: np.r_[a[1], a[1:]]), "unique"),
         (lambda d: _corrupt(d, "item_ids", lambda a: a[:-1]), "one id per item"),
-        (lambda d: _corrupt(d, "allowed", lambda a: np.r_[a, a]), "one bit per item"),
         (lambda d: (d / "meta.json").write_text("{not json"), "meta.json"),
         (lambda d: _meta(d, format=2), "newer"),
         (lambda d: _meta(d, format="1"), "integer"),
@@ -509,12 +518,12 @@ def _swap_first_row(a):
         (lambda d: _meta(d, n_cols=10), "one id per item"),
         (lambda d: _meta(d, n_cols=10**12), "one id per item"),  # checked before allocating
         (lambda d: _meta(d, block_size=0), "block_size"),
-        (lambda d: _meta(d, allowed=False, item_ids=None), "true or false"),
+        (lambda d: _meta(d, item_ids=None), "true or false"),
     ],
 )
 def test_load_rejects_corrupted_files(tmp_path, corrupt, error):
     S = _S(40, False, seed=13)
-    rec = ItemKNN(S, item_ids=np.arange(40) * 3 + 1).view(include=np.arange(10) * 3 + 1)
+    rec = ItemKNN(S, item_ids=np.arange(40) * 3 + 1)
     d = tmp_path / "m"
     rec.save(d)
     corrupt(d)

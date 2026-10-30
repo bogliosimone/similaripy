@@ -385,8 +385,14 @@ proptest! {
                 prop_assert_eq!(&got.0, &want.0);
                 prop_assert_eq!(bits(&got.1), bits(&want.1));
             }
-            // A view of a view replaces the rules: no rules = all.
-            prop_assert_eq!(&go(&c, &view.view(None, None), None, None).0, &go(&c, &m, None, None).0);
+            // A view of a view narrows: no rules = the parent's, more rules
+            // = the parent's AND them (== the same rules per call).
+            prop_assert_eq!(&go(&c, &view.view(None, None), None, None).0, &want.0);
+            let odd: Vec<i64> = (0..c.s.len()).filter(|j| j % 2 == 1).map(|j| ext_of(&c, j)).collect();
+            let got = go(&c, &view.view(None, Some(&odd)), None, None);
+            let and = go(&c, &view, None, Some(&odd));
+            prop_assert_eq!(&got.0, &and.0);
+            prop_assert_eq!(bits(&got.1), bits(&and.1));
             // View's include AND the per-call include "even original ids".
             let even: Vec<i64> = (0..c.s.len()).filter(|j| j % 2 == 0).map(|j| ext_of(&c, j)).collect();
             let both: Vec<i64> = (0..c.s.len())
@@ -654,7 +660,9 @@ fn save_load_round_trip_overwrite_and_versions() {
     let m = build_blocked(&s, &[1, 0, 2], Some(&[10, 11, 12, 13]), 2).unwrap();
     let v = m.view(Some(&[11, 12]), None);
     let dir = tmp("model");
-    v.save(&dir, "test", false).unwrap();
+    let err = v.save(&dir, "test", false).unwrap_err().to_string();
+    assert!(err.contains("save the base model"), "{err}");
+    m.save(&dir, "test", false).unwrap();
     let rec = |m: &Model| {
         let mut out = (vec![], vec![]);
         let r = Request {
@@ -672,20 +680,19 @@ fn save_load_round_trip_overwrite_and_versions() {
     // Miri can't map files; plain reads run under it
     for mmap in [false, true].into_iter().filter(|&m| !(cfg!(miri) && m)) {
         let back = Model::load(&dir, mmap).unwrap();
-        assert_eq!(Owned::of(&back), Owned::of(&v));
-        assert_eq!(rec(&back), rec(&v));
+        assert_eq!(Owned::of(&back), Owned::of(&m));
+        assert_eq!(rec(&back), rec(&m));
         // a trimmed model of a mapped one (shared mapped arrays, owned S)
         let t = back.trimmed(&[11]).unwrap();
         assert_eq!(Owned::of(&t).new_to_old, vec![1, 0, 2]);
     }
     // never into a non-empty directory unless it holds a saved model and overwrite
-    assert!(v.save(&dir, "test", false).is_err());
+    assert!(m.save(&dir, "test", false).is_err());
     m.save(&dir, "test", true).unwrap();
-    assert_eq!(Owned::of(&Model::load(&dir, false).unwrap()).allowed, None);
     let other = tmp("other");
     std::fs::create_dir_all(&other).unwrap();
     std::fs::write(other.join("keep.txt"), "x").unwrap();
-    assert!(v.save(&other, "test", true).is_err());
+    assert!(m.save(&other, "test", true).is_err());
     assert!(other.join("keep.txt").exists());
     // Q1: a newer format is a clear error, an unknown value dtype too
     let meta = std::fs::read_to_string(dir.join("meta.json")).unwrap();

@@ -21,10 +21,13 @@ default mask (cheap to change: make a new view, swap the reference);
 `include=` / `exclude=` per call. They combine with AND.
 """
 
+from typing import Literal
+
 import numpy as np
+from scipy.sparse import sparray, spmatrix
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
-from ._s_plus import _canonical_csr
+from ._s_plus import SparseInput, _canonical_csr
 
 __all__ = ["ItemKNN"]
 
@@ -84,12 +87,15 @@ def _per_user(name, lists, n=None, convert=None):
     return np.r_[0, np.cumsum(lens)].astype(np.int64), flat, (none if none.any() else None)
 
 
-def _csr_arrays(S, num_threads):
-    """S's CSR arrays as contiguous int32 / float32, copied only when the
+def _csr_arrays(S: SparseInput, num_threads):
+    """S's size and CSR arrays as contiguous int32 / float32, copied only when the
     dtype or layout differs (the build reads them in place and never changes
     them). Other formats take the similarity functions' route
     (`_canonical_csr`: one copy, values cast before duplicates are summed), so
     the model doesn't depend on the input format."""
+    n = S.shape[0]
+    if S.ndim != 2 or S.shape[1] != n:
+        raise ValueError(f"S must be square (item x item), got shape {S.shape}")
     if S.nnz > _INT32_MAX:
         raise ValueError(f"S must have at most {_INT32_MAX} non-zeros")
     if S.format != "csr":
@@ -98,6 +104,7 @@ def _csr_arrays(S, num_threads):
     with np.errstate(over="ignore"):  # inf: rejected by the build's finite check
         data = np.ascontiguousarray(S.data[:nnz], dtype=np.float32)
     return (
+        n,
         np.ascontiguousarray(S.indptr, dtype=np.int32),
         np.ascontiguousarray(S.indices[:nnz], dtype=np.int32),
         data,
@@ -134,11 +141,16 @@ class ItemKNN:
     from another thread meanwhile.
     """
 
-    def __init__(self, S, *, item_ids=None, candidate_items=None, block_size="auto", num_threads: int = 0):
-        n = S.shape[0]
-        if S.ndim != 2 or S.shape[1] != n:
-            raise ValueError(f"S must be square (item x item), got shape {S.shape}")
-        indptr, indices, data = _csr_arrays(S, num_threads)
+    def __init__(
+        self,
+        S: sparray | spmatrix,
+        *,
+        item_ids: list[int] | np.ndarray | None = None,
+        candidate_items: list[int] | np.ndarray | None = None,
+        block_size: int | Literal["auto"] | None = "auto",
+        num_threads: int = 0,
+    ):
+        n, indptr, indices, data = _csr_arrays(S, num_threads)
         ext = None
         if item_ids is not None:
             ext = _ids("item_ids", item_ids)
@@ -176,13 +188,19 @@ class ItemKNN:
             self._item_ids = ids
         return ids
 
-    def view(self, *, include=None, exclude=None) -> "ItemKNN":
+    def view(
+        self,
+        *,
+        include: list[int] | np.ndarray | None = None,
+        exclude: list[int] | np.ndarray | None = None,
+    ) -> "ItemKNN":
         """
         The same model with a default availability: only the `include` items
         (None = all) minus the `exclude` items. S is shared (no copy), only a
         bitset of one bit per item is new, so it is cheap to change often.
         Combined with the per-call `include` / `exclude` by AND. A view of a
-        view replaces both rules (`view()` = no rules).
+        view narrows: the parent's rules AND the new ones (e.g. a country
+        view, then a package view of it); to widen, start from the base model.
 
         To update availability in a running service, build the new view and
         swap the reference; requests in flight keep the model they started
@@ -194,15 +212,15 @@ class ItemKNN:
 
     def recommend(
         self,
-        history,
+        history: list[int] | np.ndarray,
         *,
-        weights=None,
+        weights: list[float] | np.ndarray | None = None,
         k: int = 10,
         exclude_seen: bool = True,
-        include=None,
-        exclude=None,
+        include: list[int] | np.ndarray | None = None,
+        exclude: list[int] | np.ndarray | None = None,
         sorted: bool = True,
-    ):
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         The top `k` items for one history.
 
@@ -234,16 +252,16 @@ class ItemKNN:
 
     def recommend_batch(
         self,
-        histories,
+        histories: list[list[int] | np.ndarray],
         *,
-        weights=None,
+        weights: list[list[float] | np.ndarray | None] | None = None,
         k: int = 10,
         exclude_seen: bool = True,
-        include=None,
-        exclude=None,
+        include: list[list[int] | np.ndarray | None] | None = None,
+        exclude: list[list[int] | np.ndarray | None] | None = None,
         sorted: bool = True,
         num_threads: int = 0,
-    ):
+    ) -> tuple[list[np.ndarray], list[np.ndarray]]:
         """
         `recommend` for many histories at once, in parallel: element u of the
         result equals `recommend(histories[u], weights=weights[u], ...)` bit
@@ -251,10 +269,14 @@ class ItemKNN:
 
         Args:
             histories: a list with one array of item ids per user.
-            weights, include, exclude: None, or a list with one entry per user
-                (an entry may be None). A rule for every user goes in
-                `view()`.
-            k, exclude_seen, sorted: as `recommend`, for every user.
+            weights: None, or a list with one array of weights per user (an
+                entry may be None: all 1.0).
+            include: None, or a list with one entry per user (an entry may be
+                None). A rule for every user goes in `view()`.
+            exclude: as `include`.
+            k: as `recommend`, for every user.
+            exclude_seen: as `recommend`, for every user.
+            sorted: as `recommend`, for every user.
             num_threads: 0 = all cores (one shared pool), n = n threads.
 
         Returns:
@@ -296,14 +318,10 @@ class ItemKNN:
 
     def save(self, path, *, overwrite: bool = False) -> None:
         """
-        Saves the model to the directory `path`, which must be missing or
-        empty, for `ItemKNN.load` in this or any later 1.x version (the view's
-        rules and `block_size` included). `overwrite=True` replaces a model
-        saved there; processes that loaded the old one keep it.
-
-        Never change a saved model's files: for a live service, save each
-        version to a new directory and switch what the workers load. Details
-        and the file format: the Serving guide.
+        Saves the model to the directory `path` (missing or empty;
+        `overwrite=True` replaces a saved model) for `ItemKNN.load` in this or
+        any later 1.x version. A view can't be saved: save the base model and
+        build views after `load`. Details: the Serving guide.
         """
         from . import __version__
 

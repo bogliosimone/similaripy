@@ -1,6 +1,10 @@
 # 🔍 Similarity Functions
 
-SimilariPy provides a suite of similarity functions for sparse matrices, all running in a multi-threaded Rust core. All functions compute `matrix1 × matrix2` row by row with Gustavson's sparse product, keeping each row's top-k. These models compute item-to-item or user-to-user similarity based on vector math or graph-based transformations.
+Similarity functions compute `matrix1 × matrix2` on sparse matrices and keep the top-k values of each row, from vector-based or graph-based scores. All of them are multi-threaded and GIL-free.
+
+```python
+import similaripy as sim   # sim.cosine, sim.rp3beta, ...
+```
 
 ## Similarities
 
@@ -26,7 +30,7 @@ All similarity functions in Similaripy share the following parameters (everythin
 | `matrix2`        | Optional second matrix. If `None`, uses `matrix1.T`. *(default: `None`)* |
 | `k`              | Number of top-k items per row. *(default: `100`)* |
 | `shrink`         | Shrinkage strength `h` (`>= 0`), see [Shrinkage Types](#shrinkage-types). *(default: `0`)* |
-| `threshold`      | Minimum similarity value to retain: scores `>= threshold` are kept, lower ones are dropped; a score of exactly `0` is always dropped. *(default: `0`)* |
+| `threshold`      | Minimum similarity value to retain (`>= 0`): scores `>= threshold` are kept, lower ones are dropped; a score of exactly `0` is always dropped. *(default: `0`)* |
 | `shrink_type`    | Shrinkage type: `stabilized`, `bayesian`, or `additive`.  *(default: `stabilized`)* |
 | `binary`         | If `True`, binarizes the input matrix. *(default: `False`)* |
 | `target_rows`    | List or array of row indices to compute. If `None`, computes for all rows. *(default: `None`)* |
@@ -57,7 +61,7 @@ $s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i x_i^2} \cdot \sqrt{\sum_i y_i^2} + h}$
 ### Bayesian Shrinkage
 $s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i x_i^2} \cdot \sqrt{\sum_i y_i^2}} \cdot \frac{x \cdot y}{x \cdot y + h}$
 
-- Penalizes similarities with items with low overlap support.  
+- Penalizes similarities between items with low overlap.  
 - **`h`** acts as the shrinkage strength.
 - `shrink_type = 'bayesian'`
 
@@ -71,11 +75,9 @@ $s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i x_i^2 + h} \cdot \sqrt{\sum_i y_i^2 + h}
 
 ## Notes
 
-- All similarity functions run in a **Rust core** on CSR matrices.
-- Computations are fully **multi-threaded** and scale with CPU cores.
-- Supports **CSR** and **COO** sparse matrix formats as output.
-- **Negative values** are accepted, with a few rules per function, see [Signed Input](signed-input.md#similarities).
-- **Input values and scores** are float32, so inputs must be finite and scores stay within about `1e-4` relative of float64.
+- **Output**: a new CSR matrix (`format_output='coo'` for COO), at most `k` entries per row; the inputs never change.
+- **Precision**: inputs and scores are float32, so inputs must be finite (NaN or inf raises a `ValueError`) and scores stay within about `1e-4` relative of float64.
+- **Negative values**: accepted, with a few rules per function: see [Signed Input](signed-input.md#similarities).
 
 ## Math Equations
 

@@ -3,10 +3,11 @@
 ??? info "ItemKNN"
     ::: similaripy.serving.ItemKNN
         options:
+          group_by_category: false
           members:
-            - item_ids
             - recommend
             - recommend_batch
             - view
             - save
             - load
+            - item_ids

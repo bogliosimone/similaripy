@@ -11,17 +11,18 @@
 
 ## Welcome to SimilariPy’s documentation!
 
-**SimilariPy** is a Python package that provides high-performance KNN similarity and normalization functions, optimized for sparse matrices, and an engine to serve item-item recommendations.
+**SimilariPy** is a high-performance Python package, built in Rust, to compute KNN similarity matrices from sparse data and serve them with low latency.
 
 ---
 
 ## 🔥 Why SimilariPy?
 
+- **Wide similarity coverage**: Dot Product, Cosine, Tversky, P3α, RP3β, and more
+- **Low-latency serving**: recommendations in microseconds, one model shared by every worker process
+- **Availability rules**: include or exclude items for every request, a group of users or one user
+- **Flexible normalization**: L1, L2, TF-IDF, BM25, BM25+
 - **Fast**: a multi-threaded Rust core, GIL-free
 - **Sparse matrix focus**: any SciPy sparse input, CSR or COO output
-- **Wide similarity coverage**: Dot Product, Cosine, Tversky, P3α, RP3β, and more
-- **Flexible normalization**: includes L1, L2, TF-IDF, BM25, BM25+
-- **Serving**: `ItemKNN` answers a history in microseconds, GIL-free, memory-mapped across worker processes, with include / exclude rules
 
 ---
 
@@ -30,9 +31,9 @@
 - [Installation](installation.md)
 - [Quickstart](guide.md)
 - [Similarities](similarity.md)
+- [Serving](serving.md)
 - [Normalizations](normalization.md)
 - [Signed Input](signed-input.md)
-- [Serving](serving.md)
 - [API reference](api/similarity.md)
 - [Migration from 0.7.0](migration.md)
 

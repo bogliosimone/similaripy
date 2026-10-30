@@ -1,8 +1,7 @@
 # ➕➖ Signed Input
 
 Input values can be negative, e.g. mean-centered ratings (adjusted cosine) or
-explicit dislikes. Most recommender data (clicks, plays, counts) is
-non-negative and needs none of this page.
+explicit dislikes.
 
 A score is evidence of similarity: only **positive** scores (`>= threshold`)
 are results; negative scores and scores that cancel to exactly `0` are
@@ -34,14 +33,9 @@ similarity_matrix = sim.cosine(urm.T, k=50, threshold=1e-6)
 - **Dissimilar items** are not returned. To rank them, negate `matrix2`:
   `sim.cosine(m, -m.T)` keeps the most negative scores, as positives.
 - **`threshold > 0`** is a good idea: sums that should cancel can leave a tiny
-  float32 residue (e.g. `1e-8`) instead of an exact `0`. On float data in any
-  similarity; for `cosine`, `asymmetric_cosine` and `rp3beta` also on integer
-  data (they run as a dot product of pre-scaled inputs, whose rounding doesn't
-  cancel exactly).
+  float32 residue (e.g. `1e-8`) instead of an exact `0`.
 - **Selectors:** `filter_cols` / `target_cols` matrices select the non-zero
-  entries. Pass the raw (or binarized) interaction matrix, not a mean-centered
-  one: a rating equal to the user's mean centers to `0` and would not be
-  filtered. Duplicate entries that cancel (e.g. `+1` and `-1`) select nothing.
+  entries. Duplicate entries that cancel (e.g. `+1` and `-1`) select nothing.
 - **`binary=True`** makes the input non-signed (every non-zero is `1`), so none
   of the rules below apply.
 
