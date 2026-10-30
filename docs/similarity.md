@@ -61,7 +61,7 @@ $s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i x_i^2} \cdot \sqrt{\sum_i y_i^2} + h}$
 ### Bayesian Shrinkage
 $s_{xy} = \frac{x \cdot y}{\sqrt{\sum_i x_i^2} \cdot \sqrt{\sum_i y_i^2}} \cdot \frac{x \cdot y}{x \cdot y + h}$
 
-- Penalizes similarities with items with low overlap support.  
+- Penalizes similarities between items with low overlap.  
 - **`h`** acts as the shrinkage strength.
 - `shrink_type = 'bayesian'`
 

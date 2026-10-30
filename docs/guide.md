@@ -22,9 +22,9 @@ All functions run in a multi-threaded Rust core, GIL-free, on sparse CSR matrice
 - **P3α**: Graph-based similarity computed through random walk propagation with exponentiation.
 - **RP3β**: Similar to P3α but includes a popularity penalization term.
 
-### Advanced 
+### Advanced
 
-- **S-Plus**: A hybrid model combining Tversky and Cosine components, with RP3Beta-style depopularization and full control over weights and smoothing. 
+- **S-Plus**: A hybrid model combining Tversky and Cosine components, with RP3Beta-style depopularization and full control over weights and smoothing.
 
 ## Serving
 

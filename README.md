@@ -20,7 +20,7 @@ It also includes normalization functions to pre-process the data.
 
 SimilariPy is primarily designed for Recommender Systems and Information Retrieval (IR) tasks, but can be applied to other domains as well.
 
-The official documentations is available at **[📘 SimilariPy Guide](https://bogliosimone.github.io/similaripy/)**
+The official documentation is available at **[📘 SimilariPy Guide](https://bogliosimone.github.io/similaripy/)**
 
 ## 🔍 Similarity Functions
 
@@ -40,7 +40,7 @@ All functions run in a multi-threaded Rust core, GIL-free, on sparse CSR matrice
 
 ### Advanced 
 
-- **S-Plus**: A hybrid model combining Tversky and Cosine components, with full control over weights and smoothing.
+- **S-Plus**: A hybrid model combining Tversky and Cosine components, with RP3Beta-style depopularization and full control over weights and smoothing.
 
 For mathematical definitions and parameter details, see the **[📘 SimilariPy Guide](https://bogliosimone.github.io/similaripy/)**.
 
