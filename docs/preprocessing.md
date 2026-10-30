@@ -115,4 +115,3 @@ ids, scores = model.recommend(history, weights=w)
 - **String ids** (or unsigned ids beyond int64): map them at the edge with `pd.factorize` and keep the names next to the model: `codes, names = pd.factorize(log.item)`, then `names[ids]`.
 - **Ids**: must be integers everywhere. In the URM, row `u` is `user_ids[u]` and column `j` is `item_ids[j]`; histories are in your item ids.
 - **Weighting and normalization**: the decays weight single events, before the URM (repeats are summed, so old repeats fade); the [normalizations](normalization.md) need the whole matrix, so they come after.
-- **Rank decay online**: a history kept in arrival order has the same weights on every request: compute `table = rank_decay(np.zeros(1000, dtype=int), scale=...)` once, then pass `table[-len(history):]` (histories of at most 1000 events).

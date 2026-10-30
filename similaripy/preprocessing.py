@@ -98,35 +98,49 @@ def interactions_to_urm(
     item_ids: ArrayLike | None = None,
 ) -> tuple[sp.csr_array, np.ndarray, np.ndarray]:
     """
-    A user-item matrix from interaction logs, with the id maps.
+    The user-item matrix (URM) from one entry per event, with the id maps.
+
+    Examples:
+        ```python
+        URM, user_ids, item_ids = interactions_to_urm(log.user, log.item)
+        # with a time decay: each event weighted by its own age, then summed
+        w = time_decay(log.ts, reference=cutoff, scale=30 * 86400)
+        URM, user_ids, item_ids = interactions_to_urm(log.user, log.item, w)
+        ```
 
     Args:
-        users, items: one integer id per interaction (any ints: gaps and
-            unaligned ids are fine).
-        values: one finite value per interaction (None = 1.0 each), e.g. a
-            rating, an event weight, or a decay: `values *
-            time_decay(ts, ...)` / `rank_decay(users, ...)` (each
-            event weighted by its own age, then summed: as `recommend` sums
-            a live history).
-        timestamps: one per interaction (numbers or datetime64), only to
-            order "first" / "last"; None = input order.
+        users: one integer user id per event; gaps and unaligned ids are fine.
+        items: one integer item id per event.
+        values: one finite value per event, e.g. a rating, an event weight
+            or a decay weight; None = 1.0 each.
+        timestamps: one per event (numbers or datetime64), only to order
+            "first" / "last" (ties: input order); None = input order.
         duplicates: what a repeated (user, item) pair keeps: "sum" adds the
             values (counts), "first" / "last" keep the earliest / latest
-            event's value, by timestamp (ties: input order), or by input
-            order without timestamps.
-        user_ids, item_ids: a fixed vocabulary (unique ints) instead of the
-            ids seen, e.g. to give matrices built from different slices the
-            same columns; interactions with other ids are dropped.
+            event's value.
+        user_ids: a fixed user vocabulary (unique ints) instead of the ids
+            seen; events with other ids are dropped.
+        item_ids: a fixed item vocabulary, e.g. to give matrices built from
+            different slices the same columns; events with other ids are
+            dropped.
 
     Returns:
-        (URM, user_ids, item_ids): `URM` a float32 canonical `csr_array`
-        (users x items), row `u` = `user_ids[u]`, column `j` = `item_ids[j]`
-        (int64, sorted, or the vocabulary as given); pass `item_ids` to
-        `ItemKNN(S, item_ids=item_ids)`. Pairs whose value is 0 in float32
-        are not stored.
+        URM: float32 CSR matrix (users x items), duplicates merged, pairs
+            whose value is 0 in float32 not stored.
+        user_ids: int64, `user_ids[u]` is your id of row `u` (sorted, or
+            the vocabulary as given).
+        item_ids: int64, `item_ids[j]` is your id of column `j`; pass it to
+            `ItemKNN(S, item_ids=item_ids)`.
 
-    Memory: about 20 bytes per interaction above the inputs (int32 codes,
-    then per-user buckets: item, value; + 8 with timestamps), plus the output.
+    Raises:
+        TypeError: on non-integer ids or timestamps of another type.
+        ValueError: on lengths that don't match, non-finite values or
+            timestamps, a non-unique vocabulary, no event left with a
+            vocabulary, or more than 2^31 - 1 distinct pairs.
+
+    Note:
+        Memory: about 20 bytes per event above the inputs (+ 8 with
+        timestamps), plus the output; built in the Rust core.
     """
     users, items = _check_ids("users", users), _check_ids("items", items)  # no int64 copy: ~8 B/event each
     if users.shape != items.shape:
@@ -170,28 +184,33 @@ def interactions_to_histories(
 ) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
     """
     Each user's events as a history for `ItemKNN.recommend_batch`, straight
-    from the log: no matrix, no id mapping (histories are in your item ids;
-    ids the model doesn't have are ignored by `recommend`). E.g. the
-    histories of a holdout set.
+    from the log, e.g. a holdout set: no matrix and no id mapping (ids the
+    model doesn't have are ignored by `recommend`).
 
     Repeated items stay (`recommend` sums their weights: the same scores as
-    `interactions_to_urm` + `urm_to_histories`); events with weight 0 are
-    dropped, so a `rank_decay(..., shape="step")` also caps the length.
+    through a URM); events with weight 0 are dropped, so a `"step"` decay
+    also caps the length.
 
-    Example::
-
+    Examples:
+        ```python
         user_ids, histories, weights = interactions_to_histories(test.user, test.item)
         ids, scores = model.recommend_batch(histories, weights=weights, k=20)  # element u: user_ids[u]
+        ```
 
     Args:
-        users, items: one integer id per event.
-        weights: one finite weight per event (None = 1.0 each), e.g. a
-            `time_decay` / `rank_decay`.
+        users: one integer user id per event.
+        items: one integer item id per event.
+        weights: one finite weight per event, e.g. a `time_decay` /
+            `rank_decay`; None = 1.0 each.
 
     Returns:
-        (user_ids, histories, weights): `user_ids` int64, sorted; two lists
-        with one array per user (int64 item ids in input order, float32
-        weights).
+        user_ids: int64, sorted: `user_ids[u]` is the user of element `u`.
+        histories: one int64 array of item ids per user, in input order.
+        weights: one float32 array of weights per user.
+
+    Raises:
+        TypeError: on non-integer ids.
+        ValueError: on lengths that don't match or non-finite weights.
     """
     users, items = _check_ids("users", users), _ids("items", items)
     if users.shape != items.shape:
@@ -215,37 +234,45 @@ def interactions_to_histories(
     return user_ids, np.split(items[order], cuts), np.split(w[order], cuts)
 
 
-def urm_to_histories(X, item_ids: ArrayLike | None = None) -> tuple[list[np.ndarray], list[np.ndarray]]:
+def urm_to_histories(URM, item_ids: ArrayLike | None = None) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """
-    Each row of X as a history for `ItemKNN.recommend_batch`.
+    Each row of a URM as a history for `ItemKNN.recommend_batch`, e.g. every
+    training user, or a benchmark dataset given as a matrix.
+
+    Examples:
+        ```python
+        histories, weights = urm_to_histories(URM, item_ids)
+        ids, scores = model.recommend_batch(histories, weights=weights, k=20)  # element u: row u
+        ```
 
     Args:
-        X: user-item matrix (e.g. the URM).
+        URM: user-item sparse matrix; its values become the weights.
         item_ids: your id of each column (the `item_ids` of
             `interactions_to_urm`); None = column indices (for `ItemKNN(S)`
             without `item_ids`).
 
     Returns:
-        (histories, weights): two lists with one array per row of X (int64
-        ids, float32 weights = X's values), row u = `user_ids[u]`; views into
-        one copy of X's arrays. Use as
-        `model.recommend_batch(histories, weights=weights)`, in chunks of
-        rows for many users.
+        histories: one int64 array of item ids per row.
+        weights: one float32 array of the row's values per row.
+
+    Raises:
+        TypeError: on non-integer `item_ids`.
+        ValueError: on `item_ids` without one id per column.
     """
-    X = sp.csr_array(X, dtype=np.float32, copy=True)  # sum_duplicates must not touch the caller's
-    X.sum_duplicates()
+    URM = sp.csr_array(URM, dtype=np.float32, copy=True)  # sum_duplicates must not touch the caller's
+    URM.sum_duplicates()
     if item_ids is None:
-        ids = X.indices.astype(np.int64)
+        ids = URM.indices.astype(np.int64)
     else:
         item_ids = _ids("item_ids", item_ids)
-        n_cols = X.shape[1]  # ty: ignore[index-out-of-bounds]  (scipy-stubs: csr_array(X) as 1-d)
+        n_cols = URM.shape[1]  # ty: ignore[index-out-of-bounds]  (scipy-stubs: csr_array(URM) as 1-d)
         if item_ids.shape != (n_cols,):
             raise ValueError(f"item_ids must have one id per column ({n_cols}), got shape {item_ids.shape}")
-        ids = item_ids[X.indices]
-    if X.shape[0] == 0:
+        ids = item_ids[URM.indices]
+    if URM.shape[0] == 0:
         return [], []
-    cuts = X.indptr[1:-1]
-    return np.split(ids, cuts), np.split(X.data, cuts)
+    cuts = URM.indptr[1:-1]
+    return np.split(ids, cuts), np.split(URM.data, cuts)
 
 
 # ---- Time and rank decay: one weight per event ----
@@ -285,59 +312,55 @@ def _weights(age: np.ndarray, shape: str, scale: float, exponent) -> np.ndarray:
 
 
 def time_decay(
-    timestamps,
+    timestamps: ArrayLike,
     *,
-    reference,
-    scale,
-    shape: str = "exponential",
+    reference: float | str | np.datetime64 | datetime.datetime,
+    scale: float | np.timedelta64 | datetime.timedelta,
+    shape: Literal["exponential", "power", "linear", "step"] = "exponential",
     exponent: float | None = None,
-    users=None,
+    users: ArrayLike | None = None,
 ) -> np.ndarray:
     """
     The decay weight of each event from its age in time: age = reference -
-    timestamp. Multiply the weights into `interactions_to_urm`' values (each
-    event weighted by its own age, repeats summed), or pass them to
-    `recommend` for a live history: one formula offline and online.
+    timestamp. Multiply the weights into the values of `interactions_to_urm`
+    (offline), or pass them as `weights` to `recommend` (online): one
+    formula for both.
 
-    Shapes (weight 1 at age 0): "exponential" 0.5^(age / scale) (scale =
-    half-life); "power" (1 + (2^(1/p) - 1) age / scale)^-p (also 0.5 at age
-    = scale, a longer tail for a smaller p = `exponent`, default 1);
-    "linear" max(0, 1 - age / scale) (0 from age = scale); "step" 1 if age
-    < scale else 0 (a window).
+    Examples:
+        ```python
+        # offline: the same reference for every user
+        w = time_decay(log.ts, reference=cutoff, scale=30 * 86400)  # half-life 30 days
+        URM, user_ids, item_ids = interactions_to_urm(log.user, log.item, w)
 
-    Example::
-
-        w = time_decay(df.ts, reference=cutoff, scale=30 * 86400)
-        URM, user_ids, item_ids = interactions_to_urm(df.user, df.item, values * w)
-        # online, the same formula
-        w = time_decay(history_ts, reference=now, scale=30 * 86400)
+        # online: one live history, from the user's latest event
+        w = time_decay(history_ts, reference=history_ts.max(), scale=30 * 86400)
         ids, scores = model.recommend(history, weights=w)
+        ```
 
     Args:
         timestamps: one per event: numbers, or datetime64 (read as seconds).
-        reference: where age 0 is: a time, the same for every event (e.g.
-            the training cutoff; online: now): a number in the timestamps'
-            units, or a datetime (datetime64, `datetime`, `pd.Timestamp`)
-            for datetime timestamps; or
-            "user": each user's latest event (needs `users`; online, the
-            same is `reference=history_ts.max()`).
-        scale: in the timestamps' units (seconds for datetimes), or a
-            duration (`np.timedelta64`, `datetime.timedelta`,
-            `pd.Timedelta`); required. `np.inf` = no decay (every weight 1).
-        shape: "exponential", "power", "linear" or "step".
-        exponent: the power-law p (> 0), shape "power" only.
+        reference: where age 0 is. A time, the same for every event (a
+            number in the timestamps' units, or a datetime for datetime
+            timestamps), or "user": each user's latest event (needs
+            `users`).
+        scale: in the timestamps' units, or a duration (`np.timedelta64`,
+            `datetime.timedelta`, `pd.Timedelta`); `np.inf` = no decay.
+        shape: "exponential" (scale = half-life), "power" (half-life, longer
+            tail), "linear" (0 from age = scale) or "step" (a window); see
+            the Preprocessing guide for the formulas.
+        exponent: the power-law p (> 0), for shape "power" only; None = 1.
         users: one integer id per event, for `reference="user"` only.
 
     Returns:
-        float32 weights, one per event, in input order. A negative age (an
-        event after the reference, e.g. clock skew online) counts as 0.
+        weights: float32, one per event, in input order; a negative age (an
+            event after the reference, e.g. clock skew online) counts as 0.
 
     Raises:
-        ValueError: on NaN / inf timestamps, a bad shape, scale or exponent,
-            `reference="user"` without `users` (or `users` with a fixed
-            reference).
         TypeError: on a datetime reference with numeric timestamps, or the
             other way round.
+        ValueError: on non-finite timestamps, a bad shape, scale or
+            exponent, or `users` without `reference="user"` (or the other
+            way round).
     """
     _check_shape(shape, exponent)
     scale = _scale(scale)
@@ -366,59 +389,53 @@ def time_decay(
 
 
 def rank_decay(
-    users=None,
+    users: ArrayLike | None = None,
     *,
     scale: float,
-    timestamps=None,
-    shape: str = "exponential",
+    timestamps: ArrayLike | None = None,
+    shape: Literal["exponential", "power", "linear", "step"] = "exponential",
     exponent: float | None = None,
 ) -> np.ndarray:
     """
-    The decay weight of each event from its recency rank within its user's
-    events: 0 = the latest, 1 = the one before, ... (events, not distinct
-    items). Use as `time_decay`'s weights; `scale` is in events.
+    The decay weight of each event from its recency rank in its user's
+    history: 0 = the latest, 1 = the one before, ... (events, not distinct
+    items). Multiply the weights into the values of `interactions_to_urm`
+    (offline), or pass them as `weights` to `recommend` (online).
 
-    Shapes (weight 1 at age 0): "exponential" 0.5^(age / scale) (scale =
-    half-life); "power" (1 + (2^(1/p) - 1) age / scale)^-p (also 0.5 at age
-    = scale, a longer tail for a smaller p = `exponent`, default 1);
-    "linear" max(0, 1 - age / scale) (0 from age = scale); "step" 1 if age
-    < scale else 0 (a window).
+    Examples:
+        ```python
+        # offline: each user's 200 latest events
+        w = rank_decay(log.user, scale=200, shape="step")
+        URM, user_ids, item_ids = interactions_to_urm(log.user, log.item, w)
 
-    Example::
-
-        w = rank_decay(df.user, shape="step", scale=200)  # each user's 200 latest events
-        URM, user_ids, item_ids = interactions_to_urm(df.user, df.item, w)
-
-    Online, a history in arrival order has the same weights on every
-    request: compute them once and slice::
-
-        table = rank_decay(np.zeros(1000, dtype=int), shape="step", scale=200)
-        history = history[-1000:]  # at most the table's length
-        ids, scores = model.recommend(history, weights=table[-len(history):])
+        # online: one user's live history, so no users; the timestamps order it
+        w = rank_decay(timestamps=history_ts, scale=200, shape="step")
+        ids, scores = model.recommend(history, weights=w)
+        ```
 
     Args:
-        users: one integer id per event (offline); None = all events are
-            one history (online, with `timestamps`).
-        scale: in events (> 0, `np.inf` = no decay); required.
-        timestamps: one per event, to order them (equal timestamps: the
+        users: one integer user id per event; None = all events are one
+            history (then `timestamps` is needed).
+        scale: in events; `np.inf` = no decay.
+        timestamps: one per event, to order each user's events (ties: the
             later row is the more recent); None = input order, oldest first.
-        shape: "exponential", "power", "linear" or "step".
-        exponent: the power-law p (> 0), shape "power" only.
+        shape: as in `time_decay`, with ages in events.
+        exponent: the power-law p (> 0), for shape "power" only; None = 1.
 
     Returns:
-        float32 weights, one per event, in input order.
+        weights: float32, one per event, in input order.
 
     Raises:
+        TypeError: on non-integer ids or a duration as `scale`.
         ValueError: on neither `users` nor `timestamps`, lengths that don't
-            match, NaN / inf timestamps, a bad shape, scale or exponent.
-        TypeError: on a duration as `scale`.
+            match, non-finite timestamps, a bad shape, scale or exponent.
     """
     _check_shape(shape, exponent)
     if isinstance(scale, np.timedelta64) or hasattr(scale, "total_seconds"):
         raise TypeError("rank_decay's scale is a number of events, not a duration (time_decay takes durations)")
     scale = _scale(scale)
     if users is None and timestamps is None:
-        raise ValueError("rank_decay needs users and/or timestamps (a history in arrival order: see the table example)")
+        raise ValueError("rank_decay needs users and/or timestamps")
     t = None
     if timestamps is not None:
         t = _timestamps(timestamps, np.size(timestamps))
