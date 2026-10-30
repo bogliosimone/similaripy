@@ -96,6 +96,22 @@ def test_datetimes_and_durations():
     assert time_decay(t, reference="user", users=[1, 1], scale=np.timedelta64(30, "D")).tolist() == [0.5, 1.0]
 
 
+def test_datetime_like_references():
+    t = np.array(["2026-01-01", "2026-01-31"], dtype="datetime64[s]")
+    for ref in (datetime.datetime(2026, 1, 31), np.datetime64("2026-01-31")):
+        assert time_decay(t, reference=ref, scale=np.timedelta64(30, "D")).tolist() == [0.5, 1.0]
+    with pytest.raises(TypeError, match="both be datetimes or both be numbers"):
+        time_decay(t, reference=30 * 86400, scale=1)
+    with pytest.raises(TypeError, match="both be datetimes or both be numbers"):
+        time_decay([1.0, 2.0], reference=np.datetime64("2026-01-31"), scale=1)
+
+
+def test_pandas_timestamp_reference():
+    pd = pytest.importorskip("pandas")  # not in the CI test group
+    t = pd.Series(pd.to_datetime(["2026-01-01", "2026-01-31"]))
+    assert time_decay(t, reference=t.max(), scale=pd.Timedelta("30D")).tolist() == [0.5, 1.0]
+
+
 def test_event_level_offline_equals_online():
     # repeats decay per event: offline (summed by from_interactions) == online (summed by recommend)
     rng = np.random.default_rng(0)

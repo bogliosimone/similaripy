@@ -11,6 +11,7 @@ never change. The grouping (a counting sort by user, then each user's row in
 parallel) runs in the Rust core.
 """
 
+import datetime
 from typing import Literal
 
 import numpy as np
@@ -40,7 +41,9 @@ def _codes(name: str, ids: np.ndarray, vocab) -> tuple[np.ndarray, np.ndarray]:
         return (np.empty(0, dtype=np.int64) if vocab is None else vocab), np.empty(0, dtype=np.int32)
     lo, hi = int(ids.min()), int(ids.max())
     if hi - lo < 2 * ids.size + 1024:
-        offset = ids - ids.dtype.type(lo)  # in the ids' dtype (int32 ids: 4 B/event)
+        # in the ids' dtype when the span fits it (int32 ids: 4 B/event), else int64
+        dtype = ids.dtype if hi - lo <= np.iinfo(ids.dtype).max else np.dtype(np.int64)
+        offset = ids.astype(dtype, copy=False) - dtype.type(lo)
         if vocab is None:
             present = np.zeros(hi - lo + 1, dtype=bool)
             present[offset] = True
@@ -257,8 +260,10 @@ def time_decay(
 
     Args:
         timestamps: one per event: numbers, or datetime64 (read as seconds).
-        reference: where age 0 is: a time (number, or datetime64), the same
-            for every event (e.g. the training cutoff; online: now), or
+        reference: where age 0 is: a time, the same for every event (e.g.
+            the training cutoff; online: now): a number in the timestamps'
+            units, or a datetime (datetime64, `datetime`, `pd.Timestamp`)
+            for datetime timestamps; or
             "user": each user's latest event (needs `users`; online, the
             same is `reference=history_ts.max()`).
         users: one integer id per event, for `reference="user"` only.
@@ -276,9 +281,12 @@ def time_decay(
         ValueError: on NaN / inf timestamps, a bad shape, scale or exponent,
             `reference="user"` without `users` (or `users` with a fixed
             reference).
+        TypeError: on a datetime reference with numeric timestamps, or the
+            other way round.
     """
     _check_shape(shape, exponent)
     scale = _scale(scale)
+    dates = np.asarray(timestamps).dtype.kind == "M"
     t = _timestamps(timestamps, np.size(timestamps))
     if isinstance(reference, str):
         if reference != "user":
@@ -290,8 +298,14 @@ def time_decay(
     else:
         if users is not None:
             raise ValueError("users applies to reference='user' only")
+        if isinstance(reference, datetime.datetime):  # also pd.Timestamp
+            if reference.tzinfo is not None:
+                raise TypeError("reference must be timezone-naive (as the timestamps), e.g. `.tz_convert(None)`")
+            reference = np.datetime64(reference)
         ref = np.asarray(reference)
-        ref = float((ref - np.datetime64(0, "s")) / np.timedelta64(1, "s")) if ref.dtype.kind == "M" else float(ref)
+        if (ref.dtype.kind == "M") != dates:  # e.g. ms timestamps vs a date: every age wrong, silently
+            raise TypeError("reference and timestamps must both be datetimes or both be numbers (same units)")
+        ref = float((ref - np.datetime64(0, "s")) / np.timedelta64(1, "s")) if dates else float(ref)
         age = ref - t
     return _weights(age, shape, scale, exponent)
 
@@ -324,6 +338,7 @@ def rank_decay(
     request: compute them once and slice::
 
         table = rank_decay(np.zeros(1000, dtype=int), shape="step", scale=200)
+        history = history[-1000:]  # at most the table's length
         ids, scores = model.recommend(history, weights=table[-len(history):])
 
     Args:

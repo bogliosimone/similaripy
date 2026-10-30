@@ -1,4 +1,4 @@
-`similaripy.preprocessing` (one import path: `from similaripy.preprocessing import from_interactions`).
+`similaripy.preprocessing`
 
 ??? info "From interactions"
     ::: similaripy.preprocessing.from_interactions

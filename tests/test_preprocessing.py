@@ -139,8 +139,8 @@ def test_to_histories_feeds_recommend_batch():
     rng = np.random.default_rng(1)
     users, items = rng.integers(0, 40, 800), rng.choice(np.arange(100, 160) * 7, 800)
     t = rng.integers(0, 99, 800)
-    H, _, item_ids = from_interactions(users, items, rng.random(800) * time_decay(t, reference=99, scale=20))
-    URM = H
+    URM, _, item_ids = from_interactions(users, items, rng.random(800) * time_decay(t, reference=99, scale=20))
+    H = URM
     model = sim.serving.ItemKNN(sim.cosine(URM.T, k=20), item_ids=item_ids)
     histories, weights = to_histories(H, item_ids)
     assert len(histories) == URM.shape[0]
@@ -171,3 +171,10 @@ def test_id_dtypes(dtype, spread):
     assert user_ids.dtype == item_ids.dtype == np.int64
     assert user_ids.tolist() == [spread, 3 * spread] and URM.toarray().tolist() == [[0, 2], [3, 1]]
     from_interactions(users, items, values=np.arange(6.0)[::2])  # strided values
+
+
+def test_small_int_ids_wide_span():
+    # int8 ids spanning more than int8's max: the table offset must not wrap
+    users = np.array([-100, 100, -100, 0], dtype=np.int8)
+    URM, user_ids, _ = from_interactions(users, np.array([1, 2, 3, 4], dtype=np.int16))
+    assert user_ids.tolist() == [-100, 0, 100] and URM.toarray().tolist() == [[1, 0, 1, 0], [0, 0, 0, 1], [0, 1, 0, 0]]

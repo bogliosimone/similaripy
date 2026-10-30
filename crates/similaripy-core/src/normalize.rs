@@ -1,5 +1,5 @@
-//! In-place CSR normalizations (l1, l2, max, TF-IDF, BM25+), and the decay
-//! curve of `decay_weights` (`Decay`, shared with a future server). Generic over
+//! In-place CSR normalizations (l1, l2, max, TF-IDF, BM25+), and the per-event
+//! decay of `time_decay` / `rank_decay` (`Decay`, `user_ages`). Generic over
 //! f32/f64 data and i32/i64 indices, since `similaripy.normalization` keeps the
 //! input dtypes.
 //!
@@ -257,8 +257,8 @@ fn idf<T: Value>(df: T, n_docs: T, mode: IdfMode, lb: T) -> T {
 }
 
 /// A decay curve: the weight of an age (1 at age 0). `scale` > 0 (infinite =
-/// every weight 1). One formula for the decays of a matrix and of a single
-/// history (e.g. a server weighting a live history), so they always match.
+/// every weight 1). One formula for the events of a log (offline) and of a
+/// live history (a server), so training and serving weights match.
 #[derive(Clone, Copy, Debug)]
 pub struct Decay {
     shape: Shape,
@@ -287,7 +287,7 @@ impl Decay {
         }
         let c = match shape {
             Shape::Power(p) if !(p > 0.0 && p.is_finite()) => {
-                return bad(format!("exponent must be > 0, got {p}"));
+                return bad(format!("exponent must be finite and > 0, got {p}"));
             }
             Shape::Power(p) => (std::f64::consts::LN_2 / p).exp_m1(),
             _ => 0.0,

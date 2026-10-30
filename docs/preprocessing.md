@@ -52,7 +52,7 @@ The age is `reference - timestamp`. Choose where age 0 is:
 
 | `reference` | Age from | Effect | Online |
 |-------------|----------|--------|--------|
-| a time (e.g. the training cutoff) | the same moment for every user | inactive users fade as a whole; recent trends weigh more | `reference=now` |
+| a time (e.g. the training cutoff: a number in the timestamps' units, or a datetime for datetime timestamps) | the same moment for every user | inactive users fade as a whole; recent trends weigh more | `reference=now` |
 | `"user"` (with `users=`) | each user's latest event | every user's latest event weighs 1; only the order inside a profile matters | `reference=history_ts.max()` |
 
 ```python
@@ -76,6 +76,7 @@ Online, a history kept in arrival order has the same weights on every request: c
 
 ```python
 table = rank_decay(np.zeros(1000, dtype=int), shape="step", scale=200)
+history = history[-1000:]                                  # at most the table's length
 ids, scores = model.recommend(history, weights=table[-len(history):])
 ```
 
