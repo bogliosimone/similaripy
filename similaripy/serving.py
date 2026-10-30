@@ -128,7 +128,8 @@ class ItemKNN:
     immutable and safe to share across threads; each call releases the GIL.
 
     Args:
-        S: square sparse item-item matrix (e.g. `sim.cosine(URM.T, k=100)`).
+        S: square sparse item-item matrix, e.g. `sim.cosine(URM.T, k=100).T`
+            (see "Orientation of S" in the Serving guide).
         item_ids: one unique int64 id per item: `item_ids[j]` is your id for
             column j of S (e.g. the `item_ids` of `interactions_to_urm`); None =
             the ids are S's column indices.
@@ -144,8 +145,14 @@ class ItemKNN:
             machine.
         num_threads: threads for the build (0 = all).
 
-    S is read in place during the build (not copied first): don't change it
-    from another thread meanwhile.
+    Raises:
+        TypeError: on non-integer `item_ids` or `candidate_items`.
+        ValueError: on a non-square S, more than 2^31 - 1 non-zeros, or
+            `item_ids` without one unique id per item.
+
+    Note:
+        S is read in place during the build (not copied first): don't
+        change it from another thread meanwhile.
     """
 
     def __init__(
@@ -209,11 +216,25 @@ class ItemKNN:
         view narrows: the parent's rules AND the new ones (e.g. a country
         view, then a package view of it); to widen, start from the base model.
 
-        To update availability in a running service, build the new view and
-        swap the reference; requests in flight keep the model they started
-        with::
+        Examples:
+            To update availability in a running service, build the new view
+            and swap the reference; requests in flight keep the model they
+            started with:
 
+            ```python
             state["model"] = base.view(include=available_ids)
+            ```
+
+        Args:
+            include: only these item ids can be recommended (None = all).
+            exclude: never recommend these item ids.
+
+        Returns:
+            model: a new `ItemKNN` sharing S, with these rules for every
+                request.
+
+        Raises:
+            TypeError: on non-integer ids.
         """
         return self._wrap(self._model.view(_opt_ids("include", include), _opt_ids("exclude", exclude)))
 
@@ -244,7 +265,12 @@ class ItemKNN:
                 thousands, nothing at k ~ 100).
 
         Returns:
-            (ids int64, scores float32).
+            ids: int64, your item ids, best first (unless `sorted=False`).
+            scores: float32, one per id.
+
+        Raises:
+            TypeError: on non-integer ids.
+            ValueError: on a negative `k` or weights without one per id.
         """
         k = _check_k(k)
         return self._model.recommend(
@@ -287,7 +313,14 @@ class ItemKNN:
             num_threads: 0 = all cores (one shared pool), n = n threads.
 
         Returns:
-            (ids, scores): two lists with one array per user.
+            ids: one int64 array of item ids per user.
+            scores: one float32 array of scores per user.
+
+        Raises:
+            TypeError: on non-integer ids, or rules that aren't a list with
+                one entry per user.
+            ValueError: on a negative `k`, lists without one entry per
+                user, or weights without one per history id.
         """
         k = _check_k(k)
         offsets, ids, _ = _per_user("histories", histories)
@@ -325,10 +358,19 @@ class ItemKNN:
 
     def save(self, path, *, overwrite: bool = False) -> None:
         """
-        Saves the model to the directory `path` (missing or empty;
-        `overwrite=True` replaces a saved model) for `ItemKNN.load` in this or
-        any later 1.x version. A view can't be saved: save the base model and
+        Saves the model to a directory, for `ItemKNN.load` in this or any
+        later 1.x version. A view can't be saved: save the base model and
         build views after `load`. Details: the Serving guide.
+
+        Args:
+            path: the directory: missing or empty.
+            overwrite: replace a model saved there before (never other
+                files).
+
+        Raises:
+            FileExistsError: on a non-empty directory without
+                `overwrite=True`, or one that holds more than a saved model.
+            ValueError: on a view.
         """
         from . import __version__
 
@@ -339,11 +381,22 @@ class ItemKNN:
         """
         A model saved by `save`, checked before use.
 
-        `mmap=True` maps the files read-only: one copy in the OS page cache,
-        shared by every process that loads them, and fast to load.
-        `mmap=False` reads them into memory (e.g. on a network file system).
-        Load files you trust: the check makes a corrupted file an error, not
-        a crash, but doesn't guard against resource exhaustion.
+        Args:
+            path: the directory written by `save`.
+            mmap: map the files read-only: one copy in the OS page cache,
+                shared by every process that loads them, and fast to load.
+                False reads them into memory (e.g. on a network file system).
+
+        Returns:
+            model: the `ItemKNN`.
+
+        Raises:
+            FileNotFoundError: on a missing directory or file.
+            ValueError: on a corrupted or unsupported file.
+
+        Note:
+            Load files you trust: the check makes a corrupted file an error,
+            not a crash, but doesn't guard against resource exhaustion.
         """
         return cls._wrap(_core.ServeModel.load(path, mmap))
 
