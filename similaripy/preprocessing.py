@@ -5,8 +5,9 @@ take: `from_interactions` (logs -> URM + id maps + timestamps) and
 `from similaripy.preprocessing import from_interactions`.
 
 Ids are integers everywhere, with the same rules as `similaripy.serving`
-(strings: map them at your edge, e.g. `pd.factorize`). Cold code: one numpy
-path, the caller's arrays never change.
+(strings: map them at your edge, e.g. `pd.factorize`). The caller's arrays
+never change. The grouping (a counting sort by user, then each user's row in
+parallel) and `rank_decay`'s per-row rank run in the Rust core.
 """
 
 from typing import Literal
@@ -15,7 +16,8 @@ import numpy as np
 import scipy.sparse as sp
 from numpy.typing import ArrayLike
 
-from .serving import _ids
+from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
+from .serving import _check_ids, _ids
 
 __all__ = ["from_interactions", "to_histories"]
 
@@ -24,19 +26,42 @@ _INT32_MAX = np.iinfo(np.int32).max
 _MAX_PAIRS = _INT32_MAX
 
 
-def _codes(name: str, ids: np.ndarray, vocab) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-    """(vocabulary, code of each id, mask of the known ids or None = all)."""
+def _codes(name: str, ids: np.ndarray, vocab) -> tuple[np.ndarray, np.ndarray]:
+    """(vocabulary, int32 code of each id, -1 = not in the given vocabulary).
+    Dense-ish ids (range <= 2x the events): a lookup table, O(n); else a sort."""
+    if vocab is not None:
+        vocab = _ids(name, vocab)
+        if vocab.size > _INT32_MAX:
+            raise ValueError(f"at most {_INT32_MAX} {name} (int32 indices), got {vocab.size}")
+        if np.unique(vocab).size != vocab.size:
+            raise ValueError(f"{name} must be unique")
+    if ids.size == 0:
+        return (np.empty(0, dtype=np.int64) if vocab is None else vocab), np.empty(0, dtype=np.int32)
+    lo, hi = int(ids.min()), int(ids.max())
+    if hi - lo < 2 * ids.size + 1024:
+        offset = ids - ids.dtype.type(lo)  # in the ids' dtype (int32 ids: 4 B/event)
+        if vocab is None:
+            present = np.zeros(hi - lo + 1, dtype=bool)
+            present[offset] = True
+            vocab = np.flatnonzero(present) + lo
+            table = np.cumsum(present, dtype=np.int32) - 1
+        else:
+            table = np.full(hi - lo + 1, -1, dtype=np.int32)
+            inside = (vocab >= lo) & (vocab <= hi)
+            table[vocab[inside] - lo] = np.flatnonzero(inside)
+        return vocab, table[offset]
     if vocab is None:
         vocab, codes = np.unique(ids, return_inverse=True)
-        return vocab, codes.ravel(), None  # ravel: numpy 2.0.x returned the input's shape
-    vocab = _ids(name, vocab)
-    order = np.argsort(vocab, kind="stable")
+        vocab = vocab.astype(np.int64)
+        if vocab.size > _INT32_MAX:
+            raise ValueError(f"at most {_INT32_MAX} {name} (int32 indices), got {vocab.size}")
+        return vocab, codes.ravel().astype(np.int32)  # ravel: numpy 2.0.x returned the input's shape
+    order = np.argsort(vocab)
     sorted_vocab = vocab[order]
-    if sorted_vocab.size and (sorted_vocab[1:] == sorted_vocab[:-1]).any():
-        raise ValueError(f"{name} must be unique")
     pos = np.minimum(np.searchsorted(sorted_vocab, ids), max(vocab.size - 1, 0))
-    known = sorted_vocab[pos] == ids if vocab.size else np.zeros(ids.size, dtype=bool)
-    return vocab, order[pos] if vocab.size else pos, known
+    if vocab.size == 0:
+        return vocab, np.full(ids.size, -1, dtype=np.int32)
+    return vocab, np.where(sorted_vocab[pos] == ids, order[pos], -1).astype(np.int32)
 
 
 def _timestamps(timestamps, n: int) -> np.ndarray:
@@ -45,7 +70,7 @@ def _timestamps(timestamps, n: int) -> np.ndarray:
     if t.dtype.kind == "M":
         t = (t - np.datetime64(0, "s")) / np.timedelta64(1, "s")  # epoch seconds; NaT -> NaN, caught below
     elif t.dtype.kind in "iuf":
-        t = t.astype(np.float64)
+        t = np.ascontiguousarray(t, dtype=np.float64)
     else:
         raise TypeError(
             f"timestamps must be numbers or datetime64, got dtype {t.dtype} "
@@ -96,16 +121,16 @@ def from_interactions(
         timestamps. Pairs whose value is 0 in float32 are not stored (in
         either matrix).
 
-    Memory: a few int64/float64 arrays of one entry per interaction (one sort).
+    Memory: about 30 bytes per interaction above the inputs (int32 codes,
+    then per-user buckets: item, value, timestamp), plus the output.
     """
-    users, items = _ids("users", users), _ids("items", items)
+    users, items = _check_ids("users", users), _check_ids("items", items)  # no int64 copy: ~8 B/event each
     if users.shape != items.shape:
         raise ValueError(f"users and items must have the same length, got {users.size} and {items.size}")
     n = users.size
-    if values is None:
-        v = np.ones(n, dtype=np.float64)
-    else:
-        v = np.asarray(values, dtype=np.float64)
+    v = None
+    if values is not None:
+        v = np.ascontiguousarray(values, dtype=np.float64)
         if v.shape != (n,):
             raise ValueError(f"values must have one value per interaction, got shape {v.shape}")
         if not np.isfinite(v).all():
@@ -114,56 +139,24 @@ def from_interactions(
     if duplicates not in ("sum", "first", "last"):
         raise ValueError(f"duplicates must be 'sum', 'first' or 'last', got {duplicates!r}")
 
-    user_ids, rows, known_users = _codes("user_ids", users, user_ids)
-    item_ids, cols, known_items = _codes("item_ids", items, item_ids)
-    for name, ids in (("user_ids", user_ids), ("item_ids", item_ids)):
-        if ids.size > _INT32_MAX:
-            raise ValueError(f"at most {_INT32_MAX} {name} (int32 indices), got {ids.size}")
-    if known_users is not None or known_items is not None:
-        keep = np.ones(n, dtype=bool)
-        for known in (known_users, known_items):
-            if known is not None:
-                keep &= known
-        if n and not keep.any():
-            raise ValueError("no interaction left: none of the ids are in user_ids / item_ids")
-        rows, cols, v = rows[keep], cols[keep], v[keep]
-        t = None if t is None else t[keep]
-
-    # One sort by (row, col). "sum" needs no order within a pair: the default
-    # sort (deterministic, ~4x faster than stable on 20M int64 keys); first/last
-    # sort stably by input order, or by time (ties: input order).
-    # ponytail: lexsort ~1 s per M events; a Rust helper if large logs need it.
-    key = rows.astype(np.int64) * item_ids.size + cols
-    if duplicates == "sum":
-        order = np.argsort(key)
-    elif t is not None:
-        order = np.lexsort((t, key))
-    else:
-        order = np.argsort(key, kind="stable")
-    key = key[order]
-    starts = np.flatnonzero(np.r_[True, key[1:] != key[:-1]]) if key.size else np.empty(0, dtype=np.intp)
-    v = v[order]
-    if duplicates == "sum":
-        data = np.add.reduceat(v, starts) if starts.size else v
-    elif duplicates == "first":
-        data = v[starts]
-    else:
-        data = v[np.r_[starts[1:], key.size] - 1] if starts.size else v
-    data = data.astype(np.float32)
-    stored = data != 0  # after the cast: what canonical CSR keeps
-    if int(stored.sum()) > _MAX_PAIRS:
-        raise ValueError(f"at most {_MAX_PAIRS} distinct (user, item) pairs (int32 indices), got {int(stored.sum())}")
-    key = key[starts][stored]
-    pair_rows = key // max(item_ids.size, 1)
-    indices = (key - pair_rows * item_ids.size).astype(np.int32)
-    indptr = np.zeros(user_ids.size + 1, dtype=np.int32)
-    np.cumsum(np.bincount(pair_rows, minlength=user_ids.size), out=indptr[1:])
+    user_ids, rows = _codes("user_ids", users, user_ids)
+    item_ids, cols = _codes("item_ids", items, item_ids)
+    if n and ((rows < 0) | (cols < 0)).all():
+        raise ValueError("no interaction left: none of the ids are in user_ids / item_ids")
+    indptr, indices, data, latest = _core.group_interactions(
+        rows=rows,
+        cols=cols,
+        values=v,
+        t=t,
+        n_rows=user_ids.size,
+        n_cols=item_ids.size,
+        duplicates=duplicates,
+    )
+    if data.size > _MAX_PAIRS:
+        raise ValueError(f"at most {_MAX_PAIRS} distinct (user, item) pairs (int32 indices), got {data.size}")
     shape = (user_ids.size, item_ids.size)
-    URM = sp.csr_array((data[stored], indices, indptr), shape=shape)
-    T = None
-    if t is not None:
-        latest = np.maximum.reduceat(t[order], starts) if starts.size else t
-        T = sp.csr_array((latest[stored], indices.copy(), indptr.copy()), shape=shape)
+    URM = sp.csr_array((data, indices, indptr), shape=shape)
+    T = None if latest is None else sp.csr_array((latest, indices.copy(), indptr.copy()), shape=shape)
     return URM, user_ids, item_ids, T
 
 

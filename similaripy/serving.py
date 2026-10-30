@@ -35,9 +35,10 @@ _INT32_MAX = np.iinfo(np.int32).max
 _INT64_MAX = np.iinfo(np.int64).max
 
 
-def _ids(name, ids) -> np.ndarray:
-    """A private 1-d int64 copy; integer ids only (a float id is a bug, not
-    an id), uint64 only within int64's range (no silent wrap)."""
+def _check_ids(name, ids) -> np.ndarray:
+    """The ids as a 1-d array, as given (no copy when already one); integer
+    ids only (a float id is a bug, not an id), uint64 only within int64's
+    range (no silent wrap)."""
     a = np.asarray(ids)
     if a.ndim > 1:
         raise ValueError(f"{name} must be 1-d, got shape {a.shape}")
@@ -48,7 +49,12 @@ def _ids(name, ids) -> np.ndarray:
     # int(): exact; numpy 1.x compares uint64 with a Python int as float64 (2**63 == 2**63 - 1)
     if a.dtype.kind == "u" and int(a.max()) > _INT64_MAX:
         raise ValueError(f"{name} must fit in int64, got {a.max()}")
-    return np.array(a, dtype=np.int64)
+    return a
+
+
+def _ids(name, ids) -> np.ndarray:
+    """A private 1-d int64 copy of `_check_ids`."""
+    return np.array(_check_ids(name, ids), dtype=np.int64)
 
 
 def _opt_ids(name, ids):

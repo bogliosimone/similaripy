@@ -1,5 +1,8 @@
-//! Input prep: canonical rows (sorted, duplicates summed) and the blocked
-//! kernel's column renumbering + per-row sort.
+//! Input prep: canonical rows (sorted, duplicates summed), the blocked
+//! kernel's column renumbering + per-row sort, and interaction logs grouped
+//! into a CSR (`group_interactions`).
+
+use rayon::prelude::*;
 
 use crate::Error;
 use crate::csr::{CsrView, check_indptr};
@@ -235,6 +238,156 @@ fn par_leaves_from<V: Send, F>(
     }
 }
 
+/// What a repeated (row, col) pair keeps in `group_interactions`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Duplicates {
+    Sum,
+    First,
+    Last,
+}
+
+/// `group_interactions`' output: a canonical CSR (f32 values, zeros dropped)
+/// and, with timestamps, each stored pair's latest timestamp.
+pub struct Grouped {
+    pub indptr: Vec<i32>,
+    pub indices: Vec<i32>,
+    pub data: Vec<f32>,
+    pub latest: Option<Vec<f64>>,
+}
+
+/// Interaction logs (one row code, col code, value, timestamp per event; a
+/// negative code = drop the event) grouped into a canonical CSR: a counting
+/// sort by row (stable: input order), then per row, in parallel, a stable
+/// sort by (col, timestamp) and one pass per pair: values summed in that
+/// order, or the first / last value; the latest timestamp. Pairs whose value
+/// is 0 in f32 aren't stored. Peak: the per-row buckets (col + value +
+/// timestamp per event) plus the output.
+pub fn group_interactions(
+    rows: &[i32],
+    cols: &[i32],
+    values: Option<&[f64]>,
+    t: Option<&[f64]>,
+    n_rows: usize,
+    n_cols: usize,
+    duplicates: Duplicates,
+) -> Result<Grouped, Error> {
+    let bad = |m: &str| Err(Error::InvalidInput(format!("group_interactions: {m}")));
+    let n = rows.len();
+    if cols.len() != n || values.is_some_and(|v| v.len() != n) || t.is_some_and(|t| t.len() != n) {
+        return bad("rows, cols, values and t must have the same length");
+    }
+    if rows
+        .iter()
+        .zip(cols)
+        .any(|(&r, &c)| (r as i64) >= n_rows as i64 || (c as i64) >= n_cols as i64)
+    {
+        return bad("code out of range");
+    }
+    let keep = |e: usize| rows[e] >= 0 && cols[e] >= 0;
+
+    // Counting sort by row: bucket offsets, then a stable scatter.
+    let mut start = vec![0usize; n_rows + 1];
+    for e in 0..n {
+        if keep(e) {
+            start[rows[e] as usize + 1] += 1;
+        }
+    }
+    for r in 0..n_rows {
+        start[r + 1] += start[r];
+    }
+    let total = start[n_rows];
+    let mut b_col = vec![0i32; total];
+    let mut b_val = values.map(|_| vec![0f64; total]);
+    let mut b_t = t.map(|_| vec![0f64; total]);
+    let mut next = start.clone();
+    for e in 0..n {
+        if keep(e) {
+            let p = next[rows[e] as usize];
+            next[rows[e] as usize] += 1;
+            b_col[p] = cols[e];
+            if let (Some(b), Some(v)) = (b_val.as_mut(), values) {
+                b[p] = v[e];
+            }
+            if let (Some(b), Some(t)) = (b_t.as_mut(), t) {
+                b[p] = t[e];
+            }
+        }
+    }
+    drop(next);
+
+    // Per row: (cols, values, latest) of its stored pairs.
+    let row_out: Vec<(Vec<i32>, Vec<f32>, Vec<f64>)> = (0..n_rows)
+        .into_par_iter()
+        .map(|r| {
+            let (a, z) = (start[r], start[r + 1]);
+            let c = &b_col[a..z];
+            let v = b_val.as_deref().map(|b| &b[a..z]);
+            let ts = b_t.as_deref().map(|b| &b[a..z]);
+            let mut order: Vec<usize> = (0..z - a).collect();
+            order.sort_by(|&x, &y| {
+                c[x].cmp(&c[y]).then_with(|| match (ts, duplicates) {
+                    (Some(ts), Duplicates::First | Duplicates::Last) => ts[x].total_cmp(&ts[y]),
+                    _ => std::cmp::Ordering::Equal,
+                })
+            });
+            let (mut oc, mut ov, mut ot) = (Vec::new(), Vec::new(), Vec::new());
+            let mut g = 0;
+            while g < order.len() {
+                let mut h = g;
+                while h < order.len() && c[order[h]] == c[order[g]] {
+                    h += 1;
+                }
+                let group = &order[g..h];
+                let val = |e: usize| v.map_or(1.0, |v| v[e]);
+                let value = match duplicates {
+                    Duplicates::Sum => group.iter().map(|&e| val(e)).sum::<f64>(),
+                    Duplicates::First => val(group[0]),
+                    Duplicates::Last => val(group[group.len() - 1]),
+                };
+                if value as f32 != 0.0 {
+                    oc.push(c[group[0]]);
+                    ov.push(value as f32);
+                    if let Some(ts) = ts {
+                        ot.push(
+                            group
+                                .iter()
+                                .map(|&e| ts[e])
+                                .fold(f64::NEG_INFINITY, f64::max),
+                        );
+                    }
+                }
+                g = h;
+            }
+            (oc, ov, ot)
+        })
+        .collect();
+    drop((b_col, b_val, b_t));
+
+    let nnz: usize = row_out.iter().map(|o| o.0.len()).sum();
+    if nnz > i32::MAX as usize {
+        return Err(Error::InvalidInput(format!(
+            "at most {} distinct (user, item) pairs (int32 indices), got {nnz}",
+            i32::MAX
+        )));
+    }
+    let mut out = Grouped {
+        indptr: Vec::with_capacity(n_rows + 1),
+        indices: Vec::with_capacity(nnz),
+        data: Vec::with_capacity(nnz),
+        latest: t.map(|_| Vec::with_capacity(nnz)),
+    };
+    out.indptr.push(0);
+    for (oc, ov, ot) in row_out {
+        out.indices.extend_from_slice(&oc);
+        out.data.extend_from_slice(&ov);
+        if let Some(l) = out.latest.as_mut() {
+            l.extend_from_slice(&ot);
+        }
+        out.indptr.push(out.indices.len() as i32);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +482,31 @@ mod tests {
     }
 
     // Each leaf's first row index matches its slices, however the rows split.
+    #[test]
+    fn group_interactions_rules() {
+        // events: (row, col, value, t); one dropped (-1), row 1: a +1/-1 pair
+        let rows = [0, 0, 0, 1, 1, -1, 0];
+        let cols = [2, 0, 2, 1, 1, 0, 2];
+        let vals = [1.0, 5.0, 2.0, 1.0, -1.0, 9.0, 3.0];
+        let t = [7.0, 1.0, 9.0, 0.0, 0.0, 0.0, 7.0];
+        let g = |d| group_interactions(&rows, &cols, Some(&vals), Some(&t), 2, 3, d).unwrap();
+        let sum = g(Duplicates::Sum);
+        assert_eq!(
+            (sum.indptr, sum.indices, sum.data),
+            (vec![0, 2, 2], vec![0, 2], vec![5.0, 6.0])
+        );
+        assert_eq!(sum.latest.unwrap(), [1.0, 9.0]);
+        // (0, 2) by time: 1.0 @7, 3.0 @7 (tie: input order), 2.0 @9
+        assert_eq!(g(Duplicates::First).data, [5.0, 1.0, 1.0]); // row 1: first = +1 (tie: input order)
+        assert_eq!(g(Duplicates::Last).data, [5.0, 2.0, -1.0]);
+        let no_t = group_interactions(&rows, &cols, None, None, 2, 3, Duplicates::Sum).unwrap();
+        assert_eq!(
+            (no_t.data, no_t.indptr, no_t.latest.is_none()),
+            (vec![1.0, 3.0, 2.0], vec![0, 2, 3], true)
+        );
+        assert!(group_interactions(&[0], &[3], None, None, 1, 3, Duplicates::Sum).is_err());
+    }
+
     #[test]
     fn par_leaves_first_row() {
         let indptr: Vec<i32> = vec![0, 1, 1, 3, 4, 6, 6, 7];

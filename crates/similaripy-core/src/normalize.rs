@@ -1,4 +1,5 @@
-//! In-place CSR normalizations (l1, l2, max, TF-IDF, BM25+). Generic over
+//! In-place CSR normalizations (l1, l2, max, TF-IDF, BM25+), and the recency
+//! rank of `rank_decay`. Generic over
 //! f32/f64 data and i32/i64 indices, since `similaripy.normalization` keeps the
 //! input dtypes.
 //!
@@ -253,6 +254,28 @@ fn idf<T: Value>(df: T, n_docs: T, mode: IdfMode, lb: T) -> T {
     })
 }
 
+/// The recency rank of each entry within its row (0 = the latest timestamp;
+/// equal timestamps: the lower column first, as rows are sorted by column),
+/// as f64 for the decay weights. Rows in parallel, a small stable sort each.
+pub fn recency_rank(t: &[f64], indptr: &[i32]) -> Result<Vec<f64>, Error> {
+    check_indptr("recency_rank", indptr, t.len())?;
+    if t.iter().any(|x| !x.is_finite()) {
+        return Err(Error::InvalidInput(
+            "recency_rank: timestamps must be finite".into(),
+        ));
+    }
+    let mut rank = vec![0.0f64; t.len()];
+    par_rows(&mut rank, indptr, &|_, start, row: &mut [f64]| {
+        let ts = &t[start..start + row.len()];
+        let mut order: Vec<usize> = (0..row.len()).collect();
+        order.sort_by(|&a, &b| ts[b].total_cmp(&ts[a])); // stable: ties keep column order
+        for (r, &j) in order.iter().enumerate() {
+            row[j] = r as f64;
+        }
+    });
+    Ok(rank)
+}
+
 /// `log(logbase)` rounded to the data type, like every stored value.
 fn log_logbase<T: Value>(logbase: f64) -> T {
     T::narrow(T::narrow(logbase).wide().ln())
@@ -342,6 +365,15 @@ mod tests {
             });
             prop_assert!(seen.into_inner().unwrap().iter().all(|&c| c == 1));
         }
+    }
+
+    #[test]
+    fn recency_rank_latest_first_ties_by_column() {
+        // rows: [5, 9, 9, 1], [], [3]
+        let rank = recency_rank(&[5.0, 9.0, 9.0, 1.0, 3.0], &[0, 4, 4, 5]).unwrap();
+        assert_eq!(rank, [2.0, 0.0, 1.0, 3.0, 0.0]);
+        assert!(recency_rank(&[f64::NAN], &[0, 1]).is_err());
+        assert!(recency_rank(&[1.0], &[0, 2]).is_err());
     }
 
     #[test]

@@ -243,6 +243,55 @@ fn remap_sort_rows(
     .map_err(to_py)
 }
 
+/// Interaction logs grouped into a canonical CSR (`prep::group_interactions`):
+/// (indptr, indices, data float32, latest timestamps float64 or None).
+#[pyfunction]
+#[pyo3(signature = (*, rows, cols, values, t, n_rows, n_cols, duplicates))]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn group_interactions<'py>(
+    py: Python<'py>,
+    rows: PyReadonlyArray1<'py, i32>,
+    cols: PyReadonlyArray1<'py, i32>,
+    values: Option<PyReadonlyArray1<'py, f64>>,
+    t: Option<PyReadonlyArray1<'py, f64>>,
+    n_rows: usize,
+    n_cols: usize,
+    duplicates: &str,
+) -> PyResult<(
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<f32>>,
+    Option<Bound<'py, PyArray1<f64>>>,
+)> {
+    use similaripy_core::prep::Duplicates;
+    let duplicates = match duplicates {
+        "sum" => Duplicates::Sum,
+        "first" => Duplicates::First,
+        "last" => Duplicates::Last,
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "unknown duplicates '{duplicates}'"
+            )));
+        }
+    };
+    let (rows, cols) = (rows.as_slice()?, cols.as_slice()?);
+    let values = values.as_ref().map(|v| v.as_slice()).transpose()?;
+    let t = t.as_ref().map(|t| t.as_slice()).transpose()?;
+    let g = py
+        .detach(|| {
+            similaripy_core::prep::group_interactions(
+                rows, cols, values, t, n_rows, n_cols, duplicates,
+            )
+        })
+        .map_err(to_py)?;
+    Ok((
+        g.indptr.into_pyarray(py),
+        g.indices.into_pyarray(py),
+        g.data.into_pyarray(py),
+        g.latest.map(|l| l.into_pyarray(py)),
+    ))
+}
+
 /// In place: canonical rows (sorted, duplicates summed, zeros dropped),
 /// compacted to the front; returns the new indptr. Data float32 or float64.
 #[pyfunction]
@@ -287,7 +336,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(remap_sort_rows, m)?)?;
     m.add_function(wrap_pyfunction!(canonicalize_rows, m)?)?;
     m.add_class::<ProgressBar>()?;
+    m.add_function(wrap_pyfunction!(group_interactions, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::normalize, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::tfidf, m)?)?;
+    m.add_function(wrap_pyfunction!(normalize::recency_rank, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::bm25plus, m)?)
 }

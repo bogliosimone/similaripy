@@ -420,8 +420,5 @@ def rank_decay(
     if isinstance(scale, np.timedelta64) or hasattr(scale, "total_seconds"):
         raise TypeError("rank_decay's scale is a number of items, not a duration (time_decay takes durations)")
     scale = _scale(scale)
-    rows = np.repeat(np.arange(T.shape[0], dtype=np.int64), np.diff(T.indptr))
-    order = np.lexsort((T.indices, -T.data, rows))  # per row: latest first, then column
-    rank = np.empty(T.nnz, dtype=np.float64)
-    rank[order] = np.arange(T.nnz) - T.indptr[:-1][rows[order]]
+    rank = _core.recency_rank(t=np.ascontiguousarray(T.data, dtype=np.float64), indptr=T.indptr.astype(np.int32))
     return _decayed(X, T, _weights(rank, shape, scale, exponent), min_weight)

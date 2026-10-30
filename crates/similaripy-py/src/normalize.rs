@@ -1,7 +1,7 @@
 //! Bindings of the in-place normalizations on the canonical copy
 //! (`_canonical_csr`): data float32 | float64, indices/indptr int32.
 
-use numpy::{Element, PyReadonlyArray1, PyReadwriteArray1};
+use numpy::{Element, IntoPyArray, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
@@ -158,4 +158,17 @@ pub fn bm25plus(
         logbase,
     };
     dispatch(py, data, indices, indptr, shape, op)
+}
+
+/// The recency rank of each entry in its row (0 = latest), for `rank_decay`.
+#[pyfunction]
+#[pyo3(signature = (*, t, indptr))]
+pub fn recency_rank<'py>(
+    py: Python<'py>,
+    t: PyReadonlyArray1<'py, f64>,
+    indptr: PyReadonlyArray1<'py, i32>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let (t, indptr) = (t.as_slice()?, indptr.as_slice()?);
+    let rank = py.detach(|| core::recency_rank(t, indptr)).map_err(to_py)?;
+    Ok(rank.into_pyarray(py))
 }

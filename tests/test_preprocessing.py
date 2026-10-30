@@ -167,3 +167,14 @@ def test_to_histories_rejects():
         to_histories(URM, np.array(["a", "b"]))
     with pytest.raises(ValueError, match="one id per column"):
         to_histories(URM, [1])
+
+
+@pytest.mark.parametrize("dtype", [np.int32, np.uint32, np.int64, np.uint64])
+@pytest.mark.parametrize("spread", [1, 10**8])  # lookup table / sort path
+def test_id_dtypes(dtype, spread):
+    users = np.array([3, 1, 3], dtype=dtype) * dtype(spread)
+    items = np.array([2, 2, 0], dtype=dtype)
+    URM, user_ids, item_ids, _ = from_interactions(users, items, values=np.array([1.0, 2.0, 3.0])[::1])
+    assert user_ids.dtype == item_ids.dtype == np.int64
+    assert user_ids.tolist() == [spread, 3 * spread] and URM.toarray().tolist() == [[0, 2], [3, 1]]
+    _, _, _, _ = from_interactions(users, items, values=np.arange(6.0)[::2])  # strided values
