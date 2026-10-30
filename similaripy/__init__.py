@@ -6,8 +6,8 @@ except PackageNotFoundError:
     __version__ = "unknown"
 
 # Functions on matrices (0.x API) at the top level; `similaripy.serving`
-# (the online engine) has one path.
-from . import normalization, serving, similarity
+# (the online engine) and `similaripy.preprocessing` have one path.
+from . import normalization, preprocessing, serving, similarity
 from .normalization import binarize, bm25, bm25plus, normalize, tfidf
 from .similarity import (
     asymmetric_cosine,
@@ -34,6 +34,7 @@ __all__ = [
     "normalization",
     "normalize",
     "p3alpha",
+    "preprocessing",
     "rp3beta",
     "s_plus",
     "serving",
