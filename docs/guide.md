@@ -26,6 +26,8 @@ All functions run in a multi-threaded Rust core, GIL-free, on sparse CSR matrice
 
 - **S-Plus**: A hybrid model combining Tversky and Cosine components, with RP3Beta-style depopularization and full control over weights and smoothing.
 
+More details in [Similarities](similarity.md).
+
 ## Serving
 
 The serving engine turns a similarity matrix into recommendations, in your own item ids.  
@@ -34,6 +36,8 @@ All requests run in the Rust core, GIL-free: one user per call, or a batch of us
 - **Offline**: recommendations for a batch of users, e.g. to evaluate a model or precompute results.
 - **Online**: one user per call, in tens to hundreds of microseconds.
 - **Availability rules**: include or exclude items for all requests, per group, or per request.
+
+More details in [Serving](serving.md).
 
 ## Normalization and Weighting
 
@@ -44,6 +48,8 @@ Re-weight your data before the similarity computation: normalization functions o
 - **BM25**: Applies classic BM25 weighting used in information retrieval.
 - **BM25+**: Variant of BM25 with additive smoothing for low-frequency terms.
 - **Time and rank decay**: weight each interaction by its age or recency.
+
+More details in [Normalizations](normalization.md) and [Preprocessing](preprocessing.md).
 
 ## Example
 
