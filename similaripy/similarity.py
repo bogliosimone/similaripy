@@ -41,19 +41,19 @@ def dot_product(
     block_size: int | Literal["auto"] | None = "auto",
 ) -> csr_array | coo_array:
     """
-    Compute dot product similarity between rows of matrix1 and columns of matrix2.
+    Top-k dot products between the rows of matrix1 and the columns of matrix2.
 
     Args:
-        matrix1: Input sparse matrix (e.g., user-item or item-user): values finite,
+        matrix1: (n_rows, d) sparse matrix, e.g. `URM.T` for item-item: values finite,
             negative ones allowed (signed input: only positive scores are kept;
             shrink_type='bayesian' raises).
-        matrix2: Optional second matrix. If None, uses matrix1.T.
+        matrix2: (d, n_cols) sparse matrix; None = matrix1.T.
         k: Number of top-k items per row.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
             A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain (>= 0).
-        binary: Whether to binarize the input matrix before similarity computation.
+        binary: Binarize both inputs before the computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
             None = all columns, an empty one raises ValueError.
@@ -67,8 +67,15 @@ def dot_product(
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
-        A sparse matrix of shape (n_rows, n_cols) in the specified format,
-        containing the top-k dot product similarities.
+        Top-k similarities, shape (n_rows, n_cols), in `format_output` (CSR or COO).
+
+    Raises:
+        TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
+            `filter_cols` of a wrong type.
+        ValueError: on inputs of mismatched shapes, non-finite values, more
+            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
+            `target_cols`, or a `shrink_type` that does nothing for this
+            similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "dot_product", cosine=False, denominator=False
@@ -110,19 +117,19 @@ def cosine(
     block_size: int | Literal["auto"] | None = "auto",
 ) -> csr_array | coo_array:
     """
-    Compute cosine similarity between sparse vectors.
+    Top-k cosine similarities between the rows of matrix1 and the columns of matrix2.
 
     Args:
-        matrix1: Input sparse matrix: values finite,
+        matrix1: (n_rows, d) sparse matrix, e.g. `URM.T` for item-item: values finite,
             negative ones allowed (signed input: only positive scores are kept;
             shrink_type='bayesian' raises).
-        matrix2: Optional second matrix. If None, uses matrix1.T.
+        matrix2: (d, n_cols) sparse matrix; None = matrix1.T.
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
             A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain (>= 0).
-        binary: Whether to binarize the input matrix before computation.
+        binary: Binarize both inputs before the computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
             None = all columns, an empty one raises ValueError.
@@ -136,7 +143,15 @@ def cosine(
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
-        A sparse matrix of top-k cosine similarities in the specified format.
+        Top-k similarities, shape (n_rows, n_cols), in `format_output` (CSR or COO).
+
+    Raises:
+        TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
+            `filter_cols` of a wrong type.
+        ValueError: on inputs of mismatched shapes, non-finite values, more
+            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
+            `target_cols`, or a `shrink_type` that does nothing for this
+            similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "cosine", cosine=True, denominator=True
@@ -182,21 +197,21 @@ def asymmetric_cosine(
     block_size: int | Literal["auto"] | None = "auto",
 ) -> csr_array | coo_array:
     """
-    Compute asymmetric cosine similarity.
+    Top-k asymmetric cosine similarities between the rows of matrix1 and the columns of matrix2.
 
     Args:
-        matrix1: Input sparse matrix (e.g., user-item or item-user): values finite,
+        matrix1: (n_rows, d) sparse matrix, e.g. `URM.T` for item-item: values finite,
             negative ones allowed (signed input: only positive scores are kept;
             shrink_type='bayesian' raises).
-        matrix2: Optional second matrix. If None, uses matrix1.T.
-        alpha: Controls asymmetry in cosine weighting, in [0, 1].
-               `alpha=1` weighs only matrix1; `alpha=0.5` is symmetric.
+        matrix2: (d, n_cols) sparse matrix; None = matrix1.T.
+        alpha: Controls asymmetry in cosine weighting, in [0, 1]:
+            `alpha=1` weighs only matrix1; `alpha=0.5` is symmetric.
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
             A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain (>= 0).
-        binary: Whether to binarize the input matrix before computation.
+        binary: Binarize both inputs before the computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
             None = all columns, an empty one raises ValueError.
@@ -210,8 +225,15 @@ def asymmetric_cosine(
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
-        A sparse matrix of shape (n_rows, n_cols) containing the top-k
-        asymmetric cosine similarities in the specified format.
+        Top-k similarities, shape (n_rows, n_cols), in `format_output` (CSR or COO).
+
+    Raises:
+        TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
+            `filter_cols` of a wrong type.
+        ValueError: on inputs of mismatched shapes, non-finite values, more
+            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
+            `target_cols`, or a `shrink_type` that does nothing for this
+            similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "asymmetric_cosine", cosine=True, denominator=True
@@ -260,24 +282,23 @@ def tversky(
     block_size: int | Literal["auto"] | None = "auto",
 ) -> csr_array | coo_array:
     """
-    Compute Tversky similarity between sparse vectors.
+    Top-k Tversky similarities between the rows of matrix1 and the columns of matrix2.
 
     Args:
-        matrix1: Input sparse matrix: values finite,
+        matrix1: (n_rows, d) sparse matrix, e.g. `URM.T` for item-item: values finite,
             negative ones allowed (signed input: only positive scores are kept;
             shrink_type='bayesian' raises).
-        matrix2: Optional second matrix. If None, uses matrix1.T.
+        matrix2: (d, n_cols) sparse matrix; None = matrix1.T.
         alpha: Tversky weight for elements unique to matrix1 (>= 0).
-        beta: Tversky weight for elements unique to matrix2 (>= 0). Unless binary (or every value
-            the same, e.g. 0/1 data), alpha + beta = 1 or 4 alpha beta > (1 - alpha - beta)^2 is
-            needed when alpha + beta > 1, and also when alpha + beta < 1 on signed input (else
-            ValueError: the denominator can be <= 0).
+        beta: Tversky weight for elements unique to matrix2 (>= 0). `alpha + beta = 1` is
+            always safe; on weighted or signed input other values may raise ValueError
+            (the pair rule in the Similarities guide).
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
             A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain (>= 0).
-        binary: Whether to binarize the input matrix before computation.
+        binary: Binarize both inputs before the computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
             None = all columns, an empty one raises ValueError.
@@ -291,7 +312,15 @@ def tversky(
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
-        A sparse matrix of top-k Tversky similarities in the specified format.
+        Top-k similarities, shape (n_rows, n_cols), in `format_output` (CSR or COO).
+
+    Raises:
+        TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
+            `filter_cols` of a wrong type.
+        ValueError: on inputs of mismatched shapes, non-finite values, more
+            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
+            `target_cols`, or a `shrink_type` that does nothing for this
+            similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "tversky", cosine=False, denominator=True
@@ -336,19 +365,20 @@ def jaccard(
     block_size: int | Literal["auto"] | None = "auto",
 ) -> csr_array | coo_array:
     """
-    Compute Jaccard similarity (intersection over union).
+    Top-k Jaccard similarities (intersection over union) between the rows of matrix1 and the
+    columns of matrix2.
 
     Args:
-        matrix1: Input sparse matrix: values finite,
+        matrix1: (n_rows, d) sparse matrix, e.g. `URM.T` for item-item: values finite,
             negative ones allowed (signed input: only positive scores are kept;
             shrink_type='bayesian' raises).
-        matrix2: Optional second matrix. If None, uses matrix1.T.
+        matrix2: (d, n_cols) sparse matrix; None = matrix1.T.
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
             A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain (>= 0).
-        binary: Whether to binarize the input matrix before computation.
+        binary: Binarize both inputs before the computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
             None = all columns, an empty one raises ValueError.
@@ -362,7 +392,15 @@ def jaccard(
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
-        A sparse matrix of top-k Jaccard similarities in the specified format.
+        Top-k similarities, shape (n_rows, n_cols), in `format_output` (CSR or COO).
+
+    Raises:
+        TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
+            `filter_cols` of a wrong type.
+        ValueError: on inputs of mismatched shapes, non-finite values, more
+            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
+            `target_cols`, or a `shrink_type` that does nothing for this
+            similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "jaccard", cosine=False, denominator=True
@@ -407,19 +445,19 @@ def dice(
     block_size: int | Literal["auto"] | None = "auto",
 ) -> csr_array | coo_array:
     """
-    Compute Dice similarity (harmonic mean of overlap and size).
+    Top-k Dice similarities between the rows of matrix1 and the columns of matrix2.
 
     Args:
-        matrix1: Input sparse matrix: values finite,
+        matrix1: (n_rows, d) sparse matrix, e.g. `URM.T` for item-item: values finite,
             negative ones allowed (signed input: only positive scores are kept;
             shrink_type='bayesian' raises).
-        matrix2: Optional second matrix. If None, uses matrix1.T.
+        matrix2: (d, n_cols) sparse matrix; None = matrix1.T.
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
             A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain (>= 0).
-        binary: Whether to binarize the input matrix before computation.
+        binary: Binarize both inputs before the computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
             None = all columns, an empty one raises ValueError.
@@ -433,7 +471,15 @@ def dice(
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
-        A sparse matrix of top-k Dice similarities in the specified format.
+        Top-k similarities, shape (n_rows, n_cols), in `format_output` (CSR or COO).
+
+    Raises:
+        TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
+            `filter_cols` of a wrong type.
+        ValueError: on inputs of mismatched shapes, non-finite values, more
+            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
+            `target_cols`, or a `shrink_type` that does nothing for this
+            similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "dice", cosine=False, denominator=True
@@ -479,21 +525,23 @@ def p3alpha(
     block_size: int | Literal["auto"] | None = "auto",
 ) -> csr_array | coo_array:
     """
-    Compute P3alpha similarity using a normalized 3-step random walk.
+    Top-k P3alpha similarities: a normalized 3-step random walk from the rows of matrix1 to the
+    columns of matrix2.
 
     Args:
-        matrix1: Input sparse matrix: values finite, negative ones allowed (signed input,
+        matrix1: (n_rows, d) sparse matrix, e.g. `URM.T` for item-item: values finite,
+            negative ones allowed (signed input,
             an extension: rows are l1-normalized by the sum of |x|, so likes and dislikes
             share the walk's budget, and the power keeps the sign, sign(p) |p|^alpha; only
             positive scores are kept; shrink_type='bayesian' raises).
-        matrix2: Optional second matrix. If None, uses matrix1.T.
+        matrix2: (d, n_cols) sparse matrix; None = matrix1.T.
         alpha: Exponent for transition probabilities to control popularity effect (> 0).
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
             A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain (>= 0).
-        binary: Whether to binarize the input matrix before computation.
+        binary: Binarize both inputs before the computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
             None = all columns, an empty one raises ValueError.
@@ -507,7 +555,15 @@ def p3alpha(
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
-        A sparse matrix of top-k P3alpha similarities in the specified format.
+        Top-k similarities, shape (n_rows, n_cols), in `format_output` (CSR or COO).
+
+    Raises:
+        TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
+            `filter_cols` of a wrong type.
+        ValueError: on inputs of mismatched shapes, non-finite values, more
+            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
+            `target_cols`, or a `shrink_type` that does nothing for this
+            similarity.
     """
     _check_scalar("alpha", alpha, strict=True)  # 0 makes every probability 1, < 0 inverts them
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
@@ -552,12 +608,13 @@ def rp3beta(
     block_size: int | Literal["auto"] | None = "auto",
 ) -> csr_array | coo_array:
     """
-    Compute RP3beta similarity: P3alpha with popularity penalization.
+    Top-k RP3beta similarities: P3alpha with a popularity penalization.
 
     Args:
-        matrix1: Input sparse matrix: values finite, negative ones allowed (signed input,
+        matrix1: (n_rows, d) sparse matrix, e.g. `URM.T` for item-item: values finite,
+            negative ones allowed (signed input,
             an extension as in `p3alpha`; popularity is the column sum of |x|).
-        matrix2: Optional second matrix. If None, uses matrix1.T.
+        matrix2: (d, n_cols) sparse matrix; None = matrix1.T.
         alpha: Exponent for transition probabilities (> 0).
         beta: Exponent to penalize popularity based on matrix2's column sums of |x| (>= 0).
         k: Number of top-k items per row to keep.
@@ -565,7 +622,7 @@ def rp3beta(
             A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain (>= 0).
-        binary: Whether to binarize the input matrix before computation.
+        binary: Binarize both inputs before the computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
             None = all columns, an empty one raises ValueError.
@@ -579,7 +636,15 @@ def rp3beta(
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
-        A sparse matrix of top-k RP3beta similarities in the specified format.
+        Top-k similarities, shape (n_rows, n_cols), in `format_output` (CSR or COO).
+
+    Raises:
+        TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
+            `filter_cols` of a wrong type.
+        ValueError: on inputs of mismatched shapes, non-finite values, more
+            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
+            `target_cols`, or a `shrink_type` that does nothing for this
+            similarity.
     """
     _check_scalar("alpha", alpha, strict=True)  # 0 makes every probability 1, < 0 inverts them
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
@@ -636,21 +701,21 @@ def s_plus(
     block_size: int | Literal["auto"] | None = "auto",
 ) -> csr_array | coo_array:
     """
-    Combines Tversky and Cosine normalizations with RP3Beta-style depopularization, fully controlled by tunable weights
+    Top-k S-Plus similarities: Tversky and cosine normalizations with an RP3beta-style popularity
+    penalization, each with its own weight.
 
     Args:
-        matrix1: Input sparse matrix: values finite,
+        matrix1: (n_rows, d) sparse matrix, e.g. `URM.T` for item-item: values finite,
             negative ones allowed (signed input: only positive scores are kept;
             shrink_type='bayesian' raises).
-        matrix2: Optional second matrix. If None, uses matrix1.T.
+        matrix2: (d, n_cols) sparse matrix; None = matrix1.T.
         l1: Tversky normalization strength.
         l2: Cosine normalization strength.
         l3: Popularity penalization strength.
         t1: Tversky alpha for matrix1.
-        t2: Tversky beta for matrix2. With l1 != 0, unless binary (or every value the same),
-            t1 + t2 = 1 or 4 t1 t2 > (1 - t1 - t2)^2 is needed when t1 + t2 > 1, and also when
-            t1 + t2 < 1 on signed input (else ValueError: the tversky term can be <= 0; the
-            other terms are not counted).
+        t2: Tversky beta for matrix2. With `l1 != 0` the Tversky term must stay > 0:
+            `t1 + t2 = 1` is always safe; other values may raise ValueError (the
+            Tversky pair rule in the Similarities guide).
         c1: Cosine exponent coefficient for matrix1.
         c2: Cosine exponent coefficient for matrix2.
         pop1: Popularity weights for matrix1. 'none', 'sum' (sum of |x|), or custom
@@ -667,7 +732,7 @@ def s_plus(
             A shrink_type that would do nothing for this similarity raises ValueError.
         shrink_type: Type of shrinkage: 'stabilized', 'bayesian', 'additive'.
         threshold: Minimum similarity value to retain (>= 0).
-        binary: Whether to binarize the input matrix before computation.
+        binary: Binarize both inputs before the computation.
         target_rows: List or array of row indices to compute (duplicates ignored). If None, computes all.
         target_cols: Columns to include before top-k. Can be a list or sparse mask matrix;
             None = all columns, an empty one raises ValueError.
@@ -681,7 +746,15 @@ def s_plus(
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
-        A sparse matrix of top-k s_plus similarities in the specified format.
+        Top-k similarities, shape (n_rows, n_cols), in `format_output` (CSR or COO).
+
+    Raises:
+        TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
+            `filter_cols` of a wrong type.
+        ValueError: on inputs of mismatched shapes, non-finite values, more
+            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
+            `target_cols`, or a `shrink_type` that does nothing for this
+            similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "s_plus", cosine=l2 != 0, denominator=l1 != 0 or l2 != 0 or l3 != 0
