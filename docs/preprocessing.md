@@ -1,9 +1,9 @@
 # 🧰 Preprocessing
 
-Utilities to prepare your interaction data:
+Preprocessing offers two classes of utilities to prepare your interaction data:
 
-- **Build**: the URM and the user histories from your interactions, in your own ids ([Utilities](#utilities)).
-- **Weight**: each interaction by its age or recency, offline and for a live history ([Weighting](#weighting)).
+- **Build**: the URM and the user histories from your interactions ([Utilities](#utilities)).
+- **Weight**: each interaction by its age or recency, offline and for live serving ([Weighting](#weighting)).
 
 ```python
 from similaripy.preprocessing import interactions_to_urm, time_decay   # ...
@@ -11,172 +11,116 @@ from similaripy.preprocessing import interactions_to_urm, time_decay   # ...
 
 ## Utilities
 
+### Methods
+
 | Function | Description |
 |----------|-------------|
-| `interactions_to_urm(users, items, values)` | The user-item matrix (URM) and the id maps from one entry per event: `(URM, user_ids, item_ids)`. |
-| `interactions_to_histories(users, items, weights)` | Each user's events as a history for `recommend_batch`: `(user_ids, histories, weights)`. |
+| `interactions_to_urm(users, items, values)` | The user-item matrix (URM) from one entry per event, with the id maps: `(URM, user_ids, item_ids)`. |
+| `interactions_to_histories(users, items, weights)` | Each user's events as a history for `recommend_batch`, e.g. for an evaluation test set: `(user_ids, histories, weights)`. |
 | `urm_to_histories(URM, item_ids)` | Each row of a URM as a history for `recommend_batch`: `(histories, weights)`. |
 
-### From an interaction log
+### Parameters
 
-```python
-URM, user_ids, item_ids = interactions_to_urm(log.user, log.item, values)
-```
+**`interactions_to_urm(users, items, values, ...)`**
 
-- **Ids**: integers, as in `ItemKNN`; gaps and unaligned ids are fine. Row `u` is `user_ids[u]`, column `j` is `item_ids[j]` (sorted).
-- **Values**: one per event (`None` = 1.0 each), e.g. an event weight: `log.event.map({"view": 1.0, "buy": 5.0})`.
-- **Repeated (user, item) pairs**: `duplicates="sum"` (default) adds the values (counts); `"first"` / `"last"` keep the earliest / latest event's value, by `timestamps=` (ties: input order) or by input order without them. Explicit ratings: `"last"`.
-- **Fixed vocabulary**: `item_ids=` (e.g. `model.item_ids`) builds a matrix with exactly those columns, e.g. one per country with the same columns; events with other ids are dropped.
-- **Filters** (rare items, a country, an event type): on your dataframe, before the build, e.g. `log = log[log.item.map(log.item.value_counts()) >= 5]`.
-- **Limits**: at most 2^31 - 1 distinct (user, item) pairs. Built in the Rust core: Yambda 500M (480M events) in ~20 s.
+| Parameter | Description |
+|-----------|-------------|
+| `users`, `items` | One integer id per event; gaps are fine. |
+| `values` | One value per event, e.g. an event weight or a decay. *(default: `None` = 1.0 each)* |
+| `duplicates` | What a repeated (user, item) pair keeps: `'sum'` (counts), `'first'` or `'last'` (e.g. ratings). *(default: `'sum'`)* |
+| `timestamps` | Orders `'first'` / `'last'`. *(default: `None` = input order)* |
+| `user_ids`, `item_ids` | A fixed vocabulary, e.g. the same columns for several matrices; events with other ids are dropped. *(default: `None` = the ids seen)* |
 
-### Histories
+**`interactions_to_histories(users, items, weights)`**
 
-From a log, e.g. the users of a holdout set: no matrix and no id mapping, histories in your item ids (ids the model doesn't have are ignored).
+| Parameter | Description |
+|-----------|-------------|
+| `users`, `items` | One integer id per event. |
+| `weights` | One weight per event, e.g. a decay; weight-0 events are dropped. *(default: `None` = 1.0 each)* |
 
-```python
-user_ids, histories, weights = interactions_to_histories(test.user, test.item)
-ids, scores = model.recommend_batch(histories, weights=weights, k=20)   # element u is user_ids[u]
-```
+**`urm_to_histories(URM, item_ids)`**
 
-Events keep the input order and repeats stay (`recommend` sums their weights: the same scores as through a URM). Events with weight 0 are dropped, so `weights=rank_decay(..., shape="step", scale=200)` also caps each history at 200 events.
-
-From a URM (e.g. a benchmark dataset, or every training user):
-
-```python
-histories, weights = urm_to_histories(URM, item_ids)
-ids, scores = model.recommend_batch(histories, weights=weights, k=20)   # element u is user_ids[u]
-```
-
-For millions of users, call `recommend_batch` in chunks (see [Serving](serving.md#single-and-batch-recommendation)).
+| Parameter | Description |
+|-----------|-------------|
+| `URM` | A user-item matrix. |
+| `item_ids` | Your id of each column. *(default: `None` = column indices)* |
 
 ## Weighting
 
+### Methods
+
 | Function | Description |
 |----------|-------------|
-| `time_decay(timestamps, reference=..., scale=...)` | One weight per event from its age in time. |
-| `rank_decay(users, scale=...)` | One weight per event from its recency rank in its user's history (0 = the latest). |
+| `time_decay(timestamps, reference, scale)` | One weight per event from its age in time: `reference - timestamp`. |
+| `rank_decay(users, scale)` | One weight per event from its recency rank in its user's history: 0 = the latest. |
 
-The decays weight single events, before the URM: multiply them into `values` (repeats are summed, so old repeats fade), or pass them to `recommend` for a live history, so training and serving use one formula. The [normalizations](normalization.md) (BM25, TF-IDF, ...) need row and column statistics, so they come after.
+### Parameters
 
-```text
-events --time_decay / rank_decay--> weighted events --interactions_to_urm--> URM --bm25 / tfidf--> similarity
-```
+**`time_decay(timestamps, ...)`**
 
-### Time decay
+| Parameter | Description |
+|-----------|-------------|
+| `timestamps` | One per event: numbers, or datetimes (read as seconds). |
+| `reference` | Where age 0 is: a time (e.g. the training cutoff; online, `now`) or `'user'` (each user's latest event). Required. |
+| `scale` | In the timestamps' units, or a duration (e.g. `np.timedelta64(30, "D")`); `np.inf` = no decay. Required. |
+| `shape` | The decay curve (see [Shapes](#shapes)). *(default: `'exponential'`)* |
+| `exponent` | The power-law `p`, for `shape='power'` only. *(default: `1`)* |
+| `users` | One id per event, for `reference='user'` only. |
 
-```python
-w = time_decay(log.ts, reference=cutoff, scale=30 * 86400)      # half-life 30 days
-URM, user_ids, item_ids = interactions_to_urm(log.user, log.item, values * w)
+**`rank_decay(users, ...)`**
 
-# online, the same formula on the live history
-ids, scores = model.recommend(history, weights=time_decay(history_ts, reference=now, scale=30 * 86400))
-```
+| Parameter | Description |
+|-----------|-------------|
+| `users` | One id per event. *(default: `None` = one history, with `timestamps`)* |
+| `scale` | In events; `np.inf` = no decay. Required. |
+| `timestamps` | Orders each user's events. *(default: `None` = input order, oldest first)* |
+| `shape` | The decay curve (see [Shapes](#shapes)). *(default: `'exponential'`)* |
+| `exponent` | The power-law `p`, for `shape='power'` only. *(default: `1`)* |
 
-The age is `reference - timestamp`. Choose where age 0 is:
-
-| `reference` | Age from | Effect | Online |
-|-------------|----------|--------|--------|
-| a time (e.g. the training cutoff) | the same moment for every user | inactive users fade as a whole; recent trends weigh more | `reference=now` |
-| `"user"` (with `users=`) | each user's latest event | every user's latest event weighs 1; only the order inside a profile matters | `reference=history_ts.max()` |
-
-A time is a number in the timestamps' units, or a datetime for datetime timestamps.
-
-```python
-w = time_decay(log.ts, reference="user", users=log.user, scale=np.timedelta64(30, "D"))
-```
-
-### Rank decay
-
-The age is the event's position in its user's history: 0 = the latest, 1 = the one before, ...
-Without `timestamps` the log's own order (oldest first) is the time order.
-
-```python
-w = rank_decay(log.user, shape="step", scale=200)                    # each user's 200 latest events
-w = rank_decay(log.user, timestamps=log.ts, shape="linear", scale=200)
-URM, user_ids, item_ids = interactions_to_urm(log.user, log.item, w)
-```
-
-Ranks count events, not distinct items. For the latest distinct items, drop the repeats first: `log.sort_values("ts").drop_duplicates(["user", "item"], keep="last")`.
-
-Online, a history kept in arrival order has the same weights on every request: compute them once, slice per request.
-
-```python
-table = rank_decay(np.zeros(1000, dtype=int), shape="step", scale=200)
-history = history[-1000:]                                  # at most the table's length
-ids, scores = model.recommend(history, weights=table[-len(history):])
-```
 
 ### Shapes
 
-Both decays share the shapes; the weight is 1 at age 0.
+| Shape | Weight | `scale` is |
+|-------|--------|------------|
+| `'exponential'` | `0.5^(age / scale)` | the half-life |
+| `'power'` | `(1 + (2^(1/p) - 1) · age / scale)^(-p)` | the half-life, with a longer tail for a smaller `p` |
+| `'linear'` | `max(0, 1 - age / scale)` | the horizon: 0 from there on |
+| `'step'` | `1 if age < scale, else 0` | a window |
 
-| `shape` | Weight | `scale` means |
-|---------|--------|---------------|
-| `"exponential"` (default) | 0.5^(age / scale) | half-life |
-| `"power"` | (1 + (2^(1/p) - 1) age / scale)^-p, p = `exponent` (default 1) | half-life, with a longer tail for a smaller p |
-| `"linear"` | max(0, 1 - age / scale) | horizon: 0 from there on |
-| `"step"` | 1 if age < scale, else 0 | window |
+## Example
 
-- `scale` is required: in the timestamps' units for `time_decay` (durations like `np.timedelta64(30, "D")` work), in events for `rank_decay`.
-- `scale=np.inf`: no decay (every weight 1).
-- An event after the reference (a negative age, e.g. clock skew online) gets weight 1.
-
-## End to end
-
-A log with `user`, `item`, `ts` (seconds) and `event` columns:
+`train` and `test` are your event logs (`user`, `item`, `ts` in epoch seconds), split by time.
 
 ```python
-import numpy as np
-import pandas as pd
-import similaripy as sim
-from similaripy.preprocessing import interactions_to_urm, time_decay, urm_to_histories
+from similaripy.preprocessing import interactions_to_histories, interactions_to_urm, time_decay
 from similaripy.serving import ItemKNN
 
-log = pd.read_parquet("events.parquet")
-cutoff = log.ts.max()
-values = log.event.map({"view": 1.0, "buy": 5.0}).to_numpy()
+# train: each event weighted by its age from the same time for every user (half-life 30 days)
+cutoff = train.ts.max()                     # the end of the training data
+w = time_decay(train.ts, reference=cutoff, scale=30 * 86400)
+URM, user_ids, item_ids = interactions_to_urm(train.user, train.item, w)
+model = ItemKNN(sim.cosine(sim.bm25(URM).T, k=100).T, item_ids=item_ids)
 
-# 1. the URM, each event weighted by its age
-w = time_decay(log.ts, reference=cutoff, scale=30 * 86400)
-URM, user_ids, item_ids = interactions_to_urm(log.user, log.item, values * w)
-
-# 2. similarity and model, in your item ids
-S = sim.cosine(sim.bm25(URM).T, k=100)
-model = ItemKNN(S.T, item_ids=item_ids)
-model.save("model/")
-
-# 3. offline: every user's top 20, back to a dataframe
-histories, weights = urm_to_histories(URM, item_ids)
+# evaluate: the holdout users' histories, straight from the log
+user_ids, histories, weights = interactions_to_histories(test.user, test.item)
 ids, scores = model.recommend_batch(histories, weights=weights, k=20)
-recs = pd.DataFrame({
-    "user": np.repeat(user_ids, [len(i) for i in ids]),
-    "item": np.concatenate(ids),
-    "score": np.concatenate(scores),
-})
 
-# 4. online, in a worker: one live history, the same decay
-model = ItemKNN.load("model/")
-ids, scores = model.recommend(history, weights=time_decay(history_ts, reference=now, scale=30 * 86400), k=20)
+# online: one live history (item ids + epoch seconds), weighted from the user's latest event
+w = time_decay(history_ts, reference=history_ts.max(), scale=30 * 86400)
+ids, scores = model.recommend(history, weights=w)
 ```
 
-Without timestamps: drop the decay (`interactions_to_urm(log.user, log.item, values)`), or use `rank_decay` on the log's order.
+## Notes
+
+- **Ids**: integers everywhere, as in `ItemKNN`; gaps are fine. In the URM, row `u` is `user_ids[u]` and column `j` is `item_ids[j]`; histories are in your item ids.
+- **Order of the steps**: the decays weight single events, before the URM (repeats are summed, so old repeats fade); the [normalizations](normalization.md) need the whole matrix, so they come after.
+- **Training and serving**: the same `time_decay` / `rank_decay` call weights a live history, and `recommend` sums repeated ids as the URM does, so the weights match.
+- **Rank decay online**: a history kept in arrival order has the same weights on every request: compute `rank_decay(np.zeros(n, dtype=int), ...)` once and slice the last `len(history)`.
+- **Histories**: events keep the input order; events with weight 0 are dropped, so a `'step'` decay also caps the length.
+- **Limits**: at most 2^31 - 1 distinct (user, item) pairs in a URM; built in the Rust core, multi-threaded.
 
 ## Tips
 
-- **Tuning the decay**: `scale` is a parameter like `k`; `scale=np.inf` is the no-decay baseline. Each trial rebuilds the URM (~1 s on 50M events, ~20 s on 500M):
-
-    ```python
-    for days in [np.inf, 7, 30, 90]:
-        w = time_decay(log.ts, reference=cutoff, scale=days * 86400)
-        URM, user_ids, item_ids = interactions_to_urm(log.user, log.item, values * w)
-        score = evaluate(ItemKNN(sim.cosine(URM.T, k=100).T, item_ids=item_ids))   # your metric
-    ```
-
-- **String ids**: `ItemKNN` serves integer ids. Map strings at the edge with `pd.factorize` and keep the names next to the model:
-
-    ```python
-    item_codes, item_names = pd.factorize(log.item)   # strings -> 0..n-1, back with item_names[ids]
-    URM, user_ids, item_ids = interactions_to_urm(pd.factorize(log.user)[0], item_codes, values)
-    np.save("model/item_names.npy", item_names.to_numpy(dtype=str))
-    ```
+- **Tuning**: `scale` is a hyperparameter like `k`; `scale=np.inf` is the no-decay baseline. Each trial rebuilds the URM (~1 s on 50M events).
+- **String ids**: map them at the edge with `pd.factorize` and keep the names next to the model: `codes, names = pd.factorize(log.item)`, then `names[ids]`.
+- **Distinct items**: ranks count events; for the latest distinct items, drop repeats first: `log.drop_duplicates(["user", "item"], keep="last")` on a time-sorted log.

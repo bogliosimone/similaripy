@@ -288,10 +288,10 @@ def time_decay(
     timestamps,
     *,
     reference,
-    users=None,
-    shape: str = "exponential",
     scale,
+    shape: str = "exponential",
     exponent: float | None = None,
+    users=None,
 ) -> np.ndarray:
     """
     The decay weight of each event from its age in time: age = reference -
@@ -310,7 +310,8 @@ def time_decay(
         w = time_decay(df.ts, reference=cutoff, scale=30 * 86400)
         URM, user_ids, item_ids = interactions_to_urm(df.user, df.item, values * w)
         # online, the same formula
-        ids, scores = model.recommend(history, weights=time_decay(history_ts, reference=now, scale=30 * 86400))
+        w = time_decay(history_ts, reference=now, scale=30 * 86400)
+        ids, scores = model.recommend(history, weights=w)
 
     Args:
         timestamps: one per event: numbers, or datetime64 (read as seconds).
@@ -320,12 +321,12 @@ def time_decay(
             for datetime timestamps; or
             "user": each user's latest event (needs `users`; online, the
             same is `reference=history_ts.max()`).
-        users: one integer id per event, for `reference="user"` only.
-        shape: "exponential", "power", "linear" or "step".
         scale: in the timestamps' units (seconds for datetimes), or a
             duration (`np.timedelta64`, `datetime.timedelta`,
             `pd.Timedelta`); required. `np.inf` = no decay (every weight 1).
+        shape: "exponential", "power", "linear" or "step".
         exponent: the power-law p (> 0), shape "power" only.
+        users: one integer id per event, for `reference="user"` only.
 
     Returns:
         float32 weights, one per event, in input order. A negative age (an
@@ -367,9 +368,9 @@ def time_decay(
 def rank_decay(
     users=None,
     *,
+    scale: float,
     timestamps=None,
     shape: str = "exponential",
-    scale: float,
     exponent: float | None = None,
 ) -> np.ndarray:
     """
@@ -398,10 +399,10 @@ def rank_decay(
     Args:
         users: one integer id per event (offline); None = all events are
             one history (online, with `timestamps`).
+        scale: in events (> 0, `np.inf` = no decay); required.
         timestamps: one per event, to order them (equal timestamps: the
             later row is the more recent); None = input order, oldest first.
         shape: "exponential", "power", "linear" or "step".
-        scale: in events (> 0, `np.inf` = no decay); required.
         exponent: the power-law p (> 0), shape "power" only.
 
     Returns:
