@@ -174,8 +174,11 @@ fn case(float: bool) -> impl Strategy<Value = Case> {
         prop_oneof![4 => 1usize..12, 1 => 60usize..90].boxed()
     };
     sizes.prop_flat_map(move |n| {
+        // Positive float ranges start at 0.125, a multiple of ulp(3.0): from 0.1,
+        // proptest 1.12's sampler can overshoot `low` and trip its own (inverted)
+        // debug_assert, ~1 in 4e7 draws in debug builds.
         let cell = if float {
-            prop_oneof![3 => Just(0.0f32), 2 => 0.1f32..3.0, 1 => -3.0f32..-0.1].boxed()
+            prop_oneof![3 => Just(0.0f32), 2 => 0.125f32..3.0, 1 => -3.0f32..-0.125].boxed()
         } else {
             prop_oneof![
                 3 => Just(0.0f32),
