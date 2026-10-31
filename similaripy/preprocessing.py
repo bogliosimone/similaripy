@@ -28,44 +28,24 @@ _INT32_MAX = np.iinfo(np.int32).max
 _MAX_PAIRS = _INT32_MAX
 
 
-def _codes(name: str, ids: np.ndarray, vocab) -> tuple[np.ndarray, np.ndarray]:
-    """(vocabulary, int32 code of each id, -1 = not in the given vocabulary).
+def _codes(name: str, ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(sorted distinct ids as int64, int32 code of each id).
     Dense-ish ids (range <= 2x the events): a lookup table, O(n); else a sort."""
-    if vocab is not None:
-        vocab = _ids(name, vocab)
-        if vocab.size > _INT32_MAX:
-            raise ValueError(f"at most {_INT32_MAX} {name} (int32 indices), got {vocab.size}")
-        if np.unique(vocab).size != vocab.size:
-            raise ValueError(f"{name} must be unique")
     if ids.size == 0:
-        return (np.empty(0, dtype=np.int64) if vocab is None else vocab), np.empty(0, dtype=np.int32)
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int32)
     lo, hi = int(ids.min()), int(ids.max())
     if hi - lo < 2 * ids.size + 1024:
         # in the ids' dtype when the span fits it (int32 ids: 4 B/event), else int64
         dtype = ids.dtype if hi - lo <= np.iinfo(ids.dtype).max else np.dtype(np.int64)
         offset = ids.astype(dtype, copy=False) - dtype.type(lo)
-        if vocab is None:
-            present = np.zeros(hi - lo + 1, dtype=bool)
-            present[offset] = True
-            vocab = np.flatnonzero(present) + lo
-            table = np.cumsum(present, dtype=np.int32) - 1
-        else:
-            table = np.full(hi - lo + 1, -1, dtype=np.int32)
-            inside = (vocab >= lo) & (vocab <= hi)
-            table[vocab[inside] - lo] = np.flatnonzero(inside)
-        return vocab, table[offset]
-    if vocab is None:
-        vocab, codes = np.unique(ids, return_inverse=True)
-        vocab = vocab.astype(np.int64)
-        if vocab.size > _INT32_MAX:
-            raise ValueError(f"at most {_INT32_MAX} {name} (int32 indices), got {vocab.size}")
-        return vocab, codes.ravel().astype(np.int32)  # ravel: numpy 2.0.x returned the input's shape
-    order = np.argsort(vocab)
-    sorted_vocab = vocab[order]
-    pos = np.minimum(np.searchsorted(sorted_vocab, ids), max(vocab.size - 1, 0))
-    if vocab.size == 0:
-        return vocab, np.full(ids.size, -1, dtype=np.int32)
-    return vocab, np.where(sorted_vocab[pos] == ids, order[pos], -1).astype(np.int32)
+        present = np.zeros(hi - lo + 1, dtype=bool)
+        present[offset] = True
+        table = np.cumsum(present, dtype=np.int32) - 1
+        return np.flatnonzero(present) + lo, table[offset]
+    vocab, codes = np.unique(ids, return_inverse=True)
+    if vocab.size > _INT32_MAX:
+        raise ValueError(f"at most {_INT32_MAX} distinct {name} (int32 indices), got {vocab.size}")
+    return vocab.astype(np.int64), codes.ravel().astype(np.int32)  # ravel: numpy 2.0.x returned the input's shape
 
 
 def _timestamps(timestamps, n: int) -> np.ndarray:
@@ -94,8 +74,6 @@ def interactions_to_urm(
     *,
     timestamps: ArrayLike | None = None,
     duplicates: Literal["sum", "first", "last"] = "sum",
-    user_ids: ArrayLike | None = None,
-    item_ids: ArrayLike | None = None,
 ) -> tuple[sp.csr_array, np.ndarray, np.ndarray]:
     """
     The user-item matrix (URM) from one entry per event, with the id maps.
@@ -118,25 +96,18 @@ def interactions_to_urm(
         duplicates: what a repeated (user, item) pair keeps: "sum" adds the
             values (counts), "first" / "last" keep the earliest / latest
             event's value.
-        user_ids: a fixed user vocabulary (unique ints) instead of the ids
-            seen; events with other ids are dropped.
-        item_ids: a fixed item vocabulary, e.g. to give matrices built from
-            different slices the same columns; events with other ids are
-            dropped.
 
     Returns:
         URM: float32 CSR matrix (users x items), duplicates merged, pairs
             whose value is 0 in float32 not stored.
-        user_ids: int64, `user_ids[u]` is your id of row `u` (sorted, or
-            the vocabulary as given).
-        item_ids: int64, `item_ids[j]` is your id of column `j`; pass it to
-            `ItemKNN(S, item_ids=item_ids)`.
+        user_ids: int64, sorted: `user_ids[u]` is your id of row `u`.
+        item_ids: int64, sorted: `item_ids[j]` is your id of column `j`;
+            pass it to `ItemKNN(S, item_ids=item_ids)`.
 
     Raises:
         TypeError: on non-integer ids or timestamps of another type.
         ValueError: on lengths that don't match, non-finite values or
-            timestamps, a non-unique vocabulary, no event left with a
-            vocabulary, or more than 2^31 - 1 distinct pairs.
+            timestamps, or more than 2^31 - 1 distinct pairs.
 
     Note:
         Memory: about 20 bytes per event above the inputs (+ 8 with
@@ -159,10 +130,8 @@ def interactions_to_urm(
     if duplicates not in ("sum", "first", "last"):
         raise ValueError(f"duplicates must be 'sum', 'first' or 'last', got {duplicates!r}")
 
-    user_ids, rows = _codes("user_ids", users, user_ids)
-    item_ids, cols = _codes("item_ids", items, item_ids)
-    if n and ((rows < 0) | (cols < 0)).all():
-        raise ValueError("no interaction left: none of the ids are in user_ids / item_ids")
+    user_ids, rows = _codes("users", users)
+    item_ids, cols = _codes("items", items)
     indptr, indices, data = _core.group_interactions(
         rows=rows,
         cols=cols,
@@ -226,7 +195,7 @@ def interactions_to_histories(
         keep = w != 0
         if not keep.all():
             users, items, w = users[keep], items[keep], w[keep]
-    user_ids, codes = _codes("users", users, None)
+    user_ids, codes = _codes("users", users)
     if user_ids.size == 0:
         return user_ids, [], []
     order = np.argsort(codes, kind="stable")  # by user, input order within
@@ -246,7 +215,8 @@ def urm_to_histories(URM, item_ids: ArrayLike | None = None) -> tuple[list[np.nd
         ```
 
     Args:
-        URM: user-item sparse matrix; its values become the weights.
+        URM: user-item sparse matrix; its values become the weights
+            (explicit zeros and values that are 0 in float32 dropped).
         item_ids: your id of each column (the `item_ids` of
             `interactions_to_urm`); None = column indices (for `ItemKNN(S)`
             without `item_ids`).
@@ -261,6 +231,7 @@ def urm_to_histories(URM, item_ids: ArrayLike | None = None) -> tuple[list[np.nd
     """
     URM = sp.csr_array(URM, dtype=np.float32, copy=True)  # sum_duplicates must not touch the caller's
     URM.sum_duplicates()
+    URM.eliminate_zeros()  # a stored 0 is no event (exclude_seen would hide it)
     if item_ids is None:
         ids = URM.indices.astype(np.int64)
     else:
@@ -303,7 +274,7 @@ def _user_codes(users, n: int) -> tuple[np.ndarray, int]:
     ids = _check_ids("users", users)
     if ids.shape != (n,):
         raise ValueError(f"users must have one id per event ({n}), got shape {ids.shape}")
-    vocab, codes = _codes("users", ids, None)
+    vocab, codes = _codes("users", ids)
     return codes, vocab.size
 
 

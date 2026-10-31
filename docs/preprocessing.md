@@ -29,7 +29,6 @@ from similaripy.preprocessing import interactions_to_urm, time_decay   # ...
 | `values` | One value per event, e.g. an event weight or a decay. *(default: `None` = 1.0 each)* |
 | `duplicates` | What a repeated (user, item) pair keeps: `'sum'` (counts), `'first'` or `'last'` (e.g. ratings). *(default: `'sum'`)* |
 | `timestamps` | Orders `'first'` / `'last'`. *(default: `None` = input order)* |
-| `user_ids`, `item_ids` | A fixed vocabulary, e.g. the same columns for several matrices; events with other ids are dropped. *(default: `None` = the ids seen)* |
 
 **`interactions_to_histories(users, items, weights)`**
 

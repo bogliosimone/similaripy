@@ -253,8 +253,8 @@ pub struct Grouped {
     pub data: Vec<f32>,
 }
 
-/// Interaction logs (one row code, col code, value, timestamp per event; a
-/// negative code = drop the event) grouped into a canonical CSR: a counting
+/// Interaction logs (one row code, col code, value, timestamp per event)
+/// grouped into a canonical CSR: a counting
 /// sort by row (stable: input order), then per row, in parallel, a stable
 /// sort by (col, timestamp) and one pass per pair: values summed in that
 /// order, or the first / last value (timestamps only order first / last).
@@ -277,38 +277,31 @@ pub fn group_interactions(
     if rows
         .iter()
         .zip(cols)
-        .any(|(&r, &c)| (r as i64) >= n_rows as i64 || (c as i64) >= n_cols as i64)
+        .any(|(&r, &c)| r < 0 || c < 0 || r as usize >= n_rows || c as usize >= n_cols)
     {
         return bad("code out of range");
     }
-    let keep = |e: usize| rows[e] >= 0 && cols[e] >= 0;
-
     // Counting sort by row: bucket offsets, then a stable scatter.
     let mut start = vec![0usize; n_rows + 1];
-    for e in 0..n {
-        if keep(e) {
-            start[rows[e] as usize + 1] += 1;
-        }
+    for &r in rows {
+        start[r as usize + 1] += 1;
     }
     for r in 0..n_rows {
         start[r + 1] += start[r];
     }
-    let total = start[n_rows];
-    let mut b_col = vec![0i32; total];
-    let mut b_val = values.map(|_| vec![0f64; total]);
-    let mut b_t = t.map(|_| vec![0f64; total]);
+    let mut b_col = vec![0i32; n];
+    let mut b_val = values.map(|_| vec![0f64; n]);
+    let mut b_t = t.map(|_| vec![0f64; n]);
     let mut next = start.clone();
     for e in 0..n {
-        if keep(e) {
-            let p = next[rows[e] as usize];
-            next[rows[e] as usize] += 1;
-            b_col[p] = cols[e];
-            if let (Some(b), Some(v)) = (b_val.as_mut(), values) {
-                b[p] = v[e];
-            }
-            if let (Some(b), Some(t)) = (b_t.as_mut(), t) {
-                b[p] = t[e];
-            }
+        let p = next[rows[e] as usize];
+        next[rows[e] as usize] += 1;
+        b_col[p] = cols[e];
+        if let (Some(b), Some(v)) = (b_val.as_mut(), values) {
+            b[p] = v[e];
+        }
+        if let (Some(b), Some(t)) = (b_t.as_mut(), t) {
+            b[p] = t[e];
         }
     }
     drop(next);
@@ -467,14 +460,13 @@ mod tests {
         }
     }
 
-    // Each leaf's first row index matches its slices, however the rows split.
     #[test]
     fn group_interactions_rules() {
-        // events: (row, col, value, t); one dropped (-1), row 1: a +1/-1 pair
-        let rows = [0, 0, 0, 1, 1, -1, 0];
-        let cols = [2, 0, 2, 1, 1, 0, 2];
-        let vals = [1.0, 5.0, 2.0, 1.0, -1.0, 9.0, 3.0];
-        let t = [7.0, 1.0, 9.0, 0.0, 0.0, 0.0, 7.0];
+        // events: (row, col, value, t); row 1: a +1/-1 pair
+        let rows = [0, 0, 0, 1, 1, 0];
+        let cols = [2, 0, 2, 1, 1, 2];
+        let vals = [1.0, 5.0, 2.0, 1.0, -1.0, 3.0];
+        let t = [7.0, 1.0, 9.0, 0.0, 0.0, 7.0];
         let g = |d| group_interactions(&rows, &cols, Some(&vals), Some(&t), 2, 3, d).unwrap();
         let sum = g(Duplicates::Sum);
         assert_eq!(
@@ -490,8 +482,10 @@ mod tests {
             (vec![1.0, 3.0, 2.0], vec![0, 2, 3])
         );
         assert!(group_interactions(&[0], &[3], None, None, 1, 3, Duplicates::Sum).is_err());
+        assert!(group_interactions(&[-1], &[0], None, None, 1, 3, Duplicates::Sum).is_err());
     }
 
+    // Each leaf's first row index matches its slices, however the rows split.
     #[test]
     fn par_leaves_first_row() {
         let indptr: Vec<i32> = vec![0, 1, 1, 3, 4, 6, 6, 7];

@@ -2,17 +2,16 @@
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
 
 import similaripy as sim
 from similaripy.preprocessing import interactions_to_histories, interactions_to_urm, time_decay, urm_to_histories
 
 
-def _reference(users, items, values, timestamps, duplicates, user_ids, item_ids):
+def _reference(users, items, values, timestamps, duplicates):
     """{(user, item): value} with the documented rules, events in input order."""
     pairs = {}
     for e, (u, i) in enumerate(zip(users, items)):
-        if (user_ids is not None and u not in user_ids) or (item_ids is not None and i not in item_ids):
-            continue
         v = 1.0 if values is None else float(values[e])
         t = e if timestamps is None else float(timestamps[e])  # input order without t
         pairs.setdefault((u, i), []).append((t, e, v))
@@ -38,25 +37,17 @@ def _as_dict(URM, user_ids, item_ids):
 
 @pytest.mark.parametrize("duplicates", ["sum", "first", "last"])
 @pytest.mark.parametrize("with_t", [False, True])
-@pytest.mark.parametrize("vocab", [False, True])
-def test_matches_reference(duplicates, with_t, vocab):
+def test_matches_reference(duplicates, with_t):
     rng = np.random.default_rng(0)
     n = 400
     users = rng.choice([3, 10, 11, 500, 7_000_000_000], n)  # gaps, an id past int32
     items = rng.choice([-5, 0, 2, 9, 40, 41], n)
     values = rng.choice([-1.0, 0.5, 1.0, 2.0], n)
     t = rng.integers(0, 20, n) if with_t else None  # many ties
-    uv = np.array([500, 3, 99]) if vocab else None  # unsorted, 99 never seen
-    iv = np.array([41, 2, -5, 9, 12]) if vocab else None
-    URM, user_ids, item_ids = interactions_to_urm(
-        users, items, values, timestamps=t, duplicates=duplicates, user_ids=uv, item_ids=iv
-    )
-    if vocab:
-        assert user_ids.tolist() == uv.tolist() and item_ids.tolist() == iv.tolist()
-    else:
-        assert user_ids.tolist() == sorted(set(users.tolist())) and item_ids.tolist() == sorted(set(items.tolist()))
+    URM, user_ids, item_ids = interactions_to_urm(users, items, values, timestamps=t, duplicates=duplicates)
+    assert user_ids.tolist() == sorted(set(users.tolist())) and item_ids.tolist() == sorted(set(items.tolist()))
     assert URM.dtype == np.float32 and URM.indices.dtype == np.int32 and URM.has_canonical_format
-    ref = _reference(users, items, values, t, duplicates, uv, iv)
+    ref = _reference(users, items, values, t, duplicates)
     got = _as_dict(URM, user_ids, item_ids)
     assert got.keys() == ref.keys()
     for pair, v in ref.items():
@@ -102,8 +93,6 @@ def test_datetime64_any_unit_as_seconds():
 def test_empty():
     URM, user_ids, _item_ids = interactions_to_urm([], [], timestamps=[], duplicates="last")
     assert URM.shape == (0, 0) and user_ids.dtype == np.int64
-    URM, _, _ = interactions_to_urm([], [], item_ids=[4, 5])
-    assert URM.shape == (0, 2)
 
 
 @pytest.mark.parametrize(
@@ -118,9 +107,6 @@ def test_empty():
         ({"users": [1], "items": [1], "timestamps": np.array(["NaT"], dtype="datetime64[s]")}, ValueError, "finite"),
         ({"users": [1], "items": [1], "timestamps": [1, 2]}, ValueError, "one value per interaction"),
         ({"users": [1], "items": [1], "duplicates": "max"}, ValueError, "duplicates must be"),
-        ({"users": [1], "items": [1], "item_ids": [1, 1]}, ValueError, "item_ids must be unique"),
-        ({"users": [1], "items": [1], "item_ids": ["1"]}, TypeError, "item_ids must be integer ids"),
-        ({"users": [1], "items": [1], "item_ids": [2]}, ValueError, "no interaction left"),
     ],
 )
 def test_rejects(kwargs, error, match):
@@ -152,6 +138,14 @@ def test_to_histories_feeds_recommend_batch():
     # without item_ids: column indices, for ItemKNN(S) without ids
     histories, _ = urm_to_histories(URM)
     assert histories[0].tolist() == URM[[0]].indices.tolist() and histories[0].dtype == np.int64
+
+
+def test_urm_to_histories_drops_zeros():
+    # a stored 0 (and 0 in float32) is no event: with exclude_seen it would hide the item
+    X = sp.csr_array((np.array([1.0, 0.0, 1e-50]), np.array([0, 1, 2]), np.array([0, 3])), shape=(1, 3))
+    histories, weights = urm_to_histories(X)
+    assert histories[0].tolist() == [0] and weights[0].tolist() == [1.0]
+    assert X.nnz == 3  # the caller's matrix untouched
 
 
 def test_to_histories_rejects():
