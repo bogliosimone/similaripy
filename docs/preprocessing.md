@@ -6,10 +6,8 @@ Preprocessing prepares your interaction data in two parts:
 - **Weighting**: each interaction by its age or recency, offline and for live serving ([Weighting](#weighting)).
 
 ```python
-from similaripy.preprocessing import (
-    interactions_to_urm, interactions_to_histories, urm_to_histories,   # Utilities
-    time_decay, rank_decay,                                              # Weighting
-)
+from similaripy.preprocessing import interactions_to_urm, interactions_to_histories, urm_to_histories   # Utilities
+from similaripy.preprocessing import time_decay, rank_decay                                               # Weighting
 ```
 
 ## Utilities
