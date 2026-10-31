@@ -71,8 +71,11 @@ struct Case {
 
 fn case() -> impl Strategy<Value = Case> {
     (1usize..7, 1usize..7, 1usize..10).prop_flat_map(|(r, m, n)| {
-        let pos = |len| prop::collection::vec(0.1f32..3.0, len);
-        let weight = prop_oneof![Just(0.0f32), 0.1f32..2.0];
+        // Positive float ranges start at 0.125, a multiple of ulp(3.0): from 0.1,
+        // proptest 1.12's sampler can overshoot `low` and trip its own (inverted)
+        // debug_assert, ~1 in 4e7 draws in debug builds.
+        let pos = |len| prop::collection::vec(0.125f32..3.0, len);
+        let weight = prop_oneof![Just(0.0f32), 0.125f32..2.0];
         (
             dense(r, m),
             dense(m, n),
@@ -559,7 +562,7 @@ proptest! {
     #[test]
     fn blocked_matches_single_block_bitwise(
         (m1, m2, n, block) in (1usize..6, 1usize..8, 2usize..40).prop_flat_map(|(r, m, n)| {
-            let cell = prop_oneof![2 => Just(0.0f32), 1 => 0.1f32..3.0];
+            let cell = prop_oneof![2 => Just(0.0f32), 1 => 0.125f32..3.0];
             let dense = |a, b| prop::collection::vec(prop::collection::vec(cell.clone(), b), a);
             (dense(r, m), dense(m, n), Just(n), 1..n)
         })

@@ -882,13 +882,16 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
+        // Positive float ranges start at 0.125, a multiple of ulp(3.0): from 0.1,
+        // proptest 1.12's sampler can overshoot `low` and trip its own (inverted)
+        // debug_assert, ~1 in 4e7 draws in debug builds.
         // Bit-identical output across modes: the mode only skips +0.0 terms.
         #[test]
         fn score_mode_matches_full_bitwise(
-            w in proptest::array::uniform5(prop_oneof![Just(0.0f32), Just(-0.0f32), 0.1f32..2.0]),
+            w in proptest::array::uniform5(prop_oneof![Just(0.0f32), Just(-0.0f32), 0.125f32..2.0]),
             t in proptest::array::uniform2(0.0f32..1.0),
             pow in any::<bool>(),
-            norms in proptest::array::uniform6(prop_oneof![Just(0.0f32), 0.1f32..3.0]),
+            norms in proptest::array::uniform6(prop_oneof![Just(0.0f32), 0.125f32..3.0]),
             xy in prop_oneof![Just(0.0f32), -5.0f32..5.0],
         ) {
             // Not under Miri: it adds random error to powf (and random NaN bits),
@@ -920,11 +923,11 @@ mod tests {
         // slots score, in their mode, as FULL with the depop slots.
         #[test]
         fn depop_in_cosine_slot_matches_full_bitwise(
-            w in 0.1f32..2.0,
-            shrink in proptest::array::uniform2(prop_oneof![Just(0.0f32), 0.1f32..2.0]),
+            w in 0.125f32..2.0,
+            shrink in proptest::array::uniform2(prop_oneof![Just(0.0f32), 0.125f32..2.0]),
             pow in any::<bool>(),
-            xd in prop_oneof![Just(0.0f32), 0.1f32..3.0],
-            yd in prop_oneof![Just(0.0f32), 0.1f32..3.0],
+            xd in prop_oneof![Just(0.0f32), 0.125f32..3.0],
+            yd in prop_oneof![Just(0.0f32), 0.125f32..3.0],
             xy in prop_oneof![Just(0.0f32), -5.0f32..5.0],
         ) {
             let pow = pow && !cfg!(miri); // see score_mode_matches_full_bitwise
