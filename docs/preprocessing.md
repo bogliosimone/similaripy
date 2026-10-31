@@ -6,8 +6,8 @@ Preprocessing prepares your interaction data in two parts:
 - **Weighting**: each interaction by its age or recency, offline and for live serving ([Weighting](#weighting)).
 
 ```python
-from similaripy.preprocessing import interactions_to_urm, interactions_to_histories, urm_to_histories   # Utilities
-from similaripy.preprocessing import time_decay, rank_decay                                               # Weighting
+from similaripy.preprocessing import interactions_to_urm, interactions_to_histories, urm_to_histories
+from similaripy.preprocessing import time_decay, rank_decay
 ```
 
 ## Utilities
@@ -124,7 +124,8 @@ SimilariPy takes **integer ids** (any integer dtype, gaps fine): the URM numbers
 |----------|------------|
 | Integers, e.g. `905`, `12`, `7_000_000_000` | Nothing: pass them as they are. |
 | Integers stored as text, e.g. `"905"` | Convert: `log.item.astype("int64")`. |
-| Strings, UUIDs, other types (or unsigned ids beyond int64) | `pd.factorize` once, and keep the names next to the model. |
+| Unsigned 64-bit ids beyond int64, e.g. hashes | `ids.view(np.int64)` in, `ids.view(np.uint64)` out: lossless, no names table. |
+| Strings, UUIDs, other types | `pd.factorize` once, and keep the names next to the model. |
 
 With strings, the codes are your ids from then on: build, serve and evaluate in codes, and map names in and out at the edges.
 
