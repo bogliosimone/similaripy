@@ -182,7 +182,8 @@ pub fn decay_weights<'py>(
     exponent: Option<f64>,
 ) -> PyResult<Bound<'py, PyArray1<f32>>> {
     let curve = curve(shape, scale, exponent)?;
-    let w = curve.weights(age.as_slice()?).map_err(to_py)?;
+    let age = age.as_slice()?;
+    let w = py.detach(|| curve.weights(age)).map_err(to_py)?;
     Ok(w.into_pyarray(py))
 }
 
