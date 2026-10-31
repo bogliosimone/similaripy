@@ -6,7 +6,7 @@ Usage:
     python benchmarks/compare.py REF.json OTHER.json [MORE.json ...] [--metric kernel]
 
 Metrics: total (default), prep, kernel, output, and any numeric extra a
-workload records (p50_us, p99_us, gate_s, rss_peak_mb, ...). Reports from
+workload records (p50_us, p99_us, rss_peak_mb, ...). Reports from
 before the harness rebuild (no schema_version) aren't read.
 """
 

@@ -63,7 +63,7 @@ SIMILARITIES = {
 SMOKE_CASES = ["dot_product", "cosine", "cosine_k1000", "cosine_filter_matrix", "cosine_block2048"]
 CONCURRENCY_CASES = ["cosine_2x2_serial", "cosine_2x2_concurrent"]
 
-SERVE_MODES = ("latency", "gate", "block", "build")
+SERVE_MODES = ("latency", "block", "build")
 
 
 @dataclass
@@ -83,6 +83,11 @@ def merge(name, fixed, options):
     return {**fixed, **options}
 
 
+def untimed(total, **extras):
+    """A measurement with no phase times (no phase timer, or not a similarity call)."""
+    return {"total": total, "kernel": None, "output": None, "prep": None, **extras}
+
+
 def timed(func, *args, **kwargs):
     """Time one call: ({total, kernel, output, prep} seconds, output). Phases are None without a phase timer."""
     start = time.perf_counter()
@@ -90,7 +95,7 @@ def timed(func, *args, **kwargs):
     total = time.perf_counter() - start
     phases = compat.phase_times()
     if phases is None:
-        return {"total": total, "kernel": None, "output": None, "prep": None}, out
+        return untimed(total), out
     return {"total": total, **phases, "prep": total - phases["kernel"] - phases["output"]}, out
 
 
@@ -235,7 +240,7 @@ def _concurrency_run(X, kwargs, reps, concurrent):
                 for _ in range(2):
                     sim.cosine(X, **kwargs)
             times.append(time.perf_counter() - start)
-        return {"total": statistics.median(times), "kernel": None, "output": None, "prep": None}
+        return untimed(statistics.median(times))
 
     return run
 
@@ -266,22 +271,10 @@ def serve_cases(URM, opts):
                 run = _latency_run(rec, hists, kwargs, evict if regime == "cold" else None)
                 cases.append(Case(f"latency_cap{cap}_{regime}", {**kwargs, "cap": cap, "regime": regime}, run))
 
-    if {"gate", "block"} & set(modes):
-        batch_in = compat.serving_batch_inputs(URM)
-    threads = list(dict.fromkeys(opts["gate_threads"] or [1, os.cpu_count()]))  # no duplicate case names
-    info["gate_threads"] = threads
-    if "gate" in modes:
-        K = sim.dot_product(URM, S, k=k, filter_cols=URM, verbose=False, format_output="csr")
-        offsets, ids, scores = compat.serving_batch(rec, batch_in, k, 0)
-        C = sp.csr_array((scores, ids, offsets), shape=URM.shape)
-        info["gate_overlap"] = (K != 0).multiply(C != 0).nnz / max(K.nnz, 1)
-        del K, C
-        for t in threads:
-            kwargs = {"k": k, "filter_cols": URM, "num_threads": t, "verbose": False, "format_output": "csr"}
-            cases.append(Case(f"gate_kernel_t{t}", kwargs, _gate_kernel_run(URM, S, kwargs)))
-            cases.append(Case(f"gate_batch_t{t}", {"k": k, "num_threads": t}, _batch_run(rec, batch_in, k, t)))
-
     if "block" in modes:
+        batch_in = compat.serving_batch_inputs(URM)
+        threads = list(dict.fromkeys(opts["block_threads"] or [1, os.cpu_count()]))  # no duplicate case names
+        info["block_threads"] = threads
         one = ItemKNN(S, block_size=None)
         info["block_control"] = n_active <= compat.DEFAULT_BLOCK_SIZE  # both models run one block
         for t in threads:
@@ -297,14 +290,7 @@ def serve_cases(URM, opts):
 
         def build():
             secs, base_mb, peak_mb = report.in_fresh_process(build_child, str(path))
-            return {
-                "total": secs,
-                "kernel": None,
-                "output": None,
-                "prep": None,
-                "rss_base_mb": base_mb,
-                "rss_peak_mb": peak_mb,
-            }
+            return untimed(secs, rss_base_mb=base_mb, rss_peak_mb=peak_mb)
 
         cases.append(Case("build", {"block_size": "auto"}, build))
     return cases, info
@@ -332,7 +318,7 @@ def _latency_run(rec, hists, kwargs, evict):
             rec.recommend(h, **kwargs)
             ns[i] = time.perf_counter_ns() - t
         us = ns / 1e3
-        out = {"total": ns.sum() / 1e9, "kernel": None, "output": None, "prep": None}
+        out = untimed(ns.sum() / 1e9)
         out |= {"p50_us": float(np.percentile(us, 50)), "p99_us": float(np.percentile(us, 99))}
         if us.size >= 100_000:  # p99.9 only with enough samples
             out["p99.9_us"] = float(np.percentile(us, 99.9))
@@ -341,24 +327,13 @@ def _latency_run(rec, hists, kwargs, evict):
     return run
 
 
-def _gate_kernel_run(URM, S, kwargs):
-    """The kernel side of the gate: dot_product(URM, S, filter_cols=URM); gate_s = kernel + output (no prep)."""
-
-    def run():
-        t, _ = timed(sim.dot_product, URM, S, **kwargs)
-        return t | {"gate_s": None if t["kernel"] is None else t["kernel"] + t["output"]}
-
-    return run
-
-
 def _batch_run(rec, batch_in, k, threads):
-    """The core batch call on URM's rows (prep outside, as the kernel side's gate_s excludes its prep)."""
+    """The core batch call on URM's rows (their prep outside the timing)."""
 
     def run():
         start = time.perf_counter()
         compat.serving_batch(rec, batch_in, k, threads)
-        total = time.perf_counter() - start
-        return {"total": total, "kernel": None, "output": None, "prep": None, "gate_s": total}
+        return untimed(time.perf_counter() - start)
 
     return run
 

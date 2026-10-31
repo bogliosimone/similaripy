@@ -35,7 +35,7 @@ uv run --group bench python benchmarks/run.py small
 uv run --group bench python benchmarks/run.py small --cases all
 
 # Serving (ItemKNN): request latency, batch vs kernel, block size, model build
-uv run --group bench python benchmarks/run.py serve --dataset movielens --mode latency gate block build
+uv run --group bench python benchmarks/run.py serve --dataset movielens --mode latency block build
 
 # Peak memory per case: each case's first call in a fresh process, after the timed rounds
 uv run --group bench python benchmarks/run.py similarity --dataset movielens --rss
@@ -57,8 +57,7 @@ python benchmarks/compare.py benchmarks/bench_results/before_*.json benchmarks/b
 - **small**: millisecond calls on the seeded synthetic 10k x 10k matrix (~1M nnz, Zipf-like popularity), where fixed per-call costs (prep, binding, thread start-up, output build) show. Cases: k=10/1000, `binary=True`, `block_size=None` / 2048, array and matrix `filter_cols` / `target_cols`, and two concurrent cosine calls (`num_threads=2` each) vs the same calls serially (meaningful on a free-threaded build, 3.14t). One measurement = the median of `--reps` calls (default 21). The default smoke set catches big (>20%) regressions only.
 - **serve**: `similaripy.serving.ItemKNN` on S = cosine or rp3beta (`--model`, `--model-k`). Requests are URM rows (user histories), `--requests` resampled with replacement in random order (`--seed`); a history cap keeps that many random items of the row; every request excludes its own items. Modes:
   - `latency`: `recommend` end to end per request, µs p50/p99/mean (p99.9 from 100k requests) per history cap (`--caps`), warm (back to back) and cold (`--evict-mb` read before each request);
-  - `gate`: the core batch call vs the kernel (`dot_product(URM, S, filter_cols=URM)`, kernel + output = `gate_s`), same weights, on `--gate-threads` (default 1 and all cores; record which), + the top-k overlap of the two (`info.gate_overlap`);
-  - `block`: batch time with the default block size vs one block per request (`info.block_control`: the catalog fits one block, both run the same);
+  - `block`: the core batch call over every user (prep outside the timing) with the default block size vs one block per request, on `--block-threads` (default 1 and all cores, `info.block_threads`; concurrency changes the answer, D65). `info.block_control`: the catalog fits one block, both run the same. (The Step 4 batch-vs-kernel `gate` mode was removed after D64 settled it.)
   - `build`: `ItemKNN(S)` time and peak memory in a fresh process (S saved to a temp file first). Peak memory is `phys_footprint` (see below), not the `ru_maxrss` of reports before D75: not comparable with them.
 
   Serving times the core batch call through private API (`compat.py`, the one place to edit if it changes).
@@ -84,8 +83,8 @@ One JSON format for every workload (`schema_version` 1), in `benchmarks/bench_re
 - `build`: the timed similaripy: version, path, editable source tree or wheel, the git state of *that* tree (v1 builds report `__version__` 0.7.0 until 1.0: use `build.path` / `build.git`);
 - `system`: Python + GIL, numpy, scipy, OS, CPU, cores, RAM, rustc, `RAYON_NUM_THREADS`;
 - `preflight`: 1-min load before and after, power source, the busiest processes;
-- `config`: every option of the run; `dataset`: key, shape, nnz; `info`: facts about the setup (S nnz, overlap, ...);
-- `cases.<name>`: `params` (**exactly the kwargs passed**; arrays and matrices described), `median` per phase, `spread` ((max − min) / median of the total), extras (output nnz, latency percentiles, `gate_s`, `rss_base_mb` / `rss_peak_mb`), and every round's raw numbers.
+- `config`: every option of the run; `dataset`: key, shape, nnz; `info`: facts about the setup (S nnz, active items, ...);
+- `cases.<name>`: `params` (**exactly the kwargs passed**; arrays and matrices described), `median` per phase, `spread` ((max − min) / median of the total), extras (output nnz, latency percentiles, `rss_base_mb` / `rss_peak_mb`), and every round's raw numbers.
 
 Phases: **total** wall time of the public call; **kernel** (scoring, top-K, per-row un-permute + sort, compaction) and **output** (matrix wrap) from `similaripy._s_plus._last_timings`; **prep** = the rest (wrapper normalization + numpy prep). 0.7.0 has no phase timer: only total.
 
@@ -107,7 +106,7 @@ Reports from before the rebuild (`tests/benchmarks/`, no `schema_version`) aren'
 | Kernel / top-K hot path (`accumulate`, drain, `TopK`, `lower_bound`) | `abba.py` vs the previous commit, Y50M (`--pairs 2`), then Y500M on an idle machine: a change counts when every pair shows it with the same sign, ≥ 3% kernel (D40 P6) |
 | Prep, output build, Python wrappers | ML-32M + Y50M total, `small --cases all` |
 | Memory | `--rss` (fresh process per case) |
-| Serving | `serve --mode latency gate block` on ML-32M and Y50M, `--gate-threads 1` and the core count (concurrency changes results: D65) |
+| Serving | `serve --mode latency block` on ML-32M and Y50M (block mode: 1 thread and the core count, D65) |
 | rustc upgrade | see "Codegen-sensitive hot loops" |
 | Release history / other versions | `abba.py --base pypi:0.7.0 ...` (total only; the PyPI wheel is not the `v1-cython-ref` local build behind older "vs cpp" numbers: different compiler and flags, not comparable) |
 
@@ -153,16 +152,16 @@ Per-phase shares (accumulate, drain/score, top-K, row setup) come from `/usr/bin
 ```bash
 uv run --isolated --no-project --python 3.14 --with similaripy==0.7.0 \
     python benchmarks/parity_kernel.py --dump ref.npz
-uv run python benchmarks/parity_kernel.py --compare ref.npz [--exact | --rtol 1e-4]
+uv run python benchmarks/parity_kernel.py --compare ref.npz [--exact]
 ```
 
-`parity_kernel.py --compare` checks each case within tolerance (rtol 1e-5; a column on only one side passes only at a near-tie with the row's k-th score or the threshold) and always reports:
+`parity_kernel.py --compare` checks each case within tolerance (rtol 1e-4, the contract for changes that move bits; a column on only one side passes only at a near-tie with the row's k-th score or the threshold) and always reports:
 
-- `exact`: data, indices and indptr identical byte for byte. Same version + same machine must give `exact=yes`; `--exact` makes any bit difference a failure, for changes that claim exactness. For a change expected to move bits (e.g. a different float order), `--rtol 1e-4` plus the dense float64 reference in `tests/test_similarity.py` is the quality check.
+- `exact`: data, indices and indptr identical byte for byte. Same version + same machine must give `exact=yes`; `--exact` makes any bit difference a failure, for changes that claim exactness. For a change expected to move bits (e.g. a different float order), the tolerance check plus the dense float64 reference in `tests/test_similarity.py` is the quality check.
 - `overlap`: shared entries / reference entries (top-k overlap with the previous version), reported without a threshold: tie-heavy data moves entries at the k-th score with 1-ulp changes.
 
 References:
 
-- **0.7.0 (the last Cython release), from PyPI.** Expected differences: `dot_bayesian` and `p3alpha_bayesian` differ by design (in 0.7.0 a bayesian shrink with no other normalization returned an empty output; fixed in 1.0); the cosine family needs `--rtol 1e-4` (1.0 sums pre-scaled inputs, D44). The PyPI wheel was compiled by a different GCC (CI runner, `-O3 -ffast-math`), so some scores differ by 1 float32 ulp from the local build the Rust core was matched against: near-ties at the k-th score become one-sided entries (ML-32M rp3beta: ~627k, 7%, against PyPI, 0 against the tag build below).
+- **0.7.0 (the last Cython release), from PyPI.** Expected differences: `dot_bayesian` and `p3alpha_bayesian` differ by design (in 0.7.0 a bayesian shrink with no other normalization returned an empty output; fixed in 1.0); the cosine family differs by more than 1e-5 (1.0 sums pre-scaled inputs, D44). The PyPI wheel was compiled by a different GCC (CI runner, `-O3 -ffast-math`), so some scores differ by 1 float32 ulp from the local build the Rust core was matched against: near-ties at the k-th score become one-sided entries (ML-32M rp3beta: ~627k, 7%, against PyPI, 0 against the tag build below).
 - **A commit:** dump from a `git worktree` with its own venv (`make install-dev`).
 - **Timing history:** commit `608cc06` (local tag `v1-cython-ref`; from a fresh clone: `git fetch origin pull/29/head`), the last commit with both kernels in one process. Needs Homebrew GCC on macOS.

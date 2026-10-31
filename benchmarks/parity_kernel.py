@@ -4,7 +4,7 @@ Parity check vs a previous version: this install's top-k outputs vs a reference 
 Two steps, any two installs (e.g. 0.7.0 from PyPI vs this checkout, or two
 commits): `--dump` saves the outputs under the reference, `--compare` recomputes
 them here and checks, row by row, as (col, score) sets:
-  - scores of shared columns match with rtol=1e-5 (`--rtol`), atol=1e-7;
+  - scores of shared columns match with rtol=1e-4 (`--rtol`), atol=1e-7;
   - a column may be in only one side only if its score is within tolerance of
     that row's k-th score or of the threshold (near-tie). These one-sided
     entries are counted and reported; anything else fails.
@@ -12,8 +12,8 @@ Each case also reports `exact` (data, indices and indptr identical byte for
 byte, dtypes included) and `overlap` (shared entries / reference entries).
 `--exact` makes any bit difference a failure (for changes that claim exactness).
 A change of summation order (e.g. scores computed from pre-scaled inputs) moves
-float32 sums over long rows by ~sqrt(n) eps: judge it with `--rtol 1e-4` plus a
-float64 reference.
+float32 sums over long rows by ~sqrt(n) eps: the default rtol 1e-4 allows it; the
+float64 reference in tests/test_similarity.py is the quality check.
 Run this script's version under both installs: the case lists must match.
 
 Usage (from the repo root; the same options on both steps):
@@ -40,7 +40,7 @@ from workloads import SIMILARITIES, small_definitions
 
 import similaripy as sim
 
-RTOL, ATOL = 1e-5, 1e-7
+RTOL, ATOL = 1e-4, 1e-7  # the contract for changes that move bits; refactors: --exact
 
 
 def close(a, b):

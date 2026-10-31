@@ -231,8 +231,10 @@ def print_summary(report):
     print(header + "\n" + "-" * len(header))
     for name, c in report["cases"].items():
         cells = " ".join("          -" if c["median"][p] is None else f"{c['median'][p]:11.4f}" for p in PHASES)
-        extras = "  ".join(
-            f"{k} {v:.1f}" for k, v in c.items() if k.endswith(("_us", "_mb", "gate_s")) and v is not None
+        extras = "  ".join(  # every numeric extra (output nnz, percentiles, peak MB, ...)
+            f"{k} {v:.4g}"
+            for k, v in c.items()
+            if k != "spread" and isinstance(v, (int, float)) and not isinstance(v, bool)
         )
         print(f"{name:<24} {cells} {c['spread']:7.1%} {len(c['rounds']):6d}  {extras}")
     if report["info"]:

@@ -5,12 +5,12 @@ Workloads:
   similarity  item-item similarity on URM.T (every similarity + fixed-parameter variants)
   recommend   dot_product(URM, S) with and without filter_cols=URM, S a cosine model
   small       millisecond calls on the synthetic matrix (smoke set, or --cases all)
-  serve       similaripy.serving.ItemKNN: latency, batch vs kernel gate, block size, build
+  serve       similaripy.serving.ItemKNN: request latency, batch block size, model build
 
 Usage (from the repo root; any similaripy install, 0.7.0 included):
     uv run --group bench python benchmarks/run.py similarity --dataset movielens --similarities cosine rp3beta
     uv run --group bench python benchmarks/run.py similarity --dataset yambda --version 500m --rounds 1 --warmup 0
-    uv run --group bench python benchmarks/run.py serve --dataset yambda --mode latency gate
+    uv run --group bench python benchmarks/run.py serve --dataset yambda --mode latency block
     uv run --isolated --no-project --with similaripy==0.7.0 \\
         python benchmarks/run.py similarity --dataset movielens --tag 0.7.0
 
@@ -93,7 +93,7 @@ def parser():
     v.add_argument("--requests", type=int, default=20_000, help="latency: requests per round (default: 20000)")
     v.add_argument("--caps", nargs="+", default=["50", "200", "1000", "none"], help="latency: history caps")
     v.add_argument("--evict-mb", type=int, default=48, help="latency cold: MB read between requests")
-    v.add_argument("--gate-threads", type=int, nargs="+", default=None, help="gate/block (default: 1 and all cores)")
+    v.add_argument("--block-threads", type=int, nargs="+", default=None, help="block mode (default: 1 and all cores)")
     v.add_argument("--seed", type=int, default=0)
     return p
 

@@ -1,18 +1,22 @@
 """Smoke test of the benchmark harness (benchmarks/): every workload on the synthetic dataset, one round.
 
 Needs numpy/scipy only (the CI test group). Skipped where benchmarks/ isn't
-shipped (sdist, wheel tests). Only benchmarks/ goes on sys.path, never the
+shipped (sdist) and in cibuildwheel's per-wheel tests (it tests the scripts,
+not the wheel; the CI test jobs run it). Only benchmarks/ goes on sys.path, never the
 repo root: that would import the source tree's similaripy (no _core).
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 BENCH = Path(__file__).resolve().parents[1] / "benchmarks"
-pytestmark = pytest.mark.skipif(not BENCH.is_dir(), reason="benchmarks/ not shipped here")
+pytestmark = pytest.mark.skipif(
+    not BENCH.is_dir() or os.environ.get("CIBUILDWHEEL") == "1", reason="benchmarks/ not shipped, or a wheel test"
+)
 
 
 @pytest.fixture
@@ -104,16 +108,13 @@ def test_small_every_case(run):
 
 def test_serve_modes(run):
     rep = run(
-        "serve", "--mode", "latency", "gate", "block", "--requests", "200", "--caps", "50", "none",
-        "--gate-threads", "1", "2", "2", "--model-k", "20", "--k", "10", "--rounds", "1",
+        "serve", "--mode", "latency", "block", "--requests", "200", "--caps", "50", "none",
+        "--block-threads", "1", "2", "2", "--model-k", "20", "--k", "10", "--rounds", "1",
     )  # fmt: skip
     cases = rep["cases"]
-    assert {"latency_cap50_warm", "latency_capnone_cold", "gate_kernel_t2", "gate_batch_t1", "block_one_t1"} <= set(
-        cases
-    )
-    assert rep["info"]["gate_threads"] == [1, 2]  # duplicates dropped
+    assert {"latency_cap50_warm", "latency_capnone_cold", "block_default_t2", "block_one_t1"} <= set(cases)
+    assert rep["info"]["block_threads"] == [1, 2]  # duplicates dropped
     assert cases["latency_cap50_warm"]["p99_us"] >= cases["latency_cap50_warm"]["p50_us"] > 0
-    assert rep["info"]["gate_overlap"] > 0.99  # same weights, same model: only near-ties may differ
 
 
 def test_serve_build(run):
