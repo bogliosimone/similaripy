@@ -46,7 +46,7 @@ Everything is on the `ItemKNN` class: build a `model`, then call its methods.
 | Parameter | Description |
 |-----------|-------------|
 | `S` | Square sparse item-item matrix, e.g. `sim.cosine(URM.T, k=100)` or its transpose (see [Orientation of S](#orientation-of-s)). |
-| `item_ids` | One unique int64 id per item (column of S); histories, results and rules use them. `None` = S's column indices. *(default: `None`)* |
+| `item_ids` | One unique int64 id per item (column of S); histories, results and rules use them. `None` = S's column indices. String ids: [Ids](preprocessing.md#ids). *(default: `None`)* |
 | `candidate_items` | Only these items can ever be recommended; the others are dropped from the model (histories still use them). Changing it means a rebuild. *(default: `None` = all)* |
 | `block_size` | As in the similarity functions: `'auto'`, `None` (no blocking) or an int > 0. Same results at any value; blocking is faster under concurrent requests, `None` for a lone request on an idle machine. *(default: `'auto'`)* |
 | `num_threads` | Threads for the build. `0` = all cores. *(default: `0`)* |
