@@ -15,7 +15,7 @@ Review the recent code changes in the repository focusing on:
    - Every `unsafe` block justified by an invariant the Python prep or `CsrView`/`validate` guarantees
    - Pre-allocated per-thread buffers instead of repeated allocations
    - No shared mutable state across rayon workers
-   - Float32 vs Float64 usage; codegen-sensitive loops (`tests/benchmarks/README.md`) left intact
+   - Float32 vs Float64 usage; codegen-sensitive loops (`benchmarks/README.md`) left intact
    - `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` clean
 
 4. **Docs**: public functions have a docstring (ruff `D103`), updated when a signature changes

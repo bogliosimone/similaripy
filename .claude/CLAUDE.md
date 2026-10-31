@@ -47,14 +47,14 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
 - **Top-K filtering** with efficient heap structures (pre-allocated), **Lazy normalization** (only when needed)
 - **In-place operations** for zero-copy modifications
 
-**Reference:** See [kernel.rs](crates/similaripy-core/src/kernel.rs) for implementation patterns, and in [tests/benchmarks/README.md](tests/benchmarks/README.md) the sections "Codegen-sensitive hot loops" (what a change must not break) and "Profiling the kernel (macOS)" (per-phase shares with `sample`).
+**Reference:** See [kernel.rs](crates/similaripy-core/src/kernel.rs) for implementation patterns, and in [benchmarks/README.md](benchmarks/README.md) the sections "Codegen-sensitive hot loops" (what a change must not break) and "Profiling the kernel (macOS)" (per-phase shares with `sample`).
 
 **Perf tiers:** the hot path (`accumulate`, drain/score, `TopK`, `lower_bound`) gets a perf assessment on every change; prep, output build and cold core code are correctness first, perf second.
 
 ### Reproducibility contract
 - **Same version + same machine → identical results, bit for bit**, run to run, whatever `num_threads` or `block_size`. Different versions or platforms may differ by float rounding.
 - New code keeps the **addition order within an output row fixed by the data**, never by thread timing: no atomic float adds, no "first finished, first combined". Intra-row parallelism only by column blocks or fixed chunks combined in a fixed order.
-- **Parity check on every core change:** `check_kernel_parity.py --dump` under the base, `--compare` under the head. A refactor that claims no change: `--exact` (free, catches real bugs). Any other change: `--rtol 1e-4` + top-k overlap with the previous version, and a migration-notes line if users can see it. Small float differences (float32 vs float64, summation order) are fine: never add code just to keep bits identical.
+- **Parity check on every core change:** `benchmarks/parity_kernel.py --dump` under the base, `--compare` under the head. A refactor that claims no change: `--exact` (free, catches real bugs). Any other change: `--rtol 1e-4` + top-k overlap with the previous version, and a migration-notes line if users can see it. Small float differences (float32 vs float64, summation order) are fine: never add code just to keep bits identical.
 - **Normal use cases first:** extreme values (e.g. data ×1e-30 or ×1e19, past float32 range) are best effort; a cheap check on a realistic failure is fine, dedicated code paths are not.
 
 ### Index widths
@@ -88,6 +88,7 @@ make check
 # Small dataset for quick regression test (Movielens 32M)
 make benchmark-similarity-small
 ```
+Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend, small, serve; `--rss`), `abba.py` (two builds, alternating processes), `compare.py`, parity scripts; datasets cached in `~/.cache/similaripy-bench`. Its README has the protocol (which runs for which change).
 
 **Test files:**
 - [tests/test_similarity.py](tests/test_similarity.py) - every similarity × shrink type against one dense float64 reference (`_dense_scores`), selectors, signed input
@@ -96,6 +97,7 @@ make benchmark-similarity-small
 - [tests/test_decay.py](tests/test_decay.py) - `time_decay` / `rank_decay` vs a Python reference, offline-weighted URM == online-weighted history
 - [tests/test_normalization.py](tests/test_normalization.py), [tests/test_progress_bar.py](tests/test_progress_bar.py)
 - [tests/test_free_threading.py](tests/test_free_threading.py) - concurrent calls, identical bits across threads and blocking
+- [tests/test_benchmarks.py](tests/test_benchmarks.py) - the benchmark harness on the synthetic dataset (every workload, params recorded == passed, ABBA + compare)
 - [tests/test_serve.py](tests/test_serve.py) - `ItemKNN` vs a dense float64 reference, masks and views, unknown ids, batch == single bits, pickle, save/load round trips + corrupted files
 - [crates/similaripy-core/tests/serve.rs](crates/similaripy-core/tests/serve.rs) - serving proptest vs an f64 reference, bit-identity claims
 - [crates/similaripy-core/tests/reference.rs](crates/similaripy-core/tests/reference.rs) - kernel proptest vs an f64 reference, `validate` errors; unit tests in each module
@@ -139,7 +141,7 @@ make benchmark-similarity-small
 - Release the GIL (`py.detach`) around kernel calls; free-threaded builds (3.14t+) are supported
 - Threads: `num_threads=0` = rayon global pool (`RAYON_NUM_THREADS` to limit), `n` = a pool cached per calling thread
 - Ensure no shared mutable state across rayon workers
-- 0.7.0 (the last Cython release) is a tolerance reference, not a contract: `check_kernel_parity.py` / `check_normalization_parity.py` (`--dump` / `--compare`, see [tests/benchmarks/README.md](tests/benchmarks/README.md))
+- 0.7.0 (the last Cython release) is a tolerance reference, not a contract: `parity_kernel.py` / `parity_normalization.py` (`--dump` / `--compare`, see [benchmarks/README.md](benchmarks/README.md))
 
 ---
 

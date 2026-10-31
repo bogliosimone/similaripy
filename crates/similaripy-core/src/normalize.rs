@@ -5,7 +5,7 @@
 //!
 //! Float math: per-row sums in the data type, `log` and the BM25 terms in f64,
 //! rounded back to the data type. Matches similaripy 0.7.0 within rtol 1e-5
-//! (`tests/benchmarks/check_normalization_parity.py`), not bitwise.
+//! (`benchmarks/parity_normalization.py`), not bitwise.
 
 use std::ops::{Add, Div, Mul, Sub};
 

@@ -19,8 +19,8 @@ Run this script's version under both installs: the case lists must match.
 Usage (from the repo root; the same options on both steps):
     # 0.7.0 reference (the last Cython release), outside the project env
     uv run --isolated --no-project --python 3.14 --with similaripy==0.7.0 --with pandas --with datasets \
-        python tests/benchmarks/check_kernel_parity.py --dump ref.npz
-    python tests/benchmarks/check_kernel_parity.py --compare ref.npz [--exact]
+        python benchmarks/parity_kernel.py --dump ref.npz
+    python benchmarks/parity_kernel.py --compare ref.npz [--exact]
 
     Options: --block-size 1024 (synthetic, blocked path, 10 blocks);
     --dataset movielens --version 32m (dump ~0.3 GB); --similarities takes the
@@ -33,11 +33,10 @@ import argparse
 import json
 import sys
 
+import loaders
 import numpy as np
 import scipy.sparse as sp
-from benchmark import _get_similarity_function
-from dataset_loaders import load_URM
-from run_small_benchmarks import build_cases, make_urm
+from workloads import SIMILARITIES, small_definitions
 
 import similaripy as sim
 
@@ -170,7 +169,7 @@ def main():
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dump", metavar="NPZ", help="save this install's outputs (run under the reference)")
     mode.add_argument("--compare", metavar="NPZ", help="check this install's outputs against a --dump file")
-    p.add_argument("--dataset", default="synthetic", choices=["synthetic", "movielens", "yambda"])
+    p.add_argument("--dataset", default="synthetic", choices=["synthetic", "movielens", "yambda", "hm"])
     p.add_argument("--version", default=None)
     p.add_argument("--similarities", nargs="+", default=["dot_product", "cosine", "rp3beta"])
     p.add_argument("--k", type=int, default=100)
@@ -181,16 +180,16 @@ def main():
     RTOL = args.rtol
 
     if args.dataset == "synthetic":
-        X = make_urm().T.tocsr()
-        cases = build_cases(X) + scoring_cases()
+        X = loaders.make_urm().T.tocsr()
+        cases = [(name, f, kw) for name, (f, kw) in small_definitions(X.shape[0]).items()] + scoring_cases()
     else:
-        URM, _ = load_URM(args.dataset, version=args.version)
+        URM, _ = loaders.load(args.dataset, args.version)
         X = URM.T
-        cases = [(s, _get_similarity_function(s), {"k": args.k}) for s in args.similarities]
+        cases = [(s, SIMILARITIES[s][0], {"k": args.k, **SIMILARITIES[s][1]}) for s in args.similarities]
 
     meta = {k: v for k, v in vars(args).items() if k not in ("dump", "compare", "exact", "rtol")}
-    # harness variants: their fixed parameters come from the running checkout's benchmark.py
-    meta["fixed"] = {name: func.fixed for name, func, _ in cases if hasattr(func, "fixed")}
+    # harness variants: their fixed parameters come from the running checkout's workloads.py
+    meta["fixed"] = {s: SIMILARITIES[s][1] for s in args.similarities if SIMILARITIES[s][1]}
     if args.dump:
         save_outputs(args.dump, {name: func(X, **case_kwargs(kw, args.block_size)) for name, func, kw in cases}, meta)
         return

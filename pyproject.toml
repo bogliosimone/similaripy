@@ -54,7 +54,6 @@ include = [
   { path = "rust-toolchain.toml", format = "sdist" },
 ]
 exclude = [
-  { path = "tests/benchmarks/**/*", format = "sdist" },
   { path = "**/__pycache__/**/*", format = "sdist" },
   { path = "**/.DS_Store", format = "sdist" },
 ]
@@ -144,4 +143,5 @@ extend-select = ["D103"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D103"]
+"benchmarks/**" = ["D103"]  # scripts, not the library
 "notebooks/**" = ["D103", "BLE001"]  # demo code: a broad except around a plot is fine
