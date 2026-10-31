@@ -736,19 +736,45 @@ def test_signed_power_alpha_one_same_bits():
     assert _signed_power(x, 1).tobytes() == np.copysign(np.abs(x) ** 1.0, x).tobytes()
 
 
-def test_rejects_past_int32_entries():
-    # Indices are int32 (`_canonical_csr`): fail loudly instead of wrapping, for
-    # the similarities and the normalizations alike
-    class Big(sp.csr_array):
-        nnz = property(lambda self: 2**31)
+def test_csr_arrays_longer_than_indptr():
+    # scipy allows indices/data past indptr[-1]; they're not entries (regression:
+    # the canonical route kept them once it stopped going through scipy's constructor)
+    m = _m()
+    ref = sim.cosine(m, k=10, verbose=False)
+    for tail in (np.zeros(5, np.float32), np.ones(5, np.float32)):
+        long = m.copy()
+        long.indices, long.data = np.r_[m.indices, np.zeros(5, m.indices.dtype)], np.r_[m.data, tail]
+        assert long.has_canonical_format
+        _same(sim.cosine(long, k=10, verbose=False), ref)
+        _same(sim.normalization.bm25(long), sim.normalization.bm25(m))
 
-    from similaripy import normalization
 
-    m = sp.random_array((5, 5), density=0.5, format="csr", random_state=0)
-    m.__class__ = Big  # after construction: scipy checks nnz against the arrays
-    for f in (lambda: sim.cosine(m, k=2, verbose=False), lambda: normalization.bm25(m)):
-        with pytest.raises(ValueError, match="non-zeros"):
-            f()
+@pytest.mark.parametrize("case", ["blocked", "rp3beta", "selectors", "matrix_target", "coo_duplicates"])
+def test_int64_indptr_path_same_values(case, monkeypatch):
+    # Past 2^31 - 1 entries every indptr is int64 (canonical copies, selectors,
+    # the core reads it unwidened, output); forced with a limit of 0 (a real
+    # run needs ~26 GB). Same values as the int32 path.
+    from similaripy import _s_plus
+
+    m = _m(60, 40)
+    m.data[::7] = 0  # explicit zeros: the Rust canonicalization pass
+    coo = m.tocoo()
+    dup = sp.coo_array((np.r_[coo.data, coo.data], (np.r_[coo.row, coo.row], np.r_[coo.col, coo.col])), shape=m.shape)
+    run = {
+        "blocked": lambda: sim.cosine(m, k=10, block_size=8, verbose=False),
+        "rp3beta": lambda: sim.rp3beta(m, k=10, alpha=0.8, beta=0.5, verbose=False),
+        "selectors": lambda: sim.cosine(
+            m, k=10, filter_cols=sp.eye_array(60, format="csr"), target_cols=list(range(0, 60, 2)), verbose=False
+        ),
+        "matrix_target": lambda: sim.cosine(m, k=10, target_cols=sp.eye_array(60, k=1, format="csr"), verbose=False),
+        "coo_duplicates": lambda: sim.dot_product(dup, dup.T, k=10, verbose=False),
+    }[case]
+    ref = run()
+    monkeypatch.setattr(_s_plus, "_MAX_INT32_NNZ", 0)
+    out = run()
+    assert ref.indptr.dtype == np.int32 and out.indptr.dtype == out.indices.dtype == np.int64
+    for a in ("indptr", "indices", "data"):
+        np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
 
 
 @pytest.mark.parametrize(

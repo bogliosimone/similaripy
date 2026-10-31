@@ -1,5 +1,5 @@
 //! Bindings of the in-place normalizations on the canonical copy
-//! (`_canonical_csr`): data float32 | float64, indices/indptr int32.
+//! (`_canonical_csr`): data float32 | float64, indices int32, indptr int32 | int64.
 
 use numpy::{Element, IntoPyArray, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use similaripy_core::Error;
 use similaripy_core::normalize::{self as core, IdfMode, Norm, TfMode, Value};
 
-use crate::to_py;
+use crate::{Indptr, to_py};
 
 #[derive(Clone, Copy)]
 enum Op {
@@ -29,7 +29,7 @@ impl Op {
         self,
         data: &mut [T],
         indices: &[i32],
-        indptr: &[i32],
+        indptr: &[i64],
         n_cols: usize,
     ) -> Result<(), Error> {
         match self {
@@ -59,7 +59,7 @@ fn run<T: Value + Element>(
 ) -> PyResult<()> {
     let mut data: PyReadwriteArray1<T> = data.extract()?;
     let indices: PyReadonlyArray1<i32> = indices.extract()?;
-    let indptr: PyReadonlyArray1<i32> = indptr.extract()?;
+    let indptr: Indptr = indptr.extract()?;
     let (data, indices, indptr) = (
         data.as_slice_mut()?,
         indices.as_slice()?,

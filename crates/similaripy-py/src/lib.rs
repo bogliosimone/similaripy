@@ -47,9 +47,39 @@ fn cached_pool(n: usize) -> Result<Arc<ThreadPool>, Error> {
     })
 }
 
+/// A CSR `indptr` as the core reads it (int64): an int64 array borrowed, an
+/// int32 one (scipy's dtype while nnz fits) widened, a copy of n_rows + 1.
+pub(crate) enum Indptr<'py> {
+    Wide(PyReadonlyArray1<'py, i64>),
+    Widened(Vec<i64>),
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Indptr<'py> {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        if let Ok(a) = obj.extract::<PyReadonlyArray1<'py, i64>>() {
+            return Ok(Self::Wide(a));
+        }
+        let a: PyReadonlyArray1<'py, i32> = obj.extract()?;
+        Ok(Self::Widened(
+            a.as_slice()?.iter().map(|&p| i64::from(p)).collect(),
+        ))
+    }
+}
+
+impl Indptr<'_> {
+    pub(crate) fn as_slice(&self) -> PyResult<&[i64]> {
+        match self {
+            Self::Wide(a) => Ok(a.as_slice()?),
+            Self::Widened(v) => Ok(v),
+        }
+    }
+}
+
 /// A matrix column selector as `(indptr, indices)`; None = no selector (list
 /// selectors are applied in Python). Empty `Some` selects nothing.
-type Selection<'py> = Option<(PyReadonlyArray1<'py, i32>, PyReadonlyArray1<'py, i32>)>;
+type Selection<'py> = Option<(Indptr<'py>, PyReadonlyArray1<'py, i32>)>;
 
 fn selection<'a>(
     name: &'static str,
@@ -69,7 +99,7 @@ fn selection<'a>(
 struct CsrArg<'py> {
     data: PyReadonlyArray1<'py, f32>,
     indices: PyReadonlyArray1<'py, i32>,
-    indptr: PyReadonlyArray1<'py, i32>,
+    indptr: Indptr<'py>,
     n_cols: usize,
 }
 
@@ -226,7 +256,7 @@ where
 #[pyo3(signature = (*, indptr, indices, data, forward, num_threads))]
 fn remap_sort_rows(
     py: Python<'_>,
-    indptr: PyReadonlyArray1<'_, i32>,
+    indptr: Indptr<'_>,
     mut indices: PyReadwriteArray1<'_, i32>,
     mut data: Option<PyReadwriteArray1<'_, f32>>,
     forward: PyReadonlyArray1<'_, i32>,
@@ -258,7 +288,7 @@ fn group_interactions<'py>(
     n_cols: usize,
     duplicates: &str,
 ) -> PyResult<(
-    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<i64>>,
     Bound<'py, PyArray1<i32>>,
     Bound<'py, PyArray1<f32>>,
 )> {
@@ -296,11 +326,11 @@ fn group_interactions<'py>(
 #[pyo3(signature = (*, indptr, indices, data, num_threads))]
 fn canonicalize_rows<'py>(
     py: Python<'py>,
-    indptr: PyReadonlyArray1<'py, i32>,
+    indptr: Indptr<'py>,
     indices: PyReadwriteArray1<'py, i32>,
     data: &Bound<'py, PyAny>,
     num_threads: usize,
-) -> PyResult<Bound<'py, PyArray1<i32>>> {
+) -> PyResult<Bound<'py, PyArray1<i64>>> {
     match data.extract::<PyReadwriteArray1<'py, f32>>() {
         Ok(d) => canonicalize(py, indptr, indices, d, num_threads),
         Err(_) => canonicalize::<f64>(py, indptr, indices, data.extract()?, num_threads),
@@ -309,11 +339,11 @@ fn canonicalize_rows<'py>(
 
 fn canonicalize<'py, V: Value + Element>(
     py: Python<'py>,
-    indptr: PyReadonlyArray1<'py, i32>,
+    indptr: Indptr<'py>,
     mut indices: PyReadwriteArray1<'py, i32>,
     mut data: PyReadwriteArray1<'py, V>,
     num_threads: usize,
-) -> PyResult<Bound<'py, PyArray1<i32>>> {
+) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let indptr = indptr.as_slice()?;
     let (indices, data) = (indices.as_slice_mut()?, data.as_slice_mut()?);
     let new_indptr = py

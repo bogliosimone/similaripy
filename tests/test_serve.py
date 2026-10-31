@@ -316,6 +316,22 @@ def test_any_input_form_same_model():
             assert np.array_equal(a, b)
 
 
+def test_int64_indptr_input_same_model(monkeypatch):
+    """S past 2^31 - 1 entries comes with an int64 indptr (forced with a limit
+    of 0, CSR and COO routes): the same model; its indptr is int64 either way."""
+    from similaripy import _s_plus
+
+    S = _S(40, True, seed=9)
+    want = ItemKNN(S)._model.parts()
+    assert want[0].dtype == np.int64
+    monkeypatch.setattr(_s_plus, "_MAX_INT32_NNZ", 0)
+    S64 = S.copy()
+    S64.indptr, S64.indices = S.indptr.astype(np.int64), S.indices.astype(np.int64)
+    for m in (S64, S.tocoo()):
+        for a, b in zip(ItemKNN(m)._model.parts()[:5], want[:5]):
+            assert np.array_equal(a, b)
+
+
 @pytest.mark.parametrize("mapped", [False, True])
 def test_concurrent_calls_identical(tmp_path, mapped):
     """One model shared by threads (scratch per OS thread, GIL released), built or mapped from disk."""
@@ -415,6 +431,7 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
     meta = json.loads((tmp_path / "m" / "meta.json").read_text())
     assert meta["format"] == 1 and meta["n_cols"] == 80 and meta["block_size"] == block_size
     assert np.array_equal(np.load(tmp_path / "m" / "item_ids.npy"), ext)
+    assert np.load(tmp_path / "m" / "indptr.npy").dtype == np.int64  # one dtype, whatever S's nnz
     # pickling a loaded (mapped) model copies its arrays
     assert (
         pickle.loads(pickle.dumps(back)).recommend(ext[:4], k=3)[0].tolist() == back.recommend(ext[:4], k=3)[0].tolist()
@@ -496,6 +513,7 @@ def _swap_first_row(a):
         (lambda d: (d / "data.npy").write_bytes((d / "data.npy").read_bytes() + b"\0" * 4), "file size"),
         (lambda d: (d / "data.npy").write_bytes(b"not numpy at all"), "npy"),
         (lambda d: _corrupt(d, "indices", lambda a: a.astype(np.int64)), "<i4"),
+        (lambda d: _corrupt(d, "indptr", lambda a: a.astype(np.int32)), "<i8"),
         (lambda d: _corrupt(d, "data", lambda a: a.astype(">f4")), "<f4"),
         (lambda d: _corrupt(d, "data", lambda a: np.asfortranarray(np.stack([a, a], axis=1))), "<f4"),
         (lambda d: np.save(d / "data.npy", np.array([1.0] * 3, dtype=object), allow_pickle=True), "<f4"),

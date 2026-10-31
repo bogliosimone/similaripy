@@ -8,7 +8,7 @@ use crate::Error;
 
 /// `indptr` starts at 0, never decreases and ends at `nnz`, so every row span
 /// lies in `0..=nnz`. Shared with the prep functions.
-pub(crate) fn check_indptr(name: &str, indptr: &[i32], nnz: usize) -> Result<(), Error> {
+pub(crate) fn check_indptr(name: &str, indptr: &[i64], nnz: usize) -> Result<(), Error> {
     let bad = |msg: &str| Err(Error::InvalidInput(format!("{name}: {msg}")));
     if indptr.is_empty() {
         return bad("indptr is empty");
@@ -27,7 +27,7 @@ pub(crate) fn check_indptr(name: &str, indptr: &[i32], nnz: usize) -> Result<(),
 
 fn check_structure(
     name: &'static str,
-    indptr: &[i32],
+    indptr: &[i64],
     indices: &[i32],
     n_cols: usize,
 ) -> Result<(), Error> {
@@ -44,7 +44,7 @@ fn check_structure(
 /// # Safety
 /// `r + 1 < indptr.len()`.
 #[inline(always)]
-unsafe fn row_span(indptr: &[i32], r: usize) -> (usize, usize) {
+unsafe fn row_span(indptr: &[i64], r: usize) -> (usize, usize) {
     // SAFETY: caller contract.
     unsafe {
         (
@@ -54,7 +54,7 @@ unsafe fn row_span(indptr: &[i32], r: usize) -> (usize, usize) {
     }
 }
 
-fn rows_sorted(indptr: &[i32], indices: &[i32]) -> bool {
+fn rows_sorted(indptr: &[i64], indices: &[i32]) -> bool {
     indptr
         .windows(2)
         .all(|w| indices[w[0] as usize..w[1] as usize].is_sorted())
@@ -63,7 +63,7 @@ fn rows_sorted(indptr: &[i32], indices: &[i32]) -> bool {
 /// A CSR matrix with values. Indices within a row need not be sorted.
 #[derive(Clone, Copy)]
 pub struct CsrView<'a> {
-    indptr: &'a [i32],
+    indptr: &'a [i64],
     indices: &'a [i32],
     data: &'a [f32],
     n_cols: usize,
@@ -72,7 +72,7 @@ pub struct CsrView<'a> {
 impl<'a> CsrView<'a> {
     pub fn new(
         name: &'static str,
-        indptr: &'a [i32],
+        indptr: &'a [i64],
         indices: &'a [i32],
         data: &'a [f32],
         n_cols: usize,
@@ -97,7 +97,7 @@ impl<'a> CsrView<'a> {
     /// # Safety
     /// `new` with the same arguments returned `Ok`.
     pub(crate) unsafe fn new_unchecked(
-        indptr: &'a [i32],
+        indptr: &'a [i64],
         indices: &'a [i32],
         data: &'a [f32],
         n_cols: usize,
@@ -119,7 +119,7 @@ impl<'a> CsrView<'a> {
     }
 
     /// (indptr, indices, data).
-    pub(crate) fn arrays(&self) -> (&'a [i32], &'a [i32], &'a [f32]) {
+    pub(crate) fn arrays(&self) -> (&'a [i64], &'a [i32], &'a [f32]) {
         (self.indptr, self.indices, self.data)
     }
 
@@ -170,7 +170,7 @@ impl<'a> CsrView<'a> {
 /// used for the per-row filter/target column selections.
 #[derive(Clone, Copy)]
 pub struct CsrPattern<'a> {
-    indptr: &'a [i32],
+    indptr: &'a [i64],
     indices: &'a [i32],
     n_cols: usize,
 }
@@ -178,7 +178,7 @@ pub struct CsrPattern<'a> {
 impl<'a> CsrPattern<'a> {
     pub fn new(
         name: &'static str,
-        indptr: &'a [i32],
+        indptr: &'a [i64],
         indices: &'a [i32],
         n_cols: usize,
     ) -> Result<Self, Error> {
@@ -222,7 +222,7 @@ mod tests {
     use super::*;
 
     /// (indptr, indices, data, expected message)
-    type Case = (&'static [i32], &'static [i32], &'static [f32], &'static str);
+    type Case = (&'static [i64], &'static [i32], &'static [f32], &'static str);
 
     #[test]
     fn rejects_bad_structure() {

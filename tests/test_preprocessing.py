@@ -118,11 +118,20 @@ def test_rejects(kwargs, error, match):
         interactions_to_urm(**kwargs)
 
 
-def test_pair_cap(monkeypatch):
-    monkeypatch.setattr(sim.preprocessing, "_MAX_PAIRS", 2)
-    interactions_to_urm([1, 1, 1, 1], [1, 1, 2, 2])  # 4 events, 2 pairs: fine
-    with pytest.raises(ValueError, match="at most 2 distinct"):
-        interactions_to_urm([1, 1, 2], [1, 2, 1])
+def test_int64_indptr_past_int32_pairs(monkeypatch):
+    # past 2^31 - 1 pairs the URM's indptr (and indices: scipy) are int64;
+    # forced with a limit of 0. Same matrix, and it feeds the rest as usual.
+    from similaripy import _s_plus
+
+    rng = np.random.default_rng(3)
+    users, items = rng.integers(0, 30, 500), rng.integers(0, 50, 500)
+    ref, _, _ = interactions_to_urm(users, items)
+    monkeypatch.setattr(_s_plus, "_MAX_INT32_NNZ", 0)
+    URM, _, _ = interactions_to_urm(users, items)
+    assert ref.indptr.dtype == np.int32 and URM.indptr.dtype == URM.indices.dtype == np.int64
+    for a in ("indptr", "indices", "data"):
+        np.testing.assert_array_equal(getattr(URM, a), getattr(ref, a))
+    assert all(np.array_equal(a, b) for a, b in zip(urm_to_histories(URM)[0], urm_to_histories(ref)[0]))
 
 
 def test_to_histories_feeds_recommend_batch():

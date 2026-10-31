@@ -41,7 +41,7 @@ struct Scratch {
     sums: Vec<f32>,
     touched: Vec<u32>,
     /// Blocked path: `(pos, end)` in S per history item.
-    cursor: Vec<(u32, u32)>,
+    cursor: Vec<(usize, usize)>,
     topk: TopK,
     hist: Vec<(u32, f32)>,
     /// Internal ids never recommended in this request (seen, excluded).
@@ -289,15 +289,14 @@ impl Scratch {
         self.cursor.clear();
         self.cursor.extend(self.hist.iter().map(|&(id, _)| {
             // SAFETY: id < n_items.
-            let (a, b) = unsafe { s.row_span_unchecked(id as usize) };
-            (a as u32, b as u32)
+            unsafe { s.row_span_unchecked(id as usize) }
         }));
         let mut start = 0;
         while start < n_active {
             let hi = (start + block).min(n_active);
             self.preset(start, hi, f32::NEG_INFINITY);
             for (cur, &(_, w)) in self.cursor.iter_mut().zip(&self.hist) {
-                let (pos, end) = (cur.0 as usize, cur.1 as usize);
+                let (pos, end) = *cur;
                 // SAFETY: a suffix of a row span.
                 let (c_cols, c_vals) = unsafe { s.span_unchecked(pos, end) };
                 let (Some(&first), Some(&last)) = (c_cols.first(), c_cols.last()) else {
@@ -322,7 +321,7 @@ impl Scratch {
                         start,
                     )
                 };
-                cur.0 = (pos + n) as u32;
+                cur.0 = pos + n;
             }
             if !self.touched.is_empty() {
                 // SAFETY: forwarded.

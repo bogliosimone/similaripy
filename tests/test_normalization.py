@@ -178,6 +178,24 @@ def test_output_dtypes():
             np.testing.assert_allclose(out.toarray(), norm.bm25(X, axis=axis).toarray(), rtol=1e-6)
 
 
+@pytest.mark.parametrize("name", ["normalize", "binarize", "tfidf", "bm25", "bm25plus"])
+def test_int64_indptr_path_same_values(name, monkeypatch):
+    # past 2^31 - 1 entries the canonical copy's indptr is int64 (and the output's
+    # indices, scipy's rule); forced with a limit of 0
+    from similaripy import _s_plus
+
+    X = generate_random_matrix()
+    f = getattr(norm, name)
+    for kw in ({},) if name == "binarize" else ({"axis": 0}, {"axis": 1}):
+        ref = f(X, **kw)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_s_plus, "_MAX_INT32_NNZ", 0)
+            out = f(X, **kw)
+        assert ref.indptr.dtype == np.int32 and out.indptr.dtype == out.indices.dtype == np.int64
+        for a in ("indptr", "indices", "data"):
+            np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
+
+
 @pytest.mark.parametrize("bad", [np.nan, np.inf])
 @pytest.mark.parametrize("name", ["normalize", "binarize", "tfidf", "bm25", "bm25plus"])
 def test_rejects_non_finite(name, bad):
