@@ -1,7 +1,7 @@
 //! Bindings of the in-place normalizations on the canonical copy
 //! (`_canonical_csr`): data float32 | float64, indices/indptr int32.
 
-use numpy::{Element, PyReadonlyArray1, PyReadwriteArray1};
+use numpy::{Element, IntoPyArray, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
@@ -158,4 +158,55 @@ pub fn bm25plus(
         logbase,
     };
     dispatch(py, data, indices, indptr, shape, op)
+}
+
+fn curve(shape: &str, scale: f64, exponent: Option<f64>) -> PyResult<core::Decay> {
+    let shape = match shape {
+        "exponential" => core::Shape::Exponential,
+        "power" => core::Shape::Power(exponent.unwrap_or(1.0)),
+        "linear" => core::Shape::Linear,
+        "step" => core::Shape::Step,
+        _ => return Err(PyValueError::new_err(format!("unknown shape '{shape}'"))),
+    };
+    core::Decay::new(shape, scale).map_err(to_py)
+}
+
+/// The f32 decay weight of each age (`Decay::weights`).
+#[pyfunction]
+#[pyo3(signature = (*, age, shape, scale, exponent))]
+pub fn decay_weights<'py>(
+    py: Python<'py>,
+    age: PyReadonlyArray1<'py, f64>,
+    shape: &str,
+    scale: f64,
+    exponent: Option<f64>,
+) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let curve = curve(shape, scale, exponent)?;
+    let age = age.as_slice()?;
+    let w = py.detach(|| curve.weights(age)).map_err(to_py)?;
+    Ok(w.into_pyarray(py))
+}
+
+/// The age of each event within its user's events (`normalize::user_ages`):
+/// `kind` "latest" (needs t) | "rank".
+#[pyfunction]
+#[pyo3(signature = (*, users, n_users, t, kind))]
+pub fn user_ages<'py>(
+    py: Python<'py>,
+    users: PyReadonlyArray1<'py, i32>,
+    n_users: usize,
+    t: Option<PyReadonlyArray1<'py, f64>>,
+    kind: &str,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let kind = match kind {
+        "latest" => core::UserAge::SinceLatest,
+        "rank" => core::UserAge::Rank,
+        _ => return Err(PyValueError::new_err(format!("unknown kind '{kind}'"))),
+    };
+    let users = users.as_slice()?;
+    let t = t.as_ref().map(|t| t.as_slice()).transpose()?;
+    let ages = py
+        .detach(|| core::user_ages(users, n_users, t, kind))
+        .map_err(to_py)?;
+    Ok(ages.into_pyarray(py))
 }

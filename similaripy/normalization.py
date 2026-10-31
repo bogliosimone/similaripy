@@ -2,6 +2,7 @@
 TF-IDF, BM25, binarize). Also at the top level (`sim.bm25`, as in 0.x)."""
 
 from math import e
+from typing import Literal
 
 import numpy as np
 import scipy.sparse as sps
@@ -88,26 +89,28 @@ def _validate_modes(tf_mode: str, idf_mode: str) -> None:
 
 def normalize(
     X: sps.sparray | sps.spmatrix,
-    norm: str = "l2",
+    norm: Literal["l1", "l2", "max"] = "l2",
     axis: int = 1,
 ) -> sps.csr_array:
     """
     Normalize a sparse matrix along rows or columns using L1, L2, or max-norm.
 
-    Signed input is fine: l1 divides by the sum of |x|, l2 by sqrt(sum of x^2),
-    max by the largest |x|. Rows of zeros (empty after canonicalization) stay
+    Signed input is fine; rows of zeros (empty after canonicalization) stay
     unchanged.
 
     Args:
-        X: Input sparse matrix.
-        norm: Normalization method ('l1', 'l2', or 'max').
-        axis: Normalize rows (1) or columns (0).
+        X: sparse matrix; negative values are fine.
+        norm: "l1" (sum of |x|), "l2" (sqrt of the sum of x^2) or "max"
+            (the largest |x|).
+        axis: 1 = normalize each row (default), 0 = each column.
 
     Returns:
-        Normalized CSR matrix.
+        A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
+            float type kept); X never changes.
 
     Raises:
-        ValueError: on a NaN or inf value.
+        TypeError: on a non-sparse X.
+        ValueError: on a NaN or inf value, or an invalid `norm` or `axis`.
     """
     if norm not in _NORMALIZATIONS:
         raise ValueError(f"norm must be one of {_NORMALIZATIONS}, got '{norm}'")
@@ -125,12 +128,14 @@ def binarize(X: sps.sparray | sps.spmatrix) -> sps.csr_array:
     normalization.
 
     Args:
-        X: Input sparse matrix.
+        X: sparse matrix; negative values count as interactions too.
 
     Returns:
-        Binarized CSR matrix.
+        A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
+            float type kept); X never changes.
 
     Raises:
+        TypeError: on a non-sparse X.
         ValueError: on a NaN or inf value (checked before the values become 1).
     """
     X = _canonical(X)
@@ -145,27 +150,32 @@ def bm25(
     k1: float = 1.2,
     b: float = 0.75,
     logbase: float = e,
-    tf_mode: str = "raw",
-    idf_mode: str = "bm25",
+    tf_mode: Literal["binary", "raw", "sqrt", "freq", "log"] = "raw",
+    idf_mode: Literal["unary", "base", "smooth", "prob", "bm25"] = "bm25",
 ) -> sps.csr_array:
     """
     Apply BM25 normalization to a sparse matrix.
 
     Args:
-        X: Input sparse matrix; values >= 0 (term frequencies), checked after
-            summing duplicates.
-        axis: Normalize rows (1) or columns (0).
-        k1: Term saturation parameter.
-        b: Length normalization parameter.
-        logbase: Logarithm base.
-        tf_mode: Term frequency mode ('raw', 'log', 'sqrt', etc.).
-        idf_mode: Inverse document frequency mode ('bm25', 'smooth', etc.).
+        X: sparse matrix of term frequencies (e.g. the URM): values >= 0,
+            checked after summing duplicates.
+        axis: 1 = rows are the documents (default), 0 = columns.
+        k1: term-frequency saturation: higher saturates later.
+        b: document-length normalization, in [0, 1] (0 = none).
+        logbase: base of the IDF logarithm.
+        tf_mode: term-frequency transform: "binary", "raw", "sqrt", "freq" or
+            "log" (see the TF modes in the Normalizations guide).
+        idf_mode: inverse document frequency: "unary", "base", "smooth", "prob"
+            or "bm25" (see the IDF modes in the Normalizations guide).
 
     Returns:
-        BM25-normalized CSR matrix.
+        A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
+            float type kept); X never changes.
 
     Raises:
-        ValueError: on a negative, NaN or inf value.
+        TypeError: on a non-sparse X.
+        ValueError: on a negative, NaN or inf value, or an invalid `axis`,
+            `tf_mode` or `idf_mode`.
     """
     _validate_modes(tf_mode, idf_mode)
     return _transformed(
@@ -180,28 +190,34 @@ def bm25plus(
     b: float = 0.75,
     delta: float = 1.0,
     logbase: float = e,
-    tf_mode: str = "raw",
-    idf_mode: str = "bm25",
+    tf_mode: Literal["binary", "raw", "sqrt", "freq", "log"] = "raw",
+    idf_mode: Literal["unary", "base", "smooth", "prob", "bm25"] = "bm25",
 ) -> sps.csr_array:
     """
     Apply BM25+ normalization to a sparse matrix.
 
     Args:
-        X: Input sparse matrix; values >= 0 (term frequencies), checked after
-            summing duplicates.
-        axis: Normalize rows (1) or columns (0).
-        k1: Term saturation parameter.
-        b: Length normalization parameter.
-        delta: BM25+ boosting parameter.
-        logbase: Logarithm base.
-        tf_mode: Term frequency mode.
-        idf_mode: Inverse document frequency mode.
+        X: sparse matrix of term frequencies (e.g. the URM): values >= 0,
+            checked after summing duplicates.
+        axis: 1 = rows are the documents (default), 0 = columns.
+        k1: term-frequency saturation: higher saturates later.
+        b: document-length normalization, in [0, 1] (0 = none).
+        delta: BM25+ lower bound added to every term weight (> 0 keeps rare
+            terms in long documents from vanishing).
+        logbase: base of the IDF logarithm.
+        tf_mode: term-frequency transform: "binary", "raw", "sqrt", "freq" or
+            "log" (see the TF modes in the Normalizations guide).
+        idf_mode: inverse document frequency: "unary", "base", "smooth", "prob"
+            or "bm25" (see the IDF modes in the Normalizations guide).
 
     Returns:
-        BM25+ normalized CSR matrix.
+        A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
+            float type kept); X never changes.
 
     Raises:
-        ValueError: on a negative, NaN or inf value.
+        TypeError: on a non-sparse X.
+        ValueError: on a negative, NaN or inf value, or an invalid `axis`,
+            `tf_mode` or `idf_mode`.
     """
     _validate_modes(tf_mode, idf_mode)
     return _transformed(
@@ -222,25 +238,30 @@ def tfidf(
     X: sps.sparray | sps.spmatrix,
     axis: int = 1,
     logbase: float = e,
-    tf_mode: str = "sqrt",
-    idf_mode: str = "smooth",
+    tf_mode: Literal["binary", "raw", "sqrt", "freq", "log"] = "sqrt",
+    idf_mode: Literal["unary", "base", "smooth", "prob", "bm25"] = "smooth",
 ) -> sps.csr_array:
     """
     Apply TF-IDF normalization to a sparse matrix.
 
     Args:
-        X: Input sparse matrix; values >= 0 (term frequencies), checked after
-            summing duplicates.
-        axis: Normalize rows (1) or columns (0).
-        logbase: Logarithm base.
-        tf_mode: Term frequency mode.
-        idf_mode: Inverse document frequency mode.
+        X: sparse matrix of term frequencies (e.g. the URM): values >= 0,
+            checked after summing duplicates.
+        axis: 1 = rows are the documents (default), 0 = columns.
+        logbase: base of the IDF logarithm.
+        tf_mode: term-frequency transform: "binary", "raw", "sqrt", "freq" or
+            "log" (see the TF modes in the Normalizations guide).
+        idf_mode: inverse document frequency: "unary", "base", "smooth", "prob"
+            or "bm25" (see the IDF modes in the Normalizations guide).
 
     Returns:
-        TF-IDF normalized CSR matrix.
+        A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
+            float type kept); X never changes.
 
     Raises:
-        ValueError: on a negative, NaN or inf value.
+        TypeError: on a non-sparse X.
+        ValueError: on a negative, NaN or inf value, or an invalid `axis`,
+            `tf_mode` or `idf_mode`.
     """
     _validate_modes(tf_mode, idf_mode)
     return _transformed(X, axis, _core.tfidf, "tfidf", tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase)

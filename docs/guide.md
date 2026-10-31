@@ -2,7 +2,7 @@
 
 SimilariPy is a high-performance Python package, built in Rust, to **compute KNN similarity matrices** from sparse data and **serve them with low latency**.
 
-It also includes normalization functions to pre-process the data.
+It also includes normalization and weighting functions to pre-process the data.
 
 Primarily designed for Recommender Systems and Information Retrieval (IR) tasks, but can be applied to other domains as well.
 
@@ -26,6 +26,8 @@ All functions run in a multi-threaded Rust core, GIL-free, on sparse CSR matrice
 
 - **S-Plus**: A hybrid model combining Tversky and Cosine components, with RP3Beta-style depopularization and full control over weights and smoothing.
 
+More details in [Similarities](similarity.md).
+
 ## Serving
 
 The serving engine turns a similarity matrix into recommendations, in your own item ids.  
@@ -35,15 +37,19 @@ All requests run in the Rust core, GIL-free: one user per call, or a batch of us
 - **Online**: one user per call, in tens to hundreds of microseconds.
 - **Availability rules**: include or exclude items for all requests, per group, or per request.
 
-## Normalization Functions
+More details in [Serving](serving.md).
 
-SimilariPy provides a suite of normalization functions for sparse matrix pre-processing.  
-All functions run in a multi-threaded Rust core, GIL-free, and return a new CSR matrix.
+## Normalization and Weighting
+
+Re-weight your data before the similarity computation: normalization functions on sparse matrices, and time decay of interactions.
 
 - **L1, L2**: Applies row- or column-wise normalization.
 - **TF-IDF**: Computes TF-IDF weighting with customizable term-frequency and IDF modes.
 - **BM25**: Applies classic BM25 weighting used in information retrieval.
 - **BM25+**: Variant of BM25 with additive smoothing for low-frequency terms.
+- **Time and rank decay**: weight each interaction by its age or recency.
+
+More details in [Normalizations](normalization.md) and [Preprocessing](preprocessing.md).
 
 ## Example
 

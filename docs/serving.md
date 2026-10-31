@@ -46,7 +46,7 @@ Everything is on the `ItemKNN` class: build a `model`, then call its methods.
 | Parameter | Description |
 |-----------|-------------|
 | `S` | Square sparse item-item matrix, e.g. `sim.cosine(URM.T, k=100)` or its transpose (see [Orientation of S](#orientation-of-s)). |
-| `item_ids` | One unique int64 id per item (column of S); histories, results and rules use them. `None` = S's column indices. *(default: `None`)* |
+| `item_ids` | One unique int64 id per item (column of S); histories, results and rules use them. `None` = S's column indices. String ids: [Ids](preprocessing.md#ids). *(default: `None`)* |
 | `candidate_items` | Only these items can ever be recommended; the others are dropped from the model (histories still use them). Changing it means a rebuild. *(default: `None` = all)* |
 | `block_size` | As in the similarity functions: `'auto'`, `None` (no blocking) or an int > 0. Same results at any value; blocking is faster under concurrent requests, `None` for a lone request on an idle machine. *(default: `'auto'`)* |
 | `num_threads` | Threads for the build. `0` = all cores. *(default: `0`)* |
@@ -76,14 +76,12 @@ ids, scores = model.recommend_batch(histories, weights=ws, k=20)     # many user
 Example: batch recommendations from an interaction log, in chunks for millions of users:
 
 ```python
-user_codes, user_ids = pd.factorize(log.user)
-item_codes, item_ids = pd.factorize(log.item)
-URM = sps.csr_matrix((np.ones(len(log)), (user_codes, item_codes)))   # duplicates summed
+from similaripy.preprocessing import interactions_to_urm, urm_to_histories
 
+URM, user_ids, item_ids = interactions_to_urm(log.user, log.item)   # repeats summed
 model = ItemKNN(sim.cosine(URM.T, k=100).T, item_ids=item_ids)
 
-histories = np.split(item_ids[URM.indices], URM.indptr[1:-1])   # your ids per user
-weights = np.split(URM.data, URM.indptr[1:-1])
+histories, weights = urm_to_histories(URM, item_ids)   # your ids per user
 chunk = 100_000
 for a in range(0, len(histories), chunk):
     ids, scores = model.recommend_batch(histories[a:a + chunk], weights=weights[a:a + chunk], k=20)

@@ -15,6 +15,7 @@ check:
 	cargo clippy --workspace --all-targets -- -D warnings
 	cargo test --workspace
 	uv run pytest
+	rm -rf .cache  # as make docs: zensical caches API pages by their .md, not the docstrings
 	uv run --only-group docs zensical build --strict
 
 # Undefined-behaviour check of the Rust core unsafe code. One-time setup:

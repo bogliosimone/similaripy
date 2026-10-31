@@ -54,17 +54,17 @@ The serving engine runs item-based KNN models online, in your own item ids:
 
 For more details, check the **[📘 Serving](https://bogliosimone.github.io/similaripy/serving/)** guide.
 
-## 🧮 Normalization Functions
+## 🧮 Normalization and Weighting
 
-SimilariPy provides a suite of normalization functions for sparse matrix pre-processing.  
-All functions run in a multi-threaded Rust core, GIL-free, and return a new CSR matrix: the input never changes.
+Re-weight your data before the similarity computation: normalization functions on sparse matrices (multi-threaded Rust core, GIL-free, a new CSR matrix: the input never changes), and time decay of interactions.
 
 - **L1, L2**: Applies row- or column-wise normalization.
 - **TF-IDF**: Computes TF-IDF weighting with customizable term-frequency and IDF modes.
 - **BM25**: Applies classic BM25 weighting used in information retrieval.
 - **BM25+**: Variant of BM25 with additive smoothing for low-frequency terms.
+- **Time and rank decay**: weight each interaction by its age or recency.
 
-For more details, check the **[📘 Normalizations](https://bogliosimone.github.io/similaripy/normalization/)** guide.
+For more details, check the **[📘 Normalizations](https://bogliosimone.github.io/similaripy/normalization/)** and **[📘 Preprocessing](https://bogliosimone.github.io/similaripy/preprocessing/)** guides.
 
 ## ⚡ Performance
 

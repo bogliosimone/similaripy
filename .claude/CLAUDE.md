@@ -20,12 +20,13 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
   - [similarity.py](similaripy/similarity.py) - Similarity functions (cosine, jaccard, s_plus, etc.)
   - [_s_plus.py](similaripy/_s_plus.py) - numpy prep (copies, sorting, column filters), kernel call, output build
   - [normalization.py](similaripy/normalization.py) - Normalization functions (BM25, TF-IDF, etc.)
+  - [preprocessing.py](similaripy/preprocessing.py) - Interaction logs → URM + id maps (`interactions_to_urm`), histories for `recommend_batch` from a log or a URM (`interactions_to_histories`, `urm_to_histories`), event-level `time_decay` / `rank_decay` (one weight per event, offline and online); one import path
   - [serving.py](similaripy/serving.py) - `ItemKNN` (one import path: `similaripy.serving`): thin wrapper (the Rust core builds the model), `view` masks, `recommend` / `recommend_batch`, `save` / `load`
 
 - **Rust core** ([crates/similaripy-core](crates/similaripy-core)): pure Rust, no Python
   - [kernel.rs](crates/similaripy-core/src/kernel.rs) - S-Plus kernel (single-block and blocked paths, rayon)
-  - [normalize.rs](crates/similaripy-core/src/normalize.rs) - Normalizations, in place over CSR data
-  - [prep.rs](crates/similaripy-core/src/prep.rs) - Canonical rows (`canonical_row`, shared by the Python prep and the serving build), renumber + sort
+  - [normalize.rs](crates/similaripy-core/src/normalize.rs) - Normalizations, in place over CSR data; `Decay` (the one decay formula, for a future server too) + `user_ages`
+  - [prep.rs](crates/similaripy-core/src/prep.rs) - Canonical rows (`canonical_row`, shared by the Python prep and the serving build), renumber + sort, `group_interactions` (logs → CSR: counting sort by user, rows in parallel)
   - [csr.rs](crates/similaripy-core/src/csr.rs), [topk.rs](crates/similaripy-core/src/topk.rs) - CSR views, top-K heap
   - [serve.rs](crates/similaripy-core/src/serve.rs) - Serving engine, in [serve/](crates/similaripy-core/src/serve): `model.rs` (build, the one check `Core::from_arrays`, save/load, views), `ids.rs` (id maps, masks), `request.rs` (one history per call, batch = rayon over the same function)
   - [store.rs](crates/similaripy-core/src/store.rs) - Saved models: `.npy` reader/writer, mapped (`memmap2`) or owned arrays, directory replace
@@ -91,6 +92,8 @@ make benchmark-similarity-small
 **Test files:**
 - [tests/test_similarity.py](tests/test_similarity.py) - every similarity × shrink type against one dense float64 reference (`_dense_scores`), selectors, signed input
 - [tests/test_s_plus_prep.py](tests/test_s_plus_prep.py) - validation, canonicalization, layout, output build, regressions
+- [tests/test_preprocessing.py](tests/test_preprocessing.py) - `interactions_to_urm` vs a dict reference (duplicates × timestamps × vocabularies), id dtypes, both histories paths (batch == single, log == URM scores)
+- [tests/test_decay.py](tests/test_decay.py) - `time_decay` / `rank_decay` vs a Python reference, offline-weighted URM == online-weighted history
 - [tests/test_normalization.py](tests/test_normalization.py), [tests/test_progress_bar.py](tests/test_progress_bar.py)
 - [tests/test_free_threading.py](tests/test_free_threading.py) - concurrent calls, identical bits across threads and blocking
 - [tests/test_serve.py](tests/test_serve.py) - `ItemKNN` vs a dense float64 reference, masks and views, unknown ids, batch == single bits, pickle, save/load round trips + corrupted files
