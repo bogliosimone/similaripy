@@ -13,7 +13,7 @@ from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
 # A caller's sparse input before `_canonical_csr`: any scipy sparse array or
 # matrix, checked at runtime (`sp.issparse`). `Any` for type checkers:
 # scipy-stubs gives sparray/spmatrix no attributes (.shape, .nnz, ...); after
-# the canonical copy the prep works on csr_array.
+# the canonical copy the prep works on `Csr` arrays.
 SparseInput = Any
 
 # Accumulator block in float32 entries (~1 MB), defined in the Rust core.
@@ -34,9 +34,15 @@ _last_timings = {"kernel": 0.0, "output": 0.0}
 # benchmarks and tests, not an API; don't flip it under concurrent calls.
 _COLUMN_ORDER = "popularity"
 
-# Largest output nnz with an int32 CSR indptr; past it indptr and indices
-# are int64. A module constant so tests can lower it.
+# Largest nnz with an int32 CSR indptr; past it indptr is int64 (and a scipy
+# matrix's indices too: scipy keeps one index dtype). A module constant so
+# tests can lower it.
 _MAX_INT32_NNZ = np.iinfo(np.int32).max
+
+
+def _indptr_dtype(nnz: int) -> type[np.signedinteger]:
+    """int32 while `nnz` fits (as scipy), else int64."""
+    return np.int32 if nnz <= _MAX_INT32_NNZ else np.int64
 
 
 # ---- The kernel's argument groups (`_core.compute_similarities` reads them by
@@ -44,12 +50,17 @@ _MAX_INT32_NNZ = np.iinfo(np.int32).max
 
 
 class Csr(NamedTuple):
-    """A canonical CSR matrix's arrays (float32 data, int32 ids)."""
+    """A canonical CSR matrix's arrays (float32 or float64 data, int32
+    indices, int32 or int64 indptr: `_indptr_dtype`)."""
 
     data: np.ndarray
     indices: np.ndarray
     indptr: np.ndarray
     n_cols: int
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return len(self.indptr) - 1, self.n_cols
 
 
 class Params(NamedTuple):
@@ -294,10 +305,12 @@ def _one_value(*arrays) -> bool:
 # ---- Prep helpers (numpy) ----
 
 
-def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> sp.csr_array:
+def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> Csr:
     """
-    The call's own canonical copy of `matrix`: CSR, `dtype` values (float32 or
-    float64), int32 indices, rows sorted, duplicates summed, no explicit zeros.
+    The call's own canonical copy of `matrix`: CSR arrays, `dtype` values (float32
+    or float64), int32 indices, rows sorted, duplicates summed, no explicit zeros.
+    Arrays, not a scipy matrix: past 2^31 - 1 entries the indptr is int64
+    (`_indptr_dtype`) and scipy would copy the indices to int64 too.
     Always a copy: the caller's matrix never changes, and every later prep step
     assumes this form and may change the arrays in place. One cleaner for the
     similarities (float32) and the normalizations (the input's float type).
@@ -310,38 +323,28 @@ def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> sp.csr_array
     (e.g. our own COO output, fed back) then only drops zeros, the rest goes
     through the Rust canonicalization, which replaces scipy's single-threaded
     COO -> CSR (2.2 s on a 93M-entry COO item model).
-
-    Raises:
-        ValueError: more than 2^31 - 1 stored entries (indices are int32: fail
-            loudly instead of wrapping; outputs may pass 2^31, `_MAX_INT32_NNZ`).
     """
-    int32_max = np.iinfo(np.int32).max
-    if matrix.nnz > int32_max:
-        raise ValueError(f"sparse inputs must have at most {int32_max} non-zeros")
+    index = _indptr_dtype(matrix.nnz)
     if matrix.format == "coo":
         rows, cols, data = matrix.row, matrix.col, matrix.data
         if np.any(rows[1:] < rows[:-1]):
             order = np.argsort(rows, kind="stable")
             rows, cols, data = rows[order], cols[order], data[order]
-        indptr = np.zeros(matrix.shape[0] + 1, dtype=np.int32)
+        indptr = np.zeros(matrix.shape[0] + 1, dtype=index)
         np.cumsum(np.bincount(rows, minlength=matrix.shape[0]), out=indptr[1:])
     else:
         csr = matrix.tocsr()
-        indptr, cols, data = csr.indptr.astype(np.int32), csr.indices, csr.data
+        nnz = csr.indptr[-1]  # scipy allows longer arrays past the last row
+        indptr, cols, data = csr.indptr.astype(index), csr.indices[:nnz], csr.data[:nnz]
     canonical = (matrix if matrix.format == "coo" else csr).has_canonical_format
     indices = cols.astype(np.int32)
     with np.errstate(over="ignore"):  # inf: reported by the similarities' finite check (`_check_data`)
         data = data.astype(dtype)
-    if canonical:
-        out = sp.csr_array((data, indices, indptr), shape=matrix.shape)
-        if (data == 0).any():
-            out.eliminate_zeros()
-    else:
-        indptr = _core.canonicalize_rows(indptr=indptr, indices=indices, data=data, num_threads=num_threads)
-        nnz = indptr[-1]
-        out = sp.csr_array((data[:nnz], indices[:nnz], indptr), shape=matrix.shape)
-    out.has_canonical_format = True  # sorted, summed: skips scipy's re-checks
-    return out
+    if not canonical or (data == 0).any():  # zeros: the same Rust pass drops them
+        new_indptr = _core.canonicalize_rows(indptr=indptr, indices=indices, data=data, num_threads=num_threads)
+        nnz = int(new_indptr[-1])
+        indptr, indices, data = new_indptr.astype(_indptr_dtype(nnz), copy=False), indices[:nnz], data[:nnz]
+    return Csr(data, indices, indptr, matrix.shape[1])
 
 
 def _row_sums(values: np.ndarray, indptr: np.ndarray, dtype=None) -> np.ndarray:
@@ -400,7 +403,7 @@ def _keep_columns(m: Csr, keep_mask) -> Csr:
     # ponytail: two boolean gathers over nnz; a Rust pass is the upgrade if a
     # profile shows it
     sel = keep_mask[m.indices]
-    new_indptr = np.zeros(len(m.indptr), dtype=np.int32)
+    new_indptr = np.zeros(len(m.indptr), dtype=m.indptr.dtype)
     np.cumsum(_row_sums(sel, m.indptr, dtype=np.int32), out=new_indptr[1:])
     return m._replace(data=m.data[sel], indices=m.indices[sel], indptr=new_indptr)
 
@@ -493,8 +496,8 @@ def s_plus(
 
     Raises:
         ValueError: invalid shapes or parameters (see `_check_args`),
-            a block_size other than 'auto', None or an int > 0, more than
-            2^31 - 1 non-zeros in an input, input values not finite in float32, a1 != 1 or bayesian_shrink on signed input
+            a block_size other than 'auto', None or an int > 0, input values
+            not finite in float32, a1 != 1 or bayesian_shrink on signed input
             (values < 0, not binary), or l1 != 0 with t1, t2 whose tversky
             term can be <= 0 on weighted input (see `_check_score_rules`), values
             out of float32 range for a score computed from pre-scaled inputs
@@ -593,20 +596,18 @@ def _s_plus(
     if norm_params.binary:  # in place: the raw values were only needed by `_check_data`
         m1.data[:] = 1
         m2.data[:] = 1
-    m1_arrays = Csr(m1.data, m1.indices, m1.indptr, m1.shape[1])
-    m2_arrays = Csr(m2.data, m2.indices, m2.indptr, n_output_cols)
 
     if isinstance(block_size, str):  # 'auto'; None (no blocking) and int > 0 go as they are
         block_size = DEFAULT_BLOCK_SIZE
 
-    norms = _norms(m1_arrays, m2_arrays, n_output_cols, params, norm_params)
+    norms = _norms(m1, m2, n_output_cols, params, norm_params)
     params, norms = _depop_as_cosine(params, norms)
     if _product_form(params):
-        _prescale(m1_arrays, m2_arrays, params.l2, norms)
+        _prescale(m1, m2, params.l2, norms)
         params, norms = params._replace(l2=0), Norms()  # plain dot of the scaled inputs: DOT mode
-    filt, targ, m2_arrays = _selectors(filter_cols, target_cols, m2_arrays, n_output_cols, num_threads)
-    m2_arrays, norms, filt, targ, new_to_old = _popularity_layout(
-        m2_arrays, norms, filt, targ, n_output_cols, num_threads
+    filt, targ, m2 = _selectors(filter_cols, target_cols, m2, n_output_cols, num_threads)
+    m2, norms, filt, targ, new_to_old = _popularity_layout(
+        m2, norms, filt, targ, n_output_cols, num_threads
     )
 
     if bar is not None:
@@ -614,8 +615,8 @@ def _s_plus(
     kernel_start = time.perf_counter()
     cols, vals, counts = _core.compute_similarities(
         targets=targets,
-        m1=m1_arrays,
-        m2=m2_arrays,
+        m1=m1,
+        m2=m2,
         norms=norms,
         params=params,
         k=k,
@@ -808,9 +809,8 @@ def _build_output(cols, vals, counts, targets, shape, format_output):
         indptr = np.zeros(shape[0] + 1, dtype=np.int64)
         indptr[targets + 1] = counts
         np.cumsum(indptr, out=indptr)
-        if indptr[-1] <= _MAX_INT32_NNZ:
-            indptr = indptr.astype(np.int32)
-        else:  # scipy wants one index dtype: it would upcast cols anyway
+        indptr = indptr.astype(_indptr_dtype(indptr[-1]), copy=False)
+        if indptr.dtype == np.int64:  # scipy wants one index dtype: it would upcast cols anyway
             cols = cols.astype(np.int64)
         out = sp.csr_array((vals, cols, indptr), shape=shape)
     out.has_canonical_format = True

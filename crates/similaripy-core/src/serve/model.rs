@@ -59,7 +59,7 @@ fn is_saved_model(dir: &Path) -> bool {
 /// `Core::from_arrays` (the one check): the unchecked reads in `request`
 /// rely on it, so the fields are visible inside `serve` only.
 pub struct Core {
-    pub(super) indptr: Buf<i32>,
+    pub(super) indptr: Buf<i64>,
     pub(super) indices: Buf<i32>,
     pub(super) data: Buf<f32>,
     pub(super) n_active: usize,
@@ -121,7 +121,7 @@ impl BlockSize {
 /// layout, S's original item count, the external ids, the default mask and
 /// the block size as given; `Model::from_parts` takes the same back.
 pub struct Parts<'a> {
-    pub indptr: &'a [i32],
+    pub indptr: &'a [i64],
     pub indices: &'a [i32],
     pub data: &'a [f32],
     pub new_to_old: &'a [i32],
@@ -177,11 +177,11 @@ impl Model {
             return invalid("new_to_old leaves out an item with entries");
         }
         let mut indptr = Vec::with_capacity(new_to_old.len() + 1);
-        indptr.push(0i32);
+        indptr.push(0i64);
         let mut total = 0usize;
         for &old in &new_to_old {
             total += lens[old as usize] as usize;
-            indptr.push(total as i32); // <= S's nnz, an i32
+            indptr.push(total as i64);
         }
         let (mut indices, mut data) = (vec![0i32; total], vec![0f32; total]);
         let (src_ptr, src_cols, src_vals) = s.arrays();
@@ -232,7 +232,7 @@ impl Model {
     /// A model from `parts` (pickling, loading), checked as a build's output.
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
-        indptr: Vec<i32>,
+        indptr: Vec<i64>,
         indices: Vec<i32>,
         data: Vec<f32>,
         new_to_old: Vec<i32>,
@@ -443,7 +443,7 @@ impl Core {
     /// finite values. O(nnz).
     #[allow(clippy::too_many_arguments)]
     fn from_arrays(
-        indptr: Buf<i32>,
+        indptr: Buf<i64>,
         indices: Buf<i32>,
         data: Buf<f32>,
         new_to_old: Buf<i32>,
@@ -458,7 +458,7 @@ impl Core {
         }
         let dense_in = dense_in(&new_to_old, n_cols)?;
         let n = new_to_old.len();
-        let (ip, ix, d): (&[i32], &[i32], &[f32]) = (&indptr, &indices, &data);
+        let (ip, ix, d): (&[i64], &[i32], &[f32]) = (&indptr, &indices, &data);
         let s = CsrView::new("S", ip, ix, d, n)?;
         if s.n_rows() != n {
             return invalid("S must have one row per item");
@@ -489,9 +489,9 @@ impl Core {
     }
 
     fn trimmed(&self, allowed: &[u64]) -> Result<Self, Error> {
-        let (ip, ix, d): (&[i32], &[i32], &[f32]) = (&self.indptr, &self.indices, &self.data);
+        let (ip, ix, d): (&[i64], &[i32], &[f32]) = (&self.indptr, &self.indices, &self.data);
         let mut indptr = Vec::with_capacity(ip.len());
-        indptr.push(0i32);
+        indptr.push(0i64);
         let (mut indices, mut data) = (Vec::new(), Vec::new());
         for w in ip.windows(2) {
             for p in w[0] as usize..w[1] as usize {
@@ -502,7 +502,7 @@ impl Core {
                     data.push(d[p]);
                 }
             }
-            indptr.push(indices.len() as i32);
+            indptr.push(indices.len() as i64);
         }
         Self::from_arrays(
             indptr.into(),

@@ -30,7 +30,7 @@ struct Case {
 }
 
 struct Csr {
-    indptr: Vec<i32>,
+    indptr: Vec<i64>,
     indices: Vec<i32>,
     data: Vec<f32>,
 }
@@ -48,7 +48,7 @@ fn csr(s: &[Vec<f32>]) -> Csr {
                 m.data.push(v);
             }
         }
-        m.indptr.push(m.indices.len() as i32);
+        m.indptr.push(m.indices.len() as i64);
     }
     m
 }
@@ -90,7 +90,7 @@ fn messy(s: &[Vec<f32>]) -> Csr {
             m.indices.extend([0, 0]);
             m.data.extend([1.5, -1.5]);
         }
-        m.indptr.push(m.indices.len() as i32);
+        m.indptr.push(m.indices.len() as i64);
     }
     m
 }
@@ -555,7 +555,7 @@ fn rejects_bad_input() {
 /// Owned parts of a model, to corrupt one field at a time.
 #[derive(Clone, Debug, PartialEq)]
 struct Owned {
-    indptr: Vec<i32>,
+    indptr: Vec<i64>,
     indices: Vec<i32>,
     data: Vec<f32>,
     new_to_old: Vec<i32>,

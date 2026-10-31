@@ -9,7 +9,7 @@ const RTOL: f64 = 1e-5;
 const ATOL: f64 = 1e-6;
 
 struct Csr {
-    indptr: Vec<i32>,
+    indptr: Vec<i64>,
     indices: Vec<i32>,
     data: Vec<f32>,
 }
@@ -27,7 +27,7 @@ fn to_csr(dense: &[Vec<f32>]) -> Csr {
                 m.data.push(v);
             }
         }
-        m.indptr.push(m.indices.len() as i32);
+        m.indptr.push(m.indices.len() as i64);
     }
     m
 }

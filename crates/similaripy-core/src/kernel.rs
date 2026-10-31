@@ -508,7 +508,7 @@ struct Scratch {
     sums: Vec<f32>,
     touched: Vec<u32>,
     /// Blocked path: `(pos, end)` in m2 per entry of the current m1 row.
-    cursor: Vec<(u32, u32)>,
+    cursor: Vec<(usize, usize)>,
     topk: TopK,
     filter: RowMarks,
     target_cols: RowMarks,
@@ -589,17 +589,15 @@ impl Scratch {
         // Per m1 entry, the unread rest of its m2 row. Blocks run in column order
         // and rows are sorted, so each block's span starts at the cursor: no `lo`
         // search, and each m2 row is read once, front to back.
-        // Positions fit u32: indptr is i32, so nnz <= i32::MAX (`CsrView::new`).
         self.cursor.clear();
         self.cursor.extend(u_cols.iter().map(|&u| {
             // SAFETY: m1 indices < m2.n_rows.
-            let (a, b) = unsafe { inp.m2.row_span_unchecked(u as usize) };
-            (a as u32, b as u32)
+            unsafe { inp.m2.row_span_unchecked(u as usize) }
         }));
         for start in (0..n_cols).step_by(block) {
             let hi_col = (start + block).min(n_cols) as i32;
             for (cur, &v1) in self.cursor.iter_mut().zip(u_vals) {
-                let (pos, end) = (cur.0 as usize, cur.1 as usize);
+                let (pos, end) = *cur;
                 // SAFETY: pos..end is a suffix of an m2 row span.
                 let (c_cols, c_vals) = unsafe { inp.m2.span_unchecked(pos, end) };
                 let (Some(&first), Some(&last)) = (c_cols.first(), c_cols.last()) else {
@@ -625,7 +623,7 @@ impl Scratch {
                         start,
                     )
                 };
-                cur.0 = (pos + n) as u32;
+                cur.0 = pos + n;
             }
             if !self.touched.is_empty() {
                 // SAFETY: touched + start < hi_col <= n_cols.

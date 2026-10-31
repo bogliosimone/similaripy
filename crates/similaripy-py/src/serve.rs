@@ -14,7 +14,7 @@ use similaripy_core::serve::{
     BatchRequest, BlockSize, Lists, Model, Request, recommend, recommend_batch,
 };
 
-use crate::{to_py, with_pool};
+use crate::{Indptr, to_py, with_pool};
 
 type Arr<'py, T> = Bound<'py, PyArray1<T>>;
 
@@ -70,7 +70,7 @@ impl PyModel {
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
-        indptr: PyReadonlyArray1<'_, i32>,
+        indptr: Indptr<'_>,
         indices: PyReadonlyArray1<'_, i32>,
         data: PyReadonlyArray1<'_, f32>,
         n: usize,
@@ -95,7 +95,7 @@ impl PyModel {
     #[allow(clippy::too_many_arguments)]
     fn from_parts(
         py: Python<'_>,
-        indptr: PyReadonlyArray1<'_, i32>,
+        indptr: Indptr<'_>,
         indices: PyReadonlyArray1<'_, i32>,
         data: PyReadonlyArray1<'_, f32>,
         new_to_old: PyReadonlyArray1<'_, i32>,
@@ -106,7 +106,8 @@ impl PyModel {
     ) -> PyResult<Self> {
         let block = self::block_size(block_size)?;
         let v = |a: &PyReadonlyArray1<'_, i32>| a.as_slice().map(<[i32]>::to_vec);
-        let (indptr, indices, new_to_old) = (v(&indptr)?, v(&indices)?, v(&new_to_old)?);
+        let (indptr, indices, new_to_old) =
+            (indptr.as_slice()?.to_vec(), v(&indices)?, v(&new_to_old)?);
         let data = data.as_slice()?.to_vec();
         let ext = ext.map(|e| e.as_slice().map(<[i64]>::to_vec)).transpose()?;
         let allowed = allowed
@@ -255,7 +256,7 @@ impl PyModel {
         &self,
         py: Python<'py>,
     ) -> PyResult<(
-        Arr<'py, i32>,
+        Arr<'py, i64>,
         Arr<'py, i32>,
         Arr<'py, f32>,
         Arr<'py, i32>,

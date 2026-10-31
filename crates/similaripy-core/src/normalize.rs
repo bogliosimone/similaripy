@@ -112,7 +112,7 @@ impl IdfMode {
 /// Divides each row by its l1 / l2 / max norm (sum of |x|, sqrt of the sum
 /// of x^2, largest |x|: signed rows keep their signs). Empty rows and zero
 /// norms are left unchanged.
-pub fn normalize_rows<T: Value>(norm: Norm, data: &mut [T], indptr: &[i32]) -> Result<(), Error> {
+pub fn normalize_rows<T: Value>(norm: Norm, data: &mut [T], indptr: &[i64]) -> Result<(), Error> {
     check_indptr("normalize", indptr, data.len())?;
     par_rows(data, indptr, &|_, _, row: &mut [T]| {
         let d = match norm {
@@ -134,7 +134,7 @@ pub fn normalize_rows<T: Value>(norm: Norm, data: &mut [T], indptr: &[i32]) -> R
 pub fn tfidf<T: Value>(
     data: &mut [T],
     indices: &[i32],
-    indptr: &[i32],
+    indptr: &[i64],
     n_cols: usize,
     tf_mode: TfMode,
     idf_mode: IdfMode,
@@ -146,7 +146,7 @@ pub fn tfidf<T: Value>(
     par_rows(data, indptr, &|_, start, row: &mut [T]| {
         let doc_len = row.iter().fold(T::ZERO, |s, &x| s + x);
         for (x, c) in row.iter_mut().zip(&indices[start..]) {
-            *x = tf(*x, doc_len, tf_mode, lb) * idf_[ix(*c)];
+            *x = tf(*x, doc_len, tf_mode, lb) * idf_[*c as usize];
         }
     });
     Ok(())
@@ -157,7 +157,7 @@ pub fn tfidf<T: Value>(
 pub fn bm25plus<T: Value>(
     data: &mut [T],
     indices: &[i32],
-    indptr: &[i32],
+    indptr: &[i64],
     n_cols: usize,
     k1: f64,
     b: f64,
@@ -181,7 +181,7 @@ pub fn bm25plus<T: Value>(
         for (x, c) in row.iter_mut().zip(&indices[start..]) {
             let t = tf(*x, doc_len[r], tf_mode, lb);
             let w = t.wide() * (k1.wide() + 1.0) / (t + k1 * norm_len).wide() + delta.wide();
-            *x = T::narrow(idf_[ix(*c)].wide() * w);
+            *x = T::narrow(idf_[*c as usize].wide() * w);
         }
     });
     Ok(())
@@ -193,7 +193,7 @@ pub fn bm25plus<T: Value>(
 fn idf_and_doc_len<T: Value>(
     data: &[T],
     indices: &[i32],
-    indptr: &[i32],
+    indptr: &[i64],
     n_cols: usize,
     mode: IdfMode,
     lb: T,
@@ -208,7 +208,7 @@ fn idf_and_doc_len<T: Value>(
         for (&x, &c) in data[a..z].iter().zip(&indices[a..z]) {
             len = len + x;
             if x > T::ZERO {
-                counts[ix(c)] += 1;
+                counts[c as usize] += 1;
             }
         }
         if with_doc_len {
@@ -418,13 +418,13 @@ fn log_logbase<T: Value>(logbase: f64) -> T {
     T::narrow(T::narrow(logbase).wide().ln())
 }
 
-fn ix(i: i32) -> usize {
+fn ix(i: i64) -> usize {
     i as usize
 }
 
 /// The canonical CSR the Python prep passes (`_canonical_csr`): indptr from 0
 /// to nnz, one value per entry, column indices in `0..n_cols`.
-fn check_csr<T>(data: &[T], indices: &[i32], indptr: &[i32], n_cols: usize) -> Result<(), Error> {
+fn check_csr<T>(data: &[T], indices: &[i32], indptr: &[i64], n_cols: usize) -> Result<(), Error> {
     check_indptr("normalize", indptr, indices.len())?;
     if data.len() != indices.len() {
         return Err(Error::InvalidInput("len(data) != len(indices)".into()));
@@ -440,7 +440,7 @@ fn check_csr<T>(data: &[T], indices: &[i32], indptr: &[i32], n_cols: usize) -> R
 /// `start` is the row's absolute offset. Splits by entries, not rows, so
 /// popularity-ordered rows still balance. Same split as `prep::par_leaves`,
 /// kept separate: one data slice (prep's has two).
-fn par_rows<T, F>(data: &mut [T], indptr: &[i32], f: &F)
+fn par_rows<T, F>(data: &mut [T], indptr: &[i64], f: &F)
 where
     T: Send,
     F: Fn(usize, usize, &mut [T]) + Sync,
@@ -448,7 +448,7 @@ where
     rows_from(data, indptr, 0, LEAF_NNZ, f)
 }
 
-fn rows_from<T, F>(data: &mut [T], indptr: &[i32], first_row: usize, leaf: usize, f: &F)
+fn rows_from<T, F>(data: &mut [T], indptr: &[i64], first_row: usize, leaf: usize, f: &F)
 where
     T: Send,
     F: Fn(usize, usize, &mut [T]) + Sync,
@@ -487,9 +487,9 @@ mod tests {
             leaf in 0usize..8,
             offset in 0usize..3,
         ) {
-            let mut indptr = vec![offset as i32];
+            let mut indptr = vec![offset as i64];
             for l in &lens {
-                indptr.push(indptr.last().unwrap() + *l as i32);
+                indptr.push(indptr.last().unwrap() + *l as i64);
             }
             let total = *indptr.last().unwrap() as usize;
             let mut data: Vec<f32> = (0..total).map(|i| i as f32).collect();
@@ -553,14 +553,14 @@ mod tests {
     fn max_norm_divides_by_largest_abs() {
         // rows: mixed signs, all negative, all positive, empty, zeros
         let mut data = vec![2.0f32, -4.0, 1.0, -1.0, -0.5, 3.0, 6.0, 0.0, 0.0];
-        let indptr = [0i32, 3, 5, 7, 7, 9];
+        let indptr = [0i64, 3, 5, 7, 7, 9];
         normalize_rows(Norm::Max, &mut data, &indptr).unwrap();
         assert_eq!(data, [0.5, -1.0, 0.25, -1.0, -0.5, 0.5, 1.0, 0.0, 0.0]);
     }
 
     #[test]
     fn check_csr_rejects_non_canonical_input() {
-        let ok = |d: &[f32], ix: &[i32], p: &[i32]| check_csr(d, ix, p, 3).is_ok();
+        let ok = |d: &[f32], ix: &[i32], p: &[i64]| check_csr(d, ix, p, 3).is_ok();
         assert!(ok(&[1.0, 2.0], &[0, 2], &[0, 1, 2]));
         assert!(!ok(&[1.0, 2.0], &[0, 2], &[1, 1, 2])); // indptr[0] != 0
         assert!(!ok(&[1.0, 2.0], &[0, 2], &[0, 1, 1])); // indptr[-1] != nnz

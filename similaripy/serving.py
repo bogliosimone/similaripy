@@ -27,11 +27,10 @@ import numpy as np
 from scipy.sparse import sparray, spmatrix
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
-from ._s_plus import SparseInput, _canonical_csr
+from ._s_plus import SparseInput, _canonical_csr, _indptr_dtype
 
 __all__ = ["ItemKNN"]
 
-_INT32_MAX = np.iinfo(np.int32).max
 _INT64_MAX = np.iinfo(np.int64).max
 
 
@@ -94,7 +93,8 @@ def _per_user(name, lists, n=None, convert=None):
 
 
 def _csr_arrays(S: SparseInput, num_threads):
-    """S's size and CSR arrays as contiguous int32 / float32, copied only when the
+    """S's size and CSR arrays as contiguous indptr (`_indptr_dtype`) / int32 /
+    float32, copied only when the
     dtype or layout differs (the build reads them in place and never changes
     them). Other formats take the similarity functions' route
     (`_canonical_csr`: one copy, values cast before duplicates are summed), so
@@ -102,8 +102,6 @@ def _csr_arrays(S: SparseInput, num_threads):
     n = S.shape[0]
     if S.ndim != 2 or S.shape[1] != n:
         raise ValueError(f"S must be square (item x item), got shape {S.shape}")
-    if S.nnz > _INT32_MAX:
-        raise ValueError(f"S must have at most {_INT32_MAX} non-zeros")
     if S.format != "csr":
         S = _canonical_csr(S, np.float32, num_threads)
     nnz = int(S.indptr[-1])
@@ -111,7 +109,7 @@ def _csr_arrays(S: SparseInput, num_threads):
         data = np.ascontiguousarray(S.data[:nnz], dtype=np.float32)
     return (
         n,
-        np.ascontiguousarray(S.indptr, dtype=np.int32),
+        np.ascontiguousarray(S.indptr, dtype=_indptr_dtype(nnz)),
         np.ascontiguousarray(S.indices[:nnz], dtype=np.int32),
         data,
     )
@@ -147,8 +145,8 @@ class ItemKNN:
 
     Raises:
         TypeError: on non-integer `item_ids` or `candidate_items`.
-        ValueError: on a non-square S, more than 2^31 - 1 non-zeros, or
-            `item_ids` without one unique id per item.
+        ValueError: on a non-square S, or `item_ids` without one unique id
+            per item.
 
     Note:
         S is read in place during the build (not copied first): don't

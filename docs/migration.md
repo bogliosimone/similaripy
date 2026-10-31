@@ -92,12 +92,13 @@ accepts them with a few rules per function: see [Signed Input](signed-input.md).
       pre-scaled inputs); `p3alpha` / `rp3beta` normalize in float32, so
       float64 input may move by float rounding.
     - The order within a COO row differs from 0.7.0.
-    - Outputs past 2^31 results are allowed (CSR then gets int64 `indptr` and
-      `indices`); inputs stay int32 (up to 2^31 - 1 entries each).
+    - Inputs and outputs past 2^31 - 1 entries are allowed: the CSR then has
+      int64 `indptr` and `indices` (scipy keeps one index dtype); int32 up to
+      that, as before.
     - Duplicate `target_rows` are computed once.
     - The normalizations return a `csr_array` also for `spmatrix` input (use
-      `@` for products), with int32 indices (float32/float64 values kept), and
-      raise a `ValueError` past 2^31 - 1 entries, as the similarities.
+      `@` for products), with int32 indices (float32/float64 values kept) up
+      to 2^31 - 1 entries, int64 past it, as the similarities.
     - New: `similaripy.binarize(X)`, the `binary=True` of the similarities as a
       separate step.
     - New: `similaripy.serving.ItemKNN`, an online engine over a similarity

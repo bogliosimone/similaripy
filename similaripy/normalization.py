@@ -8,7 +8,7 @@ import numpy as np
 import scipy.sparse as sps
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
-from ._s_plus import SparseInput, _canonical_csr
+from ._s_plus import Csr, SparseInput, _canonical_csr
 
 __all__ = ["binarize", "bm25", "bm25plus", "normalize", "tfidf"]
 
@@ -21,14 +21,14 @@ _IDF_MODES = ("unary", "base", "smooth", "prob", "bm25")
 # ---- Private helpers ----
 
 
-def _canonical(X: SparseInput, axis: int = 1) -> sps.csr_array:
+def _canonical(X: SparseInput, axis: int = 1) -> Csr:
     """
     The call's own canonical CSR copy of X (axis 1) or X.T (axis 0), see
     `_canonical_csr`: float32/float64 values kept, other value types -> float32;
     int32 indices.
 
     Raises:
-        ValueError: If axis is not 0 or 1, or X has more than 2^31 - 1 entries.
+        ValueError: If axis is not 0 or 1.
         TypeError: If X is not a sparse matrix.
     """
     if axis not in (0, 1):
@@ -50,18 +50,27 @@ def _transformed(X: SparseInput, axis: int, op, name: str | None = None, **kwarg
     if name is not None:
         _check_non_negative(X, name)
     op(data=X.data, indices=X.indices, indptr=X.indptr, shape=X.shape, **kwargs)
+    out = _to_scipy(X)
     # ty 0.0.90 + scipy-stubs mis-resolve csr_array.T (shape-generic overloads)
-    return X.T.tocsr() if axis == 0 else X  # ty: ignore[invalid-attribute-access]
+    return out.T.tocsr() if axis == 0 else out  # ty: ignore[invalid-attribute-access]
 
 
-def _check_finite(X: sps.csr_array) -> None:
+def _to_scipy(X: Csr) -> sps.csr_array:
+    """The canonical arrays as a scipy CSR (past 2^31 - 1 entries scipy makes
+    the indices int64 too)."""
+    out = sps.csr_array((X.data, X.indices, X.indptr), shape=X.shape)
+    out.has_canonical_format = True  # sorted, summed: skips scipy's re-checks
+    return out
+
+
+def _check_finite(X: Csr) -> None:
     """NaN/inf would spread through a row's norm or idf, silently (as the
     similarities, checked on the canonical copy)."""
     if not np.isfinite(X.data).all():
         raise ValueError("X values must be finite")
 
 
-def _check_non_negative(X: sps.csr_array, name: str) -> None:
+def _check_non_negative(X: Csr, name: str) -> None:
     """Term weightings need counts: a negative value would give a NaN log or a
     negative document length (signed input). Checked on the canonical data,
     so +1/-1 duplicates sum to 0 and pass."""
@@ -138,10 +147,10 @@ def binarize(X: sps.sparray | sps.spmatrix) -> sps.csr_array:
         TypeError: on a non-sparse X.
         ValueError: on a NaN or inf value (checked before the values become 1).
     """
-    X = _canonical(X)
-    _check_finite(X)  # before the values become 1
-    X.data[:] = 1
-    return X
+    C = _canonical(X)
+    _check_finite(C)  # before the values become 1
+    C.data[:] = 1
+    return _to_scipy(C)
 
 
 def bm25(

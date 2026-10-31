@@ -19,13 +19,12 @@ import scipy.sparse as sp
 from numpy.typing import ArrayLike
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
+from ._s_plus import _indptr_dtype
 from .serving import _check_ids, _ids
 
 __all__ = ["interactions_to_histories", "interactions_to_urm", "rank_decay", "time_decay", "urm_to_histories"]
 
 _INT32_MAX = np.iinfo(np.int32).max
-# Most stored pairs a URM holds (int32 CSR, until int64 offsets); a constant so tests can lower it.
-_MAX_PAIRS = _INT32_MAX
 
 
 def _codes(name: str, ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -116,7 +115,7 @@ def interactions_to_urm(
         TypeError: on non-integer ids, non-numeric values or timestamps
             of another type.
         ValueError: on lengths that don't match, non-finite values or
-            timestamps, or more than 2^31 - 1 distinct pairs.
+            timestamps.
 
     Note:
         Memory: about 20 bytes per event above the inputs (+ 8 with
@@ -150,8 +149,7 @@ def interactions_to_urm(
         n_cols=item_ids.size,
         duplicates=duplicates,
     )
-    if data.size > _MAX_PAIRS:
-        raise ValueError(f"at most {_MAX_PAIRS} distinct (user, item) pairs (int32 indices), got {data.size}")
+    indptr = indptr.astype(_indptr_dtype(data.size), copy=False)  # int64 past 2^31 - 1 pairs (indices too: scipy)
     return sp.csr_array((data, indices, indptr), shape=(user_ids.size, item_ids.size)), user_ids, item_ids
 
 

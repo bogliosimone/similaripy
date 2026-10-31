@@ -72,10 +72,9 @@ def dot_product(
     Raises:
         TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
             `filter_cols` of a wrong type.
-        ValueError: on inputs of mismatched shapes, non-finite values, more
-            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
-            `target_cols`, or a `shrink_type` that does nothing for this
-            similarity.
+        ValueError: on inputs of mismatched shapes, non-finite values, an
+            invalid parameter value, an empty `target_cols`, or a
+            `shrink_type` that does nothing for this similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "dot_product", cosine=False, denominator=False
@@ -148,10 +147,9 @@ def cosine(
     Raises:
         TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
             `filter_cols` of a wrong type.
-        ValueError: on inputs of mismatched shapes, non-finite values, more
-            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
-            `target_cols`, or a `shrink_type` that does nothing for this
-            similarity.
+        ValueError: on inputs of mismatched shapes, non-finite values, an
+            invalid parameter value, an empty `target_cols`, or a
+            `shrink_type` that does nothing for this similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "cosine", cosine=True, denominator=True
@@ -230,10 +228,9 @@ def asymmetric_cosine(
     Raises:
         TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
             `filter_cols` of a wrong type.
-        ValueError: on inputs of mismatched shapes, non-finite values, more
-            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
-            `target_cols`, or a `shrink_type` that does nothing for this
-            similarity.
+        ValueError: on inputs of mismatched shapes, non-finite values, an
+            invalid parameter value, an empty `target_cols`, or a
+            `shrink_type` that does nothing for this similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "asymmetric_cosine", cosine=True, denominator=True
@@ -317,10 +314,9 @@ def tversky(
     Raises:
         TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
             `filter_cols` of a wrong type.
-        ValueError: on inputs of mismatched shapes, non-finite values, more
-            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
-            `target_cols`, or a `shrink_type` that does nothing for this
-            similarity.
+        ValueError: on inputs of mismatched shapes, non-finite values, an
+            invalid parameter value, an empty `target_cols`, or a
+            `shrink_type` that does nothing for this similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "tversky", cosine=False, denominator=True
@@ -397,10 +393,9 @@ def jaccard(
     Raises:
         TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
             `filter_cols` of a wrong type.
-        ValueError: on inputs of mismatched shapes, non-finite values, more
-            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
-            `target_cols`, or a `shrink_type` that does nothing for this
-            similarity.
+        ValueError: on inputs of mismatched shapes, non-finite values, an
+            invalid parameter value, an empty `target_cols`, or a
+            `shrink_type` that does nothing for this similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "jaccard", cosine=False, denominator=True
@@ -476,10 +471,9 @@ def dice(
     Raises:
         TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
             `filter_cols` of a wrong type.
-        ValueError: on inputs of mismatched shapes, non-finite values, more
-            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
-            `target_cols`, or a `shrink_type` that does nothing for this
-            similarity.
+        ValueError: on inputs of mismatched shapes, non-finite values, an
+            invalid parameter value, an empty `target_cols`, or a
+            `shrink_type` that does nothing for this similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "dice", cosine=False, denominator=True
@@ -560,10 +554,9 @@ def p3alpha(
     Raises:
         TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
             `filter_cols` of a wrong type.
-        ValueError: on inputs of mismatched shapes, non-finite values, more
-            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
-            `target_cols`, or a `shrink_type` that does nothing for this
-            similarity.
+        ValueError: on inputs of mismatched shapes, non-finite values, an
+            invalid parameter value, an empty `target_cols`, or a
+            `shrink_type` that does nothing for this similarity.
     """
     _check_scalar("alpha", alpha, strict=True)  # 0 makes every probability 1, < 0 inverts them
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
@@ -641,10 +634,9 @@ def rp3beta(
     Raises:
         TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
             `filter_cols` of a wrong type.
-        ValueError: on inputs of mismatched shapes, non-finite values, more
-            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
-            `target_cols`, or a `shrink_type` that does nothing for this
-            similarity.
+        ValueError: on inputs of mismatched shapes, non-finite values, an
+            invalid parameter value, an empty `target_cols`, or a
+            `shrink_type` that does nothing for this similarity.
     """
     _check_scalar("alpha", alpha, strict=True)  # 0 makes every probability 1, < 0 inverts them
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
@@ -751,10 +743,9 @@ def s_plus(
     Raises:
         TypeError: on a non-sparse input, or `target_rows` / `target_cols` /
             `filter_cols` of a wrong type.
-        ValueError: on inputs of mismatched shapes, non-finite values, more
-            than 2^31 - 1 non-zeros, an invalid parameter value, an empty
-            `target_cols`, or a `shrink_type` that does nothing for this
-            similarity.
+        ValueError: on inputs of mismatched shapes, non-finite values, an
+            invalid parameter value, an empty `target_cols`, or a
+            `shrink_type` that does nothing for this similarity.
     """
     stabilized_shrink, bayesian_shrink, additive_shrink = _shrink_values(
         shrink, shrink_type, "s_plus", cosine=l2 != 0, denominator=l1 != 0 or l2 != 0 or l3 != 0
@@ -805,7 +796,7 @@ def _random_walk(alpha: float, binary: bool, popularity: bool):
         pop = _col_sums(np.abs(m2.data), m2.indices, m2.shape[1]) if popularity else None
         for m in (m1, m2):
             _core.normalize(data=m.data, indices=m.indices, indptr=m.indptr, shape=m.shape, norm="l1")
-            m.data = _signed_power(m.data, alpha)
+            m.data[:] = _signed_power(m.data, alpha)
         return pop
 
     return prepare

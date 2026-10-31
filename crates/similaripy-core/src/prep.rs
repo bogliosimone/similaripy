@@ -18,7 +18,7 @@ pub(crate) const LEAF_NNZ: usize = 1 << 16;
 /// Replaces numpy's gather + scipy's single-threaded `sort_indices`: 2.1 s of
 /// the 3.3 s recommendation call on Yambda 50M (S with 93M entries).
 pub fn remap_sort_rows(
-    indptr: &[i32],
+    indptr: &[i64],
     indices: &mut [i32],
     data: Option<&mut [f32]>,
     forward: &[i32],
@@ -43,7 +43,7 @@ pub fn remap_sort_rows(
 }
 
 fn remap_sort<V: Copy + Send>(
-    indptr: &[i32],
+    indptr: &[i64],
     indices: &mut [i32],
     data: &mut [V],
     forward: &[i32],
@@ -66,19 +66,19 @@ fn remap_sort<V: Copy + Send>(
 /// item model) and sums duplicate entries of CSR inputs, which would otherwise
 /// reach the kernel unsummed (wrong norms and binary counts).
 pub fn canonicalize_rows<V: Value>(
-    indptr: &[i32],
+    indptr: &[i64],
     indices: &mut [i32],
     data: &mut [V],
-) -> Result<Vec<i32>, Error> {
+) -> Result<Vec<i64>, Error> {
     canonicalize_with_leaf(indptr, indices, data, LEAF_NNZ)
 }
 
 fn canonicalize_with_leaf<V: Value>(
-    indptr: &[i32],
+    indptr: &[i64],
     indices: &mut [i32],
     data: &mut [V],
     leaf: usize,
-) -> Result<Vec<i32>, Error> {
+) -> Result<Vec<i64>, Error> {
     let bad = |m: &str| Err(Error::InvalidInput(format!("canonicalize_rows: {m}")));
     check_indptr("canonicalize_rows", indptr, indices.len())?;
     if data.len() != indices.len() {
@@ -106,7 +106,7 @@ fn canonicalize_with_leaf<V: Value>(
         indices.copy_within(a..a + kept, out);
         data.copy_within(a..a + kept, out);
         out += kept;
-        new_indptr.push(out as i32);
+        new_indptr.push(out as i64);
     }
     Ok(new_indptr)
 }
@@ -159,7 +159,7 @@ pub(crate) fn canonical_counts(s: &CsrView) -> (Vec<u32>, Vec<u32>) {
 /// Row `r` of (indptr, indices, data) made canonical (`canonical_row`) in
 /// `cols`/`vals`; returns its length.
 pub(crate) fn canonical_copy(
-    (indptr, indices, data): (&[i32], &[i32], &[f32]),
+    (indptr, indices, data): (&[i64], &[i32], &[f32]),
     r: usize,
     cols: &mut Vec<i32>,
     vals: &mut Vec<f32>,
@@ -174,7 +174,7 @@ pub(crate) fn canonical_copy(
 }
 
 /// Sorts every row of a leaf by column, carrying the values; sorted rows are skipped.
-pub(crate) fn sort_rows<V: Copy>(indptr: &[i32], indices: &mut [i32], data: &mut [V]) {
+pub(crate) fn sort_rows<V: Copy>(indptr: &[i64], indices: &mut [i32], data: &mut [V]) {
     let base = indptr[0] as usize;
     let mut pairs: Vec<(i32, V)> = Vec::new();
     for w in indptr.windows(2) {
@@ -200,31 +200,31 @@ fn sort_row<V: Copy>(cols: &mut [i32], vals: &mut [V], pairs: &mut Vec<(i32, V)>
 /// balance; a leaf's `indptr` slice is absolute, its `indices`/`data` start at
 /// `indptr[0]`.
 pub(crate) fn par_leaves<V: Send, F>(
-    indptr: &[i32],
+    indptr: &[i64],
     indices: &mut [i32],
     data: &mut [V],
     leaf: usize,
     f: &F,
 ) where
-    F: Fn(usize, &[i32], &mut [i32], &mut [V]) + Sync,
+    F: Fn(usize, &[i64], &mut [i32], &mut [V]) + Sync,
 {
     par_leaves_from(0, indptr, indices, data, leaf, f);
 }
 
 fn par_leaves_from<V: Send, F>(
     row0: usize,
-    indptr: &[i32],
+    indptr: &[i64],
     indices: &mut [i32],
     data: &mut [V],
     leaf: usize,
     f: &F,
 ) where
-    F: Fn(usize, &[i32], &mut [i32], &mut [V]) + Sync,
+    F: Fn(usize, &[i64], &mut [i32], &mut [V]) + Sync,
 {
     let n = indptr.len() - 1;
     let base = indptr[0] as usize;
     if n > 1 && indices.len() > leaf {
-        let half = (base + indices.len() / 2) as i32;
+        let half = (base + indices.len() / 2) as i64;
         let mid = indptr.partition_point(|&p| p <= half).clamp(1, n - 1);
         let at = indptr[mid] as usize - base;
         let (il, ir) = indices.split_at_mut(at);
@@ -248,7 +248,7 @@ pub enum Duplicates {
 
 /// `group_interactions`' output: a canonical CSR (f32 values, zeros dropped).
 pub struct Grouped {
-    pub indptr: Vec<i32>,
+    pub indptr: Vec<i64>,
     pub indices: Vec<i32>,
     pub data: Vec<f32>,
 }
@@ -347,12 +347,6 @@ pub fn group_interactions(
     drop((b_col, b_val, b_t));
 
     let nnz: usize = row_out.iter().map(|o| o.0.len()).sum();
-    if nnz > i32::MAX as usize {
-        return Err(Error::InvalidInput(format!(
-            "at most {} distinct (user, item) pairs (int32 indices), got {nnz}",
-            i32::MAX
-        )));
-    }
     let mut out = Grouped {
         indptr: Vec::with_capacity(n_rows + 1),
         indices: Vec::with_capacity(nnz),
@@ -362,7 +356,7 @@ pub fn group_interactions(
     for (oc, ov) in row_out {
         out.indices.extend_from_slice(&oc);
         out.data.extend_from_slice(&ov);
-        out.indptr.push(out.indices.len() as i32);
+        out.indptr.push(out.indices.len() as i64);
     }
     Ok(out)
 }
@@ -387,7 +381,7 @@ mod tests {
             let mut indices = vec![];
             for r in &rows {
                 indices.extend(r);
-                indptr.push(indices.len() as i32);
+                indptr.push(indices.len() as i64);
             }
             // value = original column, so pairs can be checked after the move
             let mut data: Vec<f32> = indices.iter().map(|&c| c as f32).collect();
@@ -437,7 +431,7 @@ mod tests {
                     indices.push(c);
                     data.push(v);
                 }
-                indptr.push(indices.len() as i32);
+                indptr.push(indices.len() as i64);
             }
             // float64 too: the values are exact in both types
             let (mut indices64, mut data64): (Vec<i32>, Vec<f64>) = (indices.clone(), data.iter().map(|&v| v as f64).collect());
@@ -488,7 +482,7 @@ mod tests {
     // Each leaf's first row index matches its slices, however the rows split.
     #[test]
     fn par_leaves_first_row() {
-        let indptr: Vec<i32> = vec![0, 1, 1, 3, 4, 6, 6, 7];
+        let indptr: Vec<i64> = vec![0, 1, 1, 3, 4, 6, 6, 7];
         let mut indices = vec![0; 7];
         // value = row of the entry
         let mut data: Vec<usize> = vec![0, 2, 2, 3, 4, 4, 6];

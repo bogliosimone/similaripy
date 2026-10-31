@@ -58,7 +58,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
 - **Normal use cases first:** extreme values (e.g. data ×1e-30 or ×1e19, past float32 range) are best effort; a cheap check on a realistic failure is fine, dedicated code paths are not.
 
 ### Index widths
-- Inputs and ids are **int32** (each input's nnz ≤ int32 max, output column ids int32). Only output counts and offsets are 64-bit: past 2^31 results the CSR output gets int64 indptr and indices.
+- Column ids are **int32** (output column ids too). Offsets: the Rust core reads `indptr` as i64 only; Python keeps int32 while nnz ≤ int32 max and int64 past it (`_indptr_dtype`, scipy's rule, which makes a scipy matrix's indices int64 too).
 
 ---
 
@@ -131,11 +131,11 @@ make benchmark-similarity-small
 ### Sparse Matrices
 - All functions expect **CSR format** (converted automatically)
 - Inputs are canonicalized before use (summed duplicates, no explicit zeros: `_canonical_csr` in `_s_plus.py`, also used by `normalization.py`); never mutate the caller's matrices
-- **Prep owns its data:** `_canonical_csr` always copies each input once (CSR, float32 for similarities / the input's float type for normalizations, int32, sorted, summed, no zeros); every later prep step assumes that form and may change the arrays in place. Prefer one copy over aliasing tricks in prep (cold code: clarity first)
+- **Prep owns its data:** `_canonical_csr` always copies each input once into `Csr` arrays (float32 for similarities / the input's float type for normalizations, int32 indices, indptr by `_indptr_dtype`, sorted, summed, no zeros); every later prep step assumes that form and may change the arrays in place. Prefer one copy over aliasing tricks in prep (cold code: clarity first)
 
 ### Rust Development
 - `uv run` (e.g. `make test-dev`) rebuilds the extension after `.rs` edits (`[tool.uv] cache-keys`)
-- The Python prep guarantees the kernel's invariants (int32, sorted rows, no explicit zeros); the core still validates once per call, the hot loops don't
+- The Python prep guarantees the kernel's invariants (int32 indices, sorted rows, no explicit zeros); the core still validates once per call, the hot loops don't
 - Release the GIL (`py.detach`) around kernel calls; free-threaded builds (3.14t+) are supported
 - Threads: `num_threads=0` = rayon global pool (`RAYON_NUM_THREADS` to limit), `n` = a pool cached per calling thread
 - Ensure no shared mutable state across rayon workers
