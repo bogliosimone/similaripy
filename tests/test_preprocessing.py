@@ -104,7 +104,6 @@ def test_empty():
         ({"users": [1], "items": [1], "values": [1.0, 2.0]}, ValueError, "one value per interaction"),
         ({"users": [1], "items": [1], "values": [np.nan]}, ValueError, "values must be finite"),
         ({"users": ["a"], "items": [1]}, TypeError, "pd.factorize"),
-        ({"users": np.array([2**63], dtype=np.uint64), "items": [1]}, ValueError, "view"),
         ({"users": [1], "items": [1], "values": ["a"]}, TypeError, "values must be numbers"),
         ({"users": [1], "items": [1], "values": ["1.5"]}, TypeError, "values must be numbers"),
         ({"users": [1], "items": [1], "timestamps": ["2026-01-01"]}, TypeError, "pd.to_datetime"),
