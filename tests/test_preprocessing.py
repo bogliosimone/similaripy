@@ -103,6 +103,10 @@ def test_empty():
         ({"users": [1, 2], "items": [1]}, ValueError, "same length"),
         ({"users": [1], "items": [1], "values": [1.0, 2.0]}, ValueError, "one value per interaction"),
         ({"users": [1], "items": [1], "values": [np.nan]}, ValueError, "values must be finite"),
+        ({"users": ["a"], "items": [1]}, TypeError, "pd.factorize"),
+        ({"users": [1], "items": [1], "values": ["a"]}, TypeError, "values must be numbers"),
+        ({"users": [1], "items": [1], "values": ["1.5"]}, TypeError, "values must be numbers"),
+        ({"users": [1], "items": [1], "timestamps": ["2026-01-01"]}, TypeError, "pd.to_datetime"),
         ({"users": [1], "items": [1], "timestamps": ["x"]}, TypeError, "tz_convert"),
         ({"users": [1], "items": [1], "timestamps": np.array(["NaT"], dtype="datetime64[s]")}, ValueError, "finite"),
         ({"users": [1], "items": [1], "timestamps": [1, 2]}, ValueError, "one value per interaction"),
@@ -209,3 +213,5 @@ def test_interactions_to_histories_rejects():
         interactions_to_histories([1], [1], [np.nan])
     with pytest.raises(TypeError, match="integer ids"):
         interactions_to_histories([1], ["a"])
+    with pytest.raises(TypeError, match="weights must be numbers"):
+        interactions_to_histories([1], [1], ["1.0"])

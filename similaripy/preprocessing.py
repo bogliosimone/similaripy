@@ -48,6 +48,14 @@ def _codes(name: str, ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return vocab.astype(np.int64), codes.ravel().astype(np.int32)  # ravel: numpy 2.0.x returned the input's shape
 
 
+def _numbers(name: str, x, dtype) -> np.ndarray:
+    """A contiguous copy in `dtype`; numbers or bool only (no strings, even numeric ones, as for ids)."""
+    a = np.asarray(x)
+    if a.dtype.kind not in "biuf":
+        raise TypeError(f"{name} must be numbers, got dtype {a.dtype}")
+    return np.ascontiguousarray(a, dtype=dtype)
+
+
 def _timestamps(timestamps, n: int) -> np.ndarray:
     """float64, datetime64 of any unit as seconds."""
     t = np.asarray(timestamps)
@@ -58,7 +66,7 @@ def _timestamps(timestamps, n: int) -> np.ndarray:
     else:
         raise TypeError(
             f"timestamps must be numbers or datetime64, got dtype {t.dtype} "
-            "(timezone-aware pandas datetimes: `.dt.tz_convert(None)` first)"
+            "(strings: `pd.to_datetime` first; timezone-aware: `.dt.tz_convert(None)` first)"
         )
     if t.shape != (n,):
         raise ValueError(f"timestamps must have one value per interaction, got shape {t.shape}")
@@ -105,7 +113,8 @@ def interactions_to_urm(
             pass it to `ItemKNN(S, item_ids=item_ids)`.
 
     Raises:
-        TypeError: on non-integer ids or timestamps of another type.
+        TypeError: on non-integer ids, non-numeric values or timestamps
+            of another type.
         ValueError: on lengths that don't match, non-finite values or
             timestamps, or more than 2^31 - 1 distinct pairs.
 
@@ -119,7 +128,7 @@ def interactions_to_urm(
     n = users.size
     v = None
     if values is not None:
-        v = np.ascontiguousarray(values, dtype=np.float64)
+        v = _numbers("values", values, np.float64)
         if v.shape != (n,):
             raise ValueError(f"values must have one value per interaction, got shape {v.shape}")
         if not np.isfinite(v).all():
@@ -178,7 +187,7 @@ def interactions_to_histories(
         weights: one float32 array of weights per user.
 
     Raises:
-        TypeError: on non-integer ids.
+        TypeError: on non-integer ids or non-numeric weights.
         ValueError: on lengths that don't match or non-finite weights.
     """
     users, items = _check_ids("users", users), _ids("items", items)
@@ -187,7 +196,7 @@ def interactions_to_histories(
     if weights is None:
         w = np.ones(users.size, dtype=np.float32)
     else:
-        w = np.asarray(weights, dtype=np.float32)
+        w = _numbers("weights", weights, np.float32)
         if w.shape != users.shape:
             raise ValueError(f"weights must have one value per event, got shape {w.shape}")
         if not np.isfinite(w).all():
