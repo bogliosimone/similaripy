@@ -136,6 +136,10 @@ include = ["similaripy"]
 # The width the code is written at; double quotes (the formatter's default)
 line-length = 120
 
+[tool.ruff.format]
+# Docs code blocks keep their hand-aligned comments (the formatter would collapse them)
+exclude = ["*.md"]
+
 [tool.ruff.lint]
 # ruff's default rules + a docstring on every public function (the library;
 # tests and notebooks exempt)

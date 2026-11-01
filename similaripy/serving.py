@@ -44,7 +44,9 @@ def _check_ids(name, ids) -> np.ndarray:
     if a.size == 0:
         return np.empty(0, dtype=np.int64)
     if a.dtype.kind not in "iu":
-        raise TypeError(f"{name} must be integer ids, got dtype {a.dtype} (map other ids to integers first, e.g. pd.factorize)")
+        raise TypeError(
+            f"{name} must be integer ids, got dtype {a.dtype} (map other ids to integers first, e.g. pd.factorize)"
+        )
     # int(): exact; numpy 1.x compares uint64 with a Python int as float64 (2**63 == 2**63 - 1)
     if a.dtype.kind == "u" and int(a.max()) > _INT64_MAX:
         raise ValueError(f"{name} must fit in int64, got {a.max()}")

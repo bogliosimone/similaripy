@@ -606,9 +606,7 @@ def _s_plus(
         _prescale(m1, m2, params.l2, norms)
         params, norms = params._replace(l2=0), Norms()  # plain dot of the scaled inputs: DOT mode
     filt, targ, m2 = _selectors(filter_cols, target_cols, m2, n_output_cols, num_threads)
-    m2, norms, filt, targ, new_to_old = _popularity_layout(
-        m2, norms, filt, targ, n_output_cols, num_threads
-    )
+    m2, norms, filt, targ, new_to_old = _popularity_layout(m2, norms, filt, targ, n_output_cols, num_threads)
 
     if bar is not None:
         bar.set_description("Computing")

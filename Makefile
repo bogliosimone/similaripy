@@ -10,6 +10,7 @@ test-dev:
 .PHONY: check
 check:
 	uv run --only-group lint ruff check
+	uv run --only-group lint ruff format --check
 	uv check --no-install-project --group lint --preview-features check-command
 	cargo fmt --check
 	cargo clippy --workspace --all-targets -- -D warnings
