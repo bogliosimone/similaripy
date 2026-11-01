@@ -67,12 +67,17 @@ def parser():
     common.add_argument("--version", default=None, help="dataset version (default: movielens 32m, yambda 50m)")
     common.add_argument("--event-type", default="multi_event", choices=loaders.YAMBDA_EVENTS, help="yambda only")
     common.add_argument(
-        "--rounds", type=positive, default=None, help="timed rounds (default: similarity 1, small 3, recommend 5, serve 3)"
+        "--rounds",
+        type=positive,
+        default=None,
+        help="timed rounds (default: similarity 1, small 3, recommend 5, serve 3)",
     )
     common.add_argument("--warmup", type=int, default=1, help="untimed rounds first (default: 1)")
     common.add_argument("--threads", type=int, default=0, help="num_threads of every call, 0 = all (default: 0)")
     common.add_argument("--format-output", default="csr", choices=["csr", "coo"], help="passed to every call")
-    common.add_argument("--tag", type=tag_name, default=None, help="report name prefix (default: the build's git or version)")
+    common.add_argument(
+        "--tag", type=tag_name, default=None, help="report name prefix (default: the build's git or version)"
+    )
     common.add_argument("--note", default="", help="free text stored in the report")
     common.add_argument("--output-dir", default=str(report.HARNESS_DIR / "bench_results"))
     common.add_argument("--max-load", type=float, default=3.0, help="preflight: 1-min load above = not quiet")

@@ -125,6 +125,9 @@ jobs:
     - name: Lint with ruff
       run: uv run --only-group lint ruff check
 
+    - name: Check formatting with ruff
+      run: uv run --only-group lint ruff format --check
+
     - name: Type check with ty
       # uv check runs the lint group's ty on numpy/scipy, without building the package
       run: uv check --no-install-project --group lint --preview-features check-command

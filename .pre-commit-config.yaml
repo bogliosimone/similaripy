@@ -8,6 +8,12 @@ repos:
         entry: uv run --only-group lint ruff check
         language: system
         types_or: [python, pyi, jupyter]
+      - id: ruff-format
+        name: ruff format
+        # Formats the staged files in place: a changed file stops the commit, re-add it
+        entry: uv run --only-group lint ruff format
+        language: system
+        types_or: [python, pyi, jupyter]
       - id: cargo-fmt
         name: cargo fmt
         entry: cargo fmt --check

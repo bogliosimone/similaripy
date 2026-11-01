@@ -137,7 +137,9 @@ def build_report(workload, config, dataset, cases, results, pre, info=None):
         "config": config,
         "dataset": dataset,
         "info": info or {},
-        "cases": {c.name: {"params": _plain(c.params), **summarize(results[c.name]), "rounds": results[c.name]} for c in cases},
+        "cases": {
+            c.name: {"params": _plain(c.params), **summarize(results[c.name]), "rounds": results[c.name]} for c in cases
+        },
     }
 
 
