@@ -723,7 +723,7 @@ unsafe fn drain_impl<const POW: bool, const MODE: u8>(
 /// Adds `v1 * v2` for each `(c, v2)` into `sums[c - offset]`, recording first
 /// touches. A free function over a slice and a local write cursor so LLVM keeps
 /// the pointers in registers: as a `&mut self` method it reloaded `sums` and the
-/// `touched` header from the stack every element (see tests/benchmarks/README.md,
+/// `touched` header from the stack every element (see benchmarks/README.md,
 /// "Codegen-sensitive hot loops").
 ///
 /// A column whose sum is exactly 0.0 (an underflowed product) is pushed again on
@@ -769,7 +769,7 @@ pub(crate) unsafe fn accumulate(
 /// libstdc++ `lower_bound`: `partition_point` compiles branchless (`csel`), which
 /// serializes the probes' cache misses; with a branch the CPU speculates the next
 /// probe's load. Matters once m2 rows miss to DRAM (Yambda 500M; see
-/// tests/benchmarks/README.md, "Codegen-sensitive hot loops").
+/// benchmarks/README.md, "Codegen-sensitive hot loops").
 #[inline]
 pub(crate) fn lower_bound(s: &[i32], x: i32) -> usize {
     let (mut lo, mut len) = (0, s.len());

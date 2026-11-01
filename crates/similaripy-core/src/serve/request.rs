@@ -349,7 +349,7 @@ impl Scratch {
 
     /// # Safety
     /// Touched + `offset` < n_items; `allowed` sized for n_items.
-    // Out of line, as the kernel's drain (tests/benchmarks/README.md).
+    // Out of line, as the kernel's drain (benchmarks/README.md).
     #[inline(never)]
     unsafe fn drain(&mut self, offset: usize, allowed: Masks) {
         let (sums, touched, topk) = (&mut self.sums, &self.touched, &mut self.topk);

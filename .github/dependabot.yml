@@ -15,7 +15,7 @@ updates:
         patterns: ["*"]
 
   # A PyO3 / numpy / rayon bump can change the kernel's machine code: check the
-  # "Codegen-sensitive hot loops" in tests/benchmarks/README.md before merging.
+  # "Codegen-sensitive hot loops" in benchmarks/README.md before merging.
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:

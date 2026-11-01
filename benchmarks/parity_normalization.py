@@ -1,6 +1,6 @@
 """
 Normalization parity: this install vs a reference install's `--dump`
-(two steps, as check_kernel_parity.py).
+(two steps, as parity_kernel.py).
 
 Every output value must match with rtol=1e-5, atol=1e-7 (NaN/inf must match too);
 the data dtype and the sparsity structure must be identical (index dtypes may
@@ -8,8 +8,8 @@ differ: v1 outputs int32 indices for any input, 0.7.0 kept the input's).
 
 Usage (from the repo root; the same options on both steps):
     uv run --isolated --no-project --python 3.14 --with similaripy==0.7.0 --with pandas --with datasets \
-        python tests/benchmarks/check_normalization_parity.py --dump ref_norm.npz
-    python tests/benchmarks/check_normalization_parity.py --compare ref_norm.npz
+        python benchmarks/parity_normalization.py --dump ref_norm.npz
+    python benchmarks/parity_normalization.py --compare ref_norm.npz
 
     Synthetic: every mode x dtype x axis. --dataset movielens --version 32m:
     reduced set, outputs checked on a fixed 1% row sample (dump ~1 GB).
@@ -19,11 +19,10 @@ import argparse
 import itertools
 import sys
 
+import loaders
 import numpy as np
 import scipy.sparse as sp
-from check_kernel_parity import load_outputs, save_outputs
-from dataset_loaders import load_URM
-from run_small_benchmarks import make_urm
+from parity_kernel import load_outputs, save_outputs
 
 import similaripy as sim
 
@@ -84,9 +83,9 @@ def main():
     args = p.parse_args()
 
     if args.dataset == "synthetic":
-        X0 = make_urm()
+        X0 = loaders.make_urm()
     else:
-        X0, _ = load_URM(args.dataset, version=args.version)
+        X0, _ = loaders.load(args.dataset, args.version)
     full = args.dataset == "synthetic"
     # Datasets: keep a fixed 1% of output rows, or 240 full outputs take ~90 GB
     rows = None if full else np.sort(np.random.default_rng(0).choice(X0.shape[0], X0.shape[0] // 100, replace=False))

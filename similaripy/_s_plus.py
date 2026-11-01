@@ -24,7 +24,7 @@ PROGRESS_BAR_WIDTH = 25
 
 # Wall time (s) of the last call's kernel (scoring, top-K, per-row un-permute
 # + sort, compaction) and output build (matrix wrap). Read by the benchmark
-# harness (tests/benchmarks/benchmark.py), which takes prep as total - kernel -
+# harness (benchmarks/workloads.py), which takes prep as total - kernel -
 # output, so prep includes the wrappers' normalization. Racy under concurrent
 # calls: read it only after serial calls.
 _last_timings = {"kernel": 0.0, "output": 0.0}

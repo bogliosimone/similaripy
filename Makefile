@@ -36,15 +36,15 @@ build:
 
 .PHONY: benchmark-similarity-small
 benchmark-similarity-small:
-	uv run --group bench tests/benchmarks/run_benchmarks.py --dataset movielens --version 32m --rounds 1
+	uv run --group bench python benchmarks/run.py similarity --dataset movielens --version 32m
 
 .PHONY: benchmark-similarity-medium
 benchmark-similarity-medium:
-	uv run --group bench tests/benchmarks/run_benchmarks.py --dataset yambda --version 50m --rounds 1
+	uv run --group bench python benchmarks/run.py similarity --dataset yambda --version 50m
 
 .PHONY: benchmark-similarity-large
 benchmark-similarity-large:
-	uv run --group bench tests/benchmarks/run_benchmarks.py --dataset yambda --version 500m --rounds 1
+	uv run --group bench python benchmarks/run.py similarity --dataset yambda --version 500m
 
 .PHONY: clean
 clean:
