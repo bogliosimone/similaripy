@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use super::model::Model;
 use super::{bit, invalid, words};
 use crate::Error;
-use crate::kernel::{accumulate, lower_bound};
+use crate::kernel::accumulate;
 use crate::topk::TopK;
 
 /// As the similarity functions' default threshold 0: negative scores never
@@ -40,8 +40,8 @@ pub struct Request<'a> {
 struct Scratch {
     sums: Vec<f32>,
     touched: Vec<u32>,
-    /// Blocked path: `(pos, end)` in S per history item.
-    cursor: Vec<(usize, usize)>,
+    /// `(pos, end, column at pos)` in S per history item.
+    cursor: Vec<(usize, usize, usize)>,
     topk: TopK,
     hist: Vec<(u32, f32)>,
     /// Internal ids never recommended in this request (seen, excluded).
@@ -271,57 +271,49 @@ impl Scratch {
     unsafe fn accumulate_all(&mut self, m: &Model, block: usize, allowed: Masks) {
         let s = m.s();
         let n_active = m.n_active;
-        if block == n_active {
-            self.preset(0, n_active, f32::NEG_INFINITY);
-            for &(id, w) in &self.hist {
-                // SAFETY: id < n_items; S columns < n_active == block <= sums.len().
-                unsafe {
-                    let (c, vals) = s.row_unchecked(id as usize);
-                    accumulate(&mut self.sums, &mut self.touched, c, vals, w, 0);
-                }
-            }
-            // SAFETY: forwarded.
-            unsafe { self.drain(0, allowed) };
-            self.preset(0, n_active, 0.0);
-            return;
-        }
-        // Per-row column blocks, as the kernel's `blocked_row`.
+        // Per-row column blocks, as the kernel's `blocked_row`; one block (every
+        // catalog <= the block size) is this loop once.
         self.cursor.clear();
         self.cursor.extend(self.hist.iter().map(|&(id, _)| {
-            // SAFETY: id < n_items.
-            unsafe { s.row_span_unchecked(id as usize) }
+            // SAFETY: id < n_items; the span is the row's.
+            unsafe {
+                let (pos, end) = s.row_span_unchecked(id as usize);
+                (pos, end, next_col(s.span_unchecked(pos, end).0, 0))
+            }
         }));
         let mut start = 0;
         while start < n_active {
             let hi = (start + block).min(n_active);
             self.preset(start, hi, f32::NEG_INFINITY);
             for (cur, &(_, w)) in self.cursor.iter_mut().zip(&self.hist) {
-                let (pos, end) = *cur;
-                // SAFETY: a suffix of a row span.
-                let (c_cols, c_vals) = unsafe { s.span_unchecked(pos, end) };
-                let (Some(&first), Some(&last)) = (c_cols.first(), c_cols.last()) else {
-                    continue;
-                };
-                if first >= hi as i32 {
+                let (pos, end, next) = *cur;
+                // Cached, so a row with nothing in this block costs no load from S.
+                if next >= hi {
                     continue;
                 }
-                let n = if last < hi as i32 {
-                    c_cols.len()
-                } else {
-                    lower_bound(c_cols, hi as i32)
-                };
+                // SAFETY: a suffix of a row span.
+                let (c_cols, c_vals) = unsafe { s.span_unchecked(pos, end) };
+                // Not empty (next < hi). The last block takes the rest of the row
+                // (every column < n_active); a row past the block end stops inside the
+                // accumulate loop, no search first.
                 // SAFETY: start <= c < hi, so c - start < block <= sums.len().
-                unsafe {
-                    accumulate(
-                        &mut self.sums,
-                        &mut self.touched,
-                        &c_cols[..n],
-                        &c_vals[..n],
-                        w,
-                        start,
-                    )
+                let n = unsafe {
+                    if hi == n_active || (c_cols[c_cols.len() - 1] as usize) < hi {
+                        accumulate(&mut self.sums, &mut self.touched, c_cols, c_vals, w, start);
+                        c_cols.len()
+                    } else {
+                        accumulate_below(
+                            &mut self.sums,
+                            &mut self.touched,
+                            c_cols,
+                            c_vals,
+                            w,
+                            start,
+                            hi,
+                        )
+                    }
                 };
-                cur.0 = pos + n;
+                *cur = (pos + n, end, next_col(c_cols, n));
             }
             if !self.touched.is_empty() {
                 // SAFETY: forwarded.
@@ -365,6 +357,52 @@ impl Scratch {
         }
         self.touched.clear();
     }
+}
+
+/// `accumulate` over the leading columns `< hi` of a sorted segment, in one
+/// pass; returns how many it took. Same body and addition order as
+/// `accumulate` (same bits).
+///
+/// # Safety
+/// As `accumulate`, for the columns `< hi`.
+#[inline(always)]
+unsafe fn accumulate_below(
+    sums: &mut [f32],
+    touched: &mut Vec<u32>,
+    c_cols: &[i32],
+    c_vals: &[f32],
+    v1: f32,
+    offset: usize,
+    hi: usize,
+) -> usize {
+    touched.reserve(c_cols.len());
+    let buf = touched.as_mut_ptr();
+    let mut n = touched.len();
+    let mut i = 0;
+    for (&c, &v2) in c_cols.iter().zip(c_vals) {
+        if c as usize >= hi {
+            break;
+        }
+        let local = c as usize - offset;
+        // SAFETY: caller contract; n < capacity (reserve above).
+        unsafe {
+            let s = sums.get_unchecked_mut(local);
+            let old = *s;
+            buf.add(n).write(local as u32);
+            n += (old == 0.0) as usize;
+            *s = old + v2 * v1;
+        }
+        i += 1;
+    }
+    // SAFETY: entries [len, n) were written above, n <= capacity.
+    unsafe { touched.set_len(n) };
+    i
+}
+
+/// The column at `cols[n]`, `usize::MAX` past the end (never in a block).
+#[inline(always)]
+fn next_col(cols: &[i32], n: usize) -> usize {
+    cols.get(n).map_or(usize::MAX, |&c| c as usize)
 }
 
 /// The view's mask and the request's include bits (each None = all allowed).
