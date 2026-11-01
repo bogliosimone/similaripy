@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use super::model::Model;
 use super::{bit, invalid, words};
 use crate::Error;
-use crate::kernel::accumulate;
+use crate::kernel::{accumulate, accumulate_below, next_col};
 use crate::topk::TopK;
 
 /// As the similarity functions' default threshold 0: negative scores never
@@ -357,52 +357,6 @@ impl Scratch {
         }
         self.touched.clear();
     }
-}
-
-/// `accumulate` over the leading columns `< hi` of a sorted segment, in one
-/// pass; returns how many it took. Same body and addition order as
-/// `accumulate` (same bits).
-///
-/// # Safety
-/// As `accumulate`, for the columns `< hi`.
-#[inline(always)]
-unsafe fn accumulate_below(
-    sums: &mut [f32],
-    touched: &mut Vec<u32>,
-    c_cols: &[i32],
-    c_vals: &[f32],
-    v1: f32,
-    offset: usize,
-    hi: usize,
-) -> usize {
-    touched.reserve(c_cols.len());
-    let buf = touched.as_mut_ptr();
-    let mut n = touched.len();
-    let mut i = 0;
-    for (&c, &v2) in c_cols.iter().zip(c_vals) {
-        if c as usize >= hi {
-            break;
-        }
-        let local = c as usize - offset;
-        // SAFETY: caller contract; n < capacity (reserve above).
-        unsafe {
-            let s = sums.get_unchecked_mut(local);
-            let old = *s;
-            buf.add(n).write(local as u32);
-            n += (old == 0.0) as usize;
-            *s = old + v2 * v1;
-        }
-        i += 1;
-    }
-    // SAFETY: entries [len, n) were written above, n <= capacity.
-    unsafe { touched.set_len(n) };
-    i
-}
-
-/// The column at `cols[n]`, `usize::MAX` past the end (never in a block).
-#[inline(always)]
-fn next_col(cols: &[i32], n: usize) -> usize {
-    cols.get(n).map_or(usize::MAX, |&c| c as usize)
 }
 
 /// The view's mask and the request's include bits (each None = all allowed).

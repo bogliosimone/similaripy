@@ -123,7 +123,7 @@ uv run --group bench python benchmarks/gate.py quick --base ~/wt/base/.venv/bin/
 | Change | Run |
 |---|---|
 | Iterating | `run.py similarity --dataset movielens --similarities cosine` |
-| Kernel / serving hot path (`accumulate`, drain, `TopK`, the blocked loops) | `gate.py quick` vs the previous commit (~30 min; Y500M decides); `gate.py full` once per PR. A change counts when every pair shows it with the same sign, ≥ 3% (D40 P6) |
+| Kernel / serving hot path (`accumulate`, `accumulate_below`, drain, `TopK`, the blocked loops) | `gate.py quick` vs the previous commit (~30 min; Y500M decides); `gate.py full` once per PR. A change counts when every pair shows it with the same sign, ≥ 3% (D40 P6) |
 | Prep, output build, Python wrappers | ML-32M + Y50M total, `small --cases all` |
 | Memory | `--rss` (fresh process per case) |
 | Serving latency, block size | `serve --mode latency` on ML-32M (in `gate.py full`); `serve --mode block` at 1 thread and the core count (D65) |
@@ -169,7 +169,7 @@ Rules:
 
 These speedups in `crates/similaripy-core/src/kernel.rs` and `topk.rs` depend on what LLVM emits, and no unit test can see them (the output stays the same either way):
 
-- `lower_bound` must stay **branchy**. LLVM likes to turn it into a branchless `csel`/`cmov` loop, which serializes cache misses once the data no longer fits in cache. An empty `asm!` barrier prevents that today. With the per-row block cursor, it only finds where a block ends inside the rest of an m2 row.
+- The block end has no search: a row crossing it stops inside `accumulate_below` (same body as `accumulate` plus one compare per entry), and a row with nothing in the block is skipped on its cached next column (kernel and serving, perf gates 2026-11-01). A search brought back here must stay **branchy**: the old `lower_bound` needed an empty `asm!` barrier, since LLVM turned it into a branchless `csel`/`cmov` loop that serializes cache misses once the data no longer fits in cache.
 - `accumulate` must keep `sums` and the `touched` cursor in registers. As a `&mut self` method, LLVM reloaded them from the stack on every element.
 - `accumulate`'s first-touch push must stay **branchless**: always write the slot, then `n += (old == 0.0)`. On Yambda ~39% of elements are first touches, so a branch there is mispredicted all the time; replacing it cut kernel time by ~20% on Yambda 50M. Check for `cinc` (aarch64) / `cmpeqss` + `and` + `add` (x86_64) and no branch on the old sum.
 - The heap's sift-down (`PeekMut` drop) must stay **out of line** (a `bl`/`call` in every drain copy). When a change got it inlined into the drain loops, no run showed a gain and some were up to ~8% slower (likely register pressure in the hottest loop); replacements are only ~4% of scored columns, so the call is cheap.
@@ -194,7 +194,7 @@ Per-phase shares (accumulate, drain/score, top-K, row setup) come from `/usr/bin
 
 1. Build the release extension (`make install-dev`) and keep an unstripped copy for disassembly. Then `strip -x similaripy/_core.cpython-*-darwin.so`. Run Python from `.venv/bin/python` directly: `uv run` rebuilds over the stripped file.
 2. In a script: load the dataset, start `/usr/bin/sample <pid> <seconds> -file out.txt` **before** the call, and give it more seconds than the call takes. Sample the whole call: row order isn't random (popularity-ordered rows), so a time window biases the shares.
-3. Read the "Sort by top of stack" section. It gives samples per `_core` offset. Bucket the offsets into phases with address ranges read from `objdump -d --start-address=.. --stop-address=..` of the unstripped copy (symbols from `nm -n`). `single_block_row`, `blocked_row` and `PeekMut` drop are own symbols; accumulate, drain and `lower_bound` are inlined into them. Leave rayon's park/steal code out of the denominator.
+3. Read the "Sort by top of stack" section. It gives samples per `_core` offset. Bucket the offsets into phases with address ranges read from `objdump -d --start-address=.. --stop-address=..` of the unstripped copy (symbols from `nm -n`). `single_block_row`, `blocked_row` and `PeekMut` drop are own symbols; accumulate, `accumulate_below` and drain are inlined into them. Leave rayon's park/steal code out of the denominator.
 4. Samples land on the instruction *after* a stall: read the pattern around a branch or a load, not one address.
 
 `sample` slows the run by ~25–35%, so take seconds from an unsampled run. For work counts that hold on every CPU (elements accumulated, first touches, heap replacements, root rejections), a throwaway patch with per-worker counters is more reliable than shares; don't time that build. To check x86_64 codegen from a Mac: `rustup target add x86_64-unknown-linux-gnu`, then `cargo rustc -p similaripy-core --release --lib --target x86_64-unknown-linux-gnu -- --emit asm` (no linker needed; LTO into the extension can still change inlining).
