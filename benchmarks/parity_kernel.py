@@ -171,7 +171,7 @@ def main():
     mode.add_argument("--compare", metavar="NPZ", help="check this install's outputs against a --dump file")
     p.add_argument("--dataset", default="synthetic", choices=["synthetic", "movielens", "yambda", "hm"])
     p.add_argument("--version", default=None)
-    p.add_argument("--similarities", nargs="+", default=["dot_product", "cosine", "rp3beta"])
+    p.add_argument("--similarities", nargs="+", default=["dot_product", "cosine", "rp3beta"], choices=SIMILARITIES)
     p.add_argument("--k", type=int, default=100)
     p.add_argument("--block-size", default="auto", help="'auto' (262144), 'none' or an int > 0")
     p.add_argument("--exact", action="store_true", help="--compare: fail on any bit difference")

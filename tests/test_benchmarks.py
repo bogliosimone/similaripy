@@ -19,6 +19,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _unload_harness():
+    """Drop the harness modules after each test: their generic names (run, report, compare) mustn't leak."""
+    yield
+    for name, mod in list(sys.modules.items()):
+        if Path(getattr(mod, "__file__", None) or "/").parent == BENCH:
+            del sys.modules[name]
+
+
 @pytest.fixture
 def run(monkeypatch, tmp_path):
     monkeypatch.syspath_prepend(str(BENCH))
@@ -97,6 +106,35 @@ def test_recommend(run):
     assert set(rep["cases"]) == {"recommend", "recommend_filter_seen"}
     assert rep["cases"]["recommend_filter_seen"]["params"]["filter_cols"].startswith("<csr_array")
     assert rep["info"]["s_nnz"] > 0
+
+
+def test_recommend_rss(run):
+    _needs_peak_memory()
+    rep = run("recommend", "--model-k", "20", "--k", "10", "--rss")
+    assert rep["cases"]["recommend_filter_seen"]["rss_peak_mb"] >= 0
+    assert "model_path" not in rep["config"]  # the children's S file isn't a setting
+
+
+def test_bad_arguments_fail_before_running(run):
+    with pytest.raises(SystemExit, match="duplicate"):
+        run("similarity", "--similarities", "cosine", "cosine")
+    for args in (["--reps", "0"], ["--rounds", "0"], ["--tag", "a/b"]):
+        with pytest.raises(SystemExit):
+            run("small", *args)
+
+
+def test_cached_urm_gets_int32_indices(monkeypatch, tmp_path):
+    # A cache written before the int32 rule loads with int32 indices too
+    monkeypatch.syspath_prepend(str(BENCH))
+    import loaders
+    import scipy.sparse as sp
+
+    monkeypatch.setattr(loaders, "CACHE", tmp_path)
+    m = sp.random(50, 40, density=0.1, format="csr", random_state=0)
+    m.indices, m.indptr = m.indices.astype("int64"), m.indptr.astype("int64")
+    sp.save_npz(tmp_path / "old.npz", m)
+    URM = loaders._cached("old", None, verbose=False)
+    assert URM.indices.dtype == URM.indptr.dtype == "int32"
 
 
 def test_small_every_case(run):

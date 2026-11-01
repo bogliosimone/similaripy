@@ -137,8 +137,14 @@ def build_report(workload, config, dataset, cases, results, pre, info=None):
         "config": config,
         "dataset": dataset,
         "info": info or {},
-        "cases": {c.name: {"params": c.params, **summarize(results[c.name]), "rounds": results[c.name]} for c in cases},
+        "cases": {c.name: {"params": _plain(c.params), **summarize(results[c.name]), "rounds": results[c.name]} for c in cases},
     }
+
+
+def _plain(params):
+    """params as they'll be written: a matrix param becomes its description, so the report holds no data
+    (recommend's filter_cols=URM would keep the URM alive through the --rss children)."""
+    return json.loads(json.dumps(params, default=_describe))
 
 
 def write(report, output_dir, tag):

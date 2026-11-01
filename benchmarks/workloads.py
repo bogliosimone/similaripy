@@ -104,14 +104,19 @@ def make_cases(opts, URM):
     workload = opts["workload"]
     if workload == "similarity":
         compat.set_column_order(opts["column_order"])
-        return similarity_cases(URM, opts["similarities"], similarity_options(opts)), {}
-    if workload == "recommend":
-        return recommend_cases(URM, opts)
-    if workload == "small":
-        return small_cases(URM, opts), {}
-    if workload == "serve":
-        return serve_cases(URM, opts)
-    raise ValueError(f"unknown workload {workload!r}")
+        cases, info = similarity_cases(URM, opts["similarities"], similarity_options(opts)), {}
+    elif workload == "recommend":
+        cases, info = recommend_cases(URM, opts)
+    elif workload == "small":
+        cases, info = small_cases(URM, opts), {}
+    elif workload == "serve":
+        cases, info = serve_cases(URM, opts)
+    else:
+        raise ValueError(f"unknown workload {workload!r}")
+    names = [c.name for c in cases]
+    if len(set(names)) < len(names):  # results are keyed by name: two cases would mix their rounds
+        raise ValueError(f"duplicate cases: {sorted({n for n in names if names.count(n) > 1})}")
+    return cases, info
 
 
 def call_options(opts):
@@ -147,8 +152,15 @@ def similarity_cases(URM, names, options):
 
 def recommend_cases(URM, opts):
     """The recommendation step as one library batch call: dot_product(URM, S) with and without
-    filter_cols=URM ("exclude seen items"). S = cosine(URM.T, k=model_k), built once, untimed."""
-    S = sim.cosine(URM.T, k=opts["model_k"], verbose=False, format_output=opts["format_output"])
+    filter_cols=URM ("exclude seen items"). S = cosine(URM.T, k=model_k), built once, untimed.
+    With --rss the children load the parent's S: building it there would free its temporaries right
+    before the measured call, which then reuses them uncounted (see report.peak_memory)."""
+    if opts.get("model_path"):
+        S = sp.load_npz(opts["model_path"])
+    else:
+        S = sim.cosine(URM.T, k=opts["model_k"], verbose=False, format_output=opts["format_output"])
+        if opts.get("rss"):
+            opts["model_path"] = _save_tmp(S)
     base = {"k": opts["k"], **call_options(opts)}
     cases = []
     for name, kwargs in (("recommend", base), ("recommend_filter_seen", {**base, "filter_cols": URM})):
@@ -228,18 +240,18 @@ def _median(values):
 def _concurrency_run(X, kwargs, reps, concurrent):
     """Two cosine calls (num_threads=2 each), on two threads or one after the other: median wall time.
     Run on a free-threaded build (3.14t) for a meaningful number; phases aren't per call under concurrency."""
-    pool = ThreadPoolExecutor(max_workers=2)
 
     def run():
         times = []
-        for _ in range(reps):
-            start = time.perf_counter()
-            if concurrent:
-                list(pool.map(lambda _: sim.cosine(X, **kwargs), range(2)))
-            else:
-                for _ in range(2):
-                    sim.cosine(X, **kwargs)
-            times.append(time.perf_counter() - start)
+        with ThreadPoolExecutor(max_workers=2) as pool:  # no threads start until the first map
+            for _ in range(reps):
+                start = time.perf_counter()
+                if concurrent:
+                    list(pool.map(lambda _: sim.cosine(X, **kwargs), range(2)))
+                else:
+                    for _ in range(2):
+                        sim.cosine(X, **kwargs)
+                times.append(time.perf_counter() - start)
         return untimed(statistics.median(times))
 
     return run
@@ -282,18 +294,24 @@ def serve_cases(URM, opts):
             cases.append(Case(f"block_one_t{t}", {"k": k, "num_threads": t}, _batch_run(one, batch_in, k, t)))
 
     if "build" in modes:
-        tmp = tempfile.mkdtemp(prefix="similaripy-bench-")
-        atexit.register(shutil.rmtree, tmp, ignore_errors=True)  # S is GBs on Yambda 500M
-        path = Path(tmp) / "S.npz"
-        sp.save_npz(path, sp.csr_array(S), compressed=False)
+        path = _save_tmp(S)
         info["s_mb"] = S.nnz * 8 / 2**20  # indices + data
 
         def build():
-            secs, base_mb, peak_mb = report.in_fresh_process(build_child, str(path))
+            secs, base_mb, peak_mb = report.in_fresh_process(build_child, path)
             return untimed(secs, rss_base_mb=base_mb, rss_peak_mb=peak_mb)
 
         cases.append(Case("build", {"block_size": "auto"}, build))
     return cases, info
+
+
+def _save_tmp(S):
+    """S saved as an uncompressed .npz in a temp dir removed at exit (S is GBs on Yambda 500M); its path."""
+    tmp = tempfile.mkdtemp(prefix="similaripy-bench-")
+    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
+    path = str(Path(tmp) / "S.npz")
+    sp.save_npz(path, S, compressed=False)
+    return path
 
 
 def _histories(URM, users, cap, rng):

@@ -74,13 +74,13 @@ def load(dataset, version=None, event_type="multi_event", verbose=True):
 
 def _cached(key, build, verbose):
     path = CACHE / f"{key}.npz"
-    if path.exists():
-        URM = sp.csr_array(sp.load_npz(path))
-    else:
-        URM = build()
-        # One index dtype for every dataset: int32 while it fits (scipy's rule; pandas codes are int64 or int32)
-        if URM.nnz <= np.iinfo(np.int32).max and max(URM.shape) <= np.iinfo(np.int32).max:
-            URM.indices, URM.indptr = URM.indices.astype(np.int32), URM.indptr.astype(np.int32)
+    fresh = not path.exists()
+    URM = build() if fresh else sp.csr_array(sp.load_npz(path))
+    # One index dtype for every dataset: int32 while it fits (scipy's rule; pandas codes are int64 or int32),
+    # on load too (a cache written before this rule)
+    if URM.nnz <= np.iinfo(np.int32).max and max(URM.shape) <= np.iinfo(np.int32).max:
+        URM.indices, URM.indptr = URM.indices.astype(np.int32, copy=False), URM.indptr.astype(np.int32, copy=False)
+    if fresh:
         CACHE.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp.npz")
         sp.save_npz(tmp, URM, compressed=False)

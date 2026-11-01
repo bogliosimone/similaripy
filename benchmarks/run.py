@@ -18,6 +18,7 @@ See benchmarks/README.md for the protocol (which runs for which change).
 """
 
 import argparse
+import re
 import sys
 
 import loaders
@@ -33,6 +34,21 @@ def block_size(raw):
     if value <= 0:
         raise argparse.ArgumentTypeError("block size must be > 0")
     return value
+
+
+def positive(raw):
+    """An int > 0 (--rounds, --reps, abba --pairs)."""
+    value = int(raw)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be > 0")
+    return value
+
+
+def tag_name(raw):
+    """A tag that is a file name part: letters, digits, '.', '_', '+', '-' (checked before the timed run)."""
+    if not re.fullmatch(r"[\w.+-]+", raw):
+        raise argparse.ArgumentTypeError("only letters, digits, '.', '_', '+', '-'")
+    return raw
 
 
 def parser():
@@ -51,12 +67,12 @@ def parser():
     common.add_argument("--version", default=None, help="dataset version (default: movielens 32m, yambda 50m)")
     common.add_argument("--event-type", default="multi_event", choices=loaders.YAMBDA_EVENTS, help="yambda only")
     common.add_argument(
-        "--rounds", type=int, default=None, help="timed rounds (default: similarity 1, small 3, recommend 5, serve 3)"
+        "--rounds", type=positive, default=None, help="timed rounds (default: similarity 1, small 3, recommend 5, serve 3)"
     )
     common.add_argument("--warmup", type=int, default=1, help="untimed rounds first (default: 1)")
     common.add_argument("--threads", type=int, default=0, help="num_threads of every call, 0 = all (default: 0)")
     common.add_argument("--format-output", default="csr", choices=["csr", "coo"], help="passed to every call")
-    common.add_argument("--tag", default=None, help="report name prefix (default: the build's git or version)")
+    common.add_argument("--tag", type=tag_name, default=None, help="report name prefix (default: the build's git or version)")
     common.add_argument("--note", default="", help="free text stored in the report")
     common.add_argument("--output-dir", default=str(report.HARNESS_DIR / "bench_results"))
     common.add_argument("--max-load", type=float, default=3.0, help="preflight: 1-min load above = not quiet")
@@ -83,7 +99,7 @@ def parser():
 
     m = sub.add_parser("small", parents=[common], help="millisecond calls on the synthetic matrix")
     m.add_argument("--cases", nargs="+", default=workloads.SMOKE_CASES, help='case names, or "all" (default: smoke)')
-    m.add_argument("--reps", type=int, default=21, help="calls per measurement, median taken (default: 21)")
+    m.add_argument("--reps", type=positive, default=21, help="calls per measurement, median taken (default: 21)")
 
     v = sub.add_parser("serve", parents=[common], help="similaripy.serving.ItemKNN")
     v.add_argument("--mode", nargs="+", default=["latency"], choices=workloads.SERVE_MODES)
@@ -116,7 +132,7 @@ def main(argv=None):
     except ValueError as e:
         sys.exit(f"error: {e}")
 
-    config = {k: v for k, v in opts.items() if k not in ("workload", "dataset", "version", "event_type")}
+    config = {k: v for k, v in opts.items() if k not in ("workload", "dataset", "version", "event_type", "model_path")}
     results = report.run_rounds(cases, args.rounds, args.warmup, verbose=not args.quiet)
     rep = report.build_report(args.workload, config, dataset, cases, results, pre, info)
     if opts.get("rss"):
