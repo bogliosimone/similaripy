@@ -49,7 +49,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
 
 **Reference:** See [kernel.rs](crates/similaripy-core/src/kernel.rs) for implementation patterns, and in [benchmarks/README.md](benchmarks/README.md) the sections "Codegen-sensitive hot loops" (what a change must not break) and "Profiling the kernel (macOS)" (per-phase shares with `sample`).
 
-**Perf tiers:** the hot path (`accumulate`, drain/score, `TopK`, `lower_bound`) gets a perf assessment on every change; prep, output build and cold core code are correctness first, perf second.
+**Perf tiers:** the hot path (`accumulate`, `accumulate_below`, drain/score, `TopK`) gets a perf assessment on every change; prep, output build and cold core code are correctness first, perf second.
 
 ### Reproducibility contract
 - **Same version + same machine → identical results, bit for bit**, run to run, whatever `num_threads` or `block_size`. Different versions or platforms may differ by float rounding.

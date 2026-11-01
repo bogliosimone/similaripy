@@ -147,8 +147,8 @@ pub fn compute<F: Fn() + Sync>(
     let inp = &inp.resolved();
     let n_cols = inp.m2.n_cols();
     let blocked = block_size > 0 && n_cols > block_size;
-    // The blocked path finds each block's end in an m2 row by binary search, so
-    // unsorted rows would give wrong results silently. The Python prep sorts
+    // The blocked path stops each m2 row at the first column past the block end,
+    // so unsorted rows would give wrong results silently. The Python prep sorts
     // them; this catches direct callers.
     if blocked && !inp.m2.indices_sorted() {
         return Err(Error::InvalidInput(
@@ -508,7 +508,7 @@ struct Scratch {
     sums: Vec<f32>,
     touched: Vec<u32>,
     /// Blocked path: `(pos, end)` in m2 per entry of the current m1 row.
-    cursor: Vec<(usize, usize)>,
+    cursor: Vec<(usize, usize, usize)>,
     topk: TopK,
     filter: RowMarks,
     target_cols: RowMarks,
@@ -592,41 +592,45 @@ impl Scratch {
         self.cursor.clear();
         self.cursor.extend(u_cols.iter().map(|&u| {
             // SAFETY: m1 indices < m2.n_rows.
-            unsafe { inp.m2.row_span_unchecked(u as usize) }
+            unsafe {
+                let (pos, end) = inp.m2.row_span_unchecked(u as usize);
+                (pos, end, next_col(inp.m2.span_unchecked(pos, end).0, 0))
+            }
         }));
         for start in (0..n_cols).step_by(block) {
-            let hi_col = (start + block).min(n_cols) as i32;
+            let hi = (start + block).min(n_cols);
             for (cur, &v1) in self.cursor.iter_mut().zip(u_vals) {
-                let (pos, end) = *cur;
+                let (pos, end, next) = *cur;
+                // Cached (as serving's request loop): a row with nothing in this
+                // block costs no load from m2.
+                if next >= hi {
+                    continue;
+                }
                 // SAFETY: pos..end is a suffix of an m2 row span.
                 let (c_cols, c_vals) = unsafe { inp.m2.span_unchecked(pos, end) };
-                let (Some(&first), Some(&last)) = (c_cols.first(), c_cols.last()) else {
-                    continue; // row done
+                // Not empty (next < hi). A row inside the block is taken whole; one
+                // past its end stops inside the accumulate loop, no search.
+                // SAFETY: start <= c < hi, so c - start < block == sums.len().
+                let n = unsafe {
+                    if hi == n_cols || (c_cols[c_cols.len() - 1] as usize) < hi {
+                        accumulate(&mut self.sums, &mut self.touched, c_cols, c_vals, v1, start);
+                        c_cols.len()
+                    } else {
+                        accumulate_below(
+                            &mut self.sums,
+                            &mut self.touched,
+                            c_cols,
+                            c_vals,
+                            v1,
+                            start,
+                            hi,
+                        )
+                    }
                 };
-                if first >= hi_col {
-                    continue; // row resumes in a later block
-                }
-                // All of c_cols is >= start (cursor), so only the block end is searched.
-                let n = if last < hi_col {
-                    c_cols.len()
-                } else {
-                    lower_bound(c_cols, hi_col)
-                };
-                // SAFETY: start <= c < hi_col, so c - start < block == sums.len().
-                unsafe {
-                    accumulate(
-                        &mut self.sums,
-                        &mut self.touched,
-                        &c_cols[..n],
-                        &c_vals[..n],
-                        v1,
-                        start,
-                    )
-                };
-                cur.0 = pos + n;
+                *cur = (pos + n, end, next_col(c_cols, n));
             }
             if !self.touched.is_empty() {
-                // SAFETY: touched + start < hi_col <= n_cols.
+                // SAFETY: touched + start < hi <= n_cols.
                 unsafe { self.drain(inp, t, start) };
             }
         }
@@ -769,60 +773,56 @@ pub(crate) unsafe fn accumulate(
     unsafe { touched.set_len(n) };
 }
 
-/// First index `i` with `s[i] >= x` (`s` sorted). Branchy on purpose, like
-/// libstdc++ `lower_bound`: `partition_point` compiles branchless (`csel`), which
-/// serializes the probes' cache misses; with a branch the CPU speculates the next
-/// probe's load. Matters once m2 rows miss to DRAM (Yambda 500M; see
-/// benchmarks/README.md, "Codegen-sensitive hot loops").
-#[inline]
-pub(crate) fn lower_bound(s: &[i32], x: i32) -> usize {
-    let (mut lo, mut len) = (0, s.len());
-    while len > 0 {
-        let half = len / 2;
-        // SAFETY: lo + half < lo + len <= s.len().
-        if unsafe { *s.get_unchecked(lo + half) } < x {
-            lo += half + 1;
-            len -= half + 1;
-        } else {
-            // Empty asm = optimization barrier, so LLVM can't if-convert this into
-            // `csel`/`cmov` again; std has no stable "keep this branch" hint. Only on
-            // targets with stable `asm!` (the wheel matrix), and not under Miri (no
-            // inline asm support); a plain loop elsewhere.
-            #[cfg(all(
-                not(miri),
-                any(
-                    target_arch = "x86",
-                    target_arch = "x86_64",
-                    target_arch = "arm",
-                    target_arch = "aarch64"
-                )
-            ))]
-            // SAFETY: emits no instructions.
-            unsafe {
-                std::arch::asm!("", options(nomem, nostack, preserves_flags))
-            };
-            len = half;
+/// `accumulate` over the leading columns `< hi` of a sorted segment, in one
+/// pass, no search first; returns how many it took. Same body and addition
+/// order as `accumulate` (same bits).
+///
+/// # Safety
+/// As `accumulate`, for the columns `< hi`.
+#[inline(always)]
+pub(crate) unsafe fn accumulate_below(
+    sums: &mut [f32],
+    touched: &mut Vec<u32>,
+    c_cols: &[i32],
+    c_vals: &[f32],
+    v1: f32,
+    offset: usize,
+    hi: usize,
+) -> usize {
+    touched.reserve(c_cols.len());
+    let buf = touched.as_mut_ptr();
+    let mut n = touched.len();
+    let mut i = 0;
+    for (&c, &v2) in c_cols.iter().zip(c_vals) {
+        if c as usize >= hi {
+            break;
         }
+        let local = c as usize - offset;
+        // SAFETY: caller contract; n < capacity (reserve above).
+        unsafe {
+            let s = sums.get_unchecked_mut(local);
+            let old = *s;
+            buf.add(n).write(local as u32);
+            n += (old == 0.0) as usize;
+            *s = old + v2 * v1;
+        }
+        i += 1;
     }
-    lo
+    // SAFETY: entries [len, n) were written above, n <= capacity.
+    unsafe { touched.set_len(n) };
+    i
+}
+
+/// The column at `cols[n]`, `usize::MAX` past the end (never in a block).
+#[inline(always)]
+pub(crate) fn next_col(cols: &[i32], n: usize) -> usize {
+    cols.get(n).map_or(usize::MAX, |&c| c as usize)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
-        #[test]
-        fn lower_bound_matches_partition_point(
-            mut s in proptest::collection::vec(-50i32..50, 0..64),
-            x in -60i32..60,
-        ) {
-            s.sort_unstable();
-            prop_assert_eq!(lower_bound(&s, x), s.partition_point(|&c| c < x));
-        }
-    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
