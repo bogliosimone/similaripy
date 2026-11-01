@@ -94,8 +94,16 @@ jobs:
         uv pip install --system --resolution lowest-direct .
         uv pip install --system --group test
         python -c "import numpy, scipy; print('numpy', numpy.__version__, 'scipy', scipy.__version__)"
+        grep -m1 "model name" /proc/cpuinfo
 
     - name: Run tests
+      # numpy 1.23.5's own AVX-512 paths and bundled OpenBLAS 0.3.20 return wrong results on some
+      # runner CPUs (2026-11-01, 42796aa: zeros from abs(M) ** 0.8, float64 @ off by 132%; a re-run on
+      # another host passed): the tests' dense reference, not similaripy. Both pinned to AVX2 code here;
+      # on a host without AVX-512 numpy warns that it can't disable them (harmless)
+      env:
+        NPY_DISABLE_CPU_FEATURES: "AVX512F AVX512CD AVX512_KNL AVX512_KNM AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL"
+        OPENBLAS_CORETYPE: Haswell
       run: pytest
 
   lint:
