@@ -699,7 +699,11 @@ unsafe fn drain_impl<const POW: bool, const MODE: u8>(
     // `val >= floor` is the threshold test while the heap fills and push's
     // root reject once it is full (the root passed the threshold): same pushes.
     let mut floor = topk.floor(p.threshold);
-    for &local in touched {
+    // Back to front: the floor rises sooner, 35-73% fewer top-K replacements
+    // (perf gates T0 counters: ML-32M, Y50M, Y500M; cosine, rp3beta). Same
+    // result: the top-K keeps a strict total order. Not in the serving drain:
+    // there it doubled the batch time (ML-32M, perf gates night 2).
+    for &local in touched.iter().rev() {
         // SAFETY: touched columns are < sums.len().
         let s = unsafe { sums.get_unchecked_mut(local as usize) };
         let xy = std::mem::take(s);
