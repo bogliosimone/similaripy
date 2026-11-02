@@ -71,3 +71,4 @@ nav:
       - similaripy.normalization: api/normalization.md
   - About:
       - Migration from 0.7.0: migration.md
+      - Benchmarks: benchmarks.md
