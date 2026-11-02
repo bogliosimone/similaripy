@@ -5,10 +5,9 @@ use std::cell::Cell;
 
 use rayon::prelude::*;
 
-use super::model::Model;
+use super::model::{Entry, Model};
 use super::{bit, invalid, words};
 use crate::Error;
-use crate::kernel::{accumulate, accumulate_below, next_col};
 use crate::topk::TopK;
 
 /// As the similarity functions' default threshold 0: negative scores never
@@ -269,7 +268,7 @@ impl Scratch {
     /// # Safety
     /// See the call in `run`.
     unsafe fn accumulate_all(&mut self, m: &Model, block: usize, allowed: Masks) {
-        let s = m.s();
+        let pairs: &[Entry] = &m.pairs;
         let n_active = m.n_active;
         // Per-row column blocks, as the kernel's `blocked_row`; one block (every
         // catalog <= the block size) is this loop once.
@@ -277,8 +276,8 @@ impl Scratch {
         self.cursor.extend(self.hist.iter().map(|&(id, _)| {
             // SAFETY: id < n_items; the span is the row's.
             unsafe {
-                let (pos, end) = s.row_span_unchecked(id as usize);
-                (pos, end, next_col(s.span_unchecked(pos, end).0, 0))
+                let (pos, end) = m.row_span_unchecked(id as usize);
+                (pos, end, next_col(pairs.get_unchecked(pos..end), 0))
             }
         }));
         let mut start = 0;
@@ -292,28 +291,19 @@ impl Scratch {
                     continue;
                 }
                 // SAFETY: a suffix of a row span.
-                let (c_cols, c_vals) = unsafe { s.span_unchecked(pos, end) };
+                let p = unsafe { pairs.get_unchecked(pos..end) };
                 // Not empty (next < hi). The last block takes the rest of the row
                 // (every column < n_active); a row past the block end stops inside the
                 // accumulate loop, no search first.
                 // SAFETY: start <= c < hi, so c - start < block <= sums.len().
                 let n = unsafe {
-                    if hi == n_active || (c_cols[c_cols.len() - 1] as usize) < hi {
-                        accumulate(&mut self.sums, &mut self.touched, c_cols, c_vals, w, start);
-                        c_cols.len()
+                    if hi == n_active || (p[p.len() - 1].col as usize) < hi {
+                        accumulate::<false>(&mut self.sums, &mut self.touched, p, w, start, hi)
                     } else {
-                        accumulate_below(
-                            &mut self.sums,
-                            &mut self.touched,
-                            c_cols,
-                            c_vals,
-                            w,
-                            start,
-                            hi,
-                        )
+                        accumulate::<true>(&mut self.sums, &mut self.touched, p, w, start, hi)
                     }
                 };
-                *cur = (pos + n, end, next_col(c_cols, n));
+                *cur = (pos + n, end, next_col(p, n));
             }
             if !self.touched.is_empty() {
                 // SAFETY: forwarded.
@@ -357,6 +347,55 @@ impl Scratch {
         }
         self.touched.clear();
     }
+}
+
+/// The kernel's `accumulate` over S's (column, value) entries: same body,
+/// same addition order (same bits). `BOUNDED` stops at the first column
+/// `>= hi` (a row past the block end, no search first); unbounded takes the
+/// whole segment and keeps no count (two instructions less per entry: the
+/// ML-32M warm batch, where S sits in cache, felt them). Returns how many.
+///
+/// # Safety
+/// Every taken `col - offset` is `< sums.len()`.
+#[inline(always)]
+unsafe fn accumulate<const BOUNDED: bool>(
+    sums: &mut [f32],
+    touched: &mut Vec<u32>,
+    p: &[Entry],
+    v1: f32,
+    offset: usize,
+    hi: usize,
+) -> usize {
+    // At most one push per entry, so one reserve covers the segment.
+    touched.reserve(p.len());
+    let buf = touched.as_mut_ptr();
+    let mut n = touched.len();
+    let mut taken = p.len();
+    for (i, &Entry { col, val }) in p.iter().enumerate() {
+        if BOUNDED && col as usize >= hi {
+            taken = i;
+            break;
+        }
+        let local = col as usize - offset;
+        // SAFETY: caller contract; n < capacity (reserve above).
+        unsafe {
+            let s = sums.get_unchecked_mut(local);
+            let old = *s; // reuse: the touched store may alias
+            // Branchless first touch, as the kernel's.
+            buf.add(n).write(local as u32);
+            n += (old == 0.0) as usize;
+            *s = old + val * v1;
+        }
+    }
+    // SAFETY: entries [len, n) were written above, n <= capacity.
+    unsafe { touched.set_len(n) };
+    taken
+}
+
+/// The column at `p[n]`, `usize::MAX` past the end (never in a block).
+#[inline(always)]
+fn next_col(p: &[Entry], n: usize) -> usize {
+    p.get(n).map_or(usize::MAX, |e| e.col as usize)
 }
 
 /// The view's mask and the request's include bits (each None = all allowed).

@@ -23,25 +23,26 @@ const MAGIC: &[u8] = b"\x93NUMPY";
 /// # Safety
 /// Plain data: no padding bytes, every bit pattern a valid value.
 pub(crate) unsafe trait Pod: Copy + Default + Send + Sync + 'static {
-    /// numpy's little-endian `descr`.
+    /// numpy's little-endian `descr` as the header writes it: quoted for a
+    /// number (`'<i4'`), a list for a record (`[('col', '<i4'), ...]`).
     const DESCR: &'static str;
 }
 
 // SAFETY: plain numbers.
 unsafe impl Pod for i32 {
-    const DESCR: &'static str = "<i4";
+    const DESCR: &'static str = "'<i4'";
 }
 // SAFETY: plain numbers.
 unsafe impl Pod for i64 {
-    const DESCR: &'static str = "<i8";
+    const DESCR: &'static str = "'<i8'";
 }
 // SAFETY: plain numbers.
 unsafe impl Pod for u64 {
-    const DESCR: &'static str = "<u8";
+    const DESCR: &'static str = "'<u8'";
 }
 // SAFETY: plain numbers (every bit pattern is some f32, NaN included).
 unsafe impl Pod for f32 {
-    const DESCR: &'static str = "<f4";
+    const DESCR: &'static str = "'<f4'";
 }
 
 fn bytes<T: Pod>(s: &[T]) -> &[u8] {
@@ -118,7 +119,7 @@ fn little_endian() -> Result<(), Error> {
 /// starts at a multiple of 64 bytes (aligned for any `T` when mapped).
 fn header<T: Pod>(n: usize) -> Vec<u8> {
     let dict = format!(
-        "{{'descr': '{}', 'fortran_order': False, 'shape': ({n},), }}",
+        "{{'descr': {}, 'fortran_order': False, 'shape': ({n},), }}",
         T::DESCR
     );
     let len = (10 + dict.len() + 1).next_multiple_of(64) - 10;
@@ -166,7 +167,7 @@ fn read_header<T: Pod>(r: &mut impl Read) -> Result<(usize, usize), String> {
     let n = h
         .trim_end()
         .strip_prefix(&format!(
-            "{{'descr': '{}', 'fortran_order': False, 'shape': (",
+            "{{'descr': {}, 'fortran_order': False, 'shape': (",
             T::DESCR
         ))
         .and_then(|r| r.strip_suffix(",), }"))

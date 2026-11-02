@@ -432,6 +432,9 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
     assert meta["format"] == 1 and meta["n_cols"] == 80 and meta["block_size"] == block_size
     assert np.array_equal(np.load(tmp_path / "m" / "item_ids.npy"), ext)
     assert np.load(tmp_path / "m" / "indptr.npy").dtype == np.int64  # one dtype, whatever S's nnz
+    pairs = np.load(tmp_path / "m" / "pairs.npy")  # S's entries: a record array, (col, val) side by side
+    assert pairs.dtype == np.dtype([("col", "<i4"), ("val", "<f4")])
+    assert np.array_equal(pairs["col"], rec._model.parts()[1]) and np.array_equal(pairs["val"], rec._model.parts()[2])
     # pickling a loaded (mapped) model copies its arrays
     assert (
         pickle.loads(pickle.dumps(back)).recommend(ext[:4], k=3)[0].tolist() == back.recommend(ext[:4], k=3)[0].tolist()
@@ -492,6 +495,17 @@ def _corrupt(d, name, fn):
     np.save(d / f"{name}.npy", fn(np.load(d / f"{name}.npy")))
 
 
+def _field(name, fn):
+    """A `_corrupt` function changing one field of `pairs.npy`."""
+
+    def f(a):
+        a = a.copy()
+        a[name] = fn(a[name])
+        return a
+
+    return f
+
+
 def _meta(d, **kw):
     meta = json.loads((d / "meta.json").read_text())
     meta.update(kw)
@@ -507,22 +521,23 @@ def _swap_first_row(a):
 @pytest.mark.parametrize(
     "corrupt, error",
     [
-        (lambda d: (d / "indices.npy").unlink(), FileNotFoundError),
+        (lambda d: (d / "pairs.npy").unlink(), FileNotFoundError),
         (lambda d: (d / "meta.json").unlink(), FileNotFoundError),
-        (lambda d: (d / "data.npy").write_bytes((d / "data.npy").read_bytes()[:-4]), "file size"),
-        (lambda d: (d / "data.npy").write_bytes((d / "data.npy").read_bytes() + b"\0" * 4), "file size"),
-        (lambda d: (d / "data.npy").write_bytes(b"not numpy at all"), "npy"),
-        (lambda d: _corrupt(d, "indices", lambda a: a.astype(np.int64)), "<i4"),
+        (lambda d: (d / "pairs.npy").write_bytes((d / "pairs.npy").read_bytes()[:-8]), "file size"),
+        (lambda d: (d / "pairs.npy").write_bytes((d / "pairs.npy").read_bytes() + b"\0" * 8), "file size"),
+        (lambda d: (d / "pairs.npy").write_bytes(b"not numpy at all"), "npy"),
+        (lambda d: _corrupt(d, "pairs", lambda a: a.astype([("col", "<i8"), ("val", "<f4")])), "col"),
         (lambda d: _corrupt(d, "indptr", lambda a: a.astype(np.int32)), "<i8"),
-        (lambda d: _corrupt(d, "data", lambda a: a.astype(">f4")), "<f4"),
-        (lambda d: _corrupt(d, "data", lambda a: np.asfortranarray(np.stack([a, a], axis=1))), "<f4"),
-        (lambda d: np.save(d / "data.npy", np.array([1.0] * 3, dtype=object), allow_pickle=True), "<f4"),
+        (lambda d: _corrupt(d, "pairs", lambda a: a.astype([("col", "<i4"), ("val", ">f4")])), "val"),
+        (lambda d: _corrupt(d, "pairs", lambda a: a["val"]), "col"),  # a plain float array
+        (lambda d: _corrupt(d, "pairs", lambda a: np.asfortranarray(np.stack([a, a], axis=1))), "col"),
+        (lambda d: np.save(d / "pairs.npy", np.array([1.0] * 3, dtype=object), allow_pickle=True), "col"),
         (lambda d: _corrupt(d, "indptr", lambda a: np.r_[a[0], a[2], a[1], a[3:]]), "monotone"),
         (lambda d: _corrupt(d, "indptr", lambda a: a[:-1]), "indptr"),
-        (lambda d: _corrupt(d, "indices", lambda a: np.r_[999, a[1:]].astype(np.int32)), "range"),
-        (lambda d: _corrupt(d, "indices", _swap_first_row), "sorted"),
-        (lambda d: _corrupt(d, "indices", lambda a: np.r_[a[1], a[1:]].astype(np.int32)), "sorted"),
-        (lambda d: _corrupt(d, "data", lambda a: np.r_[np.float32(np.nan), a[1:]]), "finite"),
+        (lambda d: _corrupt(d, "pairs", _field("col", lambda c: np.r_[999, c[1:]])), "range"),
+        (lambda d: _corrupt(d, "pairs", _swap_first_row), "sorted"),
+        (lambda d: _corrupt(d, "pairs", _field("col", lambda c: np.r_[c[1], c[1:]])), "sorted"),
+        (lambda d: _corrupt(d, "pairs", _field("val", lambda v: np.r_[np.float32(np.nan), v[1:]])), "finite"),
         (lambda d: _corrupt(d, "new_to_old", lambda a: np.r_[a[1], a[1:]].astype(np.int32)), "distinct"),
         (lambda d: _corrupt(d, "new_to_old", lambda a: np.r_[-1, a[1:]].astype(np.int32)), "distinct"),
         (lambda d: _corrupt(d, "item_ids", lambda a: np.r_[a[1], a[1:]]), "unique"),

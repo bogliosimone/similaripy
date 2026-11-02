@@ -6,7 +6,7 @@
 use proptest::prelude::*;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{
-    BatchRequest, BlockSize, Lists, Model, Request, recommend, recommend_batch,
+    BatchRequest, BlockSize, Entry, Lists, Model, Request, recommend, recommend_batch,
 };
 
 #[derive(Debug, Clone)]
@@ -111,8 +111,7 @@ fn from_own_parts(m: &Model) -> Model {
     let p = m.parts();
     Model::from_parts(
         p.indptr.to_vec(),
-        p.indices.to_vec(),
-        p.data.to_vec(),
+        p.pairs.to_vec(),
         p.new_to_old.to_vec(),
         p.n_cols,
         p.ext.map(<[i64]>::to_vec),
@@ -455,8 +454,9 @@ proptest! {
         let m = Model::new(view, c.ext.clone(), BlockSize::Auto).unwrap();
         let want = build(&c.s, &popularity(&c.s), c.ext.as_deref()).unwrap();
         let (p, q) = (m.parts(), want.parts());
-        prop_assert_eq!((p.indptr, p.indices, p.new_to_old, p.n_cols), (q.indptr, q.indices, q.new_to_old, q.n_cols));
-        prop_assert_eq!(bits(p.data), bits(q.data));
+        prop_assert_eq!((p.indptr, p.new_to_old, p.n_cols), (q.indptr, q.new_to_old, q.n_cols));
+        let cols_bits = |m: &[Entry]| m.iter().map(|e| (e.col, e.val.to_bits())).collect::<Vec<_>>();
+        prop_assert_eq!(cols_bits(p.pairs), cols_bits(q.pairs));
         prop_assert_eq!(p.ext, q.ext);
         let c2 = Case { new_to_old: popularity(&c.s), ..c.clone() };
         let got = run(&c2, &m);
@@ -559,8 +559,7 @@ fn rejects_bad_input() {
 #[derive(Clone, Debug, PartialEq)]
 struct Owned {
     indptr: Vec<i64>,
-    indices: Vec<i32>,
-    data: Vec<f32>,
+    pairs: Vec<Entry>,
     new_to_old: Vec<i32>,
     n_cols: usize,
     ext: Option<Vec<i64>>,
@@ -573,8 +572,7 @@ impl Owned {
         let p = m.parts();
         Self {
             indptr: p.indptr.to_vec(),
-            indices: p.indices.to_vec(),
-            data: p.data.to_vec(),
+            pairs: p.pairs.to_vec(),
             new_to_old: p.new_to_old.to_vec(),
             n_cols: p.n_cols,
             ext: p.ext.map(<[i64]>::to_vec),
@@ -586,8 +584,7 @@ impl Owned {
     fn load(self) -> Result<Model, similaripy_core::Error> {
         Model::from_parts(
             self.indptr,
-            self.indices,
-            self.data,
+            self.pairs,
             self.new_to_old,
             self.n_cols,
             self.ext,
@@ -621,15 +618,15 @@ fn from_parts_checks_every_invariant() {
     assert!(bad(&|o| {
         o.indptr.pop();
     })); // one row per item
-    assert!(bad(&|o| o.indices[0] = 3)); // column >= n_items
-    assert!(bad(&|o| o.indices[0] = -1));
-    assert!(bad(&|o| o.indices.swap(1, 2))); // unsorted row
-    assert!(bad(&|o| o.indices[2] = o.indices[1])); // duplicate column
+    assert!(bad(&|o| o.pairs[0].col = 3)); // column >= n_items
+    assert!(bad(&|o| o.pairs[0].col = -1));
+    assert!(bad(&|o| o.pairs.swap(1, 2))); // unsorted row
+    assert!(bad(&|o| o.pairs[2].col = o.pairs[1].col)); // duplicate column
     assert!(bad(&|o| {
-        o.data.pop();
-    }));
-    assert!(bad(&|o| o.data[0] = f32::INFINITY));
-    assert!(bad(&|o| o.data[0] = f32::NAN));
+        o.pairs.pop();
+    })); // != nnz
+    assert!(bad(&|o| o.pairs[0].val = f32::INFINITY));
+    assert!(bad(&|o| o.pairs[0].val = f32::NAN));
     assert!(bad(&|o| o.new_to_old[0] = o.new_to_old[1])); // not distinct
     assert!(bad(&|o| o.new_to_old[0] = 4)); // >= n_cols
     assert!(bad(&|o| o.new_to_old[0] = -1));
