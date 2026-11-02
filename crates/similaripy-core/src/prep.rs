@@ -199,27 +199,39 @@ fn sort_row<V: Copy>(cols: &mut [i32], vals: &mut [V], pairs: &mut Vec<(i32, V)>
 /// parallel. Splits by entries (as `normalize::par_rows`), so skewed rows
 /// balance; a leaf's `indptr` slice is absolute, its `indices`/`data` start at
 /// `indptr[0]`.
-pub(crate) fn par_leaves<V: Send, F>(
+pub(crate) fn par_leaves<I: Send, V: Send, F>(
     indptr: &[i64],
-    indices: &mut [i32],
+    indices: &mut [I],
     data: &mut [V],
     leaf: usize,
     f: &F,
 ) where
-    F: Fn(usize, &[i64], &mut [i32], &mut [V]) + Sync,
+    F: Fn(usize, &[i64], &mut [I], &mut [V]) + Sync,
 {
     par_leaves_from(0, indptr, indices, data, leaf, f);
 }
 
-fn par_leaves_from<V: Send, F>(
+/// `par_leaves` over one array of row entries (e.g. (column, value) records).
+pub(crate) fn par_leaves_one<T: Send, F>(indptr: &[i64], out: &mut [T], leaf: usize, f: &F)
+where
+    F: Fn(usize, &[i64], &mut [T]) + Sync,
+{
+    // Zero-sized: split alongside `out`, never allocated.
+    let mut none = vec![(); out.len()];
+    par_leaves(indptr, out, &mut none, leaf, &|row0, ip, o, _| {
+        f(row0, ip, o)
+    });
+}
+
+fn par_leaves_from<I: Send, V: Send, F>(
     row0: usize,
     indptr: &[i64],
-    indices: &mut [i32],
+    indices: &mut [I],
     data: &mut [V],
     leaf: usize,
     f: &F,
 ) where
-    F: Fn(usize, &[i64], &mut [i32], &mut [V]) + Sync,
+    F: Fn(usize, &[i64], &mut [I], &mut [V]) + Sync,
 {
     let n = indptr.len() - 1;
     let base = indptr[0] as usize;

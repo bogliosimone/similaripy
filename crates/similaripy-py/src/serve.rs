@@ -11,7 +11,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{
-    BatchRequest, BlockSize, Lists, Model, Request, recommend, recommend_batch,
+    BatchRequest, BlockSize, Entry, Lists, Model, Request, recommend, recommend_batch,
 };
 
 use crate::{Indptr, to_py, with_pool};
@@ -105,21 +105,25 @@ impl PyModel {
         block_size: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
         let block = self::block_size(block_size)?;
-        let v = |a: &PyReadonlyArray1<'_, i32>| a.as_slice().map(<[i32]>::to_vec);
-        let (indptr, indices, new_to_old) =
-            (indptr.as_slice()?.to_vec(), v(&indices)?, v(&new_to_old)?);
-        let data = data.as_slice()?.to_vec();
+        let (indices, data) = (indices.as_slice()?, data.as_slice()?);
+        if indices.len() != data.len() {
+            return Err(PyValueError::new_err("indices and data differ in length"));
+        }
+        // Python keeps S as two arrays (pickles stay plain numpy); the model
+        // holds them interleaved.
+        let pairs = indices
+            .iter()
+            .zip(data)
+            .map(|(&col, &val)| Entry { col, val })
+            .collect();
+        let (indptr, new_to_old) = (indptr.as_slice()?.to_vec(), new_to_old.as_slice()?.to_vec());
         let ext = ext.map(|e| e.as_slice().map(<[i64]>::to_vec)).transpose()?;
         let allowed = allowed
             .map(|a| a.as_slice().map(<[u64]>::to_vec))
             .transpose()?;
-        py.detach(|| {
-            Model::from_parts(
-                indptr, indices, data, new_to_old, n_cols, ext, allowed, block,
-            )
-        })
-        .map(Self)
-        .map_err(to_py)
+        py.detach(|| Model::from_parts(indptr, pairs, new_to_old, n_cols, ext, allowed, block))
+            .map(Self)
+            .map_err(to_py)
     }
 
     /// See `Model::save`.
@@ -268,8 +272,8 @@ impl PyModel {
         let p = self.0.parts();
         Ok((
             PyArray1::from_slice(py, p.indptr),
-            PyArray1::from_slice(py, p.indices),
-            PyArray1::from_slice(py, p.data),
+            PyArray1::from_iter(py, p.pairs.iter().map(|e| e.col)),
+            PyArray1::from_iter(py, p.pairs.iter().map(|e| e.val)),
             PyArray1::from_slice(py, p.new_to_old),
             p.n_cols,
             p.ext.map(|e| PyArray1::from_slice(py, e)),

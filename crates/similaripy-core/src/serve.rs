@@ -23,7 +23,7 @@ mod ids;
 mod model;
 mod request;
 
-pub use model::{BlockSize, Core, Model, Parts};
+pub use model::{BlockSize, Core, Entry, Model, Parts};
 pub use request::{Batch, BatchRequest, Lists, Request, recommend, recommend_batch};
 
 use crate::Error;

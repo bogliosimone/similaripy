@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use super::ids::{ExtIds, dense_in};
 use super::{EMPTY, bit, invalid, words};
-use crate::csr::CsrView;
-use crate::prep::{LEAF_NNZ, canonical_copy, canonical_counts, par_leaves, sort_rows};
+use crate::csr::{CsrView, check_indptr};
+use crate::prep::{LEAF_NNZ, canonical_copy, canonical_counts, par_leaves_one};
 use crate::store::{self, Buf};
 use crate::{DEFAULT_BLOCK_SIZE, Error};
 
@@ -18,14 +18,28 @@ use crate::{DEFAULT_BLOCK_SIZE, Error};
 const FORMAT: u64 = 1;
 const KIND: &str = "ItemKNN";
 /// Every file a saved model may have.
-const FILES: [&str; 6] = [
+const FILES: [&str; 5] = [
     "meta.json",
     "indptr.npy",
-    "indices.npy",
-    "data.npy",
+    "pairs.npy",
     "new_to_old.npy",
     "item_ids.npy",
 ];
+
+/// One entry of S: column and value side by side, so a row start costs one
+/// cache miss, not one per array (perf gates L1: Y50M one block at 6 threads
+/// −12%). Saved as a numpy record array (`pairs.npy`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Entry {
+    pub col: i32,
+    pub val: f32,
+}
+
+// SAFETY: two 4-byte numbers, no padding; every bit pattern is valid.
+unsafe impl store::Pod for Entry {
+    const DESCR: &'static str = "[('col', '<i4'), ('val', '<f4')]";
+}
 
 fn check_square(s: &CsrView) -> Result<(), Error> {
     if s.n_rows() != s.n_cols() {
@@ -60,8 +74,7 @@ fn is_saved_model(dir: &Path) -> bool {
 /// rely on it, so the fields are visible inside `serve` only.
 pub struct Core {
     pub(super) indptr: Buf<i64>,
-    pub(super) indices: Buf<i32>,
-    pub(super) data: Buf<f32>,
+    pub(super) pairs: Buf<Entry>,
     pub(super) n_active: usize,
     /// As given (saved, pickled).
     pub(super) block_size: BlockSize,
@@ -122,8 +135,7 @@ impl BlockSize {
 /// the block size as given; `Model::from_parts` takes the same back.
 pub struct Parts<'a> {
     pub indptr: &'a [i64],
-    pub indices: &'a [i32],
-    pub data: &'a [f32],
+    pub pairs: &'a [Entry],
     pub new_to_old: &'a [i32],
     pub n_cols: usize,
     pub ext: Option<&'a [i64]>,
@@ -183,41 +195,40 @@ impl Model {
             total += lens[old as usize] as usize;
             indptr.push(total as i64);
         }
-        let (mut indices, mut data) = (vec![0i32; total], vec![0f32; total]);
+        let mut pairs = vec![Entry::default(); total];
         let (src_ptr, src_cols, src_vals) = s.arrays();
-        par_leaves(
-            &indptr,
-            &mut indices,
-            &mut data,
-            LEAF_NNZ,
-            &|row0, ip, out_c, out_v| {
-                let base = ip[0] as usize;
-                let (mut cols, mut vals, mut pairs) = (Vec::new(), Vec::new(), Vec::new());
-                for (i, w) in ip.windows(2).enumerate() {
-                    let old = new_to_old[row0 + i] as usize;
-                    let k = canonical_copy(
-                        (src_ptr, src_cols, src_vals),
-                        old,
-                        &mut cols,
-                        &mut vals,
-                        &mut pairs,
-                    );
-                    let (a, z) = (w[0] as usize - base, w[1] as usize - base);
-                    // Same row, same steps as in `canonical_counts`.
-                    assert_eq!(k, z - a, "S changed during the build");
-                    for (j, (&c, &v)) in cols[..k].iter().zip(&vals).enumerate() {
-                        out_c[a + j] = dense_in[c as usize] as i32;
-                        out_v[a + j] = v;
-                    }
+        par_leaves_one(&indptr, &mut pairs, LEAF_NNZ, &|row0, ip, out| {
+            let base = ip[0] as usize;
+            let (mut cols, mut vals, mut tmp) = (Vec::new(), Vec::new(), Vec::new());
+            for (i, w) in ip.windows(2).enumerate() {
+                let old = new_to_old[row0 + i] as usize;
+                let k = canonical_copy(
+                    (src_ptr, src_cols, src_vals),
+                    old,
+                    &mut cols,
+                    &mut vals,
+                    &mut tmp,
+                );
+                let (a, z) = (w[0] as usize - base, w[1] as usize - base);
+                // Same row, same steps as in `canonical_counts`.
+                assert_eq!(k, z - a, "S changed during the build");
+                let row = &mut out[a..z];
+                for (e, (&c, &v)) in row.iter_mut().zip(cols[..k].iter().zip(&vals)) {
+                    *e = Entry {
+                        col: dense_in[c as usize] as i32,
+                        val: v,
+                    };
                 }
-                sort_rows(ip, out_c, out_v);
-            },
-        );
+                // Renumbered: sorted again (columns are unique within a row).
+                if !row.is_sorted_by_key(|e| e.col) {
+                    row.sort_unstable_by_key(|e| e.col);
+                }
+            }
+        });
         drop(dense_in);
         let core = Core::from_arrays(
             indptr.into(),
-            indices.into(),
-            data.into(),
+            pairs.into(),
             new_to_old.into(),
             n,
             ext.map(Buf::from),
@@ -233,8 +244,7 @@ impl Model {
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         indptr: Vec<i64>,
-        indices: Vec<i32>,
-        data: Vec<f32>,
+        pairs: Vec<Entry>,
         new_to_old: Vec<i32>,
         n_cols: usize,
         ext: Option<Vec<i64>>,
@@ -243,8 +253,7 @@ impl Model {
     ) -> Result<Self, Error> {
         let core = Core::from_arrays(
             indptr.into(),
-            indices.into(),
-            data.into(),
+            pairs.into(),
             new_to_old.into(),
             n_cols,
             ext.map(Buf::from),
@@ -280,8 +289,7 @@ impl Model {
         let p = self.parts();
         store::save_dir(dir, overwrite, is_saved_model, |d| {
             store::write(d, "indptr", p.indptr)?;
-            store::write(d, "indices", p.indices)?;
-            store::write(d, "data", p.data)?;
+            store::write(d, "pairs", p.pairs)?;
             store::write(d, "new_to_old", p.new_to_old)?;
             if let Some(e) = p.ext {
                 store::write(d, "item_ids", e)?;
@@ -298,7 +306,7 @@ impl Model {
                 "value_dtype": "float32",
                 "n_items": p.new_to_old.len(),
                 "n_cols": p.n_cols,
-                "nnz": p.data.len(),
+                "nnz": p.pairs.len(),
                 "item_ids": p.ext.is_some(),
                 "block_size": block_size,
             });
@@ -367,14 +375,13 @@ impl Model {
             .transpose()?;
         let core = Core::from_arrays(
             store::read(dir, "indptr", mmap)?,
-            store::read(dir, "indices", mmap)?,
-            store::read(dir, "data", mmap)?,
+            store::read(dir, "pairs", mmap)?,
             store::read(dir, "new_to_old", mmap)?,
             n_cols,
             ext,
             block_size,
         )?;
-        if (core.n_items() as u64, core.data.len() as u64) != (uint("n_items")?, uint("nnz")?) {
+        if (core.n_items() as u64, core.pairs.len() as u64) != (uint("n_items")?, uint("nnz")?) {
             return Err(bad("n_items / nnz don't match the arrays".into()));
         }
         Ok(Self {
@@ -426,8 +433,7 @@ impl Model {
     pub fn parts(&self) -> Parts<'_> {
         Parts {
             indptr: &self.indptr,
-            indices: &self.indices,
-            data: &self.data,
+            pairs: &self.pairs,
             new_to_old: &self.new_to_old,
             n_cols: self.dense_in.len(),
             ext: self.ext.as_ref().map(|e| &e.by_col[..]),
@@ -444,8 +450,7 @@ impl Core {
     #[allow(clippy::too_many_arguments)]
     fn from_arrays(
         indptr: Buf<i64>,
-        indices: Buf<i32>,
-        data: Buf<f32>,
+        pairs: Buf<Entry>,
         new_to_old: Buf<i32>,
         n_cols: usize,
         ext: Option<Buf<i64>>,
@@ -458,27 +463,29 @@ impl Core {
         }
         let dense_in = dense_in(&new_to_old, n_cols)?;
         let n = new_to_old.len();
-        let (ip, ix, d): (&[i64], &[i32], &[f32]) = (&indptr, &indices, &data);
-        let s = CsrView::new("S", ip, ix, d, n)?;
-        if s.n_rows() != n {
+        let (ip, p): (&[i64], &[Entry]) = (&indptr, &pairs);
+        check_indptr("S", ip, p.len())?;
+        if ip.len() - 1 != n {
             return invalid("S must have one row per item");
         }
+        if p.iter().any(|e| e.col < 0 || e.col as usize >= n) {
+            return invalid("S: column index out of range");
+        }
         if ip.windows(2).any(|w| {
-            !ix[w[0] as usize..w[1] as usize]
+            !p[w[0] as usize..w[1] as usize]
                 .windows(2)
-                .all(|p| p[0] < p[1])
+                .all(|e| e[0].col < e[1].col)
         }) {
             return invalid("S rows must be sorted, without duplicate columns");
         }
-        if !d.iter().all(|v| v.is_finite()) {
+        if !p.iter().all(|e| e.val.is_finite()) {
             return invalid("S must be finite (in float32)");
         }
-        let n_active = ix.iter().max().map_or(0, |&c| c as usize + 1);
+        let n_active = p.iter().map(|e| e.col).max().map_or(0, |c| c as usize + 1);
         let ext = ext.map(|e| ExtIds::new(e, &new_to_old)).transpose()?;
         Ok(Self {
             indptr,
-            indices,
-            data,
+            pairs,
             n_active,
             block_size,
             block,
@@ -489,25 +496,22 @@ impl Core {
     }
 
     fn trimmed(&self, allowed: &[u64]) -> Result<Self, Error> {
-        let (ip, ix, d): (&[i64], &[i32], &[f32]) = (&self.indptr, &self.indices, &self.data);
+        let ip: &[i64] = &self.indptr;
         let mut indptr = Vec::with_capacity(ip.len());
         indptr.push(0i64);
-        let (mut indices, mut data) = (Vec::new(), Vec::new());
+        let mut pairs = Vec::new();
         for w in ip.windows(2) {
-            for p in w[0] as usize..w[1] as usize {
-                let c = ix[p];
-                // SAFETY: c < n_items, the mask's size (`bits_of`).
-                if unsafe { bit(allowed, c as usize) } {
-                    indices.push(c);
-                    data.push(d[p]);
+            for &e in &self.pairs[w[0] as usize..w[1] as usize] {
+                // SAFETY: e.col < n_items, the mask's size (`bits_of`).
+                if unsafe { bit(allowed, e.col as usize) } {
+                    pairs.push(e);
                 }
             }
-            indptr.push(indices.len() as i64);
+            indptr.push(pairs.len() as i64);
         }
         Self::from_arrays(
             indptr.into(),
-            indices.into(),
-            data.into(),
+            pairs.into(),
             self.new_to_old.clone(),
             self.n_cols(),
             self.ext.as_ref().map(|e| e.by_col.clone()),
@@ -536,8 +540,18 @@ impl Core {
         self.n_active
     }
 
-    pub(super) fn s(&self) -> CsrView<'_> {
-        // SAFETY: built square over n_items, columns < n_items, never changed.
-        unsafe { CsrView::new_unchecked(&self.indptr, &self.indices, &self.data, self.n_items()) }
+    /// Row `r` of S: its entries' span in `pairs`.
+    ///
+    /// # Safety
+    /// `r < n_items`.
+    #[inline(always)]
+    pub(super) unsafe fn row_span_unchecked(&self, r: usize) -> (usize, usize) {
+        // SAFETY: indptr has n_items + 1 entries (`from_arrays`).
+        unsafe {
+            (
+                *self.indptr.get_unchecked(r) as usize,
+                *self.indptr.get_unchecked(r + 1) as usize,
+            )
+        }
     }
 }
