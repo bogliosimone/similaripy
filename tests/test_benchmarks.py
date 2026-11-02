@@ -6,11 +6,13 @@ not the wheel; the CI test jobs run it). Only benchmarks/ goes on sys.path, neve
 repo root: that would import the source tree's similaripy (no _core).
 """
 
+import importlib
 import json
 import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 BENCH = Path(__file__).resolve().parents[1] / "benchmarks"
@@ -204,3 +206,78 @@ def test_abba_and_compare(monkeypatch, tmp_path, capsys):
                 *small,
             ]
         )
+
+
+CROSSLIB = ["sparse_dot_topn", "sp_matmul_rs", "implicit", "sklearn", "lenskit", "scipy"]
+
+
+def _crosslib(name, monkeypatch):
+    """The library's adapter, or a skip (the libraries come from the overlay: make bench-crosslib-test)."""
+    monkeypatch.syspath_prepend(str(BENCH))
+    import libraries
+
+    lib = libraries.LIBRARIES[name]
+    pytest.importorskip(lib.module)
+    return lib, "1" if name == "scipy" else "2"  # LensKit's threads are set once per process: one count
+
+
+@pytest.fixture
+def small_urm(monkeypatch):
+    """The synthetic dataset at the mapping check's size (3000 x 1500): scipy's full product and a dense
+    float64 reference stay small."""
+    monkeypatch.syspath_prepend(str(BENCH))
+    import loaders
+
+    URM = loaders.make_urm(n_users=3000, n_items=1500, nnz=90_000)
+    monkeypatch.setattr(loaders, "make_urm", lambda: URM)
+    return URM
+
+
+@pytest.mark.parametrize("name", CROSSLIB)
+def test_crosslib_check_and_params(run, small_urm, monkeypatch, name):
+    lib, threads = _crosslib(name, monkeypatch)
+    first = lib.similarities[0]
+    module, attr = lib.entries[first].split(":")
+    real, seen = getattr(importlib.import_module(module), attr), []
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(importlib.import_module(module), attr, spy)
+    rep = run("crosslib", "--library", name, "--threads", threads, "--check", "--rounds", "2")
+    assert set(rep["cases"]) == set(lib.similarities)
+    expected = {k: v for k, v in rep["cases"][first]["params"].items() if k != "input"}
+    assert seen and all(kw == expected for kw in seen)  # params recorded == params passed
+    assert rep["info"]["library"] == name and rep["info"]["threads"] == int(threads)
+    for case in rep["cases"].values():
+        assert len(case["rounds"]) == 2 and all(r["check"]["failures"] == 0 for r in case["rounds"])
+        assert case["check"]["overlap"] > 0.95
+    if name == "lenskit":
+        assert rep["cases"]["cosine_binary"]["dataset_s"] > 0
+
+
+@pytest.mark.parametrize("name", CROSSLIB)
+def test_crosslib_vs_dense_float64(small_urm, monkeypatch, name):
+    # The check above rests on similaripy: this one on a dense float64 reference
+    lib, threads = _crosslib(name, monkeypatch)
+    import scipy.sparse as sp
+    import workloads
+
+    k = 100
+    for similarity in lib.similarities:
+        URM = small_urm.copy()
+        if similarity == "cosine_binary":
+            URM.data[:] = 1
+        D = URM.T.toarray().astype(np.float64)
+        if similarity != "dot_product":
+            D /= np.maximum(np.linalg.norm(D, axis=1, keepdims=True), 1e-300)
+        full = D @ D.T
+        top = np.argpartition(-full, k - 1, axis=1)[:, :k]
+        rows = np.repeat(np.arange(full.shape[0]), k)
+        ref = sp.csr_array((np.take_along_axis(full, top, axis=1).ravel(), (rows, top.ravel())), shape=full.shape)
+        ref.eliminate_zeros()
+        _, call = lib.prepare(URM, similarity, k, int(threads), lib.entry(similarity))
+        out, _ = call()
+        check = workloads.check_output(lib, ref, out, k)
+        assert check["failures"] == 0, (similarity, check["first_failures"])

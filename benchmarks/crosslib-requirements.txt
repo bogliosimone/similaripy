@@ -1,0 +1,14 @@
+# Other libraries for the crosslib workload (D78): the top-level pins, the input of the per-platform locks.
+# Runs use the lock of the platform (every dependency pinned), not this file:
+#   uv run --group bench --with-requirements benchmarks/crosslib-lock-darwin-arm64.txt python benchmarks/run.py crosslib ...
+# Recompile both locks after changing a pin (macOS target 15.0: uv's default picks an older torch than installs):
+#   MACOSX_DEPLOYMENT_TARGET=15.0 uv pip compile --python-version 3.14 --python-platform aarch64-apple-darwin \
+#       --group pyproject.toml:bench benchmarks/crosslib-requirements.txt -o benchmarks/crosslib-lock-darwin-arm64.txt
+#   uv pip compile --python-version 3.14 --python-platform x86_64-manylinux_2_28 \
+#       --group pyproject.toml:bench benchmarks/crosslib-requirements.txt -o benchmarks/crosslib-lock-linux-x86_64.txt
+# sp_matmul_rs has no 3.14 wheel: built from the sdist (needs the Rust toolchain at install).
+sparse_dot_topn==1.2.0
+sp_matmul_rs==0.2.1
+implicit==0.7.3
+scikit-learn==1.9.1
+lenskit==2026.4.0

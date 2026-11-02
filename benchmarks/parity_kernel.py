@@ -43,12 +43,12 @@ import similaripy as sim
 RTOL, ATOL = 1e-4, 1e-7  # the contract for changes that move bits; refactors: --exact
 
 
-def close(a, b):
-    return np.abs(a - b) <= ATOL + RTOL * np.abs(b)
+def close(a, b, atol=ATOL, rtol=None):
+    return np.abs(a - b) <= atol + (RTOL if rtol is None else rtol) * np.abs(b)
 
 
-def compare(a, b, k, threshold=0.0):
-    """Compare two top-k CSR outputs. Returns (n_one_sided, n_shared, list of failure messages)."""
+def compare(a, b, k, threshold=0.0, atol=ATOL, rtol=None):
+    """Compare two top-k CSR outputs (rtol None: --rtol). Returns (n_one_sided, n_shared, failure messages)."""
     a, b = a.tocsr(), b.tocsr()
     a.sort_indices()
     b.sort_indices()
@@ -58,7 +58,7 @@ def compare(a, b, k, threshold=0.0):
         bc, bv = b.indices[b.indptr[r] : b.indptr[r + 1]], b.data[b.indptr[r] : b.indptr[r + 1]]
         _, ia, ib = np.intersect1d(ac, bc, assume_unique=True, return_indices=True)
         shared += ia.size
-        bad = ~close(bv[ib], av[ia])
+        bad = ~close(bv[ib], av[ia], atol, rtol)
         if bad.any():
             j = np.flatnonzero(bad)[0]
             failures.append(
@@ -70,7 +70,7 @@ def compare(a, b, k, threshold=0.0):
         for cols, vals, idx in ((ac, av, ia), (bc, bv, ib)):
             only = np.setdiff1d(np.arange(cols.size), idx, assume_unique=True)
             for s in vals[only]:
-                if any(close(s, t) for t in kth) or close(s, threshold):
+                if any(close(s, t, atol, rtol) for t in kth) or close(s, threshold, atol, rtol):
                     one_sided += 1
                 else:
                     failures.append(f"row {r}: col only on one side with score {s!r} (k-th {kth})")
