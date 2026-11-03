@@ -64,6 +64,8 @@ python benchmarks/compare.py benchmarks/bench_results/before_*.json benchmarks/b
 
   Serving times the core batch call through private API (`compat.py`, the one place to edit if it changes).
 
+  `--model-cache` (off by default): S is built by the first run and saved in the bench cache (`models/{dataset}-{model}-k{model_k}.npz`, a plain scipy CSR, plus the build that made it in a `.json`; the report's `info.model_cache` names both). Every later process and every build serves that same S: no ~1 min Y500M build per process, and a serving A/B isn't moved by kernel changes. Each build still builds its own `ItemKNN(S)`, so no serving format is shared. Delete `models/` when S's definition changes.
+
 - **crosslib**: another library's item-item similarity on the same URM (`--library`, one per process; `--check` compares the output with similaripy). See "Other libraries".
 
 Every call runs with `verbose=False` (no progress bar in the timed region) and the same `--format-output` (default csr; 0.7.0 defaults to coo).
@@ -134,7 +136,7 @@ One shared environment for every library, isolated per process: the shared depen
 
 | Library | `cosine` | `dot_product` | `cosine_binary` | Self in top-k | Threads | Traps |
 |---|---|---|---|---|---|---|
-| sparse_dot_topn 1.2.0 | rows L2-normalized by the caller (timed) | plain | yes | yes | `n_threads` | rejects `csr_array` (wrapped in `csr_matrix`, no copy); `n_threads=0` means 1 |
+| sparse_dot_topn 1.2.0 | rows L2-normalized by the caller (timed) | plain | yes | yes | `n_threads` | rejects `csr_array` (the transpose is built as a `csr_matrix`, timed); `n_threads=0` means 1 |
 | sp_matmul_rs 0.2.1 | as sparse_dot_topn | plain | yes | yes | `n_threads` (rayon) | as sparse_dot_topn |
 | implicit 0.7.3 | `CosineRecommender` | `ItemItemRecommender` on float64 (cast timed) | yes | yes (`K=k`) | `num_threads`; **the macOS wheel has no OpenMP** (single-threaded) | float64 output; `fit` also builds its scorer |
 | scikit-learn 1.9.1 | `NearestNeighbors(metric="cosine", algorithm="brute").kneighbors(X)` | – | yes | yes | `n_jobs` (0 raises; only the distance chunks run in parallel) | rows always hold k entries (zero fillers dropped for the check); float32 `1 − d`: check atol 1e-6 |

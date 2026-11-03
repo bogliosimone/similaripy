@@ -2,7 +2,7 @@
 Other libraries' exact sparse top-k item-item similarity, for the `crosslib` workload (D78).
 
 One `Library` per library: the similarities it maps to, `prepare` (the call,
-built once) and `to_csr` (its output as an items x items CSR, for the check).
+built once) and `to_csr(output, n_items)` (its output as an items x items CSR, for the check).
 Every library starts from the same users x items CSR (float32, int32
 indices); its own prep (transpose, normalize, dtype casts, LensKit's Dataset)
 is part of the call, as a user would write it. Imports are lazy: a missing
@@ -74,7 +74,7 @@ def installed_version(package):
         return None
 
 
-def _csr(out):
+def _csr(out, n):
     return sp.csr_matrix(out)
 
 
@@ -83,6 +83,11 @@ def _topn_prepare(URM, similarity, k, threads, entry):
     from sklearn.preprocessing import normalize
 
     kwargs = {"top_n": k, "n_threads": threads}
+    if threads > 1 and entry.__module__.startswith("sp_matmul_rs"):
+        import sp_matmul_rs
+
+        if not sp_matmul_rs._rust_parallel_enabled:  # it would only warn and run on 1 thread
+            raise RuntimeError("sp_matmul_rs was built without rayon: n_threads would be ignored")
 
     def call():
         X = sp.csr_matrix(URM.T)  # the transpose copy; csr_array raises
@@ -115,16 +120,16 @@ def _sklearn_prepare(URM, similarity, k, threads, entry):
     return kwargs, call
 
 
-def _sklearn_to_csr(out):
+def _sklearn_to_csr(out, n):
     dist, ids = out
-    n, k = ids.shape
+    k = ids.shape[1]
     S = sp.csr_matrix((1 - dist.ravel(), ids.ravel(), np.arange(0, n * k + 1, k)), shape=(n, n))
-    S.data[S.data <= 0] = 0  # the zero-similarity fillers of rows with < k neighbours
-    S.eliminate_zeros()
+    S.eliminate_zeros()  # the zero-similarity fillers of rows with < k neighbours (distance exactly 1)
     return S
 
 
 def _lenskit_prepare(URM, similarity, k, threads, entry):
+    from lenskit._accel import thread_count
     from lenskit.config import ParallelSettings
     from lenskit.data import DatasetBuilder
     from lenskit.parallel import get_parallel_config, init_threading
@@ -132,6 +137,8 @@ def _lenskit_prepare(URM, similarity, k, threads, entry):
     init_threading(ParallelSettings(num_threads=threads))  # a no-op (warning) once set
     if get_parallel_config().num_threads != threads:
         raise ValueError(f"LensKit threads are set once per process: already {get_parallel_config().num_threads}")
+    if thread_count() != threads:  # a failed pool init only logs a warning
+        raise RuntimeError(f"LensKit's Rayon pool has {thread_count()} threads, not {threads}")
     kwargs = {"max_nbrs": k, "save_nbrs": k - 1, "feedback": "implicit"}
 
     def call():
@@ -150,11 +157,10 @@ def _lenskit_prepare(URM, similarity, k, threads, entry):
     return kwargs, call
 
 
-def _lenskit_to_csr(scorer):
-    """The neighbour matrix with LensKit's item numbering mapped back to the URM's columns."""
+def _lenskit_to_csr(scorer, n):
+    """The neighbour matrix with LensKit's item numbering mapped back to the URM's n columns."""
     S = scorer.sim_matrix.to_scipy().tocoo()
     ids = np.asarray(scorer.items.ids())
-    n = int(ids.max()) + 1
     return sp.csr_matrix((S.data, (ids[S.row], ids[S.col])), shape=(n, n))
 
 

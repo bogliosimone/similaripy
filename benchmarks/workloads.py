@@ -13,6 +13,7 @@ dict), the same way in the main process and in a fresh `--rss` child.
 """
 
 import atexit
+import json
 import os
 import shutil
 import statistics
@@ -269,11 +270,12 @@ def serve_cases(URM, opts):
         raise ValueError("serve: this build has no similaripy.serving")
     from similaripy.serving import ItemKNN
 
-    model = sim.cosine if opts["model"] == "cosine" else sim.rp3beta
-    S = model(URM.T, k=opts["model_k"], verbose=False, format_output="csr")
+    S, cached = _serve_model(URM, opts)
     rec = ItemKNN(S)
     n_active = compat.serving_n_active(rec)
     info = {"model": opts["model"], "model_k": opts["model_k"], "s_nnz": int(S.nnz), "n_active": n_active}
+    if cached:
+        info["model_cache"] = cached
     rng = np.random.default_rng(opts["seed"])
     users = rng.choice(URM.shape[0], size=opts["requests"])
     k, modes, cases = opts["k"], opts["mode"], []
@@ -326,6 +328,29 @@ def _histories(URM, users, cap, rng):
             row = rng.choice(row, size=cap, replace=False)
         rows.append(row.astype(np.int64))
     return rows
+
+
+def _serve_model(URM, opts):
+    """S = cosine or rp3beta(URM.T, k=model_k). With --model-cache, loaded from (or saved to) the bench cache:
+    every process and every build of an A/B then serves the same S (a Y500M S takes ~1 min to build per
+    process; a serving comparison isn't moved by the kernel's own changes). Returns (S, None or
+    {path, built_by}: the build that made the cached S)."""
+    model = sim.cosine if opts["model"] == "cosine" else sim.rp3beta
+    if not opts.get("model_cache"):
+        return model(URM.T, k=opts["model_k"], verbose=False, format_output="csr"), None
+    path = loaders.CACHE / "models" / f"{opts['dataset_key']}-{opts['model']}-k{opts['model_k']}.npz"
+    meta = path.with_suffix(".json")
+    if not path.exists():
+        S = model(URM.T, k=opts["model_k"], verbose=False, format_output="csr")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp.npz")
+        sp.save_npz(tmp, S, compressed=False)
+        meta.write_text(json.dumps(compat.build_info()))
+        tmp.replace(path)  # no half-written model after an interrupt
+    S = sp.csr_array(sp.load_npz(path))
+    if S.shape != (URM.shape[1], URM.shape[1]):
+        raise ValueError(f"cached model {path} has shape {S.shape}, the dataset {URM.shape[1]} items: delete it")
+    return S, {"path": str(path), "built_by": json.loads(meta.read_text())}
 
 
 def _latency_run(rec, hists, kwargs, evict):
@@ -381,6 +406,9 @@ def crosslib_cases(URM, opts):
     if unknown:
         raise ValueError(f"{opts['library']} has no {unknown}; available: {', '.join(lib.similarities)}")
     threads, k = opts["threads"], opts["k"]
+    pinned = [v for v in ("RAYON_NUM_THREADS", "OMP_NUM_THREADS") if v in os.environ]
+    if pinned:  # they would override the explicit thread count of some libraries only
+        raise ValueError(f"unset {', '.join(pinned)}: crosslib passes --threads to every library")
     cases = []
     for name in names:
         X = URM
@@ -425,7 +453,7 @@ def check_output(lib, ref, out, k):
         ref.setdiag(0)
         ref.eliminate_zeros()
         k -= 1
-    new = lib.to_csr(out)
+    new = lib.to_csr(out, ref.shape[0])
     one_sided, shared, failures = compare(ref, new, k, lib.threshold, atol=lib.atol or ATOL, rtol=libraries.RTOL)
     overlap = shared / ref.nnz if ref.nnz else 1.0
     return {

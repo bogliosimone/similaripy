@@ -6,6 +6,7 @@ not the wheel; the CI test jobs run it). Only benchmarks/ goes on sys.path, neve
 repo root: that would import the source tree's similaripy (no _core).
 """
 
+import functools
 import importlib
 import json
 import os
@@ -157,6 +158,19 @@ def test_serve_modes(run):
     assert cases["latency_cap50_warm"]["p99_us"] >= cases["latency_cap50_warm"]["p50_us"] > 0
 
 
+def test_serve_model_cache(run, monkeypatch, tmp_path):
+    # --model-cache: the first run builds and saves S, the next one serves the saved S; off by default
+    import loaders
+
+    monkeypatch.setattr(loaders, "CACHE", tmp_path / "cache")
+    args = ("serve", "--mode", "block", "--block-threads", "1", "--model-k", "20", "--k", "10", "--rounds", "1")
+    first, second = run(*args, "--model-cache"), run(*args, "--model-cache")
+    assert first["info"]["model_cache"] == second["info"]["model_cache"]
+    assert first["info"]["s_nnz"] == second["info"]["s_nnz"] > 0
+    assert list((tmp_path / "cache" / "models").glob("*.npz"))
+    assert "model_cache" not in run(*args)["info"]
+
+
 def test_serve_build(run):
     _needs_peak_memory()
     rep = run("serve", "--mode", "build", "--model-k", "20", "--rounds", "1")
@@ -236,19 +250,38 @@ def small_urm(monkeypatch):
 @pytest.mark.parametrize("name", CROSSLIB)
 def test_crosslib_check_and_params(run, small_urm, monkeypatch, name):
     lib, threads = _crosslib(name, monkeypatch)
-    first = lib.similarities[0]
-    module, attr = lib.entries[first].split(":")
-    real, seen = getattr(importlib.import_module(module), attr), []
+    seen = {}  # entry -> kwargs of every call
 
-    def spy(*args, **kwargs):
-        seen.append(kwargs)
-        return real(*args, **kwargs)
+    for entry in set(lib.entries.values()):
+        module, attr = entry.split(":")
+        real = getattr(importlib.import_module(module), attr)
+        if isinstance(real, type):
+            # A class: wrap its __init__ in place (replacing the class would break the library's own
+            # references to it, e.g. implicit's CosineRecommender.fit calls ItemItemRecommender.fit)
+            def spy_init(entry, cls, init):
+                @functools.wraps(init)  # sklearn reads the __init__ signature
+                def wrapped(self, *args, **kwargs):
+                    if type(self) is cls:
+                        seen.setdefault(entry, []).append(kwargs)
+                    init(self, *args, **kwargs)
 
-    monkeypatch.setattr(importlib.import_module(module), attr, spy)
+                return wrapped
+
+            monkeypatch.setattr(real, "__init__", spy_init(entry, real, real.__init__))
+        else:
+
+            def call(*args, _entry=entry, _real=real, **kwargs):
+                seen.setdefault(_entry, []).append(kwargs)
+                return _real(*args, **kwargs)
+
+            monkeypatch.setattr(importlib.import_module(module), attr, call)
     rep = run("crosslib", "--library", name, "--threads", threads, "--check", "--rounds", "2")
     assert set(rep["cases"]) == set(lib.similarities)
-    expected = {k: v for k, v in rep["cases"][first]["params"].items() if k != "input"}
-    assert seen and all(kw == expected for kw in seen)  # params recorded == params passed
+    params = {c: {k: v for k, v in case["params"].items() if k != "input"} for c, case in rep["cases"].items()}
+    for entry in set(lib.entries.values()):  # params recorded == params passed, at every entry point
+        recorded = [params[c] for c, e in lib.entries.items() if e == entry]
+        calls = seen.get(entry, [])
+        assert all(kw in recorded for kw in calls) and all(p in calls for p in recorded)
     assert rep["info"]["library"] == name and rep["info"]["threads"] == int(threads)
     for case in rep["cases"].values():
         assert len(case["rounds"]) == 2 and all(r["check"]["failures"] == 0 for r in case["rounds"])
@@ -281,3 +314,15 @@ def test_crosslib_vs_dense_float64(small_urm, monkeypatch, name):
         out, _ = call()
         check = workloads.check_output(lib, ref, out, k)
         assert check["failures"] == 0, (similarity, check["first_failures"])
+
+
+def test_compare_forgives_scores_below_the_cut_off(monkeypatch):
+    # A library with a cut-off (LensKit min_sim 1e-6) drops a reference score far below it: not a failure
+    monkeypatch.syspath_prepend(str(BENCH))
+    import scipy.sparse as sp
+    from parity_kernel import compare
+
+    ref = sp.csr_array(np.array([[0.0, 0.5, 4e-7]]))
+    new = sp.csr_array(np.array([[0.0, 0.5, 0.0]]))
+    assert compare(ref, new, 100, threshold=1e-6)[2] == []
+    assert compare(ref, new, 100)[2]  # no cut-off: still a failure

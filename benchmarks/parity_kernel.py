@@ -70,7 +70,9 @@ def compare(a, b, k, threshold=0.0, atol=ATOL, rtol=None):
         for cols, vals, idx in ((ac, av, ia), (bc, bv, ib)):
             only = np.setdiff1d(np.arange(cols.size), idx, assume_unique=True)
             for s in vals[only]:
-                if any(close(s, t, atol, rtol) for t in kth) or close(s, threshold, atol, rtol):
+                # at the k-th score (tie), or at / below the side's cut-off (crosslib: LensKit's min_sim)
+                near_cut = close(s, threshold, atol, rtol) or (threshold > 0 and s <= threshold)
+                if any(close(s, t, atol, rtol) for t in kth) or near_cut:
                     one_sided += 1
                 else:
                     failures.append(f"row {r}: col only on one side with score {s!r} (k-th {kth})")

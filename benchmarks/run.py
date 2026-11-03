@@ -121,6 +121,11 @@ def parser():
     v.add_argument("--evict-mb", type=int, default=48, help="latency cold: MB read between requests")
     v.add_argument("--block-threads", type=int, nargs="+", default=None, help="block mode (default: 1 and all cores)")
     v.add_argument("--seed", type=int, default=0)
+    v.add_argument(
+        "--model-cache",
+        action="store_true",
+        help="load S from the bench cache (models/; built and saved by the first run): same S for every process and build",
+    )
 
     x = sub.add_parser("crosslib", parents=[common, rss], help="another library's item-item similarity")
     x.add_argument("--library", required=True, choices=libraries.LIBRARIES)
@@ -146,12 +151,17 @@ def main(argv=None):
     pre = report.preflight()
     report.check_quiet(pre, args.max_load, args.strict)
     URM, dataset = loaders.load(args.dataset, args.version, args.event_type, verbose=not args.quiet)
+    opts["dataset_key"] = dataset["key"]
     try:
         cases, info = workloads.make_cases(opts, URM)
     except ValueError as e:
         sys.exit(f"error: {e}")
 
-    config = {k: v for k, v in opts.items() if k not in ("workload", "dataset", "version", "event_type", "model_path")}
+    config = {
+        k: v
+        for k, v in opts.items()
+        if k not in ("workload", "dataset", "version", "event_type", "model_path", "dataset_key")
+    }
     results = report.run_rounds(cases, args.rounds, args.warmup, verbose=not args.quiet)
     rep = report.build_report(args.workload, config, dataset, cases, results, pre, info)
     if opts.get("rss"):
