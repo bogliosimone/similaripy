@@ -279,7 +279,8 @@ def _crosslib(name, monkeypatch):
     import libraries
 
     lib = libraries.LIBRARIES[name]
-    pytest.importorskip(lib.module)
+    for module in {lib.module} | {e.split(":")[0] for e in lib.entries.values()}:  # scipy's cosine is sklearn's
+        pytest.importorskip(module)
     return lib, "1" if name == "scipy" else "2"  # LensKit's threads are set once per process: one count
 
 
