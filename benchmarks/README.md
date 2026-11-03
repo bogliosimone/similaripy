@@ -115,6 +115,7 @@ uv run --group bench python benchmarks/gate.py quick --base ~/wt/base/.venv/bin/
 - **quick** (~30 min): Y50M then Y500M, kernel (cosine, rp3beta) and serving batch (`--model-cache`), `--threads` (default 6, the M2 Pro's performance cores: E-cores add noise). **full** (~60 min, once per PR): + Y500M serving at 1 thread, ML-32M kernel / serving / latency, model build.
 - **Never idle:** no waiting for a quiet machine. A sampler records the load and the CPU used by every process outside the gate every 10 s (CPU time differences, the same on macOS and Linux; a VM's steal time isn't seen) in `timeline.tsv`; a step with > 100% such CPU in > 10% of its samples is rerun once at the end. `--until HH:MM`: a step starts only if its estimate (scaled by `--pairs`, ≥ 2) ends before. A failed or skipped step is a row of the verdict (exit 1 on a failure); an output dir that already holds a run is refused.
 - **Output** (`--output-dir`, default `bench_results/gate-{tag}`): abba.py's reports per step, `steps.tsv` (time, load, burst share per step), `verdict.md`: per case, the change in every pair and win / loss (same sign, each ≥ 3%), small (same sign, some pair below), neutral (mixed), noisy.
+- macOS and Linux (the sampler reads `ps` and the load average; on Windows it's down and the verdict says so).
 - `--dry`: every step on the synthetic dataset, to check the plumbing (`tests/test_benchmarks.py` runs it).
 
 ## Which runs for which change

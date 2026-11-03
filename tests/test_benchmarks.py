@@ -231,6 +231,10 @@ def test_abba_and_compare(monkeypatch, tmp_path, capsys):
         )
 
 
+GATE_OS = pytest.mark.skipif(sys.platform == "win32", reason="gate.py samples load and CPU with ps: macOS and Linux")
+
+
+@GATE_OS
 def test_gate_dry(monkeypatch, tmp_path):
     # The quick gate's plumbing on the synthetic dataset: every step runs both builds, the verdict covers every case
     monkeypatch.syspath_prepend(str(BENCH))
@@ -249,6 +253,7 @@ def test_gate_dry(monkeypatch, tmp_path):
     assert len((tmp_path / "out" / "timeline.tsv").read_text().splitlines()) > 1
 
 
+@GATE_OS
 def test_gate_rerun_refuse_and_cpu_time(monkeypatch, tmp_path):
     # A step hit by background CPU is rerun once and the rerun stands in for it; a second run in the same
     # dir is refused; ps's CPU time parses on both platforms
