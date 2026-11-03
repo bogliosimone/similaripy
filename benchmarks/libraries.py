@@ -30,6 +30,7 @@ Mapping (verified vs a dense float64 reference, notes cross-lib/mapcheck.py):
     top-k per row. Single-threaded: threads must be 1.
 """
 
+import functools
 import importlib
 import time
 from dataclasses import dataclass
@@ -78,16 +79,16 @@ def _csr(out, n):
     return sp.csr_matrix(out)
 
 
-def _topn_prepare(URM, similarity, k, threads, entry):
+def _topn_prepare(URM, similarity, k, threads, entry, rayon=False):
     """sparse_dot_topn and sp_matmul_rs: one top-n matmul of the items x users rows with their transpose."""
     from sklearn.preprocessing import normalize
 
     kwargs = {"top_n": k, "n_threads": threads}
-    if threads > 1 and entry.__module__.startswith("sp_matmul_rs"):
+    if rayon and threads > 1:
         import sp_matmul_rs
 
         if not sp_matmul_rs._rust_parallel_enabled:  # it would only warn and run on 1 thread
-            raise RuntimeError("sp_matmul_rs was built without rayon: n_threads would be ignored")
+            raise ValueError("sp_matmul_rs was built without rayon: n_threads would be ignored")
 
     def call():
         X = sp.csr_matrix(URM.T)  # the transpose copy; csr_array raises
@@ -138,7 +139,7 @@ def _lenskit_prepare(URM, similarity, k, threads, entry):
     if get_parallel_config().num_threads != threads:
         raise ValueError(f"LensKit threads are set once per process: already {get_parallel_config().num_threads}")
     if thread_count() != threads:  # a failed pool init only logs a warning
-        raise RuntimeError(f"LensKit's Rayon pool has {thread_count()} threads, not {threads}")
+        raise ValueError(f"LensKit's Rayon pool has {thread_count()} threads, not {threads}")
     kwargs = {"max_nbrs": k, "save_nbrs": k - 1, "feedback": "implicit"}
 
     def call():
@@ -204,7 +205,7 @@ LIBRARIES = {
         "sp_matmul_rs",
         "sp-matmul-rs",
         {s: "sp_matmul_rs:sp_matmul_topn" for s in ALL},
-        _topn_prepare,
+        functools.partial(_topn_prepare, rayon=True),
         _csr,
     ),
     "implicit": Library(

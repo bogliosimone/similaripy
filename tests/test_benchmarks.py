@@ -164,11 +164,20 @@ def test_serve_model_cache(run, monkeypatch, tmp_path):
 
     monkeypatch.setattr(loaders, "CACHE", tmp_path / "cache")
     args = ("serve", "--mode", "block", "--block-threads", "1", "--model-k", "20", "--k", "10", "--rounds", "1")
-    first, second = run(*args, "--model-cache"), run(*args, "--model-cache")
+    first = run(*args, "--model-cache")
+    saved = next((tmp_path / "cache" / "models").glob("*.npz"))
+    mtime = saved.stat().st_mtime_ns
+    second = run(*args, "--model-cache")
+    assert saved.stat().st_mtime_ns == mtime  # served from the cache, not rebuilt
     assert first["info"]["model_cache"] == second["info"]["model_cache"]
     assert first["info"]["s_nnz"] == second["info"]["s_nnz"] > 0
     assert list((tmp_path / "cache" / "models").glob("*.npz"))
     assert "model_cache" not in run(*args)["info"]
+    # Another URM under the same key is refused, not served
+    meta = saved.with_suffix(".json")
+    meta.write_text(json.dumps({**json.loads(meta.read_text()), "urm": {"shape": [1, 1], "nnz": 1, "checksum": ""}}))
+    with pytest.raises(SystemExit):
+        run(*args, "--model-cache")
 
 
 def test_serve_build(run):
@@ -220,6 +229,45 @@ def test_abba_and_compare(monkeypatch, tmp_path, capsys):
                 *small,
             ]
         )
+
+
+def test_gate_dry(monkeypatch, tmp_path):
+    # The quick gate's plumbing on the synthetic dataset: every step runs both builds, the verdict covers every case
+    monkeypatch.syspath_prepend(str(BENCH))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SIMILARIPY_BENCH_DATA", str(tmp_path / "cache"))  # --model-cache writes there
+    import gate
+
+    gate.SAMPLE_S, gate.BURST_SHARE = 1, 2.0  # no reruns: background load on a test machine is not the point
+    py = sys.executable
+    gate.main(["quick", "--base", py, "--cand", py, "--tag", "g", "--pairs", "1", "--dry", "--output-dir", "out"])
+    steps = (tmp_path / "out" / "steps.tsv").read_text().splitlines()[1:]
+    assert [s.split("\t")[3] for s in steps] == ["0"] * len(gate.steps("quick"))
+    verdict = (tmp_path / "out" / "verdict.md").read_text()
+    for step, case in (("y50m-kernel", "cosine"), ("y500m-kernel", "rp3beta"), ("y500m-block", "block_one_t6")):
+        assert f"| {step} | {case} |" in verdict
+    assert len((tmp_path / "out" / "timeline.tsv").read_text().splitlines()) > 1
+
+
+def test_gate_rerun_refuse_and_cpu_time(monkeypatch, tmp_path):
+    # A step hit by background CPU is rerun once and the rerun stands in for it; a second run in the same
+    # dir is refused; ps's CPU time parses on both platforms
+    monkeypatch.syspath_prepend(str(BENCH))
+    monkeypatch.chdir(tmp_path)
+    import gate
+
+    assert gate.cpu_seconds("1-02:03:04") == 93784 and gate.cpu_seconds("12:34.56") == 754.56
+    monkeypatch.setattr(gate, "SAMPLE_S", 0.2)
+    monkeypatch.setattr(gate, "background_cpu", lambda *a: 500.0)
+    monkeypatch.setattr(gate, "steps", lambda *a: [(1, "small", ["small", "--cases", "dot_product", "--reps", "1"])])
+    args = ["quick", "--base", sys.executable, "--cand", sys.executable, "--tag", "r", "--output-dir", "out"]
+    gate.main(args)
+    steps = [s.split("\t")[0] for s in (tmp_path / "out" / "steps.tsv").read_text().splitlines()[1:]]
+    assert steps == ["r-small", "r-small-rerun"]
+    rows = [r for r in (tmp_path / "out" / "verdict.md").read_text().splitlines() if r.startswith("| small |")]
+    assert rows and all(r.rstrip(" |").endswith("noisy rerun") for r in rows)
+    with pytest.raises(SystemExit):
+        gate.main(args)
 
 
 CROSSLIB = ["sparse_dot_topn", "sp_matmul_rs", "implicit", "sklearn", "lenskit", "scipy"]

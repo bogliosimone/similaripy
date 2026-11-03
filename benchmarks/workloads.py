@@ -13,6 +13,7 @@ dict), the same way in the main process and in a fresh `--rss` child.
 """
 
 import atexit
+import hashlib
 import json
 import os
 import shutil
@@ -333,24 +334,39 @@ def _histories(URM, users, cap, rng):
 def _serve_model(URM, opts):
     """S = cosine or rp3beta(URM.T, k=model_k). With --model-cache, loaded from (or saved to) the bench cache:
     every process and every build of an A/B then serves the same S (a Y500M S takes ~1 min to build per
-    process; a serving comparison isn't moved by the kernel's own changes). Returns (S, None or
-    {path, built_by}: the build that made the cached S)."""
+    process; a serving comparison isn't moved by the kernel's own changes). The sidecar .json holds the
+    build that made S and the URM it was made from (shape, nnz, a checksum): another URM under the same
+    key is an error. Returns (S, None or {path, built_by})."""
     model = sim.cosine if opts["model"] == "cosine" else sim.rp3beta
     if not opts.get("model_cache"):
         return model(URM.T, k=opts["model_k"], verbose=False, format_output="csr"), None
     path = loaders.CACHE / "models" / f"{opts['dataset_key']}-{opts['model']}-k{opts['model_k']}.npz"
-    meta = path.with_suffix(".json")
+    meta_path = path.with_suffix(".json")
+    urm = {"shape": list(URM.shape), "nnz": int(URM.nnz), "checksum": _urm_checksum(URM)}
     if not path.exists():
         S = model(URM.T, k=opts["model_k"], verbose=False, format_output="csr")
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp.npz")
         sp.save_npz(tmp, S, compressed=False)
-        meta.write_text(json.dumps(compat.build_info()))
+        meta = {"built_by": compat.build_info(), "urm": urm}
+        meta_path.write_text(json.dumps(meta))
         tmp.replace(path)  # no half-written model after an interrupt
-    S = sp.csr_array(sp.load_npz(path))
-    if S.shape != (URM.shape[1], URM.shape[1]):
-        raise ValueError(f"cached model {path} has shape {S.shape}, the dataset {URM.shape[1]} items: delete it")
-    return S, {"path": str(path), "built_by": json.loads(meta.read_text())}
+        return S, {"path": str(path), "built_by": meta["built_by"]}  # not reloaded: one copy of S in memory
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, ValueError) as e:
+        raise ValueError(f"cached model {path}: unreadable {meta_path.name} ({e}): delete both files") from e
+    if meta.get("urm") != urm:
+        raise ValueError(f"cached model {path} was built from another URM ({meta.get('urm')}, now {urm}): delete it")
+    return sp.csr_array(sp.load_npz(path)), {"path": str(path), "built_by": meta["built_by"]}
+
+
+def _urm_checksum(URM):
+    """A cheap identity of the URM: blake2b of indptr and the first million column ids."""
+    h = hashlib.blake2b(digest_size=16)
+    h.update(URM.indptr.astype(np.int64).tobytes())  # the same URM with int32 or int64 offsets: one checksum
+    h.update(URM.indices[:1_000_000].astype(np.int64).tobytes())
+    return h.hexdigest()
 
 
 def _latency_run(rec, hists, kwargs, evict):

@@ -6,6 +6,7 @@ The benchmark harness: timing, peak memory and A/B comparisons of similaripy bui
 |---|---|
 | `run.py` | Benchmark one build: one workload on one dataset, a JSON report |
 | `abba.py` | Two builds, alternating processes (ABBA), the change per pair |
+| `gate.py` | The core's gate: `abba.py` on a fixed list of steps (quick / full), never idle, one verdict per case |
 | `compare.py` | Reports side by side, the first as the reference |
 | `parity_kernel.py`, `parity_normalization.py` | Outputs of this install vs a reference install's (`--dump` / `--compare`) |
 | `loaders.py` | Datasets (synthetic, MovieLens, Yambda, H&M), cached as `.npz` |
@@ -104,15 +105,27 @@ Reports from before the rebuild (`tests/benchmarks/`, no `schema_version`) aren'
 - **Peak memory (`--rss`):** each case's first call in a fresh spawned process, sampling every 1 ms. On macOS `phys_footprint` (Activity Monitor's "Memory"; RSS keeps freed pages, +1 MB for an ML-32M call), elsewhere psutil RSS (`pip install psutil`). A repeated call reuses the allocator's cached regions without counting them again: only a first call shows its peak.
 - **ABBA across builds (`abba.py`):** one process per (side, pair), order base-cand then cand-base. Both sides run this checkout's scripts. A worktree side is refused when its extension is older than its Rust sources (`.venv/bin/python` doesn't rebuild the way `uv run` does). `pypi:X` sides pin numpy/scipy to the running interpreter's versions. The dataset is cached first, by the running interpreter.
 
+## The gate (`gate.py`)
+
+```bash
+uv run --group bench python benchmarks/gate.py quick --base ~/wt/base/.venv/bin/python \
+    --cand .venv/bin/python --tag my-change --until 07:30
+```
+
+- **quick** (~30 min): Y50M then Y500M, kernel (cosine, rp3beta) and serving batch (`--model-cache`), `--threads` (default 6, the M2 Pro's performance cores: E-cores add noise). **full** (~60 min, once per PR): + Y500M serving at 1 thread, ML-32M kernel / serving / latency, model build.
+- **Never idle:** no waiting for a quiet machine. A sampler records the load and the CPU used by every process outside the gate every 10 s (CPU time differences, the same on macOS and Linux; a VM's steal time isn't seen) in `timeline.tsv`; a step with > 100% such CPU in > 10% of its samples is rerun once at the end. `--until HH:MM`: a step starts only if its estimate (scaled by `--pairs`, ≥ 2) ends before. A failed or skipped step is a row of the verdict (exit 1 on a failure); an output dir that already holds a run is refused.
+- **Output** (`--output-dir`, default `bench_results/gate-{tag}`): abba.py's reports per step, `steps.tsv` (time, load, burst share per step), `verdict.md`: per case, the change in every pair and win / loss (same sign, each ≥ 3%), small (same sign, some pair below), neutral (mixed), noisy.
+- `--dry`: every step on the synthetic dataset, to check the plumbing (`tests/test_benchmarks.py` runs it).
+
 ## Which runs for which change
 
 | Change | Run |
 |---|---|
 | Iterating | `run.py similarity --dataset movielens --similarities cosine` |
-| Kernel / top-K hot path (`accumulate`, drain, `TopK`, `lower_bound`) | `abba.py` vs the previous commit, Y50M (`--pairs 2`), then Y500M on an idle machine: a change counts when every pair shows it with the same sign, ≥ 3% kernel (D40 P6) |
+| Kernel / serving hot path (`accumulate`, drain, `TopK`, the blocked loops) | `gate.py quick` vs the previous commit (~30 min; Y500M decides); `gate.py full` once per PR. A change counts when every pair shows it with the same sign, ≥ 3% (D40 P6) |
 | Prep, output build, Python wrappers | ML-32M + Y50M total, `small --cases all` |
 | Memory | `--rss` (fresh process per case) |
-| Serving | `serve --mode latency block` on ML-32M and Y50M (block mode: 1 thread and the core count, D65) |
+| Serving latency, block size | `serve --mode latency` on ML-32M (in `gate.py full`); `serve --mode block` at 1 thread and the core count (D65) |
 | rustc upgrade | see "Codegen-sensitive hot loops" |
 | Other libraries (adapter, pin bump) | `make bench-crosslib-test`, then `crosslib --check` on ML-32M per library (see "Other libraries") |
 | Release history / other versions | `abba.py --base pypi:0.7.0 ...` (total only; the PyPI wheel is not the `v1-cython-ref` local build behind older "vs cpp" numbers: different compiler and flags, not comparable) |
