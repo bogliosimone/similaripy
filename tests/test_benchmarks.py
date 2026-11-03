@@ -236,7 +236,8 @@ GATE_OS = pytest.mark.skipif(sys.platform == "win32", reason="gate.py samples lo
 
 @GATE_OS
 def test_gate_dry(monkeypatch, tmp_path):
-    # The quick gate's plumbing on the synthetic dataset: every step runs both builds, the verdict covers every case
+    # The quick gate's plumbing on the synthetic dataset, + an --extra step: every step runs both builds, the verdict
+    # covers every case. Latency isn't run here (~40 s on synthetic): y500m-lat is ml32m-lat on Y500M
     monkeypatch.syspath_prepend(str(BENCH))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SIMILARIPY_BENCH_DATA", str(tmp_path / "cache"))  # --model-cache writes there
@@ -244,13 +245,25 @@ def test_gate_dry(monkeypatch, tmp_path):
 
     gate.SAMPLE_S, gate.BURST_SHARE = 1, 2.0  # no reruns: background load on a test machine is not the point
     py = sys.executable
-    gate.main(["quick", "--base", py, "--cand", py, "--tag", "g", "--pairs", "1", "--dry", "--output-dir", "out"])
+    args = ["quick", "--base", py, "--cand", py, "--tag", "g", "--pairs", "1", "--dry", "--output-dir", "out"]
+    gate.main([*args, "--extra", "y50m-recommend"])
     steps = (tmp_path / "out" / "steps.tsv").read_text().splitlines()[1:]
-    assert [s.split("\t")[3] for s in steps] == ["0"] * len(gate.steps("quick"))
+    assert [s.split("\t")[3] for s in steps] == ["0"] * (len(gate.steps("quick")) + 1)
     verdict = (tmp_path / "out" / "verdict.md").read_text()
-    for step, case in (("y50m-kernel", "cosine"), ("y500m-kernel", "rp3beta"), ("y500m-block", "block_one_t6")):
+    for step, case in (
+        ("y50m-kernel", "cosine"),
+        ("y500m-kernel", "rp3beta"),
+        ("y500m-block", "block_one_t6"),
+        ("y50m-recommend", "recommend"),
+    ):
         assert f"| {step} | {case} |" in verdict
     assert len((tmp_path / "out" / "timeline.tsv").read_text().splitlines()) > 1
+    # Extras run after the tier in table order, once; the full tier holds them all
+    names = [name for _, name, _ in gate.steps("quick", extra=["y50m-recommend", "ml32m-kernel", "y500m-lat"])]
+    assert names[4:] == ["ml32m-kernel", "y500m-lat", "y50m-recommend"]
+    full = {name: a for _, name, a in gate.steps("full", extra=["y500m-lat"])}
+    assert len(full) == len(gate.steps("full")) and {"y500m-lat", "y50m-recommend"} <= set(full)
+    assert full["y500m-lat"] == ["serve", *gate.Y500, *full["ml32m-lat"][1 + len(gate.ML) :]]
 
 
 @GATE_OS

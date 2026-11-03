@@ -5,7 +5,9 @@ The core's benchmark gate: two builds, ABBA (abba.py) on a fixed list of steps, 
 
 Tiers (the decision rests on Y500M, the library's scale; ML-32M and Y50M are cheap early signals):
   - quick (~30 min): Y50M then Y500M, kernel (cosine, rp3beta) and serving batch, --threads (the P-cores);
-  - full (~60 min, once per PR): quick + Y500M serving at 1 thread, ML-32M kernel / serving / latency, build.
+  - full (~70 min, once per PR): quick + Y500M serving at 1 thread, ML-32M kernel / serving / latency, build,
+    Y500M latency, Y50M recommend (dot_product(URM, S));
+  - --extra STEP ...: some full-tier steps on top of a quick run (D83), e.g. what a probe targets.
 
 Never idle: every step starts at once (no waiting for a quiet machine). A sampler records the 1-min load
 and the CPU used by every process outside this gate's own process tree every 10 s (CPU time differences,
@@ -36,8 +38,9 @@ SIMS = ["--similarities", "cosine", "rp3beta"]
 BLOCK = ["--mode", "block", "--rounds", "1", "--model-cache"]
 
 
-def steps(tier, dry=False, threads=6):
-    """(estimate in minutes, name, run.py arguments) in run order; threads = the performance cores."""
+def steps(tier, dry=False, threads=6, extra=()):
+    """(estimate in minutes, name, run.py arguments) in run order; threads = the performance cores;
+    extra = names of full-tier steps to add to a quick run (each step runs once)."""
     t = str(threads)
     ml, y50, y500 = ([["--dataset", "synthetic"]] * 3) if dry else (ML, Y50, Y500)
     quick = [
@@ -53,8 +56,11 @@ def steps(tier, dry=False, threads=6):
         (5, "ml32m-lat", ["serve", *ml, "--mode", "latency", "--caps", "50", "none", "--requests", "5000",
                           "--rounds", "1", "--model-cache"]),
         (3, "y50m-build", ["serve", *y50, "--mode", "build", "--rounds", "1"]),
+        (8, "y500m-lat", ["serve", *y500, "--mode", "latency", "--caps", "50", "none", "--requests", "5000",
+                          "--rounds", "1", "--model-cache"]),
+        (4, "y50m-recommend", ["recommend", *y50, "--threads", t, "--warmup", "0"]),
     ]  # fmt: skip
-    return quick + (full if tier == "full" else [])
+    return quick + [s for s in full if tier == "full" or s[1] in extra]
 
 
 def cpu_seconds(text):
@@ -183,6 +189,14 @@ def main(argv=None):
     p.add_argument("--output-dir", default=None, help="default: bench_results/gate-{tag}")
     p.add_argument("--threads", type=int, default=6, help="the performance cores (default: 6, the M2 Pro's)")
     p.add_argument("--dry", action="store_true", help="every step on the synthetic dataset (plumbing check)")
+    p.add_argument(
+        "--extra",
+        nargs="+",
+        default=[],
+        choices=[name for _, name, _ in steps("full")[len(steps("quick")) :]],
+        metavar="STEP",
+        help="full-tier steps to add to a quick run, e.g. ml32m-kernel y500m-lat y50m-recommend",
+    )
     args = p.parse_args(argv)
     if args.pairs < 2 and not args.dry:
         p.error("--pairs must be >= 2: 'same sign in every pair' means nothing with one")
@@ -192,7 +206,7 @@ def main(argv=None):
         p.error(f"{out} already holds a gate run: use another --tag or --output-dir")
     out.mkdir(parents=True, exist_ok=True)
     end = deadline(args.until) if args.until else float("inf")
-    plan = {name: (est, run_args) for est, name, run_args in steps(args.tier, args.dry, args.threads)}
+    plan = {name: (est, run_args) for est, name, run_args in steps(args.tier, args.dry, args.threads, args.extra)}
     scale = args.pairs / 2  # the estimates are for 2 pairs
     sampler = Sampler(out / "timeline.tsv")
     sampler.start()
