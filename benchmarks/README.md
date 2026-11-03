@@ -21,7 +21,7 @@ The benchmark harness: timing, peak memory and A/B comparisons of similaripy bui
 ## Quick start
 
 ```bash
-make install-dev   # the bench dependency group: pandas, datasets
+make install-dev   # the bench dependency group: pandas
 
 # Item-item similarity on MovieLens 32M (dot_product, cosine, rp3beta), 1 warm-up + 1 timed round
 uv run --group bench python benchmarks/run.py similarity --dataset movielens
@@ -77,7 +77,7 @@ Every call runs with `verbose=False` (no progress bar in the timed region) and t
 |---|---|---|
 | `synthetic` | `10k` | seeded, built on every run (`loaders.make_urm`) |
 | `movielens` | `32m` (default), `25m` | downloaded from grouplens.org; ratings as values |
-| `yambda` | `50m` (default), `500m`; `--event-type likes / listens / multi_event` | Hugging Face `yandex/yambda` (local HF cache first); implicit, repeated events summed |
+| `yambda` | `50m` (default), `500m`; `--event-type likes / listens / multi_event` | Hugging Face `yandex/yambda` (local HF cache first); implicit, repeated events summed. The first build needs `--with datasets` (not in the bench group: it pulls pyarrow) |
 | `hm` | `full` | Kaggle "H&M Personalized Fashion Recommendations" `transactions_train.csv`: download it yourself (account + competition rules) into `$CACHE/h-and-m/`; purchase counts. Internal only until the competition rules are checked for publishing |
 
 Real datasets are built once and cached as `.npz` in **one directory shared by every checkout and worktree**: `~/.cache/similaripy-bench`, or `SIMILARIPY_BENCH_DATA`. Every side of an A/B then loads the same bytes, and 0.7.0 needs no pandas. Each cache is checked against the shape and nnz in `loaders.EXPECTED`: a changed source or loader fails the load instead of timing other data (add a new dataset's numbers there after its first load). Indices are int32 whenever they fit.

@@ -146,7 +146,14 @@ def _yambda(version, event_type, verbose):
         path = hf_hub_download("yandex/yambda", f"{data_dir}/{data_file}", repo_type="dataset", local_files_only=True)
         df = pd.read_parquet(path, columns=["uid", "item_id"])
     except (ImportError, FileNotFoundError):  # not cached yet: download
-        from datasets import load_dataset
+        try:
+            from datasets import load_dataset
+        except ImportError:  # not in the bench group: only this first build needs it (and its pyarrow)
+            raise RuntimeError(
+                f"yambda {version} isn't cached yet: build it once with datasets, e.g. "
+                f"`uv run --group bench --with datasets python benchmarks/run.py similarity --dataset yambda "
+                f"--version {version} --rounds 1 --warmup 0` (the .npz cache needs nothing after that)"
+            ) from None
 
         if verbose:
             print(f"downloading yandex/yambda {data_dir}/{data_file}")
