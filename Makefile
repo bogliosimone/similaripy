@@ -47,6 +47,12 @@ benchmark-similarity-medium:
 benchmark-similarity-large:
 	uv run --group bench python benchmarks/run.py similarity --dataset yambda --version 500m
 
+# The crosslib adapters' tests under the pinned libraries of this platform (CI doesn't install them): run at every pin bump
+CROSSLIB_LOCK := benchmarks/crosslib-lock-$(shell uname -s | tr A-Z a-z)-$(shell uname -m).txt
+.PHONY: bench-crosslib-test
+bench-crosslib-test:
+	uv run --group bench --group test --with-requirements $(CROSSLIB_LOCK) pytest tests/test_benchmarks.py -k crosslib
+
 .PHONY: clean
 clean:
 	rm -rf dist/

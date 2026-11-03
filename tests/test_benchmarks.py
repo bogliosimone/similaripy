@@ -6,11 +6,14 @@ not the wheel; the CI test jobs run it). Only benchmarks/ goes on sys.path, neve
 repo root: that would import the source tree's similaripy (no _core).
 """
 
+import functools
+import importlib
 import json
 import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 BENCH = Path(__file__).resolve().parents[1] / "benchmarks"
@@ -155,6 +158,28 @@ def test_serve_modes(run):
     assert cases["latency_cap50_warm"]["p99_us"] >= cases["latency_cap50_warm"]["p50_us"] > 0
 
 
+def test_serve_model_cache(run, monkeypatch, tmp_path):
+    # --model-cache: the first run builds and saves S, the next one serves the saved S; off by default
+    import loaders
+
+    monkeypatch.setattr(loaders, "CACHE", tmp_path / "cache")
+    args = ("serve", "--mode", "block", "--block-threads", "1", "--model-k", "20", "--k", "10", "--rounds", "1")
+    first = run(*args, "--model-cache")
+    saved = next((tmp_path / "cache" / "models").glob("*.npz"))
+    mtime = saved.stat().st_mtime_ns
+    second = run(*args, "--model-cache")
+    assert saved.stat().st_mtime_ns == mtime  # served from the cache, not rebuilt
+    assert first["info"]["model_cache"] == second["info"]["model_cache"]
+    assert first["info"]["s_nnz"] == second["info"]["s_nnz"] > 0
+    assert list((tmp_path / "cache" / "models").glob("*.npz"))
+    assert "model_cache" not in run(*args)["info"]
+    # Another URM under the same key is refused, not served
+    meta = saved.with_suffix(".json")
+    meta.write_text(json.dumps({**json.loads(meta.read_text()), "urm": {"shape": [1, 1], "nnz": 1, "checksum": ""}}))
+    with pytest.raises(SystemExit):
+        run(*args, "--model-cache")
+
+
 def test_serve_build(run):
     _needs_peak_memory()
     rep = run("serve", "--mode", "build", "--model-k", "20", "--rounds", "1")
@@ -204,3 +229,154 @@ def test_abba_and_compare(monkeypatch, tmp_path, capsys):
                 *small,
             ]
         )
+
+
+GATE_OS = pytest.mark.skipif(sys.platform == "win32", reason="gate.py samples load and CPU with ps: macOS and Linux")
+
+
+@GATE_OS
+def test_gate_dry(monkeypatch, tmp_path):
+    # The quick gate's plumbing on the synthetic dataset: every step runs both builds, the verdict covers every case
+    monkeypatch.syspath_prepend(str(BENCH))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SIMILARIPY_BENCH_DATA", str(tmp_path / "cache"))  # --model-cache writes there
+    import gate
+
+    gate.SAMPLE_S, gate.BURST_SHARE = 1, 2.0  # no reruns: background load on a test machine is not the point
+    py = sys.executable
+    gate.main(["quick", "--base", py, "--cand", py, "--tag", "g", "--pairs", "1", "--dry", "--output-dir", "out"])
+    steps = (tmp_path / "out" / "steps.tsv").read_text().splitlines()[1:]
+    assert [s.split("\t")[3] for s in steps] == ["0"] * len(gate.steps("quick"))
+    verdict = (tmp_path / "out" / "verdict.md").read_text()
+    for step, case in (("y50m-kernel", "cosine"), ("y500m-kernel", "rp3beta"), ("y500m-block", "block_one_t6")):
+        assert f"| {step} | {case} |" in verdict
+    assert len((tmp_path / "out" / "timeline.tsv").read_text().splitlines()) > 1
+
+
+@GATE_OS
+def test_gate_rerun_refuse_and_cpu_time(monkeypatch, tmp_path):
+    # A step hit by background CPU is rerun once and the rerun stands in for it; a second run in the same
+    # dir is refused; ps's CPU time parses on both platforms
+    monkeypatch.syspath_prepend(str(BENCH))
+    monkeypatch.chdir(tmp_path)
+    import gate
+
+    assert gate.cpu_seconds("1-02:03:04") == 93784 and gate.cpu_seconds("12:34.56") == 754.56
+    monkeypatch.setattr(gate, "SAMPLE_S", 0.2)
+    monkeypatch.setattr(gate, "background_cpu", lambda *a: 500.0)
+    monkeypatch.setattr(gate, "steps", lambda *a: [(1, "small", ["small", "--cases", "dot_product", "--reps", "1"])])
+    args = ["quick", "--base", sys.executable, "--cand", sys.executable, "--tag", "r", "--output-dir", "out"]
+    gate.main(args)
+    steps = [s.split("\t")[0] for s in (tmp_path / "out" / "steps.tsv").read_text().splitlines()[1:]]
+    assert steps == ["r-small", "r-small-rerun"]
+    rows = [r for r in (tmp_path / "out" / "verdict.md").read_text().splitlines() if r.startswith("| small |")]
+    assert rows and all(r.rstrip(" |").endswith("noisy rerun") for r in rows)
+    with pytest.raises(SystemExit):
+        gate.main(args)
+
+
+CROSSLIB = ["sparse_dot_topn", "sp_matmul_rs", "implicit", "sklearn", "lenskit", "scipy"]
+
+
+def _crosslib(name, monkeypatch):
+    """The library's adapter, or a skip (the libraries come from the overlay: make bench-crosslib-test)."""
+    monkeypatch.syspath_prepend(str(BENCH))
+    import libraries
+
+    lib = libraries.LIBRARIES[name]
+    for module in {lib.module} | {e.split(":")[0] for e in lib.entries.values()}:  # scipy's cosine is sklearn's
+        pytest.importorskip(module)
+    return lib, "1" if name == "scipy" else "2"  # LensKit's threads are set once per process: one count
+
+
+@pytest.fixture
+def small_urm(monkeypatch):
+    """The synthetic dataset at the mapping check's size (3000 x 1500): scipy's full product and a dense
+    float64 reference stay small."""
+    monkeypatch.syspath_prepend(str(BENCH))
+    import loaders
+
+    URM = loaders.make_urm(n_users=3000, n_items=1500, nnz=90_000)
+    monkeypatch.setattr(loaders, "make_urm", lambda: URM)
+    return URM
+
+
+@pytest.mark.parametrize("name", CROSSLIB)
+def test_crosslib_check_and_params(run, small_urm, monkeypatch, name):
+    lib, threads = _crosslib(name, monkeypatch)
+    seen = {}  # entry -> kwargs of every call
+
+    for entry in set(lib.entries.values()):
+        module, attr = entry.split(":")
+        real = getattr(importlib.import_module(module), attr)
+        if isinstance(real, type):
+            # A class: wrap its __init__ in place (replacing the class would break the library's own
+            # references to it, e.g. implicit's CosineRecommender.fit calls ItemItemRecommender.fit)
+            def spy_init(entry, cls, init):
+                @functools.wraps(init)  # sklearn reads the __init__ signature
+                def wrapped(self, *args, **kwargs):
+                    if type(self) is cls:
+                        seen.setdefault(entry, []).append(kwargs)
+                    init(self, *args, **kwargs)
+
+                return wrapped
+
+            monkeypatch.setattr(real, "__init__", spy_init(entry, real, real.__init__))
+        else:
+
+            def call(*args, _entry=entry, _real=real, **kwargs):
+                seen.setdefault(_entry, []).append(kwargs)
+                return _real(*args, **kwargs)
+
+            monkeypatch.setattr(importlib.import_module(module), attr, call)
+    rep = run("crosslib", "--library", name, "--threads", threads, "--check", "--rounds", "2")
+    assert set(rep["cases"]) == set(lib.similarities)
+    params = {c: {k: v for k, v in case["params"].items() if k != "input"} for c, case in rep["cases"].items()}
+    for entry in set(lib.entries.values()):  # params recorded == params passed, at every entry point
+        recorded = [params[c] for c, e in lib.entries.items() if e == entry]
+        calls = seen.get(entry, [])
+        assert all(kw in recorded for kw in calls) and all(p in calls for p in recorded)
+    assert rep["info"]["library"] == name and rep["info"]["threads"] == int(threads)
+    for case in rep["cases"].values():
+        assert len(case["rounds"]) == 2 and all(r["check"]["failures"] == 0 for r in case["rounds"])
+        assert case["check"]["overlap"] > 0.95
+    if name == "lenskit":
+        assert rep["cases"]["cosine_binary"]["dataset_s"] > 0
+
+
+@pytest.mark.parametrize("name", CROSSLIB)
+def test_crosslib_vs_dense_float64(small_urm, monkeypatch, name):
+    # The check above rests on similaripy: this one on a dense float64 reference
+    lib, threads = _crosslib(name, monkeypatch)
+    import scipy.sparse as sp
+    import workloads
+
+    k = 100
+    for similarity in lib.similarities:
+        URM = small_urm.copy()
+        if similarity == "cosine_binary":
+            URM.data[:] = 1
+        D = URM.T.toarray().astype(np.float64)
+        if similarity != "dot_product":
+            D /= np.maximum(np.linalg.norm(D, axis=1, keepdims=True), 1e-300)
+        full = D @ D.T
+        top = np.argpartition(-full, k - 1, axis=1)[:, :k]
+        rows = np.repeat(np.arange(full.shape[0]), k)
+        ref = sp.csr_array((np.take_along_axis(full, top, axis=1).ravel(), (rows, top.ravel())), shape=full.shape)
+        ref.eliminate_zeros()
+        _, call = lib.prepare(URM, similarity, k, int(threads), lib.entry(similarity))
+        out, _ = call()
+        check = workloads.check_output(lib, ref, out, k)
+        assert check["failures"] == 0, (similarity, check["first_failures"])
+
+
+def test_compare_forgives_scores_below_the_cut_off(monkeypatch):
+    # A library with a cut-off (LensKit min_sim 1e-6) drops a reference score far below it: not a failure
+    monkeypatch.syspath_prepend(str(BENCH))
+    import scipy.sparse as sp
+    from parity_kernel import compare
+
+    ref = sp.csr_array(np.array([[0.0, 0.5, 4e-7]]))
+    new = sp.csr_array(np.array([[0.0, 0.5, 0.0]]))
+    assert compare(ref, new, 100, threshold=1e-6)[2] == []
+    assert compare(ref, new, 100)[2]  # no cut-off: still a failure

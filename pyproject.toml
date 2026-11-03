@@ -114,9 +114,9 @@ docs = [
   "mkdocstrings-python==2.0.9",
   "ghp-import==2.1.0",
 ]
+# datasets (Hugging Face, pulls pyarrow) is not here: only the first Yambda build needs it (`--with datasets`)
 bench = [
   "pandas",
-  "datasets",
 ]
 notebook = [
   "jupyterlab",

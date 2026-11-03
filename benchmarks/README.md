@@ -6,10 +6,13 @@ The benchmark harness: timing, peak memory and A/B comparisons of similaripy bui
 |---|---|
 | `run.py` | Benchmark one build: one workload on one dataset, a JSON report |
 | `abba.py` | Two builds, alternating processes (ABBA), the change per pair |
+| `gate.py` | The core's gate: `abba.py` on a fixed list of steps (quick / full), never idle, one verdict per case |
 | `compare.py` | Reports side by side, the first as the reference |
 | `parity_kernel.py`, `parity_normalization.py` | Outputs of this install vs a reference install's (`--dump` / `--compare`) |
 | `loaders.py` | Datasets (synthetic, MovieLens, Yambda, H&M), cached as `.npz` |
 | `workloads.py` | The cases of each workload and the exact kwargs of each call |
+| `libraries.py` | Other libraries' item-item similarity for the `crosslib` workload (see "Other libraries") |
+| `crosslib-requirements.txt`, `crosslib-lock-*.txt` | Their pins, and every dependency pinned per platform |
 | `compat.py` | Everything that differs between builds (0.7.0 vs v1) |
 | `report.py` | System info, preflight, the round loop, peak memory, the JSON format |
 
@@ -18,7 +21,7 @@ The benchmark harness: timing, peak memory and A/B comparisons of similaripy bui
 ## Quick start
 
 ```bash
-make install-dev   # the bench dependency group: pandas, datasets
+make install-dev   # the bench dependency group: pandas
 
 # Item-item similarity on MovieLens 32M (dot_product, cosine, rp3beta), 1 warm-up + 1 timed round
 uv run --group bench python benchmarks/run.py similarity --dataset movielens
@@ -52,7 +55,7 @@ python benchmarks/compare.py benchmarks/bench_results/before_*.json benchmarks/b
 
 ## Workloads
 
-- **similarity**: `sim.<name>(URM.T, k=100, ...)` for every similarity (`dot_product`, `cosine`, `asymmetric_cosine`, `jaccard`, `dice`, `tversky`, `p3alpha`, `rp3beta`, `splus`) and fixed-parameter variants: `dot_product_binary`, `cosine_bayesian`, `cosine_stabilized`, `dot_product_bayesian`, `p3alpha_tuned`, `p3alpha_bayesian`, `p3alpha_binary`, `rp3beta_tuned`, `rp3beta_binary`, `rp3beta_stabilized`, `rp3beta_bayesian` (placeholder values: shrink 10, alpha 0.8, beta 0.6, in `workloads.py`). Options: `--k`, `--shrink` / `--threshold` (passed only when set), `--block-size auto|none|N`, `--column-order popularity|original` (private kernel switch), `--threads`, `--format-output`.
+- **similarity**: `sim.<name>(URM.T, k=100, ...)` for every similarity (`dot_product`, `cosine`, `asymmetric_cosine`, `jaccard`, `dice`, `tversky`, `p3alpha`, `rp3beta`, `splus`) and fixed-parameter variants: `dot_product_binary`, `cosine_binary`, `cosine_bayesian`, `cosine_stabilized`, `dot_product_bayesian`, `p3alpha_tuned`, `p3alpha_bayesian`, `p3alpha_binary`, `rp3beta_tuned`, `rp3beta_binary`, `rp3beta_stabilized`, `rp3beta_bayesian` (placeholder values: shrink 10, alpha 0.8, beta 0.6, in `workloads.py`). Options: `--k`, `--shrink` / `--threshold` (passed only when set), `--block-size auto|none|N`, `--column-order popularity|original` (private kernel switch), `--threads`, `--format-output`.
 - **recommend**: `dot_product(URM, S, k)` as one library batch call over all users, `recommend` and `recommend_filter_seen` (`filter_cols=URM`); S = `cosine(URM.T, k=--model-k)`, built once, untimed.
 - **small**: millisecond calls on the seeded synthetic 10k x 10k matrix (~1M nnz, Zipf-like popularity), where fixed per-call costs (prep, binding, thread start-up, output build) show. Cases: k=10/1000, `binary=True`, `block_size=None` / 2048, array and matrix `filter_cols` / `target_cols`, and two concurrent cosine calls (`num_threads=2` each) vs the same calls serially (meaningful on a free-threaded build, 3.14t). One measurement = the median of `--reps` calls (default 21). The default smoke set catches big (>20%) regressions only.
 - **serve**: `similaripy.serving.ItemKNN` on S = cosine or rp3beta (`--model`, `--model-k`). Requests are URM rows (user histories), `--requests` resampled with replacement in random order (`--seed`); a history cap keeps that many random items of the row; every request excludes its own items. Modes:
@@ -62,6 +65,10 @@ python benchmarks/compare.py benchmarks/bench_results/before_*.json benchmarks/b
 
   Serving times the core batch call through private API (`compat.py`, the one place to edit if it changes).
 
+  `--model-cache` (off by default): S is built by the first run and saved in the bench cache (`models/{dataset}-{model}-k{model_k}.npz`, a plain scipy CSR, plus the build that made it in a `.json`; the report's `info.model_cache` names both). Every later process and every build serves that same S: no ~1 min Y500M build per process, and a serving A/B isn't moved by kernel changes. Each build still builds its own `ItemKNN(S)`, so no serving format is shared. Delete `models/` when S's definition changes.
+
+- **crosslib**: another library's item-item similarity on the same URM (`--library`, one per process; `--check` compares the output with similaripy). See "Other libraries".
+
 Every call runs with `verbose=False` (no progress bar in the timed region) and the same `--format-output` (default csr; 0.7.0 defaults to coo).
 
 ## Datasets
@@ -70,7 +77,7 @@ Every call runs with `verbose=False` (no progress bar in the timed region) and t
 |---|---|---|
 | `synthetic` | `10k` | seeded, built on every run (`loaders.make_urm`) |
 | `movielens` | `32m` (default), `25m` | downloaded from grouplens.org; ratings as values |
-| `yambda` | `50m` (default), `500m`; `--event-type likes / listens / multi_event` | Hugging Face `yandex/yambda` (local HF cache first); implicit, repeated events summed |
+| `yambda` | `50m` (default), `500m`; `--event-type likes / listens / multi_event` | Hugging Face `yandex/yambda` (local HF cache first); implicit, repeated events summed. The first build needs `--with datasets` (not in the bench group: it pulls pyarrow) |
 | `hm` | `full` | Kaggle "H&M Personalized Fashion Recommendations" `transactions_train.csv`: download it yourself (account + competition rules) into `$CACHE/h-and-m/`; purchase counts. Internal only until the competition rules are checked for publishing |
 
 Real datasets are built once and cached as `.npz` in **one directory shared by every checkout and worktree**: `~/.cache/similaripy-bench`, or `SIMILARIPY_BENCH_DATA`. Every side of an A/B then loads the same bytes, and 0.7.0 needs no pandas. Each cache is checked against the shape and nnz in `loaders.EXPECTED`: a changed source or loader fails the load instead of timing other data (add a new dataset's numbers there after its first load). Indices are int32 whenever they fit.
@@ -98,17 +105,65 @@ Reports from before the rebuild (`tests/benchmarks/`, no `schema_version`) aren'
 - **Peak memory (`--rss`):** each case's first call in a fresh spawned process, sampling every 1 ms. On macOS `phys_footprint` (Activity Monitor's "Memory"; RSS keeps freed pages, +1 MB for an ML-32M call), elsewhere psutil RSS (`pip install psutil`). A repeated call reuses the allocator's cached regions without counting them again: only a first call shows its peak.
 - **ABBA across builds (`abba.py`):** one process per (side, pair), order base-cand then cand-base. Both sides run this checkout's scripts. A worktree side is refused when its extension is older than its Rust sources (`.venv/bin/python` doesn't rebuild the way `uv run` does). `pypi:X` sides pin numpy/scipy to the running interpreter's versions. The dataset is cached first, by the running interpreter.
 
+## The gate (`gate.py`)
+
+```bash
+uv run --group bench python benchmarks/gate.py quick --base ~/wt/base/.venv/bin/python \
+    --cand .venv/bin/python --tag my-change --until 07:30
+```
+
+- **quick** (~30 min): Y50M then Y500M, kernel (cosine, rp3beta) and serving batch (`--model-cache`), `--threads` (default 6, the M2 Pro's performance cores: E-cores add noise). **full** (~60 min, once per PR): + Y500M serving at 1 thread, ML-32M kernel / serving / latency, model build.
+- **Never idle:** no waiting for a quiet machine. A sampler records the load and the CPU used by every process outside the gate every 10 s (CPU time differences, the same on macOS and Linux; a VM's steal time isn't seen) in `timeline.tsv`; a step with > 100% such CPU in > 10% of its samples is rerun once at the end. `--until HH:MM`: a step starts only if its estimate (scaled by `--pairs`, ≥ 2) ends before. A failed or skipped step is a row of the verdict (exit 1 on a failure); an output dir that already holds a run is refused.
+- **Output** (`--output-dir`, default `bench_results/gate-{tag}`): abba.py's reports per step, `steps.tsv` (time, load, burst share per step), `verdict.md`: per case, the change in every pair and win / loss (same sign, each ≥ 3%), small (same sign, some pair below), neutral (mixed), noisy.
+- macOS and Linux (the sampler reads `ps` and the load average; on Windows it's down and the verdict says so).
+- `--dry`: every step on the synthetic dataset, to check the plumbing (`tests/test_benchmarks.py` runs it).
+
 ## Which runs for which change
 
 | Change | Run |
 |---|---|
 | Iterating | `run.py similarity --dataset movielens --similarities cosine` |
-| Kernel / top-K hot path (`accumulate`, drain, `TopK`, `lower_bound`) | `abba.py` vs the previous commit, Y50M (`--pairs 2`), then Y500M on an idle machine: a change counts when every pair shows it with the same sign, ≥ 3% kernel (D40 P6) |
+| Kernel / serving hot path (`accumulate`, drain, `TopK`, the blocked loops) | `gate.py quick` vs the previous commit (~30 min; Y500M decides); `gate.py full` once per PR. A change counts when every pair shows it with the same sign, ≥ 3% (D40 P6) |
 | Prep, output build, Python wrappers | ML-32M + Y50M total, `small --cases all` |
 | Memory | `--rss` (fresh process per case) |
-| Serving | `serve --mode latency block` on ML-32M and Y50M (block mode: 1 thread and the core count, D65) |
+| Serving latency, block size | `serve --mode latency` on ML-32M (in `gate.py full`); `serve --mode block` at 1 thread and the core count (D65) |
 | rustc upgrade | see "Codegen-sensitive hot loops" |
+| Other libraries (adapter, pin bump) | `make bench-crosslib-test`, then `crosslib --check` on ML-32M per library (see "Other libraries") |
 | Release history / other versions | `abba.py --base pypi:0.7.0 ...` (total only; the PyPI wheel is not the `v1-cython-ref` local build behind older "vs cpp" numbers: different compiler and flags, not comparable) |
+
+## Other libraries
+
+The `crosslib` workload times other libraries' exact sparse top-k item-item similarity next to similaripy (D78). The libraries come from a pinned overlay, never a dependency group (LensKit pulls torch and needs numpy >= 2; the minimum-versions CI job runs numpy 1.23.5):
+
+```bash
+# One library per process: OpenMP runtimes (implicit, sklearn, torch) clash in one process on macOS
+uv run --group bench --with-requirements benchmarks/crosslib-lock-darwin-arm64.txt \
+    python benchmarks/run.py crosslib --dataset movielens --library sparse_dot_topn --threads 6 --check
+# The similaripy rows: the similarity workload, under the same lock (same numpy / scipy as every library)
+uv run --group bench --with-requirements benchmarks/crosslib-lock-darwin-arm64.txt \
+    python benchmarks/run.py similarity --dataset movielens --similarities cosine dot_product cosine_binary --threads 6
+# The adapters' tests under the pins (nothing in CI runs them): at every pin bump
+make bench-crosslib-test
+```
+
+One shared environment for every library, isolated per process: the shared dependencies resolved to their latest releases on 2026-11-02, so a venv per library would install the same versions. At a pin bump, compare `info.dependencies` of the new reports with each library's own resolve; a library that holds a shared dependency back gets its own lock. Locks: `crosslib-requirements.txt` holds the top-level pins and the recompile commands (macOS with `MACOSX_DEPLOYMENT_TARGET=15.0`: uv's default target resolves torch 2.9.1). sp_matmul_rs has no 3.14 wheel and builds from the sdist (Rust toolchain at install). The Linux lock has the PyPI (CUDA) torch: a large download, only LensKit imports it.
+
+| Library | `cosine` | `dot_product` | `cosine_binary` | Self in top-k | Threads | Traps |
+|---|---|---|---|---|---|---|
+| sparse_dot_topn 1.2.0 | rows L2-normalized by the caller (timed) | plain | yes | yes | `n_threads` | rejects `csr_array` (the transpose is built as a `csr_matrix`, timed); `n_threads=0` means 1 |
+| sp_matmul_rs 0.2.1 | as sparse_dot_topn | plain | yes | yes | `n_threads` (rayon) | as sparse_dot_topn |
+| implicit 0.7.3 | `CosineRecommender` | `ItemItemRecommender` on float64 (cast timed) | yes | yes (`K=k`) | `num_threads`; **the macOS wheel has no OpenMP** (single-threaded) | float64 output; `fit` also builds its scorer |
+| scikit-learn 1.9.1 | `NearestNeighbors(metric="cosine", algorithm="brute").kneighbors(X)` | – | yes | yes | `n_jobs` (0 raises; only the distance chunks run in parallel) | rows always hold k entries (zero fillers dropped for the check); float32 `1 − d`: check atol 1e-6 |
+| LensKit 2026.4.0 | – | – | `ItemKNNScorer(feedback="implicit")` | **no**: `save_nbrs = k − 1` | rayon, set once per process | no CSR constructor: Dataset built from the COO arrays, timed and shown as `dataset_s`; `min_sim` 1e-6 |
+| scipy (baseline) | `cosine_similarity(X, dense_output=False)` + per-row top-k (RecPack's ItemKNN) | `X @ X.T` + top-k | yes | yes | none: `--threads 1` only | full product in memory (OOM on large catalogs is the result) |
+
+Rules:
+- **Same input:** every library starts from the loader's users x items CSR (float32, int32); `cosine_binary` binarizes it before the timer (`params.input: binarized`).
+- **Total time** = from that CSR to the library's own output object, its prep (transpose, normalize, casts, Dataset) included; conversions for the check are outside. No kernel column across libraries (each library's "kernel" is a different cut); the timer is `untimed()`, never `timed()` (similaripy's phase timer would be stale).
+- **Threads:** `--threads 0` becomes `os.cpu_count()` once, and that explicit count goes to every library in its own spelling (`info.threads`). Counts: 1 and the machine's P-cores (D78 Q8). `RAYON_NUM_THREADS` / `OMP_NUM_THREADS` unset.
+- **Check (`--check`):** the first call's output (warm-up included) against similaripy on the same input, outside the timer, with the parity tie rule (`parity_kernel.compare`) at **rtol 1e-3** (`libraries.RTOL`; the parity scripts keep 1e-4): two float32 libraries summing ~1e5-term rows differ by up to ~6e-4 (on ML-32M similaripy's own cosine diagonal is off by up to 5e-4 vs float64), while a mapping mistake shows at 1e-2 and more; every round carries the result as `check = {overlap, shared, one_sided, failures, first_failures}`. Pass = zero failures (exit 1 otherwise). Timings to publish come from runs without `--check` (the reference build sits between rounds). Not on Y500M (two outputs in memory). `tests/test_benchmarks.py` also checks every library against a dense float64 reference.
+- **Peak memory (`--rss`):** unchanged; the children never run the check.
+- **Report:** `info` = library, version, threads, shared dependency versions; the default tag is the library name.
 
 ## Codegen-sensitive hot loops (Rust core)
 

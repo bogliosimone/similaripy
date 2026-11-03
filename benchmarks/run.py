@@ -6,6 +6,7 @@ Workloads:
   recommend   dot_product(URM, S) with and without filter_cols=URM, S a cosine model
   small       millisecond calls on the synthetic matrix (smoke set, or --cases all)
   serve       similaripy.serving.ItemKNN: request latency, batch block size, model build
+  crosslib    another library's item-item similarity (libraries.py), one library per process
 
 Usage (from the repo root; any similaripy install, 0.7.0 included):
     uv run --group bench python benchmarks/run.py similarity --dataset movielens --similarities cosine rp3beta
@@ -13,14 +14,18 @@ Usage (from the repo root; any similaripy install, 0.7.0 included):
     uv run --group bench python benchmarks/run.py serve --dataset yambda --mode latency block
     uv run --isolated --no-project --with similaripy==0.7.0 \\
         python benchmarks/run.py similarity --dataset movielens --tag 0.7.0
+    uv run --group bench --with-requirements benchmarks/crosslib-lock-darwin-arm64.txt \\
+        python benchmarks/run.py crosslib --library sparse_dot_topn --threads 6 --check
 
 See benchmarks/README.md for the protocol (which runs for which change).
 """
 
 import argparse
+import os
 import re
 import sys
 
+import libraries
 import loaders
 import report
 import workloads
@@ -116,6 +121,17 @@ def parser():
     v.add_argument("--evict-mb", type=int, default=48, help="latency cold: MB read between requests")
     v.add_argument("--block-threads", type=int, nargs="+", default=None, help="block mode (default: 1 and all cores)")
     v.add_argument("--seed", type=int, default=0)
+    v.add_argument(
+        "--model-cache",
+        action="store_true",
+        help="load S from the bench cache (models/; built and saved by the first run): same S for every process and build",
+    )
+
+    x = sub.add_parser("crosslib", parents=[common, rss], help="another library's item-item similarity")
+    x.add_argument("--library", required=True, choices=libraries.LIBRARIES)
+    x.add_argument("--similarities", nargs="+", default=None, metavar="NAME", help="default: all the library has")
+    x.add_argument("--k", type=int, default=100)
+    x.add_argument("--check", action="store_true", help="check the output against similaripy (exit 1 on failures)")
     return p
 
 
@@ -128,27 +144,46 @@ def main(argv=None):
     args.rounds = args.rounds or {"small": 3, "recommend": 5, "serve": 3}.get(args.workload, 1)
     if small and args.dataset != "synthetic":
         sys.exit("error: the small preset runs on the synthetic dataset only")
+    if args.workload == "crosslib":
+        # One explicit count for every library: 0 means 1 thread in sparse_dot_topn, raises in sklearn
+        args.threads = args.threads or os.cpu_count()
     opts = vars(args)
     pre = report.preflight()
     report.check_quiet(pre, args.max_load, args.strict)
     URM, dataset = loaders.load(args.dataset, args.version, args.event_type, verbose=not args.quiet)
+    opts["dataset_key"] = dataset["key"]
     try:
         cases, info = workloads.make_cases(opts, URM)
     except ValueError as e:
         sys.exit(f"error: {e}")
 
-    config = {k: v for k, v in opts.items() if k not in ("workload", "dataset", "version", "event_type", "model_path")}
+    config = {
+        k: v
+        for k, v in opts.items()
+        if k not in ("workload", "dataset", "version", "event_type", "model_path", "dataset_key")
+    }
     results = report.run_rounds(cases, args.rounds, args.warmup, verbose=not args.quiet)
     rep = report.build_report(args.workload, config, dataset, cases, results, pre, info)
     if opts.get("rss"):
         del URM, cases  # the children load their own copy
         for name, case in rep["cases"].items():
-            case["rss_base_mb"], case["rss_peak_mb"] = report.in_fresh_process(workloads.rss_child, opts, name)
+            child = {**opts, "check": False}  # the check's reference would count in the peak
+            case["rss_base_mb"], case["rss_peak_mb"] = report.in_fresh_process(workloads.rss_child, child, name)
             if not args.quiet:
                 print(f"[rss] {name:<24} peak +{case['rss_peak_mb']:.0f} MB over {case['rss_base_mb']:.0f} MB")
-    path = report.write(rep, args.output_dir, args.tag)
+    path = report.write(rep, args.output_dir, args.tag or opts.get("library"))
     report.print_summary(rep)
     print(f"\nreport: {path}")
+    failed = []
+    for name, case in rep["cases"].items():
+        if "check" in case:  # crosslib --check
+            c = case["check"]
+            status = "FAIL" if c["failures"] else "OK"
+            line = f"check {name:<16} {status}  overlap {c['overlap']:.6f}  one_sided {c['one_sided']}"
+            print(f"{line}  failures {c['failures']}", *c["first_failures"], sep="\n    ")
+            failed += [name] if c["failures"] else []
+    if failed:
+        sys.exit(f"error: check failed for {sorted(failed)}")
     return path
 
 

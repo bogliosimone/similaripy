@@ -13,6 +13,8 @@ dict), the same way in the main process and in a fresh `--rss` child.
 """
 
 import atexit
+import hashlib
+import json
 import os
 import shutil
 import statistics
@@ -24,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import compat
+import libraries
 import loaders
 import numpy as np
 import report
@@ -39,6 +42,7 @@ SIMILARITIES = {
     "dot_product": (sim.dot_product, {}),
     "dot_product_binary": (sim.dot_product, {"binary": True}),  # integer scores: tie-heavy
     "cosine": (sim.cosine, {}),
+    "cosine_binary": (sim.cosine, {"binary": True}),
     "asymmetric_cosine": (sim.asymmetric_cosine, {}),
     "jaccard": (sim.jaccard, {}),
     "dice": (sim.dice, {}),
@@ -111,6 +115,8 @@ def make_cases(opts, URM):
         cases, info = small_cases(URM, opts), {}
     elif workload == "serve":
         cases, info = serve_cases(URM, opts)
+    elif workload == "crosslib":
+        cases, info = crosslib_cases(URM, opts)
     else:
         raise ValueError(f"unknown workload {workload!r}")
     names = [c.name for c in cases]
@@ -265,11 +271,12 @@ def serve_cases(URM, opts):
         raise ValueError("serve: this build has no similaripy.serving")
     from similaripy.serving import ItemKNN
 
-    model = sim.cosine if opts["model"] == "cosine" else sim.rp3beta
-    S = model(URM.T, k=opts["model_k"], verbose=False, format_output="csr")
+    S, cached = _serve_model(URM, opts)
     rec = ItemKNN(S)
     n_active = compat.serving_n_active(rec)
     info = {"model": opts["model"], "model_k": opts["model_k"], "s_nnz": int(S.nnz), "n_active": n_active}
+    if cached:
+        info["model_cache"] = cached
     rng = np.random.default_rng(opts["seed"])
     users = rng.choice(URM.shape[0], size=opts["requests"])
     k, modes, cases = opts["k"], opts["mode"], []
@@ -324,6 +331,44 @@ def _histories(URM, users, cap, rng):
     return rows
 
 
+def _serve_model(URM, opts):
+    """S = cosine or rp3beta(URM.T, k=model_k). With --model-cache, loaded from (or saved to) the bench cache:
+    every process and every build of an A/B then serves the same S (a Y500M S takes ~1 min to build per
+    process; a serving comparison isn't moved by the kernel's own changes). The sidecar .json holds the
+    build that made S and the URM it was made from (shape, nnz, a checksum): another URM under the same
+    key is an error. Returns (S, None or {path, built_by})."""
+    model = sim.cosine if opts["model"] == "cosine" else sim.rp3beta
+    if not opts.get("model_cache"):
+        return model(URM.T, k=opts["model_k"], verbose=False, format_output="csr"), None
+    path = loaders.CACHE / "models" / f"{opts['dataset_key']}-{opts['model']}-k{opts['model_k']}.npz"
+    meta_path = path.with_suffix(".json")
+    urm = {"shape": list(URM.shape), "nnz": int(URM.nnz), "checksum": _urm_checksum(URM)}
+    if not path.exists():
+        S = model(URM.T, k=opts["model_k"], verbose=False, format_output="csr")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp.npz")
+        sp.save_npz(tmp, S, compressed=False)
+        meta = {"built_by": compat.build_info(), "urm": urm}
+        meta_path.write_text(json.dumps(meta))
+        tmp.replace(path)  # no half-written model after an interrupt
+        return S, {"path": str(path), "built_by": meta["built_by"]}  # not reloaded: one copy of S in memory
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, ValueError) as e:
+        raise ValueError(f"cached model {path}: unreadable {meta_path.name} ({e}): delete both files") from e
+    if meta.get("urm") != urm:
+        raise ValueError(f"cached model {path} was built from another URM ({meta.get('urm')}, now {urm}): delete it")
+    return sp.csr_array(sp.load_npz(path)), {"path": str(path), "built_by": meta["built_by"]}
+
+
+def _urm_checksum(URM):
+    """A cheap identity of the URM: blake2b of indptr and the first million column ids."""
+    h = hashlib.blake2b(digest_size=16)
+    h.update(URM.indptr.astype(np.int64).tobytes())  # the same URM with int32 or int64 offsets: one checksum
+    h.update(URM.indices[:1_000_000].astype(np.int64).tobytes())
+    return h.hexdigest()
+
+
 def _latency_run(rec, hists, kwargs, evict):
     """`recommend` per history, end to end: per-request µs percentiles; cold = evict caches before each call."""
 
@@ -365,6 +410,75 @@ def build_child(path):
     start = time.perf_counter()
     _, base_mb, peak_mb = report.peak_memory(lambda: ItemKNN(S))
     return time.perf_counter() - start, base_mb, peak_mb
+
+
+def crosslib_cases(URM, opts):
+    """Another library's item-item similarity on the users x items URM (libraries.py), one case per
+    similarity; cosine_binary binarizes the URM before the timer. With opts["check"], the first call's
+    output (warm-up included) is checked against similaripy, outside the timer; every round carries it."""
+    lib = libraries.LIBRARIES[opts["library"]]
+    names = opts["similarities"] or lib.similarities
+    unknown = [n for n in names if n not in lib.entries]
+    if unknown:
+        raise ValueError(f"{opts['library']} has no {unknown}; available: {', '.join(lib.similarities)}")
+    threads, k = opts["threads"], opts["k"]
+    pinned = [v for v in ("RAYON_NUM_THREADS", "OMP_NUM_THREADS") if v in os.environ]
+    if pinned:  # they would override the explicit thread count of some libraries only
+        raise ValueError(f"unset {', '.join(pinned)}: crosslib passes --threads to every library")
+    cases = []
+    for name in names:
+        X = URM
+        if name == "cosine_binary":
+            X = URM.copy()
+            X.data[:] = 1
+        kwargs, call = lib.prepare(X, name, k, threads, lib.entry(name))
+        params = {**kwargs, "input": "binarized"} if name == "cosine_binary" else kwargs
+
+        cases.append(Case(name, params, _crosslib_run(lib, name, X, call, k, threads, opts["check"])))
+    info = {"library": opts["library"], "version": libraries.installed_version(lib.package), "threads": threads}
+    return cases, info | {"dependencies": {d: libraries.installed_version(d) for d in libraries.DEPENDENCIES}}
+
+
+def _crosslib_run(lib, name, X, call, k, threads, check):
+    """One timed call of the library; with check, its first output (computed once) vs similaripy's."""
+    result = {}
+
+    def run():
+        start = time.perf_counter()
+        out, extras = call()
+        m = untimed(time.perf_counter() - start, **extras)
+        if check:
+            if not result:
+                func, fixed = SIMILARITIES[name]
+                ref = func(X.T, k=k, num_threads=threads, verbose=False, format_output="csr", **fixed)
+                result.update(check_output(lib, ref, out, k))
+            m["check"] = dict(result)
+        return m
+
+    return run
+
+
+def check_output(lib, ref, out, k):
+    """A library's output vs a reference top-k CSR (similaripy, or dense float64 in the tests), with the
+    parity tie rule: {overlap, shared, one_sided, failures, first_failures}. A library that leaves self out
+    of its neighbours gets k - 1 and the reference loses its diagonal."""
+    from parity_kernel import ATOL, compare  # parity_kernel imports this module
+
+    ref = sp.csr_array(ref)
+    if not lib.self_in_topk:
+        ref.setdiag(0)
+        ref.eliminate_zeros()
+        k -= 1
+    new = lib.to_csr(out, ref.shape[0])
+    one_sided, shared, failures = compare(ref, new, k, lib.threshold, atol=lib.atol or ATOL, rtol=libraries.RTOL)
+    overlap = shared / ref.nnz if ref.nnz else 1.0
+    return {
+        "overlap": overlap,
+        "shared": shared,
+        "one_sided": one_sided,
+        "failures": len(failures),
+        "first_failures": failures[:5],
+    }
 
 
 def rss_child(opts, name):
