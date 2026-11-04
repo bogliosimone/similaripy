@@ -143,6 +143,9 @@ mod tests {
         assert_eq!(estimate(934_057, 6, M2_PRO), 0); // Y50M 6t: none
         assert_eq!(estimate(3_004_578, 1, M2_PRO), 0); // Y500M 1t: none
         assert_eq!(estimate(3_004_578, 6, M2_PRO), 1 << 20); // Y500M 6t: 1M
+        // a single serving request assumes a loaded L2 (D65): all its cores
+        assert_eq!(estimate(3_004_578, usize::MAX, M2_PRO), 1 << 20);
+        assert_eq!(estimate(934_057, usize::MAX, M2_PRO), 0); // Y50M fits a third of 16 MB
     }
 
     #[test]

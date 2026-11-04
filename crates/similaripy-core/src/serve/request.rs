@@ -235,10 +235,13 @@ impl Scratch {
             }
         }
         self.topk.set_k(req.k.min(m.n_active));
-        // 'auto' per call: this call's threads share the cache (a batch: its
-        // rayon pool; a single request: the caller's thread).
+        // 'auto' per call. A batch: its rayon pool's threads share the cache. A
+        // single request can't see the server's other callers, so it assumes
+        // every core on its L2 is busy (D65: one block wins alone, loses 9-38%
+        // under concurrent requests); usize::MAX clamps to the L2's cores.
         let block = if m.block_size == BlockSize::Auto {
-            let threads = rayon::current_thread_index().map_or(1, |_| rayon::current_num_threads());
+            let threads =
+                rayon::current_thread_index().map_or(usize::MAX, |_| rayon::current_num_threads());
             crate::block::auto_block_size(m.n_active, threads)
         } else {
             m.block
