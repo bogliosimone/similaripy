@@ -5,7 +5,7 @@ use std::cell::Cell;
 
 use rayon::prelude::*;
 
-use super::model::{Entry, Model};
+use super::model::{BlockSize, Entry, Model};
 use super::{bit, invalid, words};
 use crate::Error;
 use crate::topk::TopK;
@@ -235,10 +235,18 @@ impl Scratch {
             }
         }
         self.topk.set_k(req.k.min(m.n_active));
-        let block = if m.block == 0 || m.block >= m.n_active {
-            m.n_active
+        // 'auto' per call: this call's threads share the cache (a batch: its
+        // rayon pool; a single request: the caller's thread).
+        let block = if m.block_size == BlockSize::Auto {
+            let threads = rayon::current_thread_index().map_or(1, |_| rayon::current_num_threads());
+            crate::block::auto_block_size(m.n_active, threads)
         } else {
             m.block
+        };
+        let block = if block == 0 || block >= m.n_active {
+            m.n_active
+        } else {
+            block
         };
         if self.sums.len() < block {
             self.sums.resize(block, 0.0);

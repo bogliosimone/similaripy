@@ -1,5 +1,6 @@
 //! SimilariPy core: top-K sparse similarity kernels in pure Rust.
 
+pub mod block;
 pub mod csr;
 mod kernel;
 pub mod normalize;

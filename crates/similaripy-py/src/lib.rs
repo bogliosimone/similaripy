@@ -356,10 +356,24 @@ fn canonicalize<'py, V: Value + Element>(
     Ok(new_indptr.into_pyarray(py))
 }
 
+/// `block_size='auto'` of the similarity functions over `n_cols` output
+/// columns on `num_threads` threads (0 = the rayon global pool); 0 = no
+/// blocking. See `similaripy_core::block`.
+#[pyfunction]
+fn auto_block_size(n_cols: usize, num_threads: usize) -> usize {
+    let threads = if num_threads == 0 {
+        rayon::current_num_threads()
+    } else {
+        num_threads
+    };
+    similaripy_core::block::auto_block_size(n_cols, threads)
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DEFAULT_BLOCK_SIZE", similaripy_core::DEFAULT_BLOCK_SIZE)?;
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
+    m.add_function(wrap_pyfunction!(auto_block_size, m)?)?;
     m.add_class::<serve::PyModel>()?;
     m.add_function(wrap_pyfunction!(remap_sort_rows, m)?)?;
     m.add_function(wrap_pyfunction!(canonicalize_rows, m)?)?;

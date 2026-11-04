@@ -598,7 +598,7 @@ def _s_plus(
         m2.data[:] = 1
 
     if isinstance(block_size, str):  # 'auto'; None (no blocking) and int > 0 go as they are
-        block_size = DEFAULT_BLOCK_SIZE
+        block_size = _core.auto_block_size(n_output_cols, num_threads) or None
 
     norms = _norms(m1, m2, n_output_cols, params, norm_params)
     params, norms = _depop_as_cosine(params, norms)
