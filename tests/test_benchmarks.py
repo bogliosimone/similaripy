@@ -158,6 +158,17 @@ def test_serve_modes(run):
     assert cases["latency_cap50_warm"]["p99_us"] >= cases["latency_cap50_warm"]["p50_us"] > 0
 
 
+def test_serve_concurrent(run):
+    rep = run(
+        "serve", "--mode", "concurrent", "--callers", "1", "3", "3", "--requests", "60",
+        "--model-k", "20", "--k", "10", "--rounds", "1",
+    )  # fmt: skip
+    cases = rep["cases"]
+    assert {"concurrent_default_c1", "concurrent_one_c3"} <= set(cases) and rep["info"]["callers"] == [1, 3]
+    c = cases["concurrent_default_c3"]
+    assert c["p99_us"] >= c["p50_us"] > 0 and c["requests_per_s"] > 0
+
+
 def test_serve_block_size(run, monkeypatch):
     # --block-size reaches the timed model (the one-block control stays None); 'auto' passes nothing
     from similaripy import serving

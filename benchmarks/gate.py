@@ -59,6 +59,11 @@ def steps(tier, dry=False, threads=6, extra=()):
         (8, "y500m-lat", ["serve", *y500, "--mode", "latency", "--caps", "50", "none", "--requests", "5000",
                           "--rounds", "1", "--model-cache"]),
         (4, "y50m-recommend", ["recommend", *y50, "--threads", t, "--warmup", "0"]),
+        # a loaded server: `threads` callers sending single requests at once (D65), the timed 'auto' vs one block
+        (3, "y50m-conc", ["serve", *y50, "--mode", "concurrent", "--callers", t, "--requests", "5000",
+                          "--rounds", "1", "--model-cache"]),
+        (5, "y500m-conc", ["serve", *y500, "--mode", "concurrent", "--callers", t, "--requests", "5000",
+                           "--rounds", "1", "--model-cache"]),
     ]  # fmt: skip
     return quick + [s for s in full if tier == "full" or s[1] in extra]
 

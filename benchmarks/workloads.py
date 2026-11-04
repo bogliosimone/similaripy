@@ -67,7 +67,7 @@ SIMILARITIES = {
 SMOKE_CASES = ["dot_product", "cosine", "cosine_k1000", "cosine_filter_matrix", "cosine_block2048"]
 CONCURRENCY_CASES = ["cosine_2x2_serial", "cosine_2x2_concurrent"]
 
-SERVE_MODES = ("latency", "block", "build")
+SERVE_MODES = ("latency", "block", "concurrent", "build")
 
 
 @dataclass
@@ -303,6 +303,20 @@ def serve_cases(URM, opts):
             cases.append(Case(f"block_default_t{t}", {"k": k, "num_threads": t}, _batch_run(rec, batch_in, k, t)))
             cases.append(Case(f"block_one_t{t}", {"k": k, "num_threads": t}, _batch_run(one, batch_in, k, t)))
 
+    if "concurrent" in modes:
+        # A loaded server: C Python threads send single requests at once (recommend releases the GIL in the
+        # core), full histories; the timed model vs one block (D65: one block wins alone, loses under load).
+        hists = _histories(URM, users, None, rng)
+        callers = list(dict.fromkeys(opts["callers"]))
+        info["callers"] = callers
+        one = ItemKNN(S, block_size=None)
+        kwargs = {"k": k, "exclude_seen": True}
+        for c in callers:
+            cases.append(
+                Case(f"concurrent_default_c{c}", {**kwargs, "callers": c}, _concurrent_run(rec, hists, kwargs, c))
+            )
+            cases.append(Case(f"concurrent_one_c{c}", {**kwargs, "callers": c}, _concurrent_run(one, hists, kwargs, c)))
+
     if "build" in modes:
         path = _save_tmp(S)
         info["s_mb"] = S.nnz * 8 / 2**20  # indices + data
@@ -389,6 +403,32 @@ def _latency_run(rec, hists, kwargs, evict):
         if us.size >= 100_000:  # p99.9 only with enough samples
             out["p99.9_us"] = float(np.percentile(us, 99.9))
         return out | {"mean_us": float(us.mean())}
+
+    return run
+
+
+def _concurrent_run(rec, hists, kwargs, callers):
+    """`recommend` from `callers` threads at once, history i on thread i % callers: total = makespan, plus
+    per-request µs percentiles over all threads."""
+
+    def worker(part):
+        ns = np.empty(len(part), dtype=np.int64)
+        for i, h in enumerate(part):
+            t = time.perf_counter_ns()
+            rec.recommend(h, **kwargs)
+            ns[i] = time.perf_counter_ns() - t
+        return ns
+
+    def run():
+        parts = [hists[c::callers] for c in range(callers)]
+        with ThreadPoolExecutor(max_workers=callers) as pool:
+            start = time.perf_counter()
+            ns = np.concatenate(list(pool.map(worker, parts)))
+            secs = time.perf_counter() - start
+        us = ns / 1e3
+        out = untimed(secs)
+        out |= {"p50_us": float(np.percentile(us, 50)), "p99_us": float(np.percentile(us, 99))}
+        return out | {"mean_us": float(us.mean()), "requests_per_s": len(hists) / secs}
 
     return run
 
