@@ -158,6 +158,20 @@ def test_serve_modes(run):
     assert cases["latency_cap50_warm"]["p99_us"] >= cases["latency_cap50_warm"]["p50_us"] > 0
 
 
+def test_serve_block_size(run, monkeypatch):
+    # --block-size reaches the timed model (the one-block control stays None); 'auto' passes nothing
+    from similaripy import serving
+
+    seen, real = [], serving.ItemKNN
+    monkeypatch.setattr(serving, "ItemKNN", lambda S, **kw: seen.append(kw) or real(S, **kw))
+    args = ("serve", "--mode", "block", "--block-threads", "1", "--model-k", "20", "--k", "10", "--rounds", "1")
+    rep = run(*args, "--block-size", "16")
+    assert seen == [{"block_size": 16}, {"block_size": None}]
+    assert rep["info"]["block_size"] == 16 and rep["info"]["block_control"] is False
+    seen.clear()
+    assert run(*args)["info"]["block_size"] == "auto" and seen == [{}, {"block_size": None}]
+
+
 def test_serve_model_cache(run, monkeypatch, tmp_path):
     # --model-cache: the first run builds and saves S, the next one serves the saved S; off by default
     import loaders

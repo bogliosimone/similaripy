@@ -120,6 +120,9 @@ def parser():
     v.add_argument("--caps", nargs="+", default=["50", "200", "1000", "none"], help="latency: history caps")
     v.add_argument("--evict-mb", type=int, default=48, help="latency cold: MB read between requests")
     v.add_argument("--block-threads", type=int, nargs="+", default=None, help="block mode (default: 1 and all cores)")
+    v.add_argument(
+        "--block-size", type=block_size, default="auto", help="the timed model's block_size: auto, none or an int > 0"
+    )
     v.add_argument("--seed", type=int, default=0)
     v.add_argument(
         "--model-cache",

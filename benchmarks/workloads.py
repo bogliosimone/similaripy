@@ -272,9 +272,11 @@ def serve_cases(URM, opts):
     from similaripy.serving import ItemKNN
 
     S, cached = _serve_model(URM, opts)
-    rec = ItemKNN(S)
+    bs = compat.block_size_kwargs(opts["block_size"])
+    rec = ItemKNN(S, **bs)
     n_active = compat.serving_n_active(rec)
     info = {"model": opts["model"], "model_k": opts["model_k"], "s_nnz": int(S.nnz), "n_active": n_active}
+    info["block_size"] = opts["block_size"]
     if cached:
         info["model_cache"] = cached
     rng = np.random.default_rng(opts["seed"])
@@ -295,7 +297,8 @@ def serve_cases(URM, opts):
         threads = list(dict.fromkeys(opts["block_threads"] or [1, os.cpu_count()]))  # no duplicate case names
         info["block_threads"] = threads
         one = ItemKNN(S, block_size=None)
-        info["block_control"] = n_active <= compat.DEFAULT_BLOCK_SIZE  # both models run one block
+        size = {"auto": compat.DEFAULT_BLOCK_SIZE, None: n_active}.get(opts["block_size"], opts["block_size"])
+        info["block_control"] = n_active <= size  # both models run one block
         for t in threads:
             cases.append(Case(f"block_default_t{t}", {"k": k, "num_threads": t}, _batch_run(rec, batch_in, k, t)))
             cases.append(Case(f"block_one_t{t}", {"k": k, "num_threads": t}, _batch_run(one, batch_in, k, t)))
