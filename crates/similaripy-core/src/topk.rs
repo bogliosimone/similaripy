@@ -1,18 +1,24 @@
 //! Top-K by score: keeps the k best under (score desc, col asc), so equal
 //! scores resolve to the lower column whatever the push order (blocked,
-//! single-block and any candidate order give the same rows). A min-heap whose
-//! root is the worst kept entry: lowest score, then highest column.
+//! single-block and any candidate order give the same rows).
+//!
+//! An unsorted buffer of up to 2k entries: `push` appends (one compare against
+//! the floor, one store), and a full buffer is cut back to the k best by
+//! `select_nth_unstable`, which raises the floor to the k-th best score. Per
+//! accepted candidate that is O(1) amortized, against a heap's log k
+//! unpredictable branches (4c D89: kernel −5..−18%, serving latency at cap 50
+//! −11..−20% vs the heap on the M2; same results bit for bit). Between cuts the
+//! floor lags (more pushes than a heap would take).
 //!
 //! Scores must not be NaN, and each column with a non-zero score is pushed at most
-//! once per row. A 0.0 score is never a result: `drain_into` drops it (a sum that
+//! once per row. A 0.0 score is never a result: the drains drop it (a sum that
 //! cancels on signed input, or an underflowed product, re-pushes its column with
 //! 0.0, see `kernel::accumulate`). -0.0 (a negative score that underflows, signed
-//! input) is harmless although the heap's `total_cmp` orders it below 0.0 and the
-//! push's float compares do not: like a 0.0 it can only take a free slot or
-//! replace a +-0.0 root, never a positive score, and `drain_into` drops both.
+//! input) is harmless although the cut's `total_cmp` orders it below 0.0 and the
+//! push's float compare does not: a +-0.0 entry never outranks a positive score
+//! at a cut, and the drains drop both.
 
-use std::cmp::{Ordering, Reverse};
-use std::collections::BinaryHeap;
+use std::cmp::Ordering;
 
 #[derive(Clone, Copy, PartialEq)]
 struct Entry {
@@ -37,72 +43,95 @@ impl PartialOrd for Entry {
     }
 }
 
+/// Better first: higher score, then lower column (a total order: columns are
+/// unique among non-zero scores, and equal entries are interchangeable).
+fn better(a: &Entry, b: &Entry) -> Ordering {
+    b.cmp(a)
+}
+
 #[derive(Default)]
 pub struct TopK {
     k: usize,
-    heap: BinaryHeap<Reverse<Entry>>,
+    /// Buffer length that triggers a cut: `cap_for(k)`.
+    cap: usize,
+    buf: Vec<Entry>,
+    /// Lowest score push accepts: -inf until the first cut, then the k-th best.
+    min: f32,
+    cut: bool,
+}
+
+/// Cut when the buffer holds 2k entries (4c tonight9: 1.5k cuts too often, 4k
+/// gains nothing); 1 for k = 0, which never pushes.
+fn cap_for(k: usize) -> usize {
+    k.saturating_mul(2).max(1)
 }
 
 impl TopK {
     pub fn new(k: usize) -> Self {
+        let cap = cap_for(k);
         Self {
             k,
-            heap: BinaryHeap::with_capacity(k),
+            cap,
+            buf: Vec::with_capacity(cap),
+            min: f32::NEG_INFINITY,
+            cut: false,
         }
     }
 
     #[inline]
     #[allow(clippy::neg_cmp_op_on_partial_ord)] // `!(>=)` is the NaN-safe reject, below
     pub fn push(&mut self, col: i32, score: f32) {
-        // The kernel's drain never pushes NaN (`val >= floor` is false for it);
-        // this guards other callers, where a NaN pushed while the heap fills
-        // would rank above +inf. Debug builds only.
         debug_assert!(!score.is_nan(), "TopK::push: NaN score");
-        if self.heap.len() < self.k {
-            self.heap.push(Reverse(Entry { score, col }));
+        // Rejects NaN too; ties pass and the next cut decides them by column.
+        if !(score >= self.min) || self.k == 0 {
             return;
         }
-        let Some(&Reverse(root)) = self.heap.peek() else {
-            return; // k == 0
-        };
-        // Almost every scored column is rejected here: one compare and one
-        // branch. Ties take the second test; `!(>=)` also rejects NaN, which
-        // `score < root` would let through to the tie test.
-        if !(score >= root.score) {
-            return;
+        self.buf.push(Entry { score, col });
+        if self.buf.len() == self.cap {
+            self.cut_to_k();
         }
-        if (score > root.score || col < root.col)
-            && let Some(mut top) = self.heap.peek_mut()
-        {
-            *top = Reverse(Entry { score, col });
-        }
+    }
+
+    /// Keeps the k best (unordered) and raises `min` to the k-th best score.
+    /// Out of line (`#[cold]`): once per k accepted pushes, and inlined into the
+    /// drain loops it would cost registers there (benchmarks/README.md,
+    /// "Codegen-sensitive hot loops").
+    #[cold]
+    #[inline(never)]
+    fn cut_to_k(&mut self) {
+        self.buf.select_nth_unstable_by(self.k - 1, better);
+        self.buf.truncate(self.k);
+        self.min = self.buf[self.k - 1].score;
+        self.cut = true;
     }
 
     /// Sets k for the next row (serving reuses one `TopK` across requests with
-    /// different k). The heap must be empty, as after a drain.
+    /// different k). The buffer must be empty, as after a drain.
     pub fn set_k(&mut self, k: usize) {
-        debug_assert!(self.heap.is_empty(), "TopK::set_k on a non-empty heap");
+        debug_assert!(self.buf.is_empty(), "TopK::set_k on a non-empty buffer");
         self.k = k;
-        self.heap.reserve(k);
+        self.cap = cap_for(k);
+        self.buf.reserve(self.cap);
     }
 
     /// The lowest score `push` can still accept, for a caller that only pushes
-    /// scores `>= threshold`: `threshold` while the heap fills, then the root's
-    /// score (which is `>= threshold`), `+inf` for k == 0. Lets the caller keep
-    /// it in a register and reject without touching the heap; an equal score
-    /// still goes to `push` (the column decides ties).
+    /// scores `>= threshold`: `threshold` until the first cut, then the k-th
+    /// best at the last cut (`>= threshold`), `+inf` for k == 0. An equal
+    /// score still goes to `push` (the column decides ties).
     #[inline]
     pub fn floor(&self, threshold: f32) -> f32 {
-        if self.heap.len() < self.k {
-            threshold
+        if self.k == 0 {
+            f32::INFINITY
+        } else if self.cut {
+            self.min
         } else {
-            self.heap.peek().map_or(f32::INFINITY, |r| r.0.score)
+            threshold
         }
     }
 
     /// Writes the kept (col, score) pairs with a non-zero score sorted by
     /// column, ids renumbered through `col_map` if given (a permutation),
-    /// empties the heap and returns the count. Slots past it are left
+    /// empties the buffer and returns the count. Slots past it are left
     /// untouched. Once per row: the sort is k log k, outside the scoring loop.
     pub fn drain_into(
         &mut self,
@@ -110,50 +139,48 @@ impl TopK {
         cols: &mut [i32],
         values: &mut [f32],
     ) -> usize {
-        let mut kept = self.take_kept();
+        self.keep_k();
         if let Some(map) = col_map {
-            for Reverse(e) in &mut kept {
+            for e in &mut self.buf {
                 e.col = map[e.col as usize];
             }
         }
-        kept.sort_unstable_by_key(|Reverse(e)| e.col);
-        for ((Reverse(e), c), v) in kept.iter().zip(cols).zip(values) {
+        self.buf.sort_unstable_by_key(|e| e.col);
+        for ((e, c), v) in self.buf.iter().zip(cols).zip(values) {
             *c = e.col;
             *v = e.score;
         }
-        let n = kept.len();
-        self.give_back(kept);
+        let n = self.buf.len();
+        self.reset();
         n
     }
 
     /// Appends the kept (col, score) pairs with a non-zero score best first
-    /// (score desc, col asc; `sorted = false`: heap order, the same pairs) to
-    /// `cols` / `values` and empties the heap.
+    /// (score desc, col asc; `sorted = false`: any order, the same pairs) to
+    /// `cols` / `values` and empties the buffer.
     pub fn drain_by_score(&mut self, cols: &mut Vec<i32>, values: &mut Vec<f32>, sorted: bool) {
-        let mut kept = self.take_kept();
+        self.keep_k();
         if sorted {
-            // Reverse(e) ascending = e descending = best first.
-            kept.sort_unstable();
+            self.buf.sort_unstable_by(better);
         }
-        cols.extend(kept.iter().map(|Reverse(e)| e.col));
-        values.extend(kept.iter().map(|Reverse(e)| e.score));
-        self.give_back(kept);
+        cols.extend(self.buf.iter().map(|e| e.col));
+        values.extend(self.buf.iter().map(|e| e.score));
+        self.reset();
     }
 
-    /// The heap's own buffer without its +-0.0 entries; `give_back` returns it
-    /// empty, so draining allocates nothing.
-    fn take_kept(&mut self) -> Vec<Reverse<Entry>> {
-        let mut kept = std::mem::take(&mut self.heap).into_vec();
-        // Per kept entry, not per candidate: a +-0.0 is a cancelled sum (signed
-        // input) or an f32 underflow, never evidence, and may duplicate a column
-        // kept above it.
-        kept.retain(|Reverse(e)| e.score != 0.0);
-        kept
+    /// Cuts to the k best and drops +-0.0 entries (a cancelled sum or an f32
+    /// underflow, never evidence, and may duplicate a column kept above it).
+    fn keep_k(&mut self) {
+        if self.buf.len() > self.k {
+            self.cut_to_k();
+        }
+        self.buf.retain(|e| e.score != 0.0);
     }
 
-    fn give_back(&mut self, mut kept: Vec<Reverse<Entry>>) {
-        kept.clear();
-        self.heap = BinaryHeap::from(kept);
+    fn reset(&mut self) {
+        self.buf.clear();
+        self.min = f32::NEG_INFINITY;
+        self.cut = false;
     }
 }
 
@@ -175,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_renumbers_sorts_and_reuses_the_heap() {
+    fn drain_renumbers_sorts_and_reuses_the_buffer() {
         let mut t = TopK::new(3);
         for (c, s) in [(0, 1.0), (1, 3.0), (2, 2.0)] {
             t.push(c, s);
@@ -211,7 +238,7 @@ mod tests {
         for (c, s) in [(0, 1.0), (1, 3.0), (3, 2.0), (2, 2.0), (4, 0.5)] {
             t.push(c, s);
         }
-        // col 2 ties col 3 at 2.0, comes later, and replaces it: lower column wins
+        // col 2 ties col 3 at 2.0 and comes later: the cut keeps the lower column
         assert_eq!(kept(&mut t, 2), vec![(1, 3.0), (2, 2.0)]);
     }
 
@@ -234,24 +261,27 @@ mod tests {
 
     #[test]
     #[cfg(not(debug_assertions))] // debug builds stop at the assert above
-    fn nan_never_replaces_the_root() {
+    fn nan_is_never_kept() {
         // Not produced by drain; guards reuse with other score sources.
         let mut t = TopK::new(1);
         t.push(5, 1.0);
-        t.push(0, f32::NAN); // lower column: a `<`-first reject would take the tie path
+        t.push(0, f32::NAN); // `!(score >= min)` rejects it before the buffer
         assert_eq!(kept(&mut t, 1), vec![(5, 1.0)]);
     }
 
     #[test]
-    fn floor_is_threshold_until_full_then_the_root() {
+    fn floor_is_threshold_until_the_first_cut_then_the_kth_best() {
         let mut t = TopK::new(2);
         assert_eq!(t.floor(0.5), 0.5);
-        t.push(0, 3.0);
-        assert_eq!(t.floor(0.5), 0.5);
-        t.push(1, 2.0);
-        assert_eq!(t.floor(0.5), 2.0);
-        t.push(2, 4.0); // replaces 2.0
+        for (c, s) in [(0, 3.0), (1, 2.0), (2, 4.0)] {
+            t.push(c, s);
+            assert_eq!(t.floor(0.5), 0.5);
+        }
+        t.push(3, 1.0); // 2k = 4 entries: cut to {4.0, 3.0}
         assert_eq!(t.floor(0.5), 3.0);
+        t.push(4, 2.5); // below the floor: rejected
+        assert_eq!(kept(&mut t, 2), vec![(0, 3.0), (2, 4.0)]);
+        assert_eq!(t.floor(0.5), 0.5); // drained: back to the threshold
         assert_eq!(TopK::new(0).floor(0.5), f32::INFINITY);
     }
 

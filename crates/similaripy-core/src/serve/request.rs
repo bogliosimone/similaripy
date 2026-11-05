@@ -28,7 +28,7 @@ pub struct Request<'a> {
     pub include: Option<&'a [i64]>,
     /// Never recommend these items.
     pub exclude: Option<&'a [i64]>,
-    /// Best first; false = the same items in heap order (no sort).
+    /// Best first; false = the same items in any order (no sort).
     pub sorted: bool,
 }
 
