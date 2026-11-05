@@ -1,14 +1,14 @@
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING
 
 try:
     __version__ = version("similaripy")
 except PackageNotFoundError:
     __version__ = "unknown"
 
-# Functions on matrices (0.x API) at the top level; `similaripy.serving`
-# (the online engine) and `similaripy.preprocessing` have one path.
+# The similarities (0.x API) at the top level; every other module has one path:
+# `similaripy.normalization`, `similaripy.preprocessing`, `similaripy.serving`.
 from . import normalization, preprocessing, serving, similarity
-from .normalization import binarize, bm25, bm25plus, normalize, tfidf
 from .similarity import (
     asymmetric_cosine,
     cosine,
@@ -24,21 +24,25 @@ from .similarity import (
 __all__ = [
     "__version__",
     "asymmetric_cosine",
-    "binarize",
-    "bm25",
-    "bm25plus",
     "cosine",
     "dice",
     "dot_product",
     "jaccard",
     "normalization",
-    "normalize",
     "p3alpha",
     "preprocessing",
     "rp3beta",
     "s_plus",
     "serving",
     "similarity",
-    "tfidf",
     "tversky",
 ]
+
+
+if not TYPE_CHECKING:  # type checkers would resolve every name through it
+
+    def __getattr__(name: str):
+        # The normalizations left the top level in 1.0: say where they are.
+        if name in normalization.__all__:
+            raise AttributeError(f"similaripy.{name} is not at the top level: use similaripy.normalization.{name}")
+        raise AttributeError(f"module 'similaripy' has no attribute {name!r}")

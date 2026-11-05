@@ -105,7 +105,7 @@ from similaripy.serving import ItemKNN
 cutoff = train.ts.max()                     # the end of the training data
 w = time_decay(train.ts, reference=cutoff, scale=30 * 86400)
 URM, user_ids, item_ids = interactions_to_urm(train.user, train.item, w)
-model = ItemKNN(sim.cosine(sim.bm25(URM).T, k=100).T, item_ids=item_ids)
+model = ItemKNN(sim.cosine(sim.normalization.bm25(URM).T, k=100).T, item_ids=item_ids)
 
 # evaluate: the holdout users' histories, straight from the log
 test_users, histories, weights = interactions_to_histories(test.user, test.item)

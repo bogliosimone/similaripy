@@ -1,20 +1,31 @@
-"""The public import paths: matrix functions at the top level (the 0.x API) and
-in their modules, the same objects; the serving engine and the preprocessing utilities in their modules only."""
+"""The public import paths: the similarities at the top level (the 0.x API) and
+in `similaripy.similarity`, the same objects; every other module in its own path only."""
 
 import inspect
 import math
+
+import pytest
 
 import similaripy as sim
 from similaripy import normalization, preprocessing, serving, similarity
 
 
-def test_top_level_functions_are_the_module_ones():
-    for module in (similarity, normalization):
-        for name in module.__all__:
-            assert getattr(sim, name) is getattr(module, name), name
+def test_top_level_similarities_are_the_module_ones():
+    for name in similarity.__all__:
+        assert getattr(sim, name) is getattr(similarity, name), name
     assert set(sim.__all__) == {"__version__", "normalization", "preprocessing", "serving", "similarity"} | set(
         similarity.__all__
-    ) | set(normalization.__all__)
+    )
+
+
+def test_normalization_has_one_path():
+    assert normalization.__all__ == ["binarize", "bm25", "bm25plus", "normalize", "tfidf"]
+    assert sim.normalization.bm25 is normalization.bm25
+    for name in normalization.__all__:
+        with pytest.raises(AttributeError, match=f"use similaripy.normalization.{name}"):
+            getattr(sim, name)
+    with pytest.raises(AttributeError, match="no attribute 'nope'"):
+        _ = sim.nope
 
 
 def test_serving_has_one_path():
