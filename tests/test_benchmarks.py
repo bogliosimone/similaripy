@@ -166,7 +166,8 @@ def test_serve_concurrent(run):
     cases = rep["cases"]
     assert {"concurrent_default_c1", "concurrent_one_c3"} <= set(cases) and rep["info"]["callers"] == [1, 3]
     c = cases["concurrent_default_c3"]
-    assert c["p99_us"] >= c["p50_us"] > 0 and c["requests_per_s"] > 0 and c["cpu_us_per_request"] > 0
+    assert c["p99_us"] >= c["p50_us"] > 0 and c["requests_per_s"] > 0
+    assert c["cpu_us_per_request"] >= 0  # Windows: the CPU clock ticks every ~15 ms, a tiny run can read 0
 
 
 def test_serve_block_size(run, monkeypatch):
