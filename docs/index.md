@@ -50,4 +50,4 @@ SimilariPy achieves high performance through several key optimizations:
 - **Cache blocking**: the output columns are split into cache-sized tiles, most popular first, so the accumulator stays in the CPU cache on large matrices
 - **Specialized scoring**: one compiled loop per scoring mode, with no per-candidate branches; cosine and RP3β run as a plain dot product of pre-scaled inputs
 - **Compact types**: float32 values and int32 indices, half the memory traffic of float64/int64
-- **Pre-allocated buffers**: per-thread accumulators and heaps reused across rows, no allocation per row
+- **Pre-allocated buffers**: per-thread accumulators and top-k buffers reused across rows, no allocation per row

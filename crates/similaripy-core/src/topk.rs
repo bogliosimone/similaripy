@@ -49,7 +49,6 @@ fn better(a: &Entry, b: &Entry) -> Ordering {
     b.cmp(a)
 }
 
-#[derive(Default)]
 pub struct TopK {
     k: usize,
     /// Buffer length that triggers a cut: `cap_for(k)`.
@@ -64,6 +63,14 @@ pub struct TopK {
 /// gains nothing); 1 for k = 0, which never pushes.
 fn cap_for(k: usize) -> usize {
     k.saturating_mul(2).max(1)
+}
+
+/// k = 0 until `set_k` (serving's per-thread scratch); `min` starts at -inf
+/// as in `new` (a derived 0.0 would reject negative scores before the first cut).
+impl Default for TopK {
+    fn default() -> Self {
+        Self::new(0)
+    }
 }
 
 impl TopK {
@@ -308,5 +315,50 @@ mod tests {
             }
             prop_assert_eq!(kept(&mut t, k), want);
         }
+
+        // The callers' contract: one `TopK` from `Default` reused across rows
+        // with `set_k` (serving), pushes gated by `val >= floor(threshold)` as
+        // the drains do, 0.0 re-pushes of already-pushed columns, k = 0..n+2.
+        // Each row keeps the brute-force k best non-zero entries.
+        #[test]
+        fn reused_and_floor_gated_rows_match_brute_force(
+            rows in prop::collection::vec(
+                prop::collection::vec((0u8..4, prop::bool::ANY), 0..30)
+                    .prop_flat_map(|s| {
+                        let n = s.len();
+                        (Just(s).prop_shuffle(), 0..=n + 2)
+                    }),
+                1..6,
+            )
+        ) {
+            let mut t = TopK::default();
+            for (row, k) in rows {
+                // column c: score v at index c; a `true` flag re-pushes c with 0.0 later
+                let mut pushes: Vec<(i32, f32)> =
+                    row.iter().enumerate().map(|(c, &(v, _))| (c as i32, f32::from(v))).collect();
+                pushes.extend(row.iter().enumerate().filter(|(_, (_, z))| *z).map(|(c, _)| (c as i32, 0.0)));
+                let mut want: Vec<(i32, f32)> = pushes.iter().copied().filter(|&(_, s)| s != 0.0).collect();
+                want.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                want.truncate(k);
+                want.sort_by_key(|&(c, _)| c);
+                t.set_k(k);
+                for (c, s) in pushes {
+                    if s >= t.floor(0.0) {
+                        t.push(c, s);
+                    }
+                }
+                prop_assert_eq!(kept(&mut t, k), want);
+            }
+        }
+    }
+
+    #[test]
+    fn default_then_set_k_accepts_negative_scores() {
+        // A derived Default (min = 0.0) rejected these before the first cut.
+        let mut t = TopK::default();
+        t.set_k(2);
+        t.push(0, -1.0);
+        t.push(1, -2.0);
+        assert_eq!(kept(&mut t, 2), vec![(0, -1.0), (1, -2.0)]);
     }
 }

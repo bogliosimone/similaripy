@@ -61,7 +61,7 @@ Everything is on the `ItemKNN` class: build a `model`, then call its methods.
 | `exclude_seen` | Never recommend a history item. *(default: `True`)* |
 | `include` | Only these items can be recommended. In batch: one entry per user. *(default: `None` = all)* |
 | `exclude` | Never recommend these items. In batch: one entry per user. *(default: `None`)* |
-| `sorted` | Best first; `False` skips the final sort (a few % faster at k in the thousands). *(default: `True`)* |
+| `sorted` | Best first; `False` skips the final sort (a few % faster at k in the thousands); the order is then unspecified and can differ between calls. *(default: `True`)* |
 | `num_threads` | Batch only. `0` = all cores (one shared pool), `n` = `n` threads. *(default: `0`)* |
 
 ## Single and batch recommendation

@@ -70,7 +70,7 @@ For more details, check the **[📘 Normalizations](https://bogliosimone.github.
 
 - **Rust core**: native code, multi-threaded with rayon, GIL-free
 - **Gustavson's row-wise product + cache blocking**: a dense accumulator per row, kept in the CPU cache by cache-sized column tiles
-- **Memory-efficient**: float32 values, int32 indices, pre-allocated buffers, top-k heap per row
+- **Memory-efficient**: float32 values, int32 indices, pre-allocated buffers, a top-k buffer per thread
 
 ## 🚀 Getting Started
 

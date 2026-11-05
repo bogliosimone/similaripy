@@ -56,6 +56,12 @@ def _same(a, b):
     return np.array_equal(a[0], b[0]) and np.array_equal(a[1].view(np.int32), b[1].view(np.int32))
 
 
+def _same_set(a, b):
+    """`_same` up to order (sorted=False: the order can differ between calls)."""
+    ia, ib = np.argsort(a[0], kind="stable"), np.argsort(b[0], kind="stable")
+    return _same((a[0][ia], a[1][ia]), (b[0][ib], b[1][ib]))
+
+
 @pytest.mark.parametrize("signed", [False, True])
 @pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize("n", [40, 150])  # 150: bitsets past one word
@@ -175,7 +181,7 @@ def test_batch_matches_single_bits(block):
         for u in range(users):
             single = {key: (v[u] if isinstance(v, list) else v) for key, v in opts.items()}
             want = rec.recommend(hists[u], k=10, **single)
-            assert _same((got_ids[u], got_scores[u]), want)
+            assert (_same if opts.get("sorted", True) else _same_set)((got_ids[u], got_scores[u]), want)
             if not opts:  # blocking never changes bits
                 assert _same(one_block.recommend(hists[u], k=10), want)
 

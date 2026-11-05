@@ -261,8 +261,10 @@ class ItemKNN:
             include: only these items can be recommended (None = all).
             exclude: never recommend these items.
             sorted: best first; False returns the same items in an
-                unspecified order (no final sort: a few % faster at k in the
-                thousands, nothing at k ~ 100).
+                unspecified order, which can differ between calls (e.g. this
+                and `recommend_batch`: 'auto' picks the block size per call).
+                No final sort: a few % faster at k in the thousands, nothing
+                at k ~ 100.
 
         Returns:
             ids: int64, your item ids, best first (unless `sorted=False`).

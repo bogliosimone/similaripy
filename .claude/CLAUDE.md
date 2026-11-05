@@ -27,7 +27,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
   - [kernel.rs](crates/similaripy-core/src/kernel.rs) - S-Plus kernel (single-block and blocked paths, rayon)
   - [normalize.rs](crates/similaripy-core/src/normalize.rs) - Normalizations, in place over CSR data; `Decay` (the one decay formula, for a future server too) + `user_ages`
   - [prep.rs](crates/similaripy-core/src/prep.rs) - Canonical rows (`canonical_row`, shared by the Python prep and the serving build), renumber + sort, `group_interactions` (logs → CSR: counting sort by user, rows in parallel)
-  - [csr.rs](crates/similaripy-core/src/csr.rs), [topk.rs](crates/similaripy-core/src/topk.rs) - CSR views, top-K heap
+  - [csr.rs](crates/similaripy-core/src/csr.rs), [topk.rs](crates/similaripy-core/src/topk.rs) - CSR views, top-K buffer (cut by select)
   - [serve.rs](crates/similaripy-core/src/serve.rs) - Serving engine, in [serve/](crates/similaripy-core/src/serve): `model.rs` (build, the one check `Core::from_arrays`, save/load, views), `ids.rs` (id maps, masks), `request.rs` (one history per call, batch = rayon over the same function)
   - [store.rs](crates/similaripy-core/src/store.rs) - Saved models: `.npy` reader/writer, mapped (`memmap2`) or owned arrays, directory replace
 - **Bindings** ([crates/similaripy-py](crates/similaripy-py)): PyO3 module `similaripy._core`
@@ -44,7 +44,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
 
 **Key Optimizations:**
 - **Float32 precision** + **Pre-allocated per-thread buffers** + **GIL-free computation** (`py.detach`)
-- **Top-K filtering** with efficient heap structures (pre-allocated), **Lazy normalization** (only when needed)
+- **Top-K filtering** with a pre-allocated buffer cut by `select_nth_unstable`, **Lazy normalization** (only when needed)
 - **In-place operations** for zero-copy modifications
 
 **Reference:** See [kernel.rs](crates/similaripy-core/src/kernel.rs) for implementation patterns, and in [benchmarks/README.md](benchmarks/README.md) the sections "Codegen-sensitive hot loops" (what a change must not break) and "Profiling the kernel (macOS)" (per-phase shares with `sample`).

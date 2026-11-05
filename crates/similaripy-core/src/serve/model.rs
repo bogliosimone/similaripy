@@ -78,7 +78,8 @@ pub struct Core {
     pub(super) n_active: usize,
     /// As given (saved, pickled).
     pub(super) block_size: BlockSize,
-    /// Column block size of a request, 0 = one block (`block_size` resolved).
+    /// Column block size of a request, 0 = one block (`block_size` resolved;
+    /// unused for `Auto`, which picks per request: `request.rs`).
     pub(super) block: usize,
     /// Internal id → S's original column.
     pub(super) new_to_old: Buf<i32>,

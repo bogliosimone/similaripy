@@ -175,7 +175,7 @@ def main():
     p.add_argument("--version", default=None)
     p.add_argument("--similarities", nargs="+", default=["dot_product", "cosine", "rp3beta"], choices=SIMILARITIES)
     p.add_argument("--k", type=int, default=100)
-    p.add_argument("--block-size", default="auto", help="'auto' (262144), 'none' or an int > 0")
+    p.add_argument("--block-size", default="auto", help="'auto' (the library's choice), 'none' or an int > 0")
     p.add_argument("--exact", action="store_true", help="--compare: fail on any bit difference")
     p.add_argument("--rtol", type=float, default=RTOL, help=f"--compare: score tolerance (default {RTOL})")
     args = p.parse_args()
