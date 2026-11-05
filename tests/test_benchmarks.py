@@ -278,7 +278,8 @@ def test_gate_dry(monkeypatch, tmp_path):
     verdict = (tmp_path / "out" / "verdict.md").read_text()
     for step, case in (
         ("y50m-kernel", "cosine"),
-        ("y500m-kernel", "rp3beta"),
+        ("y500m-kernel", "rp3beta_bayesian"),
+        ("y500m-kernel", "cosine_stabilized"),
         ("y500m-block", "block_one_t6"),
         ("y50m-recommend", "recommend"),
         ("y500m-lat", "latency_cap50_cold"),

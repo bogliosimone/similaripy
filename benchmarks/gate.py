@@ -5,9 +5,9 @@ The core's benchmark gate: two builds, ABBA (abba.py) on a fixed list of steps, 
 
 Tiers (the decision rests on Y500M, the library's scale; ML-32M and Y50M are cheap early signals; priorities
 D90: online serving > batch serving > offline similarity):
-  - quick (~45 min): Y50M then Y500M, kernel (cosine, rp3beta) and serving batch, --threads (the P-cores), then
+  - quick (~55 min): Y50M then Y500M, kernel (one workload per scoring mode) and serving batch, --threads (the P-cores), then
     concurrent callers (Y50M, Y500M) and Y500M single-request latency;
-  - full (~75 min, once per PR): quick + Y500M serving at 1 thread, ML-32M kernel / serving / latency, build,
+  - full (~85 min, once per PR): quick + Y500M serving at 1 thread, ML-32M kernel / serving / latency, build,
     Y50M dot_product(URM, S) (a control: discouraged for recommendations, no perf tier);
   - --extra STEP ...: some full-tier steps on top of a quick run (D83), e.g. what a probe targets.
 
@@ -38,7 +38,9 @@ BURST_CPU, BURST_SHARE = 100.0, 0.10  # % CPU outside the gate's tree; share of 
 SAMPLE_S = 10
 
 ML, Y50, Y500 = ["--dataset", "movielens"], ["--dataset", "yambda"], ["--dataset", "yambda", "--version", "500m"]
-SIMS = ["--similarities", "cosine", "rp3beta"]
+# one workload per compiled scoring mode (kernel.rs `mode()`): cosine = DOT (pre-scaled; rp3beta and dot_product run
+# the same code), cosine_stabilized = COSINE, rp3beta_bayesian = FULL. Other DOT data (rp3beta, dot_product) via a probe.
+SIMS = ["--similarities", "cosine", "cosine_stabilized", "rp3beta_bayesian"]
 BLOCK = ["--mode", "block", "--rounds", "1", "--model-cache"]
 
 
@@ -49,9 +51,9 @@ def steps(tier, dry=False, threads=6, extra=()):
     ml, y50, y500 = ([["--dataset", "synthetic"]] * 3) if dry else (ML, Y50, Y500)
     n = "100" if dry else "5000"  # serving requests per round (dry: the plumbing only)
     quick = [
-        (3, "y50m-kernel", ["similarity", *y50, *SIMS, "--threads", t, "--warmup", "0"]),
+        (4, "y50m-kernel", ["similarity", *y50, *SIMS, "--threads", t, "--warmup", "0"]),
         (3, "y50m-block", ["serve", *y50, *BLOCK, "--block-threads", t]),
-        (15, "y500m-kernel", ["similarity", *y500, *SIMS, "--threads", t, "--warmup", "0"]),
+        (22, "y500m-kernel", ["similarity", *y500, *SIMS, "--threads", t, "--warmup", "0"]),
         (8, "y500m-block", ["serve", *y500, *BLOCK, "--block-threads", t]),
         # online serving first (D90): a loaded server, `threads` callers sending single requests at once (D65,
         # the timed 'auto' vs one block; makespan, p99, CPU per request), then single-request latency
@@ -64,7 +66,7 @@ def steps(tier, dry=False, threads=6, extra=()):
     ]  # fmt: skip
     full = [
         (15, "y500m-block-t1", ["serve", *y500, *BLOCK, "--block-threads", "1"]),
-        (3, "ml32m-kernel", ["similarity", *ml, *SIMS, "--threads", t]),
+        (4, "ml32m-kernel", ["similarity", *ml, *SIMS, "--threads", t]),
         (3, "ml32m-block", ["serve", *ml, *BLOCK, "--block-threads", "1", t]),
         (5, "ml32m-lat", ["serve", *ml, "--mode", "latency", "--caps", "50", "none", "--requests", n,
                           "--rounds", "1", "--model-cache"]),
