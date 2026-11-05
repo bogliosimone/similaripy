@@ -95,13 +95,14 @@ similarity_matrix = sim.cosine(urm.T, k=50)
 # Build the serving model, in your item ids
 model = ItemKNN(similarity_matrix.T, item_ids=item_ids)
 
-# Online: a user from the items they interacted with (no retraining), already-seen items excluded
-ids, scores = model.recommend([101, 104], k=3)
+# Online: a user from the items they interacted with (no retraining)
+# exclude_seen=True drops the items in the history (the default); False keeps them, e.g. music or grocery
+ids, scores = model.recommend([101, 104], k=3, exclude_seen=True)
 print(ids)  # [103 102]: item ids from the log
 
 # Offline: every user of the log at once, e.g. to evaluate a model
-user_ids, histories, weights = interactions_to_histories(users, items)
-ids, scores = model.recommend_batch(histories, weights=weights, k=3)
+user_ids, histories, _ = interactions_to_histories(users, items)  # _: weights, all 1.0 here
+ids, scores = model.recommend_batch(histories, k=3, exclude_seen=True)  # ids[u]: user user_ids[u]
 ```
 
 For a more in-depth, end-to-end example with SimilariPy, see the notebook:
