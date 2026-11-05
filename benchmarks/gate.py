@@ -3,10 +3,12 @@ The core's benchmark gate: two builds, ABBA (abba.py) on a fixed list of steps, 
 
     python benchmarks/gate.py quick --base OLD/.venv/bin/python --cand NEW/.venv/bin/python --tag my-change
 
-Tiers (the decision rests on Y500M, the library's scale; ML-32M and Y50M are cheap early signals):
-  - quick (~30 min): Y50M then Y500M, kernel (cosine, rp3beta) and serving batch, --threads (the P-cores);
-  - full (~70 min, once per PR): quick + Y500M serving at 1 thread, ML-32M kernel / serving / latency, build,
-    Y500M latency, Y50M recommend (dot_product(URM, S));
+Tiers (the decision rests on Y500M, the library's scale; ML-32M and Y50M are cheap early signals; priorities
+D90: online serving > batch serving > offline similarity):
+  - quick (~45 min): Y50M then Y500M, kernel (cosine, rp3beta) and serving batch, --threads (the P-cores), then
+    concurrent callers (Y50M, Y500M) and Y500M single-request latency;
+  - full (~75 min, once per PR): quick + Y500M serving at 1 thread, ML-32M kernel / serving / latency, build,
+    Y50M dot_product(URM, S) (a control: discouraged for recommendations, no perf tier);
   - --extra STEP ...: some full-tier steps on top of a quick run (D83), e.g. what a probe targets.
 
 Never idle: every step starts at once (no waiting for a quiet machine). A sampler records the 1-min load
@@ -15,7 +17,8 @@ the same on macOS and Linux; a VM's steal time isn't seen); a step whose window 
 > 10% of its samples is rerun once at the end, while time remains. A step starts only if its estimate
 (scaled by --pairs) ends before --until; a failed or skipped step is a row of the verdict; exit 1 on a failure.
 An output dir that already holds a run is refused. Output, in --output-dir: one folder per step (abba.py's reports),
-timeline.tsv, steps.tsv, verdict.md (win / loss = same sign in every pair, each >= 3%, D40 P6).
+timeline.tsv, steps.tsv, verdict.md (win / loss = same sign in every pair, each >= 3%, D40 P6): per case the
+phase (kernel, else total), plus p99 and CPU per request where the workload records them.
 """
 
 import argparse
@@ -29,6 +32,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+EXTRAS = ("p99_us", "cpu_us_per_request")  # = abba.EXTRAS: verdict rows besides the phase
 THRESHOLD = 0.03  # a change counts at >= 3% in every pair (D40 P6)
 BURST_CPU, BURST_SHARE = 100.0, 0.10  # % CPU outside the gate's tree; share of a step's samples
 SAMPLE_S = 10
@@ -43,27 +47,29 @@ def steps(tier, dry=False, threads=6, extra=()):
     extra = names of full-tier steps to add to a quick run (each step runs once)."""
     t = str(threads)
     ml, y50, y500 = ([["--dataset", "synthetic"]] * 3) if dry else (ML, Y50, Y500)
+    n = "100" if dry else "5000"  # serving requests per round (dry: the plumbing only)
     quick = [
         (3, "y50m-kernel", ["similarity", *y50, *SIMS, "--threads", t, "--warmup", "0"]),
         (3, "y50m-block", ["serve", *y50, *BLOCK, "--block-threads", t]),
         (15, "y500m-kernel", ["similarity", *y500, *SIMS, "--threads", t, "--warmup", "0"]),
         (8, "y500m-block", ["serve", *y500, *BLOCK, "--block-threads", t]),
-    ]
+        # online serving first (D90): a loaded server, `threads` callers sending single requests at once (D65,
+        # the timed 'auto' vs one block; makespan, p99, CPU per request), then single-request latency
+        (3, "y50m-conc", ["serve", *y50, "--mode", "concurrent", "--callers", t, "--requests", n,
+                          "--rounds", "1", "--model-cache"]),
+        (5, "y500m-conc", ["serve", *y500, "--mode", "concurrent", "--callers", t, "--requests", n,
+                           "--rounds", "1", "--model-cache"]),
+        (8, "y500m-lat", ["serve", *y500, "--mode", "latency", "--caps", "50", "none", "--requests", n,
+                          "--rounds", "1", "--model-cache"]),
+    ]  # fmt: skip
     full = [
         (15, "y500m-block-t1", ["serve", *y500, *BLOCK, "--block-threads", "1"]),
         (3, "ml32m-kernel", ["similarity", *ml, *SIMS, "--threads", t]),
         (3, "ml32m-block", ["serve", *ml, *BLOCK, "--block-threads", "1", t]),
-        (5, "ml32m-lat", ["serve", *ml, "--mode", "latency", "--caps", "50", "none", "--requests", "5000",
+        (5, "ml32m-lat", ["serve", *ml, "--mode", "latency", "--caps", "50", "none", "--requests", n,
                           "--rounds", "1", "--model-cache"]),
         (3, "y50m-build", ["serve", *y50, "--mode", "build", "--rounds", "1"]),
-        (8, "y500m-lat", ["serve", *y500, "--mode", "latency", "--caps", "50", "none", "--requests", "5000",
-                          "--rounds", "1", "--model-cache"]),
         (4, "y50m-recommend", ["recommend", *y50, "--threads", t, "--warmup", "0"]),
-        # a loaded server: `threads` callers sending single requests at once (D65), the timed 'auto' vs one block
-        (3, "y50m-conc", ["serve", *y50, "--mode", "concurrent", "--callers", t, "--requests", "5000",
-                          "--rounds", "1", "--model-cache"]),
-        (5, "y500m-conc", ["serve", *y500, "--mode", "concurrent", "--callers", t, "--requests", "5000",
-                           "--rounds", "1", "--model-cache"]),
     ]  # fmt: skip
     return quick + [s for s in full if tier == "full" or s[1] in extra]
 
@@ -159,11 +165,12 @@ def verdict_rows(out, results):
         pairs = json.loads((out / s["dir"] / f"abba_{s['dir']}.json").read_text())["pairs"]
         has_kernel = any(p[2] is not None for ps in pairs.get("kernel", {}).values() for p in ps)
         metric = "kernel" if has_kernel else "total"  # serving steps have no kernel phase
-        for case, ps in pairs[metric].items():
-            rels = [p[2] for p in ps]
-            cells = " / ".join("-" if r is None else f"{100 * r:+.1f}%" for r in rels)
-            notes = [n for n, on in (("noisy", s["burst"] > BURST_SHARE), ("rerun", s["rerun"])) if on]
-            rows.append(f"| {name} | {case} | {metric} | {cells} | **{verdict(rels)}** | {' '.join(notes)} |")
+        notes = " ".join(n for n, on in (("noisy", s["burst"] > BURST_SHARE), ("rerun", s["rerun"])) if on)
+        for m in (metric, *(e for e in EXTRAS if e in pairs)):  # + p99 / CPU per request where recorded (D90)
+            for case, ps in pairs[m].items():
+                rels = [p[2] for p in ps]
+                cells = " / ".join("-" if r is None else f"{100 * r:+.1f}%" for r in rels)
+                rows.append(f"| {name} | {case} | {m} | {cells} | **{verdict(rels)}** | {notes} |")
     return rows
 
 

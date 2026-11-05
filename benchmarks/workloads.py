@@ -409,7 +409,7 @@ def _latency_run(rec, hists, kwargs, evict):
 
 def _concurrent_run(rec, hists, kwargs, callers):
     """`recommend` from `callers` threads at once, history i on thread i % callers: total = makespan, plus
-    per-request µs percentiles over all threads."""
+    per-request µs percentiles over all threads and the process CPU µs per request (the load a request costs)."""
 
     def worker(part):
         ns = np.empty(len(part), dtype=np.int64)
@@ -422,12 +422,13 @@ def _concurrent_run(rec, hists, kwargs, callers):
     def run():
         parts = [hists[c::callers] for c in range(callers)]
         with ThreadPoolExecutor(max_workers=callers) as pool:
-            start = time.perf_counter()
+            start, cpu = time.perf_counter(), time.process_time()
             ns = np.concatenate(list(pool.map(worker, parts)))
-            secs = time.perf_counter() - start
+            secs, cpu = time.perf_counter() - start, time.process_time() - cpu
         us = ns / 1e3
         out = untimed(secs)
         out |= {"p50_us": float(np.percentile(us, 50)), "p99_us": float(np.percentile(us, 99))}
+        out |= {"cpu_us_per_request": cpu / len(hists) * 1e6}
         return out | {"mean_us": float(us.mean()), "requests_per_s": len(hists) / secs}
 
     return run
