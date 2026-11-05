@@ -210,14 +210,14 @@ def interactions_to_histories(
     return user_ids, np.split(items[order], cuts), np.split(w[order], cuts)
 
 
-def urm_to_histories(URM, item_ids: ArrayLike | None = None) -> tuple[list[np.ndarray], list[np.ndarray]]:
+def urm_to_histories(URM, *, item_ids: ArrayLike | None = None) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """
     Each row of a URM as a history for `ItemKNN.recommend_batch`, e.g. every
     training user, or a benchmark dataset given as a matrix.
 
     Examples:
         ```python
-        histories, weights = urm_to_histories(URM, item_ids)
+        histories, weights = urm_to_histories(URM, item_ids=item_ids)
         ids, scores = model.recommend_batch(histories, weights=weights, k=20)  # element u: row u
         ```
 
