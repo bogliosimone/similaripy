@@ -85,7 +85,7 @@ from similaripy.serving import ItemKNN
 users = [10, 10, 20, 20, 30, 30, 40, 40, 40, 50, 50, 60, 60, 70, 70]
 items = [101, 102, 103, 105, 101, 103, 101, 102, 104, 102, 105, 104, 105, 103, 104]
 
-# The user-item matrix (URM), with the id maps: row u is user_ids[u], column j is item_ids[j]
+# The user-item matrix (URM), with the user and item id maps
 urm, user_ids, item_ids = interactions_to_urm(users, items)
 
 # Re-weight the URM with BM25
