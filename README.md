@@ -78,16 +78,19 @@ From an interaction log to recommendations:
 
 ```python
 import similaripy as sim
-from similaripy.preprocessing import interactions_to_histories, interactions_to_urm
+from similaripy.preprocessing import interactions_to_urm
 from similaripy.serving import ItemKNN
 
 # An interaction log: one (user, item) pair per event, in your own ids
-users = [10, 10, 10, 20, 20, 20, 30, 30, 30, 40, 40, 50, 50]
-items = [101, 102, 103, 101, 103, 104, 102, 103, 105, 101, 104, 102, 105]
+users = [10, 10, 20, 20, 30, 30, 40, 40, 40, 50, 50, 60, 60, 70, 70]
+items = [101, 102, 103, 105, 101, 103, 101, 102, 104, 102, 105, 104, 105, 103, 104]
 
 # The user-item matrix (URM), with the id maps: row u is user_ids[u], column j is item_ids[j]
 # (older events can count less: see time_decay in Preprocessing)
 urm, user_ids, item_ids = interactions_to_urm(users, items)
+
+# Re-weight the URM with BM25
+urm = sim.bm25(urm)
 
 # Train an item-item cosine similarity model
 similarity_matrix = sim.cosine(urm.T, k=50)
@@ -95,14 +98,14 @@ similarity_matrix = sim.cosine(urm.T, k=50)
 # Build the serving model, in your item ids
 model = ItemKNN(similarity_matrix.T, item_ids=item_ids)
 
-# Online: a user from the items they interacted with (no retraining)
+# Online: one user, from the items they interacted with (no retraining)
 # exclude_seen=True drops the items in the history (the default); False keeps them, e.g. music or grocery
 ids, scores = model.recommend([101, 104], k=3, exclude_seen=True)
-print(ids)  # [103 102]: item ids from the log
+print(ids)  # [102 103 105]
 
-# Offline: every user of the log at once, e.g. to evaluate a model
-user_ids, histories, _ = interactions_to_histories(users, items)  # _: weights, all 1.0 here
-ids, scores = model.recommend_batch(histories, k=3, exclude_seen=True)  # ids[u]: user user_ids[u]
+# Offline: many users at once, in parallel; one list per user in, one array per user out
+ids_per_user, scores_per_user = model.recommend_batch([[101, 104], [102]], k=3, exclude_seen=True)
+print(ids_per_user)  # [array([102, 103, 105]), array([101, 105, 104])]: user 0, user 1
 ```
 
 For a more in-depth, end-to-end example with SimilariPy, see the notebook:
