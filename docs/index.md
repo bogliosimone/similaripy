@@ -30,12 +30,14 @@
 
 - [Installation](installation.md)
 - [Quickstart](guide.md)
+- [Preprocessing](preprocessing.md)
 - [Similarities](similarity.md)
 - [Serving](serving.md)
 - [Normalizations](normalization.md)
 - [Signed Input](signed-input.md)
 - [API reference](api/similarity.md)
 - [Migration from 0.7.0](migration.md)
+- [Benchmarks](benchmarks.md)
 
 ---
 

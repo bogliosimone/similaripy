@@ -16,7 +16,7 @@ Pre-built wheels are available for Python 3.11 to 3.15 on:
 
 No compiler is needed on these platforms. Elsewhere, pip builds the package from source (see below).
 
-Free-threaded Python (3.14t, 3.15t) is supported: the GIL stays disabled. When calling SimilariPy from several Python threads at once, set `num_threads` on each call to avoid oversubscribing the CPU cores.
+Free-threaded Python (3.14t, 3.15t) is supported: the GIL stays disabled. Calls from several Python threads share one thread pool by default and queue on it; `num_threads=n` gives each calling thread its own pool of `n` threads.
 
 ## Build from source
 

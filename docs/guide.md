@@ -53,41 +53,42 @@ More details in [Normalizations](normalization.md) and [Preprocessing](preproces
 
 ## Example
 
-Here’s a minimal example to get you up and running with SimilariPy:
+From an interaction log to recommendations:
 
 
 ```python
 import similaripy as sim
-import scipy.sparse as sps
+from similaripy.preprocessing import interactions_to_histories, interactions_to_urm
 from similaripy.serving import ItemKNN
 
-# Create a random User-Rating Matrix (URM)
-urm = sps.random_array((1000, 2000), density=0.025, format="csr")
+# An interaction log: one (user, item) pair per event, in your own ids
+users = [10, 10, 10, 20, 20, 20, 30, 30, 30, 40, 40, 50, 50]
+items = [101, 102, 103, 101, 103, 104, 102, 103, 105, 101, 104, 102, 105]
 
-# Normalize the URM using BM25
-urm = sim.normalization.bm25(urm)
+# The user-item matrix (URM), with the id maps: row u is user_ids[u], column j is item_ids[j]
+# (older events can count less: see time_decay in Preprocessing)
+urm, user_ids, item_ids = interactions_to_urm(users, items)
 
 # Train an item-item cosine similarity model
-similarity_matrix = sim.cosine(urm.T, k=50, verbose=True)  # verbose: progress bar
+similarity_matrix = sim.cosine(urm.T, k=50)
 
-# Build the serving model
-model = ItemKNN(similarity_matrix.T)
+# Build the serving model, in your item ids
+model = ItemKNN(similarity_matrix.T, item_ids=item_ids)
 
-# Offline: the top 10 items to evaluate a few test users, already-seen items excluded
-# (exclude_seen=False to keep them, e.g. music or grocery)
-test_users = [1, 14, 8]
-histories = [urm[[u]].indices for u in test_users]
-weights = [urm[[u]].data for u in test_users]
-ids, scores = model.recommend_batch(histories, weights=weights, k=10)
+# Online: a user from the items they interacted with (no retraining), already-seen items excluded
+ids, scores = model.recommend([101, 104], k=3)
+print(ids)  # [103 102]: item ids from the log
 
-# Online: a new user, from the items they interacted with (no retraining)
-ids, scores = model.recommend([3, 17, 256], k=10)
+# Offline: every user of the log at once, e.g. to evaluate a model
+# (exclude_seen=False to keep seen items, e.g. music or grocery)
+user_ids, histories, weights = interactions_to_histories(users, items)
+ids, scores = model.recommend_batch(histories, weights=weights, k=3)
 ```
 
 Tips:
 
 - `urm.T` is used to switch from user-item to item-user to train an item-item similarity model.
-- You can use `bm25plus`, `tfidf`, or `normalize` for different pre-processing strategies.
+- On real data, re-weight the URM before the similarity, e.g. `urm = sim.bm25(urm)`; `bm25plus`, `tfidf` and `normalize` are the alternatives ([Normalizations](normalization.md)).
 - `ItemKNN` is the serving engine: save it once, load it in every worker.
 - All operations are multithreaded and scale with available CPU cores.
 
