@@ -481,8 +481,8 @@ def s_plus(
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation. Controls the trade-off
             between cache efficiency and multi-pass overhead.
-            'auto' = the library's choice, currently DEFAULT_BLOCK_SIZE entries (~1 MB);
-            may adapt in future versions (results are the same at any size).
+            'auto' = the library's choice, from the output width, the L2 cache and the
+            threads; may change in future versions (results are the same at any size).
             None = disabled (no blocking).
             int > 0 = explicit size in number of float32 entries.
         prepare: Private (p3alpha, rp3beta): `prepare(m1, m2)` gets the call's

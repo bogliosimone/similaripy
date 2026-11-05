@@ -1,10 +1,7 @@
-//! `block_size='auto'` (4c step 1b): today's `DEFAULT_BLOCK_SIZE`, or, behind
-//! the private switch `SIMILARIPY_AUTO_BLOCK=estimate`, a size estimated from
-//! the accumulator width, the L2 cache and the threads sharing it
-//! (`4c/estimator-design.md`). Block size never changes results (same
-//! addition order), only speed.
-// ponytail: env switch until the estimate is validated on x86 + M5 (plan
-// step 6); then it becomes 'auto' and the switch goes.
+//! `block_size='auto'`: a size estimated from the accumulator width, the L2
+//! cache and the threads sharing it (4c, `4c/estimator-design.md`; M2 Pro vs
+//! the fixed `DEFAULT_BLOCK_SIZE`: kernel −6..−10%, serving 'auto' −5..−27%).
+//! Block size never changes results (same addition order), only speed.
 
 use std::sync::OnceLock;
 
@@ -13,20 +10,16 @@ use crate::DEFAULT_BLOCK_SIZE;
 /// Block size for `block_size='auto'` over `n_cols` accumulator slots on
 /// `threads` threads; 0 = one block.
 pub fn auto_block_size(n_cols: usize, threads: usize) -> usize {
-    static ON: OnceLock<bool> = OnceLock::new();
-    if *ON.get_or_init(|| std::env::var("SIMILARIPY_AUTO_BLOCK").is_ok_and(|v| v == "estimate")) {
-        estimate(n_cols, threads, l2_cache())
-    } else {
-        DEFAULT_BLOCK_SIZE
-    }
+    estimate(n_cols, threads, l2_cache())
 }
 
 /// The estimate: one block while the f32 accumulator fits the thread's L2
 /// share (L2 / threads on it); else the largest power of two that fits, at
 /// least `DEFAULT_BLOCK_SIZE` (smaller blocks lost 11-41% in every M2 sweep).
 /// Unknown cache: `DEFAULT_BLOCK_SIZE`.
-// ponytail: width only; the hot-footprint input (work spread over columns)
-// only if the flat-column sweep (tonight3) needs it.
+// ponytail: width only. Flat column work can be up to ~10% off the best size
+// (D87); `dot_product(URM, S)` +14..18% vs the fixed size on Y50M, accepted
+// (D88 rejected: a discouraged path, cause not understood).
 pub fn estimate(n_cols: usize, threads: usize, l2: Option<(usize, usize)>) -> usize {
     let Some((bytes, cpus)) = l2 else {
         return DEFAULT_BLOCK_SIZE;

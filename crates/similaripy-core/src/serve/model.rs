@@ -111,7 +111,8 @@ impl std::ops::Deref for Model {
 /// choice of the version that loads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockSize {
-    /// `DEFAULT_BLOCK_SIZE`.
+    /// `block::auto_block_size` per request (the threads that share the cache
+    /// depend on the caller, D65).
     Auto,
     /// One block (no blocking): for a lone request on an idle machine.
     Off,
