@@ -74,33 +74,36 @@ For more details, check the **[📘 Normalizations](https://bogliosimone.github.
 
 ## 🚀 Getting Started
 
-Here’s a minimal example to get you up and running with SimilariPy:
+From an interaction log to recommendations:
 
 ```python
 import similaripy as sim
-import scipy.sparse as sps
+from similaripy.preprocessing import interactions_to_urm
 from similaripy.serving import ItemKNN
 
-# Create a random User-Rating Matrix (URM)
-urm = sps.random_array((1000, 2000), density=0.025, format="csr")
+# An interaction log: one (user, item) pair per event, in your own ids
+users = [10, 10, 20, 20, 30, 30, 40, 40, 40, 50, 50, 60, 60, 70, 70]
+items = [101, 102, 103, 105, 101, 103, 101, 102, 104, 102, 105, 104, 105, 103, 104]
 
-# Normalize the URM using BM25
-urm = sim.normalization.bm25(urm)
+# The user-item matrix (URM), with the user and item id maps
+urm, user_ids, item_ids = interactions_to_urm(users, items)
+
+# Re-weight the URM with BM25
+urm = sim.bm25(urm)
 
 # Train an item-item cosine similarity model
-similarity_matrix = sim.cosine(urm.T, k=50, verbose=True)  # verbose: progress bar
+similarity_matrix = sim.cosine(urm.T, k=50)
 
-# Build the serving model
-model = ItemKNN(similarity_matrix.T)
+# Build the serving model, in your item ids
+model = ItemKNN(similarity_matrix.T, item_ids=item_ids)
 
-# Offline: the top 10 items for a few test users (e.g. to evaluate them), already-seen items excluded
-test_users = [1, 14, 8]
-histories = [urm[[u]].indices for u in test_users]
-weights = [urm[[u]].data for u in test_users]
-ids, scores = model.recommend_batch(histories, weights=weights, k=10)
+# Online: one user, from the items in their history
+ids, scores = model.recommend([101, 104], k=3, exclude_seen=True)
+print(ids)  # [102 103 105]
 
-# Online: a new user, from the items they interacted with (no retraining)
-ids, scores = model.recommend([3, 17, 256], k=10)
+# Offline: many users at once, in parallel
+ids_per_user, scores_per_user = model.recommend_batch([[101, 104], [102]], k=3, exclude_seen=True)
+print(ids_per_user)  # [array([102, 103, 105]), array([101, 105, 104])]: user 0, user 1
 ```
 
 For a more in-depth, end-to-end example with SimilariPy, see the notebook:
@@ -122,7 +125,7 @@ Pre-built wheels are available for Python 3.11 to 3.15 on:
 
 No compiler is needed on these platforms. Elsewhere, pip builds the package from source, which needs a Rust toolchain: see **[Build from source](https://bogliosimone.github.io/similaripy/installation/#build-from-source)**.
 
-Free-threaded Python (3.14t, 3.15t) is supported: the GIL stays disabled. When calling SimilariPy from several Python threads at once, set `num_threads` on each call to avoid oversubscribing the CPU cores.
+Free-threaded Python (3.14t, 3.15t) is supported: the GIL stays disabled. Calls from several Python threads share one thread pool by default and queue on it; `num_threads=n` gives each calling thread its own pool of `n` threads.
 
 ## 📦 Requirements
 
@@ -146,15 +149,15 @@ Thanks to my Creamy Fireflies friends for the support! 🙏
 
 This project is released under the MIT License.
 
-## 🔖 Citation
+## 🔖 How to cite
 
-If you use SimilariPy in your research, please cite:
+If you use SimilariPy in your research, please cite it (GitHub's "Cite this repository" gives the same entry in other formats):
 
 ```text
-@misc{boglio_simone_similaripy,
-  author       = {Boglio Simone},
-  title        = {bogliosimone/similaripy},
-  doi          = {10.5281/zenodo.2583851},
-  url          = {https://doi.org/10.5281/zenodo.2583851}
+@software{boglio_similaripy,
+  author = {Boglio, Simone},
+  title  = {SimilariPy},
+  doi    = {10.5281/zenodo.2583851},
+  url    = {https://github.com/bogliosimone/similaripy}
 }
 ```

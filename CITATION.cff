@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use SimilariPy, please cite it as below."
+type: software
+title: SimilariPy
+abstract: "High-performance KNN similarity and serving for sparse data, built in Rust, for recommender systems and information retrieval."
+authors:
+  - family-names: Boglio
+    given-names: Simone
+doi: 10.5281/zenodo.2583851
+repository-code: "https://github.com/bogliosimone/similaripy"
+url: "https://bogliosimone.github.io/similaripy/"
+license: MIT
+keywords:
+  - recommender systems
+  - similarity
+  - nearest neighbors
+  - sparse matrices

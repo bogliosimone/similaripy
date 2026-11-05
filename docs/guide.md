@@ -53,41 +53,42 @@ More details in [Normalizations](normalization.md) and [Preprocessing](preproces
 
 ## Example
 
-Here’s a minimal example to get you up and running with SimilariPy:
+From an interaction log to recommendations:
 
 
 ```python
 import similaripy as sim
-import scipy.sparse as sps
+from similaripy.preprocessing import interactions_to_urm
 from similaripy.serving import ItemKNN
 
-# Create a random User-Rating Matrix (URM)
-urm = sps.random_array((1000, 2000), density=0.025, format="csr")
+# An interaction log: one (user, item) pair per event, in your own ids
+users = [10, 10, 20, 20, 30, 30, 40, 40, 40, 50, 50, 60, 60, 70, 70]
+items = [101, 102, 103, 105, 101, 103, 101, 102, 104, 102, 105, 104, 105, 103, 104]
 
-# Normalize the URM using BM25
-urm = sim.normalization.bm25(urm)
+# The user-item matrix (URM), with the user and item id maps
+urm, user_ids, item_ids = interactions_to_urm(users, items)
+
+# Re-weight the URM with BM25
+urm = sim.bm25(urm)
 
 # Train an item-item cosine similarity model
-similarity_matrix = sim.cosine(urm.T, k=50, verbose=True)  # verbose: progress bar
+similarity_matrix = sim.cosine(urm.T, k=50)
 
-# Build the serving model
-model = ItemKNN(similarity_matrix.T)
+# Build the serving model, in your item ids
+model = ItemKNN(similarity_matrix.T, item_ids=item_ids)
 
-# Offline: the top 10 items to evaluate a few test users, already-seen items excluded
-# (exclude_seen=False to keep them, e.g. music or grocery)
-test_users = [1, 14, 8]
-histories = [urm[[u]].indices for u in test_users]
-weights = [urm[[u]].data for u in test_users]
-ids, scores = model.recommend_batch(histories, weights=weights, k=10)
+# Online: one user, from the items in their history
+ids, scores = model.recommend([101, 104], k=3, exclude_seen=True)
+print(ids)  # [102 103 105]
 
-# Online: a new user, from the items they interacted with (no retraining)
-ids, scores = model.recommend([3, 17, 256], k=10)
+# Offline: many users at once, in parallel
+ids_per_user, scores_per_user = model.recommend_batch([[101, 104], [102]], k=3, exclude_seen=True)
+print(ids_per_user)  # [array([102, 103, 105]), array([101, 105, 104])]: user 0, user 1
 ```
 
 Tips:
 
 - `urm.T` is used to switch from user-item to item-user to train an item-item similarity model.
-- You can use `bm25plus`, `tfidf`, or `normalize` for different pre-processing strategies.
 - `ItemKNN` is the serving engine: save it once, load it in every worker.
 - All operations are multithreaded and scale with available CPU cores.
 
