@@ -242,7 +242,7 @@ impl Scratch {
         let block = if m.block_size == BlockSize::Auto {
             let threads =
                 rayon::current_thread_index().map_or(usize::MAX, |_| rayon::current_num_threads());
-            crate::block::auto_block_size(m.n_active, threads)
+            crate::block::auto_block_size(m.n_active, threads, 4)
         } else {
             m.block
         };

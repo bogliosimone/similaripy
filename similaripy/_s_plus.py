@@ -597,9 +597,6 @@ def _s_plus(
         m1.data[:] = 1
         m2.data[:] = 1
 
-    if isinstance(block_size, str):  # 'auto'; None (no blocking) and int > 0 go as they are
-        block_size = _core.auto_block_size(n_output_cols, num_threads) or None
-
     norms = _norms(m1, m2, n_output_cols, params, norm_params)
     params, norms = _depop_as_cosine(params, norms)
     if _product_form(params):
@@ -607,6 +604,10 @@ def _s_plus(
         params, norms = params._replace(l2=0), Norms()  # plain dot of the scaled inputs: DOT mode
     filt, targ, m2 = _selectors(filter_cols, target_cols, m2, n_output_cols, num_threads)
     m2, norms, filt, targ, new_to_old = _popularity_layout(m2, norms, filt, targ, n_output_cols, num_threads)
+    if isinstance(block_size, str):  # 'auto'; None (no blocking) and int > 0 go as they are
+        # hot bytes per column: the f32 accumulator + each y-norm array the drain reads (none in DOT mode)
+        n_arrays = sum(y is not None for y in (norms.y_tversky, norms.y_cosine, norms.y_depop))
+        block_size = _core.auto_block_size(n_output_cols, num_threads, 4 * (1 + n_arrays)) or None
 
     if bar is not None:
         bar.set_description("Computing")

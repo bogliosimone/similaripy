@@ -7,28 +7,37 @@ use std::sync::OnceLock;
 
 use crate::DEFAULT_BLOCK_SIZE;
 
-/// Block size for `block_size='auto'` over `n_cols` accumulator slots on
-/// `threads` threads; 0 = one block.
-pub fn auto_block_size(n_cols: usize, threads: usize) -> usize {
-    estimate(n_cols, threads, l2_cache())
+/// Block size for `block_size='auto'` over `n_cols` columns on `threads`
+/// threads, `col_bytes` hot bytes per column (4: the f32 accumulator; the
+/// kernel adds 4 per norm array its drain reads); 0 = one block.
+pub fn auto_block_size(n_cols: usize, threads: usize, col_bytes: usize) -> usize {
+    estimate(n_cols, threads, l2_cache(), col_bytes)
 }
 
-/// The estimate: one block while the f32 accumulator fits the thread's L2
-/// share (L2 / threads on it); else the largest power of two that fits, at
-/// least `DEFAULT_BLOCK_SIZE` (smaller blocks lost 11-41% in every M2 sweep).
+/// The estimate: one block while a block's hot bytes (`col_bytes` per column:
+/// the accumulator, plus the norm arrays the kernel's drain reads) fit the
+/// thread's L2 share (L2 / threads on it); else the largest power of two that
+/// fits, at least `DEFAULT_BLOCK_SIZE` (smaller blocks lost 11-41% in every M2
+/// sweep).
 /// Unknown cache: `DEFAULT_BLOCK_SIZE`.
-// ponytail: width only. Flat column work can be up to ~10% off the best size
+// ponytail: width × hot bytes, no data shape. Flat column work can be up to ~10% off the best size
 // (D87); `dot_product(URM, S)` +14..18% vs the fixed size on Y50M, accepted
 // (D88 rejected: a discouraged path, cause not understood).
-pub fn estimate(n_cols: usize, threads: usize, l2: Option<(usize, usize)>) -> usize {
+pub fn estimate(
+    n_cols: usize,
+    threads: usize,
+    l2: Option<(usize, usize)>,
+    col_bytes: usize,
+) -> usize {
     let Some((bytes, cpus)) = l2 else {
         return DEFAULT_BLOCK_SIZE;
     };
     let share = bytes / threads.clamp(1, cpus.max(1));
-    if n_cols.saturating_mul(4) <= share {
+    let col_bytes = col_bytes.max(1);
+    if n_cols.saturating_mul(col_bytes) <= share {
         return 0;
     }
-    let slots = (share / 4).max(1);
+    let slots = (share / col_bytes).max(1);
     (1usize << (usize::BITS - 1 - slots.leading_zeros())).max(DEFAULT_BLOCK_SIZE)
 }
 
@@ -131,24 +140,33 @@ mod tests {
     #[test]
     fn estimate_matches_the_m2_sweep() {
         // tonight1 sweep winners (4c Deviations 2026-11-04), cosine kernel + serving
-        assert_eq!(estimate(84_432, 6, M2_PRO), 0); // ML-32M
-        assert_eq!(estimate(934_057, 1, M2_PRO), 0); // Y50M 1t: none
-        assert_eq!(estimate(934_057, 6, M2_PRO), 0); // Y50M 6t: none
-        assert_eq!(estimate(3_004_578, 1, M2_PRO), 0); // Y500M 1t: none
-        assert_eq!(estimate(3_004_578, 6, M2_PRO), 1 << 20); // Y500M 6t: 1M
+        assert_eq!(estimate(84_432, 6, M2_PRO, 4), 0); // ML-32M
+        assert_eq!(estimate(934_057, 1, M2_PRO, 4), 0); // Y50M 1t: none
+        assert_eq!(estimate(934_057, 6, M2_PRO, 4), 0); // Y50M 6t: none
+        assert_eq!(estimate(3_004_578, 1, M2_PRO, 4), 0); // Y500M 1t: none
+        assert_eq!(estimate(3_004_578, 6, M2_PRO, 4), 1 << 20); // Y500M 6t: 1M
         // a single serving request assumes a loaded L2 (D65): all its cores
-        assert_eq!(estimate(3_004_578, usize::MAX, M2_PRO), 1 << 20);
-        assert_eq!(estimate(934_057, usize::MAX, M2_PRO), 0); // Y50M fits a third of 16 MB
+        assert_eq!(estimate(3_004_578, usize::MAX, M2_PRO, 4), 1 << 20);
+        assert_eq!(estimate(934_057, usize::MAX, M2_PRO, 4), 0); // Y50M fits a third of 16 MB
+    }
+
+    #[test]
+    fn estimate_counts_the_drain_norm_arrays() {
+        // Y500M 6t: COSINE / FULL read one norm array per column in the drain → 8 B/column
+        assert_eq!(estimate(3_004_578, 6, M2_PRO, 8), 1 << 19);
+        assert_eq!(estimate(3_004_578, 6, M2_PRO, 12), 1 << 18);
+        assert_eq!(estimate(934_057, 6, M2_PRO, 8), 1 << 19); // Y50M: 7.5 MB > the 5.3 MB share
+        assert_eq!(estimate(84_432, 6, M2_PRO, 16), 0); // ML-32M fits at any mode
     }
 
     #[test]
     fn estimate_floor_and_unknown_cache() {
         let zen4 = Some((1 << 20, 2)); // 1 MB L2 per core, 2 SMT threads
-        assert_eq!(estimate(3_004_578, 16, zen4), DEFAULT_BLOCK_SIZE); // 512 KB share → floor
-        assert_eq!(estimate(100_000, 16, zen4), 0); // 400 KB fits
-        assert_eq!(estimate(3_004_578, 6, None), DEFAULT_BLOCK_SIZE);
-        assert_eq!(estimate(3_004_578, 0, M2_PRO), 0); // 0 threads read as 1
-        assert_eq!(estimate(usize::MAX, 1, M2_PRO), 4 << 20); // no overflow
+        assert_eq!(estimate(3_004_578, 16, zen4, 4), DEFAULT_BLOCK_SIZE); // 512 KB share → floor
+        assert_eq!(estimate(100_000, 16, zen4, 4), 0); // 400 KB fits
+        assert_eq!(estimate(3_004_578, 6, None, 4), DEFAULT_BLOCK_SIZE);
+        assert_eq!(estimate(3_004_578, 0, M2_PRO, 4), 0); // 0 threads read as 1
+        assert_eq!(estimate(usize::MAX, 1, M2_PRO, 4), 4 << 20); // no overflow
     }
 
     #[test]

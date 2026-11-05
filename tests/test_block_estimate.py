@@ -15,3 +15,12 @@ def test_auto_block_size_is_the_estimate():
         assert all(b == 0 or b >= DEFAULT_BLOCK_SIZE for b in blocks)  # never below the floor
     else:  # unknown cache: the fixed size
         assert blocks == [DEFAULT_BLOCK_SIZE] * 3
+
+
+def test_auto_block_size_counts_hot_bytes_per_column():
+    # more bytes per column (the drain's norm arrays) never gives a larger block
+    n = 50_000_000
+    b4, b8, b12 = (_core.auto_block_size(n, 1, c) for c in (4, 8, 12))
+    assert _core.auto_block_size(n, 1) == b4  # default: the accumulator alone
+    if sys.platform in ("darwin", "linux"):
+        assert b4 >= b8 >= b12 >= DEFAULT_BLOCK_SIZE
