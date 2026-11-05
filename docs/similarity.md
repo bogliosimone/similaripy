@@ -17,7 +17,7 @@ import similaripy as sim   # sim.cosine, sim.rp3beta, ...
 | `dice()`           | Overlap over the mean of the two vectors' lengths (Tversky with `alpha = beta = 0.5`). |
 | `tversky(alpha=1.0, beta=1.0)` | Tversky similarity, a generalization of Jaccard and Dice. |
 | `p3alpha(alpha=1.0)` | Graph-based similarity computed as normalized matrix multiplication with `alpha` exponentiation. |
-| `rp3beta(alpha=1.0, beta=1.0)` | P3alpha variant that penalizes popular items with a `beta` exponent. |
+| `rp3beta(alpha=0.75, beta=0.3)` | P3alpha variant that penalizes popular items with a `beta` exponent. |
 | `s_plus(l1=0.5, l2=0.5, l3=0.0, t1=1.0, t2=1.0, c1=0.5, c2=0.5, alpha=1, pop1='none', pop2='none', beta1=0.0, beta2=0.0)` | Hybrid similarity model that combines Tversky and Cosine normalizations with RP3Beta-style depopularization, controlled by tunable weights. The `pop1` and `pop2` parameters define item popularity weights and may be provided as custom arrays of arbitrary values, or initialized with built-in options: `'sum'`: use the sum of `|x|` per item (the interaction count on binary input); `'none'`: disable popularity weighting  *(default: `'none'`)* |
 
 ## Common Parameters
@@ -122,6 +122,7 @@ $s_{xy} = \frac{x^\alpha \cdot y^\alpha}{{pop}(y)^\beta}$
 - **`pop(y)`**: popularity of item y, the column sum of `|x|` in `matrix2` before the row normalization (the number of interactions with `binary=True`)
 - Normalization row-wise (L1) is applied before exponentiation
 - Penalization is applied before the top k selection
+- Defaults `α = 0.75`, `β = 0.3`: a starting point that held up on movies, music and fashion data (temporal split, recall and NDCG at 10 and 100). The best `β` depends on the data (higher `α` wants lower `β`) and `β` near 1 can collapse accuracy: tune both
 
 ### S-Plus
 

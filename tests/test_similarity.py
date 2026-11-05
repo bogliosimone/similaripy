@@ -32,8 +32,8 @@ def _dense_scores(m, name, kw):
     sq = (A**2).sum(axis=1)
     pop = np.abs(A).sum(axis=1)
     if name in ("p3alpha", "rp3beta"):
-        xy = _dense_random_walk(A, kw.get("alpha", 1.0))
-        den = pop[None, :] ** kw.get("beta", 0.5) if name == "rp3beta" else None
+        xy = _dense_random_walk(A, kw.get("alpha", 0.75 if name == "rp3beta" else 1.0))
+        den = pop[None, :] ** kw.get("beta", 0.3) if name == "rp3beta" else None
     else:
         xy = A @ A.T
         if name == "dot_product":
@@ -93,6 +93,7 @@ _CASES = [
     ("tversky", {"alpha": 0.8, "beta": 0.4}),
     ("p3alpha", {"alpha": 0.8}),
     ("rp3beta", {"alpha": 0.8, "beta": 0.4}),
+    ("rp3beta", {}),  # the defaults (alpha 0.75, beta 0.3)
     (
         "s_plus",
         {
