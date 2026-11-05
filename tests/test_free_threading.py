@@ -25,8 +25,8 @@ def _calls(m):
         "cosine_all_threads": lambda: sim.cosine(m, k=50, verbose=False),
         "rp3beta": lambda: sim.rp3beta(m, k=50, verbose=False, num_threads=2),
         "s_plus": lambda: sim.s_plus(m, k=50, verbose=False, num_threads=2),
-        "bm25": lambda: sim.bm25(m),
-        "normalize": lambda: sim.normalize(m),
+        "bm25": lambda: sim.normalization.bm25(m),
+        "normalize": lambda: sim.normalization.normalize(m),
         # serving: one shared model, batch on 2 threads and on the global pool
         "recommend_batch": lambda: _as_csr(*_REC.recommend_batch(_histories(m), k=20, num_threads=2)),
         "recommend_batch_all_threads": lambda: _as_csr(*_REC.recommend_batch(_histories(m), k=20)),
@@ -98,7 +98,7 @@ rng = np.random.default_rng(7)
 n = 150_000
 m = sp.coo_array((rng.random(n).astype(np.float32),
                   (rng.integers(0, 2000, n), rng.integers(0, 500, n))), shape=(2000, 500)).tocsr()
-for x in (sim.normalize(m, norm='l2'), sim.tfidf(m), sim.bm25(m), sim.bm25plus(m)):
+for x in (sim.normalization.normalize(m, norm='l2'), sim.normalization.tfidf(m), sim.normalization.bm25(m), sim.normalization.bm25plus(m)):
     print(hashlib.sha256(x.data.tobytes() + x.indices.tobytes() + x.indptr.tobytes()).hexdigest())
 """
 

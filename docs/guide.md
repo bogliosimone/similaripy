@@ -69,7 +69,7 @@ items = [101, 102, 103, 105, 101, 103, 101, 102, 104, 102, 105, 104, 105, 103, 1
 urm, user_ids, item_ids = interactions_to_urm(users, items)
 
 # Re-weight the URM with BM25
-urm = sim.bm25(urm)
+urm = sim.normalization.bm25(urm)
 
 # Train an item-item cosine similarity model
 similarity_matrix = sim.cosine(urm.T, k=50)

@@ -33,7 +33,7 @@ IDF_MODES = ("unary", "base", "smooth", "prob", "bm25")
 
 def cases(full):
     """(name, func, kwargs). full=False: defaults + one mode varied at a time."""
-    out = [(f"normalize_{n}", sim.normalize, {"norm": n}) for n in ("l1", "l2", "max")]
+    out = [(f"normalize_{n}", sim.normalization.normalize, {"norm": n}) for n in ("l1", "l2", "max")]
     if full:
         modes = list(itertools.product(TF_MODES, IDF_MODES))
     else:
@@ -41,9 +41,9 @@ def cases(full):
     for tf, idf in modes:
         kw = {"tf_mode": tf, "idf_mode": idf}
         out += [
-            (f"tfidf_{tf}_{idf}", sim.tfidf, kw),
-            (f"bm25_{tf}_{idf}", sim.bm25, kw),
-            (f"bm25plus_{tf}_{idf}", sim.bm25plus, kw | {"delta": 0.5, "k1": 1.5, "b": 0.6}),
+            (f"tfidf_{tf}_{idf}", sim.normalization.tfidf, kw),
+            (f"bm25_{tf}_{idf}", sim.normalization.bm25, kw),
+            (f"bm25plus_{tf}_{idf}", sim.normalization.bm25plus, kw | {"delta": 0.5, "k1": 1.5, "b": 0.6}),
         ]
     return out
 

@@ -7,8 +7,11 @@ can break your code come first; the full lists are at the end.
 ## What breaks
 
 - Every parameter after `matrix2` (similarities) or `X` (normalizations) is
-  keyword-only: `sim.cosine(m, None, 50)` and `sim.normalize(X, 'l1')` raise
-  `TypeError`; write `sim.cosine(m, k=50)` and `sim.normalize(X, norm='l1')`.
+  keyword-only: `sim.cosine(m, None, 50)` and `sim.normalization.normalize(X, 'l1')` raise
+  `TypeError`; write `sim.cosine(m, k=50)` and `sim.normalization.normalize(X, norm='l1')`.
+- The normalizations are only in `similaripy.normalization` (0.7.0 also had
+  them at the top level): `sim.bm25(X)` raises `AttributeError`; write
+  `sim.normalization.bm25(X)`, as the 0.7.0 README did.
 - `format_output` defaults to `'csr'` (0.7.0: `'coo'`): pass
   `format_output='coo'` for the old format.
 - `verbose` defaults to `False`: pass `verbose=True` for the progress bar.
@@ -103,7 +106,7 @@ accepts them with a few rules per function: see [Signed Input](signed-input.md).
     - The normalizations return a `csr_array` also for `spmatrix` input (use
       `@` for products), with int32 indices (float32/float64 values kept) up
       to 2^31 - 1 entries, int64 past it, as the similarities.
-    - New: `similaripy.binarize(X)`, the `binary=True` of the similarities as a
+    - New: `similaripy.normalization.binarize(X)`, the `binary=True` of the similarities as a
       separate step.
     - New: `similaripy.serving.ItemKNN`, an online engine over a similarity
       matrix (save / load with mmap, include / exclude rules): see

@@ -1,5 +1,5 @@
 """Normalizations and weightings of sparse matrices (row/column norms,
-TF-IDF, BM25, binarize). Also at the top level (`sim.bm25`, as in 0.x)."""
+TF-IDF, BM25, binarize)."""
 
 from math import e
 from typing import Literal
