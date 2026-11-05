@@ -98,6 +98,7 @@ def _validate_modes(tf_mode: str, idf_mode: str) -> None:
 
 def normalize(
     X: sps.sparray | sps.spmatrix,
+    *,
     norm: Literal["l1", "l2", "max"] = "l2",
     axis: int = 1,
 ) -> sps.csr_array:
@@ -155,6 +156,7 @@ def binarize(X: sps.sparray | sps.spmatrix) -> sps.csr_array:
 
 def bm25(
     X: sps.sparray | sps.spmatrix,
+    *,
     axis: int = 1,
     k1: float = 1.2,
     b: float = 0.75,
@@ -194,6 +196,7 @@ def bm25(
 
 def bm25plus(
     X: sps.sparray | sps.spmatrix,
+    *,
     axis: int = 1,
     k1: float = 1.2,
     b: float = 0.75,
@@ -245,6 +248,7 @@ def bm25plus(
 
 def tfidf(
     X: sps.sparray | sps.spmatrix,
+    *,
     axis: int = 1,
     logbase: float = e,
     tf_mode: Literal["binary", "raw", "sqrt", "freq", "log"] = "sqrt",

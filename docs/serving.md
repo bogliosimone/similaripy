@@ -81,7 +81,7 @@ from similaripy.preprocessing import interactions_to_urm, urm_to_histories
 URM, user_ids, item_ids = interactions_to_urm(log.user, log.item)   # repeats summed
 model = ItemKNN(sim.cosine(URM.T, k=100).T, item_ids=item_ids)
 
-histories, weights = urm_to_histories(URM, item_ids)   # your ids per user
+histories, weights = urm_to_histories(URM, item_ids=item_ids)   # your ids per user
 chunk = 100_000
 for a in range(0, len(histories), chunk):
     ids, scores = model.recommend_batch(histories[a:a + chunk], weights=weights[a:a + chunk], k=20)

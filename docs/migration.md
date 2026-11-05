@@ -6,8 +6,9 @@ can break your code come first; the full lists are at the end.
 
 ## What breaks
 
-- Every parameter after `matrix2` is keyword-only: `sim.cosine(m, None, 50)`
-  raises `TypeError`; write `sim.cosine(m, k=50)`.
+- Every parameter after `matrix2` (similarities) or `X` (normalizations) is
+  keyword-only: `sim.cosine(m, None, 50)` and `sim.normalize(X, 'l1')` raise
+  `TypeError`; write `sim.cosine(m, k=50)` and `sim.normalize(X, norm='l1')`.
 - `format_output` defaults to `'csr'` (0.7.0: `'coo'`): pass
   `format_output='coo'` for the old format.
 - `verbose` defaults to `False`: pass `verbose=True` for the progress bar.

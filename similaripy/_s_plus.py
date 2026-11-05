@@ -322,7 +322,7 @@ def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> Csr:
     float32); canonical input
     (e.g. our own COO output, fed back) then only drops zeros, the rest goes
     through the Rust canonicalization, which replaces scipy's single-threaded
-    COO -> CSR (2.2 s on a 93M-entry COO item model).
+    COO -> CSR.
     """
     index = _indptr_dtype(matrix.nnz)
     if matrix.format == "coo":

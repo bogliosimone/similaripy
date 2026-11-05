@@ -141,7 +141,7 @@ def test_to_histories_feeds_recommend_batch():
     URM, _, item_ids = interactions_to_urm(users, items, rng.random(800) * time_decay(t, reference=99, scale=20))
     H = URM
     model = sim.serving.ItemKNN(sim.cosine(URM.T, k=20), item_ids=item_ids)
-    histories, weights = urm_to_histories(H, item_ids)
+    histories, weights = urm_to_histories(H, item_ids=item_ids)
     assert len(histories) == URM.shape[0]
     ids, scores = model.recommend_batch(histories, weights=weights, k=10)
     for u in range(URM.shape[0]):
@@ -164,9 +164,9 @@ def test_urm_to_histories_drops_zeros():
 def test_to_histories_rejects():
     URM, _, _ = interactions_to_urm([0, 1], [0, 1])
     with pytest.raises(TypeError, match="integer ids"):
-        urm_to_histories(URM, np.array(["a", "b"]))
+        urm_to_histories(URM, item_ids=np.array(["a", "b"]))
     with pytest.raises(ValueError, match="one id per column"):
-        urm_to_histories(URM, [1])
+        urm_to_histories(URM, item_ids=[1])
 
 
 @pytest.mark.parametrize("dtype", [np.int32, np.uint32, np.int64, np.uint64])
@@ -203,7 +203,7 @@ def test_interactions_to_histories():
     model = sim.serving.ItemKNN(sim.cosine(URM.T, k=10).T, item_ids=item_ids)
     _, histories, weights = interactions_to_histories(users, items, w)
     a = model.recommend_batch(histories, weights=weights, k=5)
-    hb, wb = urm_to_histories(URM, item_ids)
+    hb, wb = urm_to_histories(URM, item_ids=item_ids)
     b = model.recommend_batch(hb, weights=wb, k=5)
     for u in range(len(histories)):
         assert a[0][u].tolist() == b[0][u].tolist()

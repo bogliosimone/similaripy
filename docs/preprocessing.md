@@ -18,7 +18,7 @@ from similaripy.preprocessing import time_decay, rank_decay                     
 |----------|-------------|
 | `interactions_to_urm(users, items, values=None, *, timestamps=None, duplicates='sum')` | The user-item matrix (URM) from one entry per event, with the id maps: `(URM, user_ids, item_ids)`. |
 | `interactions_to_histories(users, items, weights=None)` | Each user's events as a history for `recommend_batch`, e.g. for an evaluation test set: `(user_ids, histories, weights)`. |
-| `urm_to_histories(URM, item_ids=None)` | Each row of a URM as a history for `recommend_batch`: `(histories, weights)`. |
+| `urm_to_histories(URM, *, item_ids=None)` | Each row of a URM as a history for `recommend_batch`: `(histories, weights)`. |
 
 - Ids mapping: in the URM, row `u` is `user_ids[u]` and column `j` is `item_ids[j]`.
 - Histories use your item ids.
