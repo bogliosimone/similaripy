@@ -585,8 +585,8 @@ def rp3beta(
     matrix1: sparray | spmatrix,
     matrix2: sparray | spmatrix | None = None,
     *,
-    alpha: float = 1.0,
-    beta: float = 1.0,
+    alpha: float = 0.75,
+    beta: float = 0.3,
     k: int = 100,
     shrink: float = 0.0,
     shrink_type: Literal["stabilized", "bayesian", "additive"] = "stabilized",
@@ -610,6 +610,9 @@ def rp3beta(
         matrix2: (d, n_cols) sparse matrix; None = matrix1.T.
         alpha: Exponent for transition probabilities (> 0).
         beta: Exponent to penalize popularity based on matrix2's column sums of |x| (>= 0).
+            The defaults (alpha 0.75, beta 0.3) are a starting point that held up on
+            movies, music and fashion data; the best beta depends on the data
+            (higher alpha wants lower beta): tune both.
         k: Number of top-k items per row to keep.
         shrink: Shrinkage value (>= 0) that prevents instability when normalizations are small.
             A shrink_type that would do nothing for this similarity raises ValueError.

@@ -26,6 +26,9 @@ can break your code come first; the full lists are at the end.
 
 ## What may change in results
 
+- **`rp3beta` defaults** are `alpha=0.75, beta=0.3` (0.7.0: `1.0, 1.0`, a
+  popularity penalty strong enough to collapse accuracy on real data): pass
+  `alpha=1.0, beta=1.0` for the old scores.
 - **Float rounding:** scores may differ in the last digits; up to about `1e-4`
   relative on the longest rows for `cosine`, `asymmetric_cosine` and `rp3beta`.
 - **Ties** are deterministic: on equal scores the more popular column wins,
