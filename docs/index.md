@@ -1,4 +1,4 @@
-# <p align="center"><img src="logo.png" alt="SimilariPy Logo" width="300"/></p>
+# <p align="center"><img src="assets/logo-light.svg#only-light" alt="SimilariPy" width="300"/><img src="assets/logo-dark.svg#only-dark" alt="SimilariPy" width="300"/></p>
 
 [![PyPI version](https://img.shields.io/pypi/v/similaripy.svg?logo=pypi&logoColor=white)](https://pypi.org/project/similaripy/)
 [![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://bogliosimone.github.io/similaripy/)

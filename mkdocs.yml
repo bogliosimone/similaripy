@@ -2,6 +2,8 @@ site_name: SimilariPy
 repo_url: https://github.com/bogliosimone/similaripy
 theme:
   name: material
+  logo: assets/mark.svg
+  favicon: assets/favicon.svg
   features:
     - navigation.sections
     - navigation.top
