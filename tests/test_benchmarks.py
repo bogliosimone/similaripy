@@ -158,6 +158,32 @@ def test_serve_modes(run):
     assert cases["latency_cap50_warm"]["p99_us"] >= cases["latency_cap50_warm"]["p50_us"] > 0
 
 
+def test_serve_concurrent(run):
+    rep = run(
+        "serve", "--mode", "concurrent", "--callers", "1", "3", "3", "--requests", "60",
+        "--model-k", "20", "--k", "10", "--rounds", "1",
+    )  # fmt: skip
+    cases = rep["cases"]
+    assert {"concurrent_default_c1", "concurrent_one_c3"} <= set(cases) and rep["info"]["callers"] == [1, 3]
+    c = cases["concurrent_default_c3"]
+    assert c["p99_us"] >= c["p50_us"] > 0 and c["requests_per_s"] > 0
+    assert c["cpu_us_per_request"] >= 0  # Windows: the CPU clock ticks every ~15 ms, a tiny run can read 0
+
+
+def test_serve_block_size(run, monkeypatch):
+    # --block-size reaches the timed model (the one-block control stays None); 'auto' passes nothing
+    from similaripy import serving
+
+    seen, real = [], serving.ItemKNN
+    monkeypatch.setattr(serving, "ItemKNN", lambda S, **kw: seen.append(kw) or real(S, **kw))
+    args = ("serve", "--mode", "block", "--block-threads", "1", "--model-k", "20", "--k", "10", "--rounds", "1")
+    rep = run(*args, "--block-size", "16")
+    assert seen == [{"block_size": 16}, {"block_size": None}]
+    assert rep["info"]["block_size"] == 16 and rep["info"]["block_control"] is False
+    seen.clear()
+    assert run(*args)["info"]["block_size"] == "auto" and seen == [{}, {"block_size": None}]
+
+
 def test_serve_model_cache(run, monkeypatch, tmp_path):
     # --model-cache: the first run builds and saves S, the next one serves the saved S; off by default
     import loaders
@@ -236,7 +262,8 @@ GATE_OS = pytest.mark.skipif(sys.platform == "win32", reason="gate.py samples lo
 
 @GATE_OS
 def test_gate_dry(monkeypatch, tmp_path):
-    # The quick gate's plumbing on the synthetic dataset: every step runs both builds, the verdict covers every case
+    # The quick gate's plumbing on the synthetic dataset, + an --extra step: every step runs both builds, the verdict
+    # covers every case, serving metrics included (p99, CPU per request)
     monkeypatch.syspath_prepend(str(BENCH))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SIMILARIPY_BENCH_DATA", str(tmp_path / "cache"))  # --model-cache writes there
@@ -244,13 +271,29 @@ def test_gate_dry(monkeypatch, tmp_path):
 
     gate.SAMPLE_S, gate.BURST_SHARE = 1, 2.0  # no reruns: background load on a test machine is not the point
     py = sys.executable
-    gate.main(["quick", "--base", py, "--cand", py, "--tag", "g", "--pairs", "1", "--dry", "--output-dir", "out"])
+    args = ["quick", "--base", py, "--cand", py, "--tag", "g", "--pairs", "1", "--dry", "--output-dir", "out"]
+    gate.main([*args, "--extra", "y50m-recommend"])
     steps = (tmp_path / "out" / "steps.tsv").read_text().splitlines()[1:]
-    assert [s.split("\t")[3] for s in steps] == ["0"] * len(gate.steps("quick"))
+    assert [s.split("\t")[3] for s in steps] == ["0"] * (len(gate.steps("quick")) + 1)
     verdict = (tmp_path / "out" / "verdict.md").read_text()
-    for step, case in (("y50m-kernel", "cosine"), ("y500m-kernel", "rp3beta"), ("y500m-block", "block_one_t6")):
+    for step, case in (
+        ("y50m-kernel", "cosine"),
+        ("y500m-kernel", "rp3beta_bayesian"),
+        ("y500m-kernel", "cosine_stabilized"),
+        ("y500m-block", "block_one_t6"),
+        ("y50m-recommend", "recommend"),
+        ("y500m-lat", "latency_cap50_cold"),
+    ):
         assert f"| {step} | {case} |" in verdict
+    for metric in ("total", "p99_us", "cpu_us_per_request"):
+        assert f"| y50m-conc | concurrent_default_c6 | {metric} |" in verdict
     assert len((tmp_path / "out" / "timeline.tsv").read_text().splitlines()) > 1
+    # Extras run after the tier in table order, once; the full tier holds them all
+    names = [name for _, name, _ in gate.steps("quick", extra=["y50m-recommend", "ml32m-kernel", "y500m-lat"])]
+    assert names[len(gate.steps("quick")) :] == ["ml32m-kernel", "y50m-recommend"]
+    full = {name: a for _, name, a in gate.steps("full", extra=["ml32m-lat"])}
+    assert len(full) == len(gate.steps("full")) and {"y500m-lat", "y50m-conc", "y50m-recommend"} <= set(full)
+    assert full["y500m-lat"] == ["serve", *gate.Y500, *full["ml32m-lat"][1 + len(gate.ML) :]]
 
 
 @GATE_OS

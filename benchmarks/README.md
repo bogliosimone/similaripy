@@ -112,9 +112,10 @@ uv run --group bench python benchmarks/gate.py quick --base ~/wt/base/.venv/bin/
     --cand .venv/bin/python --tag my-change --until 07:30
 ```
 
-- **quick** (~30 min): Y50M then Y500M, kernel (cosine, rp3beta) and serving batch (`--model-cache`), `--threads` (default 6, the M2 Pro's performance cores: E-cores add noise). **full** (~60 min, once per PR): + Y500M serving at 1 thread, ML-32M kernel / serving / latency, model build.
+- **Priorities (D90):** 1. online serving (`ItemKNN.recommend`: most requests/s at the least CPU, p99 under load), 2. batch serving (`recommend_batch`: throughput), 3. offline similarity (Y500M decides; small-dataset losses OK for simpler prep). Shared code (kernel, `TopK`, block size) is judged in that order: a tier-1 loss blocks, a few % tier-3 loss is acceptable for a tier-1 win. `dot_product` for recommendations is discouraged: a control, no perf tier.
+- **quick** (~55 min): Y50M then Y500M, kernel (one workload per scoring mode: `cosine` = DOT, as `rp3beta` and `dot_product`; `cosine_stabilized` = COSINE; `rp3beta_bayesian` = FULL) and serving batch (`--model-cache`), `--threads` (default 6, the M2 Pro's performance cores: E-cores add noise), then concurrent callers (Y50M, Y500M) and Y500M single-request latency. **full** (~85 min, once per PR): + Y500M serving at 1 thread, ML-32M kernel / serving / latency, model build, Y50M `dot_product(URM, S)` (control). `--extra STEP ...` adds some full-tier steps to a quick run (e.g. `--extra ml32m-kernel y500m-lat`: what a change targets), after the tier's steps.
 - **Never idle:** no waiting for a quiet machine. A sampler records the load and the CPU used by every process outside the gate every 10 s (CPU time differences, the same on macOS and Linux; a VM's steal time isn't seen) in `timeline.tsv`; a step with > 100% such CPU in > 10% of its samples is rerun once at the end. `--until HH:MM`: a step starts only if its estimate (scaled by `--pairs`, ≥ 2) ends before. A failed or skipped step is a row of the verdict (exit 1 on a failure); an output dir that already holds a run is refused.
-- **Output** (`--output-dir`, default `bench_results/gate-{tag}`): abba.py's reports per step, `steps.tsv` (time, load, burst share per step), `verdict.md`: per case, the change in every pair and win / loss (same sign, each ≥ 3%), small (same sign, some pair below), neutral (mixed), noisy.
+- **Output** (`--output-dir`, default `bench_results/gate-{tag}`): abba.py's reports per step, `steps.tsv` (time, load, burst share per step), `verdict.md`: per case and metric (the kernel phase, else total; plus `p99_us` and `cpu_us_per_request` where recorded), the change in every pair and win / loss (same sign, each ≥ 3%), small (same sign, some pair below), neutral (mixed), noisy.
 - macOS and Linux (the sampler reads `ps` and the load average; on Windows it's down and the verdict says so).
 - `--dry`: every step on the synthetic dataset, to check the plumbing (`tests/test_benchmarks.py` runs it).
 
@@ -123,10 +124,10 @@ uv run --group bench python benchmarks/gate.py quick --base ~/wt/base/.venv/bin/
 | Change | Run |
 |---|---|
 | Iterating | `run.py similarity --dataset movielens --similarities cosine` |
-| Kernel / serving hot path (`accumulate`, `accumulate_below`, drain, `TopK`, the blocked loops) | `gate.py quick` vs the previous commit (~30 min; Y500M decides); `gate.py full` once per PR. A change counts when every pair shows it with the same sign, ≥ 3% (D40 P6) |
+| Kernel / serving hot path (`accumulate`, `accumulate_below`, drain, `TopK`, the blocked loops) | `gate.py quick` vs the previous commit (~55 min; Y500M decides); `gate.py full` once per PR. A change counts when every pair shows it with the same sign, ≥ 3% (D40 P6) |
 | Prep, output build, Python wrappers | ML-32M + Y50M total, `small --cases all` |
 | Memory | `--rss` (fresh process per case) |
-| Serving latency, block size | `serve --mode latency` on ML-32M (in `gate.py full`); `serve --mode block` at 1 thread and the core count (D65) |
+| Serving latency, block size | `serve --mode latency` on ML-32M and Y500M (in `gate.py full`, or `--extra`); `serve --mode block` at 1 thread and the core count (D65) |
 | rustc upgrade | see "Codegen-sensitive hot loops" |
 | Other libraries (adapter, pin bump) | `make bench-crosslib-test`, then `crosslib --check` on ML-32M per library (see "Other libraries") |
 | Release history / other versions | `abba.py --base pypi:0.7.0 ...` (total only; the PyPI wheel is not the `v1-cython-ref` local build behind older "vs cpp" numbers: different compiler and flags, not comparable) |

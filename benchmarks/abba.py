@@ -78,6 +78,11 @@ def check_fresh(cmd, cwd):
         sys.exit(f"error: {root}: the extension is older than its Rust sources; rebuild it (make install-dev)")
 
 
+# Phases, then the extras a verdict also reads (serving: tail latency, CPU per request; D90)
+EXTRAS = ("p99_us", "cpu_us_per_request")
+METRICS = ("total", "kernel", *EXTRAS)
+
+
 def run_tags(tag, n_pairs):
     """{run tag: (side, pair)} of one ABBA."""
     return {f"{tag}-{side}-{i}": (side, i) for i in range(1, n_pairs + 1) for side in ("base", "cand")}
@@ -155,8 +160,10 @@ def main(argv=None):
             )
 
     summary = {}
-    for metric in ("total", "kernel"):
+    for metric in METRICS:
         table = pairs_table(out_dir, args.tag, args.pairs, metric)
+        if metric in EXTRAS and all(d is None for rows in table.values() for _, _, d in rows):
+            continue  # an extra this workload doesn't record
         print(f"\n{metric} (cand vs base per pair; same sign in every pair = a candidate change)")
         for name, rows in table.items():
             deltas = [d for _, _, d in rows]
