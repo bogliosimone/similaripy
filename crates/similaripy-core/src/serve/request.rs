@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use super::model::{BlockSize, Entry, Model};
 use super::{bit, invalid, words};
 use crate::Error;
+use crate::kernel::prefetch;
 use crate::topk::TopK;
 
 /// As the similarity functions' default threshold 0: negative scores never
@@ -417,24 +418,6 @@ unsafe fn accumulate<const BOUNDED: bool>(
 /// k <= 128 row; longer rows stream on the hardware prefetcher after that).
 const PREFETCH_ROWS: usize = 4;
 const PREFETCH_LINES: usize = 16;
-
-/// A read prefetch hint into L1: never faults, no-op where the target has none here.
-// ponytail: aarch64 and x86_64 only (the release targets); others skip the hint, same results.
-#[inline(always)]
-fn prefetch(p: *const u8) {
-    #[cfg(all(target_arch = "aarch64", not(miri)))] // Miri runs no inline asm
-    // SAFETY: a prefetch hint never faults and writes nothing.
-    unsafe {
-        core::arch::asm!("prfm pldl1keep, [{0}]", in(reg) p, options(nostack, preserves_flags, readonly));
-    }
-    #[cfg(all(target_arch = "x86_64", not(miri)))]
-    // SAFETY: as above.
-    unsafe {
-        core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(p.cast::<i8>());
-    }
-    #[cfg(any(miri, not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
-    let _ = p;
-}
 
 /// One history row's segment in the block `[start, hi)`, its cursor moved past it. Out of line so the accumulate
 /// loops keep the registers they had before the prefetch (x86_64: no extra stack operand); one call per row.

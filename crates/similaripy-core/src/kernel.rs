@@ -559,7 +559,15 @@ impl Scratch {
         // m2 indices < m2.n_cols == sums.len() (all checked at construction/validate).
         unsafe {
             let (u_cols, u_vals) = inp.m1.row_unchecked(t);
-            for (&u, &v1) in u_cols.iter().zip(u_vals) {
+            for i in 0..u_cols.len() {
+                // Prefetch the head of the m2 row PREFETCH_ROWS ahead: each row starts at an address the
+                // hardware prefetcher can't predict; long rows stream after that. M2 Pro vs no prefetch
+                // (night13, bits unchanged): ML-32M −4..−5%, Y500M −2..−4%, Y50M flat; short rows gain most.
+                if let Some(&un) = u_cols.get(i + PREFETCH_ROWS) {
+                    let (pc, pv) = inp.m2.row_unchecked(un as usize);
+                    prefetch_span(pc, pv);
+                }
+                let (u, v1) = (*u_cols.get_unchecked(i), *u_vals.get_unchecked(i));
                 let (c_cols, c_vals) = inp.m2.row_unchecked(u as usize);
                 accumulate(&mut self.sums, &mut self.touched, c_cols, c_vals, v1, 0);
             }
@@ -599,7 +607,18 @@ impl Scratch {
         }));
         for start in (0..n_cols).step_by(block) {
             let hi = (start + block).min(n_cols);
-            for (cur, &v1) in self.cursor.iter_mut().zip(u_vals) {
+            for i in 0..self.cursor.len() {
+                // Prefetch as in `single_block_row`, the in-block part of the row ahead.
+                if let Some(&(ppos, pend, pnext)) = self.cursor.get(i + PREFETCH_ROWS)
+                    && pnext < hi
+                {
+                    // SAFETY: ppos..pend is a suffix of an m2 row span.
+                    let (pc, pv) = unsafe { inp.m2.span_unchecked(ppos, pend) };
+                    prefetch_span(pc, pv);
+                }
+                // SAFETY: i < cursor.len() == u_vals.len().
+                let (cur, v1) =
+                    unsafe { (self.cursor.get_unchecked_mut(i), *u_vals.get_unchecked(i)) };
                 let (pos, end, next) = *cur;
                 // Cached (as serving's request loop): a row with nothing in this
                 // block costs no load from m2.
@@ -817,6 +836,39 @@ pub(crate) unsafe fn accumulate_below(
 #[inline(always)]
 pub(crate) fn next_col(cols: &[i32], n: usize) -> usize {
     cols.get(n).map_or(usize::MAX, |&c| c as usize)
+}
+
+/// m2 rows ahead to prefetch, and the most lines prefetched per array (8 lines = 128 entries; longer rows
+/// stream on the hardware prefetcher after that).
+const PREFETCH_ROWS: usize = 8;
+const PREFETCH_LINES: usize = 8;
+
+/// Hints the head of an m2 row span (both arrays) into L1.
+#[inline(always)]
+fn prefetch_span(cols: &[i32], vals: &[f32]) {
+    let bytes = cols.len().min(PREFETCH_LINES * 16) * 4;
+    for off in (0..bytes).step_by(64) {
+        prefetch(cols.as_ptr().cast::<u8>().wrapping_add(off));
+        prefetch(vals.as_ptr().cast::<u8>().wrapping_add(off));
+    }
+}
+
+/// A read prefetch hint into L1: never faults, no-op where the target has none here.
+// ponytail: aarch64 and x86_64 only (the release targets); others skip the hint, same results.
+#[inline(always)]
+pub(crate) fn prefetch(p: *const u8) {
+    #[cfg(all(target_arch = "aarch64", not(miri)))] // Miri runs no inline asm
+    // SAFETY: a prefetch hint never faults and writes nothing.
+    unsafe {
+        core::arch::asm!("prfm pldl1keep, [{0}]", in(reg) p, options(nostack, preserves_flags, readonly));
+    }
+    #[cfg(all(target_arch = "x86_64", not(miri)))]
+    // SAFETY: as above.
+    unsafe {
+        core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(p.cast::<i8>());
+    }
+    #[cfg(any(miri, not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
+    let _ = p;
 }
 
 #[cfg(test)]
