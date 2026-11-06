@@ -18,42 +18,36 @@
 //! push's float compare does not: a +-0.0 entry never outranks a positive score
 //! at a cut, and the drains drop both.
 
-use std::cmp::Ordering;
-
-#[derive(Clone, Copy, PartialEq)]
-struct Entry {
-    score: f32,
-    col: i32,
+/// An entry as one integer in the top-K's order, better = smaller: the score
+/// in `total_cmp` order, inverted (higher first), above the column (lower
+/// first). One integer compare per step of the cut and the sorts, where the
+/// (score, col) pair took a `total_cmp` and a column tie-break (D2: the cut and
+/// the final sort are 25-35% of a cap-10 serving request).
+#[inline(always)]
+fn key(score: f32, col: i32) -> u64 {
+    let t = score.to_bits() as i32;
+    let t = t ^ (((t >> 31) as u32) >> 1) as i32; // total_cmp order as i32
+    let hi = !((t as u32) ^ 0x8000_0000); // as u32, inverted: higher score first
+    (u64::from(hi) << 32) | u64::from((col as u32) ^ 0x8000_0000)
 }
 
-impl Eq for Entry {}
-
-impl Ord for Entry {
-    /// Greater = better: higher score, then lower column.
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.score
-            .total_cmp(&other.score)
-            .then(other.col.cmp(&self.col))
-    }
-}
-
-impl PartialOrd for Entry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// Better first: higher score, then lower column (a total order: columns are
-/// unique among non-zero scores, and equal entries are interchangeable).
-fn better(a: &Entry, b: &Entry) -> Ordering {
-    b.cmp(a)
+/// `key`'s inverse: (score, col).
+#[inline(always)]
+fn unkey(key: u64) -> (f32, i32) {
+    let t = (!((key >> 32) as u32) ^ 0x8000_0000) as i32;
+    let bits = t ^ (((t >> 31) as u32) >> 1) as i32; // the map is its own inverse
+    (
+        f32::from_bits(bits as u32),
+        ((key as u32) ^ 0x8000_0000) as i32,
+    )
 }
 
 pub struct TopK {
     k: usize,
     /// Buffer length that triggers a cut: `cap_for(k)`.
     cap: usize,
-    buf: Vec<Entry>,
+    /// `key`s, unordered between cuts.
+    buf: Vec<u64>,
     /// Lowest score push accepts: -inf until the first cut, then the k-th best.
     min: f32,
     cut: bool,
@@ -93,7 +87,7 @@ impl TopK {
         if !(score >= self.min) || self.k == 0 {
             return;
         }
-        self.buf.push(Entry { score, col });
+        self.buf.push(key(score, col));
         if self.buf.len() == self.cap {
             self.cut_to_k();
         }
@@ -106,9 +100,9 @@ impl TopK {
     #[cold]
     #[inline(never)]
     fn cut_to_k(&mut self) {
-        self.buf.select_nth_unstable_by(self.k - 1, better);
+        self.buf.select_nth_unstable(self.k - 1);
         self.buf.truncate(self.k);
-        self.min = self.buf[self.k - 1].score;
+        self.min = unkey(self.buf[self.k - 1]).0;
         self.cut = true;
     }
 
@@ -147,15 +141,17 @@ impl TopK {
         values: &mut [f32],
     ) -> usize {
         self.keep_k();
-        if let Some(map) = col_map {
-            for e in &mut self.buf {
-                e.col = map[e.col as usize];
-            }
+        // Re-keyed by (column, score bits): the integer sort orders by column
+        // (unique once zeros are dropped).
+        for e in &mut self.buf {
+            let (score, col) = unkey(*e);
+            let col = col_map.map_or(col, |map| map[col as usize]);
+            *e = (u64::from((col as u32) ^ 0x8000_0000) << 32) | u64::from(score.to_bits());
         }
-        self.buf.sort_unstable_by_key(|e| e.col);
-        for ((e, c), v) in self.buf.iter().zip(cols).zip(values) {
-            *c = e.col;
-            *v = e.score;
+        self.buf.sort_unstable();
+        for ((&e, c), v) in self.buf.iter().zip(cols).zip(values) {
+            *c = (((e >> 32) as u32) ^ 0x8000_0000) as i32;
+            *v = f32::from_bits(e as u32);
         }
         let n = self.buf.len();
         self.reset();
@@ -168,10 +164,10 @@ impl TopK {
     pub fn drain_by_score(&mut self, cols: &mut Vec<i32>, values: &mut Vec<f32>, sorted: bool) {
         self.keep_k();
         if sorted {
-            self.buf.sort_unstable_by(better);
+            self.buf.sort_unstable();
         }
-        cols.extend(self.buf.iter().map(|e| e.col));
-        values.extend(self.buf.iter().map(|e| e.score));
+        cols.extend(self.buf.iter().map(|&e| unkey(e).1));
+        values.extend(self.buf.iter().map(|&e| unkey(e).0));
         self.reset();
     }
 
@@ -181,7 +177,7 @@ impl TopK {
         if self.buf.len() > self.k {
             self.cut_to_k();
         }
-        self.buf.retain(|e| e.score != 0.0);
+        self.buf.retain(|&e| unkey(e).0 != 0.0);
     }
 
     fn reset(&mut self) {
@@ -292,8 +288,53 @@ mod tests {
         assert_eq!(TopK::new(0).floor(0.5), f32::INFINITY);
     }
 
+    #[test]
+    fn key_orders_as_score_desc_then_col_asc() {
+        let scores = [
+            f32::NEG_INFINITY,
+            -2.5,
+            -f32::MIN_POSITIVE,
+            -1e-45,
+            -0.0,
+            0.0,
+            1e-45,
+            0.5,
+            1.0,
+            f32::MAX,
+            f32::INFINITY,
+        ];
+        let cols = [i32::MIN, -1, 0, 1, 7, i32::MAX];
+        let all: Vec<(f32, i32)> = scores
+            .iter()
+            .flat_map(|&s| cols.iter().map(move |&c| (s, c)))
+            .collect();
+        for &(sa, ca) in &all {
+            assert_eq!(unkey(key(sa, ca)).0.to_bits(), sa.to_bits());
+            assert_eq!(unkey(key(sa, ca)).1, ca);
+            for &(sb, cb) in &all {
+                let want = sb.total_cmp(&sa).then(ca.cmp(&cb)); // better first
+                assert_eq!(
+                    key(sa, ca).cmp(&key(sb, cb)),
+                    want,
+                    "({sa}, {ca}) vs ({sb}, {cb})"
+                );
+            }
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 1000 }))]
+        // Any non-NaN scores and columns: the key's integer order is the
+        // top-K's order, and unkey inverts key bit for bit.
+        #[test]
+        fn key_matches_the_order_on_any_bits(a in any::<u32>(), b in any::<u32>(), ca in any::<i32>(), cb in any::<i32>()) {
+            let (sa, sb) = (f32::from_bits(a), f32::from_bits(b));
+            prop_assume!(!sa.is_nan() && !sb.is_nan());
+            prop_assert_eq!(unkey(key(sa, ca)).1, ca);
+            prop_assert_eq!(unkey(key(sa, ca)).0.to_bits(), a);
+            prop_assert_eq!(key(sa, ca).cmp(&key(sb, cb)), sb.total_cmp(&sa).then(ca.cmp(&cb)));
+        }
+
         // Any push order keeps the same entries: the brute-force k best under
         // (score desc, col asc). Few distinct scores, so ties are everywhere.
         #[test]
