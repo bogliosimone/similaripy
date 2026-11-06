@@ -295,26 +295,36 @@ impl Scratch {
         while start < n_active {
             let hi = (start + block).min(n_active);
             self.preset(start, hi, f32::NEG_INFINITY);
-            for (cur, &(_, w)) in self.cursor.iter_mut().zip(&self.hist) {
-                let (pos, end, next) = *cur;
-                // Cached, so a row with nothing in this block costs no load from S.
-                if next >= hi {
-                    continue;
-                }
-                // SAFETY: a suffix of a row span.
-                let p = unsafe { pairs.get_unchecked(pos..end) };
-                // Not empty (next < hi). The last block takes the rest of the row
-                // (every column < n_active); a row past the block end stops inside the
-                // accumulate loop, no search first.
-                // SAFETY: start <= c < hi, so c - start < block <= sums.len().
-                let n = unsafe {
-                    if hi == n_active || (p[p.len() - 1].col as usize) < hi {
-                        accumulate::<false>(&mut self.sums, &mut self.touched, p, w, start, hi)
-                    } else {
-                        accumulate::<true>(&mut self.sums, &mut self.touched, p, w, start, hi)
+            for i in 0..self.cursor.len() {
+                // Prefetch the in-block part of a row PREFETCH_ROWS ahead: each history row of S starts at an
+                // unpredictable address the hardware prefetcher can't reach, and a k = 100 row is ~13 lines.
+                // Overlapping those misses across rows (M2 Pro vs no prefetch, bits unchanged): Y500M latency
+                // −13..−37%, 6 concurrent callers −43..−46%, batch −30..−48%, ML-32M −8..−42%; 2..16 rows ahead
+                // all within a few %.
+                if let Some(&(ppos, pend, pnext)) = self.cursor.get(i + PREFETCH_ROWS)
+                    && pnext < hi
+                {
+                    let bytes =
+                        (pend - ppos).min(PREFETCH_LINES * 8) * std::mem::size_of::<Entry>();
+                    // SAFETY: ppos < pend <= pairs.len(); the hints stay inside the row.
+                    let base = unsafe { pairs.as_ptr().add(ppos) }.cast::<u8>();
+                    for off in (0..bytes).step_by(64) {
+                        prefetch(base.wrapping_add(off));
                     }
+                }
+                // SAFETY: i < cursor.len() == hist.len(); forwarded (`accumulate_all`'s contract).
+                unsafe {
+                    accumulate_row(
+                        &mut self.sums,
+                        &mut self.touched,
+                        pairs,
+                        self.cursor.get_unchecked_mut(i),
+                        self.hist.get_unchecked(i).1,
+                        start,
+                        hi,
+                        n_active,
+                    )
                 };
-                *cur = (pos + n, end, next_col(p, n));
             }
             if !self.touched.is_empty() {
                 // SAFETY: forwarded.
@@ -401,6 +411,67 @@ unsafe fn accumulate<const BOUNDED: bool>(
     // SAFETY: entries [len, n) were written above, n <= capacity.
     unsafe { touched.set_len(n) };
     taken
+}
+
+/// History rows ahead to prefetch, and the most lines prefetched per row (16 lines = 128 entries: a whole
+/// k <= 128 row; longer rows stream on the hardware prefetcher after that).
+const PREFETCH_ROWS: usize = 4;
+const PREFETCH_LINES: usize = 16;
+
+/// A read prefetch hint into L1: never faults, no-op where the target has none here.
+// ponytail: aarch64 and x86_64 only (the release targets); others skip the hint, same results.
+#[inline(always)]
+fn prefetch(p: *const u8) {
+    #[cfg(all(target_arch = "aarch64", not(miri)))] // Miri runs no inline asm
+    // SAFETY: a prefetch hint never faults and writes nothing.
+    unsafe {
+        core::arch::asm!("prfm pldl1keep, [{0}]", in(reg) p, options(nostack, preserves_flags, readonly));
+    }
+    #[cfg(all(target_arch = "x86_64", not(miri)))]
+    // SAFETY: as above.
+    unsafe {
+        core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(p.cast::<i8>());
+    }
+    #[cfg(any(miri, not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
+    let _ = p;
+}
+
+/// One history row's segment in the block `[start, hi)`, its cursor moved past it. Out of line so the accumulate
+/// loops keep the registers they had before the prefetch (x86_64: no extra stack operand); one call per row.
+///
+/// # Safety
+/// As `Scratch::accumulate_all`: the cursor is a suffix of its row's span, `hi - start <= sums.len()`.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+unsafe fn accumulate_row(
+    sums: &mut [f32],
+    touched: &mut Vec<u32>,
+    pairs: &[Entry],
+    cur: &mut (usize, usize, usize),
+    w: f32,
+    start: usize,
+    hi: usize,
+    n_active: usize,
+) {
+    let (pos, end, next) = *cur;
+    // Cached, so a row with nothing in this block costs no load from S.
+    if next >= hi {
+        return;
+    }
+    // SAFETY: a suffix of a row span.
+    let p = unsafe { pairs.get_unchecked(pos..end) };
+    // Not empty (next < hi). The last block takes the rest of the row
+    // (every column < n_active); a row past the block end stops inside the
+    // accumulate loop, no search first.
+    // SAFETY: start <= c < hi, so c - start < block <= sums.len().
+    let n = unsafe {
+        if hi == n_active || (p[p.len() - 1].col as usize) < hi {
+            accumulate::<false>(sums, touched, p, w, start, hi)
+        } else {
+            accumulate::<true>(sums, touched, p, w, start, hi)
+        }
+    };
+    *cur = (pos + n, end, next_col(p, n));
 }
 
 /// The column at `p[n]`, `usize::MAX` past the end (never in a block).
