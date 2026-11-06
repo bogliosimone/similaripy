@@ -283,6 +283,9 @@ def test_gate_dry(monkeypatch, tmp_path):
         ("y500m-block", "block_one_t6"),
         ("y50m-recommend", "recommend"),
         ("y500m-lat", "latency_cap50_cold"),
+        ("y500m-lat", "latency_cap10_warm"),  # D101 caps: 10 / 50 / 200 / none
+        ("y500m-lat", "latency_cap200_cold"),
+        ("y500m-lat", "latency_capnone_warm"),
     ):
         assert f"| {step} | {case} |" in verdict
     for metric in ("total", "p99_us", "cpu_us_per_request"):
