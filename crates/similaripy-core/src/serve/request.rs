@@ -5,7 +5,7 @@ use std::cell::Cell;
 
 use rayon::prelude::*;
 
-use super::model::{Entry, Model};
+use super::model::{BlockSize, Entry, Model};
 use super::{bit, invalid, words};
 use crate::Error;
 use crate::topk::TopK;
@@ -28,7 +28,7 @@ pub struct Request<'a> {
     pub include: Option<&'a [i64]>,
     /// Never recommend these items.
     pub exclude: Option<&'a [i64]>,
-    /// Best first; false = the same items in heap order (no sort).
+    /// Best first; false = the same items in any order (no sort).
     pub sorted: bool,
 }
 
@@ -235,10 +235,21 @@ impl Scratch {
             }
         }
         self.topk.set_k(req.k.min(m.n_active));
-        let block = if m.block == 0 || m.block >= m.n_active {
-            m.n_active
+        // 'auto' per call. A batch: its rayon pool's threads share the cache. A
+        // single request can't see the server's other callers, so it assumes
+        // every core on its L2 is busy (D65: one block wins alone, loses 9-38%
+        // under concurrent requests); usize::MAX clamps to the L2's cores.
+        let block = if m.block_size == BlockSize::Auto {
+            let threads =
+                rayon::current_thread_index().map_or(usize::MAX, |_| rayon::current_num_threads());
+            crate::block::auto_block_size(m.n_active, threads, 4)
         } else {
             m.block
+        };
+        let block = if block == 0 || block >= m.n_active {
+            m.n_active
+        } else {
+            block
         };
         if self.sums.len() < block {
             self.sums.resize(block, 0.0);

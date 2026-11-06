@@ -16,5 +16,9 @@ rayon = "1.12"
 memmap2 = "0.9.11"
 serde_json = "1.0.154"
 
+# Cache sizes for the block-size estimate (`block.rs`): sysctlbyname (already in the tree via memmap2)
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.190"
+
 [dev-dependencies]
 proptest = "1.12"

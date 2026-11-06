@@ -1,5 +1,5 @@
-//! Top-K similarity kernel: dense accumulator + list of touched columns, heap
-//! top-K; rows in parallel with rayon.
+//! Top-K similarity kernel: dense accumulator + list of touched columns, top-K
+//! buffer; rows in parallel with rayon.
 
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -681,7 +681,7 @@ impl Scratch {
 /// `Scratch::drain`'s loop. A free function over slices and locals, like
 /// `accumulate`: as a `&mut self` method LLVM reloaded `sums`' pointer every
 /// column (the reset store might alias `Scratch`), and the top-K reject read
-/// the heap's length, pointer and root from memory. Here the row's norm terms
+/// the top-K's state from memory. Here the row's norm terms
 /// and the lowest acceptable score (`floor`) stay in registers.
 ///
 /// # Safety
@@ -700,8 +700,8 @@ unsafe fn drain_impl<const POW: bool, const MODE: u8>(
     let p = &inp.params;
     // SAFETY: t in range of the active norms (validate).
     let x = unsafe { p.row_terms(&inp.norms, t) };
-    // `val >= floor` is the threshold test while the heap fills and push's
-    // root reject once it is full (the root passed the threshold): same pushes.
+    // `val >= floor` is the threshold test until the top-K's first cut and
+    // push's floor reject after it (the k-th best passed the threshold): same pushes.
     let mut floor = topk.floor(p.threshold);
     // Back to front: the floor rises sooner, 35-73% fewer top-K replacements
     // (perf gates T0 counters: ML-32M, Y50M, Y500M; cosine, rp3beta). Same

@@ -1,5 +1,6 @@
 //! SimilariPy core: top-K sparse similarity kernels in pure Rust.
 
+pub mod block;
 pub mod csr;
 mod kernel;
 pub mod normalize;
@@ -11,8 +12,9 @@ mod topk;
 pub use csr::{CsrPattern, CsrView};
 pub use kernel::{Inputs, Norms, Output, Params, compute};
 
-/// Accumulator block in float32 entries (~1 MB): `block_size='auto'` of the
-/// similarity functions and the serving model.
+/// Accumulator block in float32 entries (~1 MB): the smallest block
+/// `block_size='auto'` picks, and its size when the L2 cache is unknown
+/// (`block::estimate`).
 pub const DEFAULT_BLOCK_SIZE: usize = 262_144;
 
 #[derive(Debug, Clone, PartialEq)]

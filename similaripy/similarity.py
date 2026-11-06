@@ -63,7 +63,7 @@ def dot_product(
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
-            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            from the output width, the L2 cache and the threads; may change in future versions),
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
@@ -138,7 +138,7 @@ def cosine(
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
-            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            from the output width, the L2 cache and the threads; may change in future versions),
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
@@ -219,7 +219,7 @@ def asymmetric_cosine(
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
-            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            from the output width, the L2 cache and the threads; may change in future versions),
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
@@ -305,7 +305,7 @@ def tversky(
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
-            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            from the output width, the L2 cache and the threads; may change in future versions),
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
@@ -384,7 +384,7 @@ def jaccard(
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
-            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            from the output width, the L2 cache and the threads; may change in future versions),
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
@@ -462,7 +462,7 @@ def dice(
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
-            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            from the output width, the L2 cache and the threads; may change in future versions),
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
@@ -545,7 +545,7 @@ def p3alpha(
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
-            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            from the output width, the L2 cache and the threads; may change in future versions),
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
@@ -628,7 +628,7 @@ def rp3beta(
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
-            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            from the output width, the L2 cache and the threads; may change in future versions),
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:
@@ -737,7 +737,7 @@ def s_plus(
         num_threads: Number of threads (0 = all cores on the shared rayon pool, or
             `RAYON_NUM_THREADS`; concurrent calls queue on it).
         block_size: Block size for column-blocked accumulation: 'auto' (the library's choice,
-            currently 262144 float32 entries, ~1 MB; may adapt in future versions),
+            from the output width, the L2 cache and the threads; may change in future versions),
             None = disabled, int > 0 = explicit size in float32 entries.
 
     Returns:

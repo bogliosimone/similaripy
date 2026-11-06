@@ -39,7 +39,7 @@ All similarity functions in Similaripy share the following parameters (everythin
 | `verbose`        | If `True`, shows a progress bar. *(default: `False`)* |
 | `format_output`  | Output format: `'csr'` or `'coo'`. *(default: `'csr'`)* |
 | `num_threads`    | Number of threads to use. `0` = all cores, on one shared thread pool (concurrent calls queue on it; `RAYON_NUM_THREADS` caps it). *(default: `0`)* |
-| `block_size`     | Block size for column-blocked accumulation. `'auto'` (recommended: the library's choice, currently 262144 float32 entries, ~1 MB; may adapt in future versions), `None` = disabled, or an int > 0. Results are the same at any size. *(default: `'auto'`)* |
+| `block_size`     | Block size for column-blocked accumulation. `'auto'` (recommended: the library's choice, from the output width, the L2 cache and the threads; may change in future versions), `None` = disabled, or an int > 0. Results are the same at any size. *(default: `'auto'`)* |
 
 ## Shrinkage Types
 

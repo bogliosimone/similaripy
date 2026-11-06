@@ -580,7 +580,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 1000 }))]
     // Small integers make ties common; with k < n the tie rule (lower column
     // wins) decides which tied columns stay, so blocked == single-block only
-    // if the result is independent of the order columns reach the heap.
+    // if the result is independent of the order columns reach the top-K.
     #[test]
     fn blocked_matches_single_block_with_ties(
         (m1, m2, n, k, block) in (1usize..6, 1usize..8, 2usize..40).prop_flat_map(|(r, m, n)| {
