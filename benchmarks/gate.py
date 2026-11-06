@@ -6,7 +6,7 @@ The core's benchmark gate: two builds, ABBA (abba.py) on a fixed list of steps, 
 Tiers (the decision rests on Y500M, the library's scale; ML-32M and Y50M are cheap early signals; priorities
 D90: online serving > batch serving > offline similarity):
   - quick (~55 min): Y50M then Y500M, kernel (one workload per scoring mode) and serving batch, --threads (the P-cores), then
-    concurrent callers (Y50M, Y500M) and Y500M single-request latency;
+    concurrent callers (Y50M, Y500M) and Y500M single-request latency (history caps 10, 50, 200, none);
   - full (~85 min, once per PR): quick + Y500M serving at 1 thread, ML-32M kernel / serving / latency, build,
     Y50M dot_product(URM, S) (a control: discouraged for recommendations, no perf tier);
   - --extra STEP ...: some full-tier steps on top of a quick run (D83), e.g. what a probe targets.
@@ -42,6 +42,8 @@ ML, Y50, Y500 = ["--dataset", "movielens"], ["--dataset", "yambda"], ["--dataset
 # the same code), cosine_stabilized = COSINE, rp3beta_bayesian = FULL. Other DOT data (rp3beta, dot_product) via a probe.
 SIMS = ["--similarities", "cosine", "cosine_stabilized", "rp3beta_bayesian"]
 BLOCK = ["--mode", "block", "--rounds", "1", "--model-cache"]
+# history caps (D101): 10 near the fixed per-request cost, 50 / 200 the real-time profile range, uncapped for completeness
+CAPS = ["--caps", "10", "50", "200", "none"]
 
 
 def steps(tier, dry=False, threads=6, extra=()):
@@ -61,14 +63,14 @@ def steps(tier, dry=False, threads=6, extra=()):
                           "--rounds", "1", "--model-cache"]),
         (5, "y500m-conc", ["serve", *y500, "--mode", "concurrent", "--callers", t, "--requests", n,
                            "--rounds", "1", "--model-cache"]),
-        (8, "y500m-lat", ["serve", *y500, "--mode", "latency", "--caps", "50", "none", "--requests", n,
+        (10, "y500m-lat", ["serve", *y500, "--mode", "latency", *CAPS, "--requests", n,
                           "--rounds", "1", "--model-cache"]),
     ]  # fmt: skip
     full = [
         (15, "y500m-block-t1", ["serve", *y500, *BLOCK, "--block-threads", "1"]),
         (4, "ml32m-kernel", ["similarity", *ml, *SIMS, "--threads", t]),
         (3, "ml32m-block", ["serve", *ml, *BLOCK, "--block-threads", "1", t]),
-        (5, "ml32m-lat", ["serve", *ml, "--mode", "latency", "--caps", "50", "none", "--requests", n,
+        (6, "ml32m-lat", ["serve", *ml, "--mode", "latency", *CAPS, "--requests", n,
                           "--rounds", "1", "--model-cache"]),
         (3, "y50m-build", ["serve", *y50, "--mode", "build", "--rounds", "1"]),
         (4, "y50m-recommend", ["recommend", *y50, "--threads", t, "--warmup", "0"]),
