@@ -92,6 +92,13 @@ from similaripy.preprocessing import time_decay, rank_decay                     
 | `'linear'` | `max(0, 1 - age / scale)` | the horizon: 0 from there on |
 | `'step'` | `1 if age < scale, else 0` | a window |
 
+Events with weight 0 are dropped (`interactions_to_urm`, `interactions_to_histories`), so `'linear'` and `'step'` already cut every event past `scale`. To drop the events an `'exponential'` or `'power'` decay has faded to almost nothing (fewer history rows, faster requests), filter them yourself; a user whose events are all below the cut gets an empty history, so no recommendations:
+
+```python
+keep = w >= 1e-3                        # online: one history
+history, w = history[keep], w[keep]
+```
+
 ## Example
 
 `train` and `test` are your event logs (`user`, `item`, `ts` in epoch seconds), split by time.
