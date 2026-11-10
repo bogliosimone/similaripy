@@ -148,10 +148,13 @@ class ItemKNN:
             between versions. 'clustered' = the most popular items first, the
             rest grouped by their most popular neighbour (fewer cache misses
             on large catalogs). 'popularity' = most entries in the column of S
-            first (ties go to the more popular item, then the lower column).
-            'original' = S's own column order (usually slower on large
-            catalogs; can help when S's ids already group similar items).
-            Fixed at build: saved and pickled with the model.
+            first, then the lower column. 'original' = S's own column order
+            (usually slower on large catalogs; can help when S's ids already
+            group similar items). Exactly tied scores follow the layout: under
+            'clustered' the more popular item wins among the most popular
+            ones, otherwise the order is unspecified; under 'popularity' the
+            more popular item, under 'original' the lower column. Fixed at
+            build: saved and pickled with the model.
         block_size: column block size of every request, as the similarity
             functions': 'auto' (the library's choice), None (no blocking) or
             an int > 0. Results are the same; blocking is faster under

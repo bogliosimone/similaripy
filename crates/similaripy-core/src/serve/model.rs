@@ -134,7 +134,8 @@ impl BlockSize {
 
 /// The internal item order of a build (D115): speed only, plus which of two
 /// exactly tied items comes first (the lower internal id) and float noise in
-/// the last bits (the history sums in internal order). A pure function of S.
+/// the last bits (the history sums in internal order). A pure function of S
+/// and the kept columns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemOrder {
     /// The library's pick for typical recommender catalogs: `Clustered`
@@ -271,7 +272,8 @@ impl Model {
     /// column indices. `keep`: one flag per original column, None = all: the
     /// others are dropped first (S · diag(keep), `candidate_items`), then
     /// the order is computed on what is left, so the kept columns get the
-    /// first internal ids (rows of the others stay: their history signal).
+    /// first internal ids (rows of the others that still have a kept column
+    /// stay: their history signal; the rest score nothing and are dropped).
     /// No default mask. Peak memory: the model's own arrays plus O(n) (no
     /// canonical copy of S).
     pub fn new(
@@ -286,6 +288,7 @@ impl Model {
 
     /// As `new`, with `head` in place of `CLUSTER_HEAD` (tests: catalogs
     /// smaller than the head would never reach the clustered tail).
+    #[doc(hidden)]
     pub fn new_with_head(
         s: CsrView,
         ext: Option<Vec<i64>>,

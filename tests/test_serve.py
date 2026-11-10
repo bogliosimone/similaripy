@@ -252,12 +252,13 @@ def test_item_order_validation():
             ItemKNN(S, item_order=bad)
 
 
-def test_item_orders_same_scores_ties_by_internal_order():
+def test_item_orders_same_scores_ties_by_internal_order(tmp_path):
     """Past the clustered head (16384 items): every order gives the same
     scores; ties go to the lower internal id (the documented tie rule). A
     trimmed model (`candidate_items`) is ordered after the trim: its
     candidates with a column take the first internal ids (`n_active`), and it
-    answers as the full S with the candidates as include (D116)."""
+    answers as the full S with the candidates as include (D116). A clustered
+    tail survives pickle and save/load and doesn't depend on the threads."""
     n, k = 20_000, 50
     rng = np.random.default_rng(7)
     S = sp.random_array((n, n), density=4 / n, rng=rng, format="csr", dtype=np.float64)
@@ -268,8 +269,15 @@ def test_item_orders_same_scores_ties_by_internal_order():
     layout = {}
     for order in ("auto", "clustered", "popularity", "original"):
         for trim in (False, True):
-            rec = ItemKNN(S, item_order=order, candidate_items=cand if trim else None)
+            opts = {"item_order": order, "candidate_items": cand if trim else None}
+            rec = ItemKNN(S, **opts)
             new_to_old = rec._model.parts()[3]
+            if order == "clustered":
+                rec.save(tmp_path / str(trim))
+                for back in (pickle.loads(pickle.dumps(rec)), ItemKNN.load(tmp_path / str(trim))):
+                    for a, b in zip(rec._model.parts(), back._model.parts()):
+                        assert a == b if not isinstance(a, np.ndarray) else np.array_equal(a, b)
+                assert np.array_equal(ItemKNN(S, **opts, num_threads=1)._model.parts()[3], new_to_old)
             if trim:
                 n_cand = np.count_nonzero(counts[cand])
                 assert rec._model.n_active == n_cand
