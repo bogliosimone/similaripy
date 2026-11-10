@@ -231,6 +231,14 @@ def test_serve_item_order(run, monkeypatch):
     args = ("serve", "--mode", "block", "--block-threads", "1", "--model-k", "20", "--k", "10", "--rounds", "1")
     assert run(*args, "--item-order", "original")["info"]["item_order"] == "original"
     assert seen == [{"item_order": "original"}, {"item_order": "original", "block_size": None}]
+    # SIMILARIPY_BENCH_ITEM_ORDER = the default when the flag is unset (one wheel, two sides); the flag wins
+    monkeypatch.setenv("SIMILARIPY_BENCH_ITEM_ORDER", "popularity")
+    seen.clear()
+    assert run(*args)["info"]["item_order"] == "popularity"
+    assert run(*args, "--item-order", "original")["info"]["item_order"] == "original"
+    assert [kw["item_order"] for kw in seen] == ["popularity"] * 2 + ["original"] * 2
+    monkeypatch.delenv("SIMILARIPY_BENCH_ITEM_ORDER")
+    assert run(*args)["info"]["item_order"] is None
 
 
 def test_serve_transpose(run, monkeypatch):

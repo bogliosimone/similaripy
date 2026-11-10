@@ -278,7 +278,7 @@ def serve_cases(URM, opts):
     rec = ItemKNN(S, **io, **compat.block_size_kwargs(opts["block_size"]))
     n_active = compat.serving_n_active(rec)
     info = {"model": opts["model"], "model_k": opts["model_k"], "s_nnz": int(S.nnz), "n_active": n_active}
-    info |= {key: opts[key] for key in ("block_size", "item_order", "transpose")}
+    info |= {"block_size": opts["block_size"], "item_order": io.get("item_order"), "transpose": opts["transpose"]}
     if cached:
         info["model_cache"] = cached
     rng = np.random.default_rng(opts["seed"])

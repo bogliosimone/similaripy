@@ -13,6 +13,7 @@ block size 0 (v1: 'auto'), so 'auto' is left out of the call.
 
 import importlib.util
 import inspect
+import os
 import subprocess
 from pathlib import Path
 
@@ -51,7 +52,9 @@ def set_column_order(order):
 
 
 def item_order_kwargs(order):
-    """ItemKNN's item_order (D115) when set; None = the library default, left out of the call (a base without it)."""
+    """ItemKNN's item_order (D115) when set, else SIMILARIPY_BENCH_ITEM_ORDER (one wheel as two A/B sides: the x86
+    kit sets it per side); None = the library default, left out of the call (a base without it)."""
+    order = order or os.environ.get("SIMILARIPY_BENCH_ITEM_ORDER") or None
     if order is None:
         return {}
     if not HAS_ITEM_ORDER:
