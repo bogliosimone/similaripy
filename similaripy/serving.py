@@ -7,8 +7,8 @@ then the top-k items of one history (`recommend`) or of many
 
 Everything is in the caller's item ids (`item_ids`, or S's column indices
 without them); ids the model doesn't have are ignored. The internal layout
-(items in popularity order, items with no row and no column dropped) never
-shows.
+(items in `item_order`, items with no row and no column dropped) never shows
+beyond the order of exactly tied scores.
 
 Build: the Rust core reads S's arrays in place (cast here only when their
 dtypes aren't int32/float32) and copies S once into the model, made canonical
@@ -122,10 +122,10 @@ class ItemKNN:
     Item-based KNN recommendations from an item-item similarity matrix S.
 
     `score[j] = sum_i w_i * S[i, j]` over the history items `i`; the best `k`
-    items with a positive score, best first (ties: the item with more entries
-    in its column of S, then the lower column). Ids are yours (`item_ids`)
-    everywhere; ids the model doesn't have are ignored. The model is
-    immutable and safe to share across threads; each call releases the GIL.
+    items with a positive score, best first (ties: see `item_order`). Ids
+    are yours (`item_ids`) everywhere; ids the model doesn't have are
+    ignored. The model is immutable and safe to share across threads; each
+    call releases the GIL.
 
     Args:
         S: square sparse item-item matrix, e.g. `sim.cosine(URM.T, k=100).T`
@@ -138,6 +138,17 @@ class ItemKNN:
             it means a rebuild). Histories still use every item. For items
             that are never available, `target_cols` when computing S is
             better: it keeps k available neighbours per item. None = all.
+        item_order: how items are laid out in memory: speed only, results
+            are the same up to the order of exactly tied scores and float
+            rounding in the last bits. 'auto' (recommended) = the library's
+            choice for recommender catalogs, today 'clustered'; it may change
+            between versions. 'clustered' = the most popular items first, the
+            rest grouped by their most popular neighbour (fewer cache misses
+            on large catalogs). 'popularity' = most entries in the column of S
+            first (ties go to the more popular item, then the lower column).
+            'original' = S's own column order (usually slower on large
+            catalogs; can help when S's ids already group similar items).
+            Fixed at build: saved and pickled with the model.
         block_size: column block size of every request, as the similarity
             functions': 'auto' (the library's choice), None (no blocking) or
             an int > 0. Results are the same; blocking is faster under
@@ -147,8 +158,8 @@ class ItemKNN:
 
     Raises:
         TypeError: on non-integer `item_ids` or `candidate_items`.
-        ValueError: on a non-square S, or `item_ids` without one unique id
-            per item.
+        ValueError: on a non-square S, `item_ids` without one unique id
+            per item, or an unknown `item_order`.
 
     Note:
         S is read in place during the build (not copied first): don't
@@ -161,6 +172,7 @@ class ItemKNN:
         *,
         item_ids: list[int] | np.ndarray | None = None,
         candidate_items: list[int] | np.ndarray | None = None,
+        item_order: Literal["auto", "clustered", "popularity", "original"] = "auto",
         block_size: int | Literal["auto"] | None = "auto",
         num_threads: int = 0,
     ):
@@ -176,6 +188,7 @@ class ItemKNN:
             data=data,
             n=n,
             ext=ext,
+            item_order=item_order,
             block_size=block_size,
             num_threads=num_threads,
         )

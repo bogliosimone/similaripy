@@ -1,11 +1,11 @@
 //! Serving: the top-K items for one history from a prepared item-item model S.
 //!
 //! The model is S made canonical and renumbered in one copy: items with
-//! neither a row nor a column are dropped, the rest get internal ids in
-//! popularity order (descending column count, ties to the lower column), rows
-//! and columns alike, so a history item's internal id is both its row and its
-//! column. Columns with entries come first, so the accumulator covers
-//! `0..n_active`.
+//! neither a row nor a column are dropped, the rest get internal ids in an
+//! `ItemOrder` (default: the most popular first, the rest clustered by their
+//! most popular neighbour; D115), rows and columns alike, so a history item's
+//! internal id is both its row and its column. Except in `Original` order,
+//! columns with entries come first, so the accumulator covers `0..n_active`.
 //!
 //! A request: the caller's ids → internal ids (dense gather or hash; unknown
 //! ids ignored), history sorted with duplicates merged, the slots of seen and
@@ -23,7 +23,7 @@ mod ids;
 mod model;
 mod request;
 
-pub use model::{BlockSize, Core, Entry, Model, Parts};
+pub use model::{BlockSize, CLUSTER_HEAD, Core, Entry, ItemOrder, Model, Parts};
 pub use request::{Batch, BatchRequest, Lists, Request, recommend, recommend_batch};
 
 use crate::Error;

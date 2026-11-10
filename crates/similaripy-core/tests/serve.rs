@@ -6,7 +6,7 @@
 use proptest::prelude::*;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{
-    BatchRequest, BlockSize, Entry, Lists, Model, Request, recommend, recommend_batch,
+    BatchRequest, BlockSize, Entry, ItemOrder, Lists, Model, Request, recommend, recommend_batch,
 };
 
 #[derive(Debug, Clone)]
@@ -104,6 +104,34 @@ fn popularity(s: &[Vec<f32>]) -> Vec<i32> {
     order.sort_by_key(|&j| std::cmp::Reverse(count(j as usize)));
     order.retain(|&j| count(j as usize) > 0 || s[j as usize].iter().any(|&v| v != 0.0));
     order
+}
+
+/// The build's order from the dense S: `popularity`; S's own order; or
+/// clustered: the `head` most popular, then the rest by (no column first =
+/// false, popularity rank of the most popular neighbour (own rank without a
+/// row), own rank).
+fn reference_order(s: &[Vec<f32>], order: ItemOrder, head: usize) -> Vec<i32> {
+    let mut pop = popularity(s);
+    match order {
+        ItemOrder::Popularity => pop,
+        ItemOrder::Original => {
+            pop.sort();
+            pop
+        }
+        ItemOrder::Auto | ItemOrder::Clustered => {
+            let by_rank = pop.clone();
+            let rank = |j: usize| by_rank.iter().position(|&p| p as usize == j).unwrap();
+            let count = |j: usize| s.iter().filter(|r| r[j] != 0.0).count();
+            let key = |j: usize| {
+                let anchor = (0..s.len()).filter(|&i| s[j][i] != 0.0).map(rank).min();
+                (count(j) == 0, anchor.unwrap_or(rank(j)), rank(j))
+            };
+            let mut tail = pop.split_off(head.min(pop.len()));
+            tail.sort_by_key(|&j| key(j as usize));
+            pop.extend(tail);
+            pop
+        }
+    }
 }
 
 /// A model rebuilt from its own parts (the pickle / load path).
@@ -445,20 +473,23 @@ proptest! {
         prop_assert_eq!(bits(&got_scores[l..]), bits(&want.1));
     }
 
-    // `new` on S as a caller may give it == the canonical S in popularity
-    // order, array for array; a model rebuilt from its parts answers the same.
+    // `new` on S as a caller may give it == the canonical S in the reference
+    // order (a small head: the catalogs are smaller than `CLUSTER_HEAD`),
+    // array for array; a model rebuilt from its parts answers the same.
     #[test]
-    fn raw_input_popularity_and_parts(c in case(true)) {
+    fn raw_input_orders_and_parts(c in case(true), o in 0usize..4, head in 0usize..12) {
+        let order = [ItemOrder::Auto, ItemOrder::Clustered, ItemOrder::Popularity, ItemOrder::Original][o];
         let raw = messy(&c.s);
         let view = CsrView::new("S", &raw.indptr, &raw.indices, &raw.data, c.s.len()).unwrap();
-        let m = Model::new(view, c.ext.clone(), BlockSize::Auto).unwrap();
-        let want = build(&c.s, &popularity(&c.s), c.ext.as_deref()).unwrap();
+        let m = Model::new_with_head(view, c.ext.clone(), order, head, BlockSize::Auto).unwrap();
+        let new_to_old = reference_order(&c.s, order, head);
+        let want = build(&c.s, &new_to_old, c.ext.as_deref()).unwrap();
         let (p, q) = (m.parts(), want.parts());
         prop_assert_eq!((p.indptr, p.new_to_old, p.n_cols), (q.indptr, q.new_to_old, q.n_cols));
         let cols_bits = |m: &[Entry]| m.iter().map(|e| (e.col, e.val.to_bits())).collect::<Vec<_>>();
         prop_assert_eq!(cols_bits(p.pairs), cols_bits(q.pairs));
         prop_assert_eq!(p.ext, q.ext);
-        let c2 = Case { new_to_old: popularity(&c.s), ..c.clone() };
+        let c2 = Case { new_to_old, ..c.clone() };
         let got = run(&c2, &m);
         let view = m.view(flagged(&c2, &c2.allowed).as_deref(), flagged(&c2, &c2.excluded).as_deref());
         let back = from_own_parts(&view);

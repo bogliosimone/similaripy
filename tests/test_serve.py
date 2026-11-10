@@ -243,6 +243,44 @@ def test_block_size_validation():
             ItemKNN(S, block_size=bad)
 
 
+def test_item_order_validation():
+    S = _S(10, False, seed=1)
+    for ok in ("auto", "clustered", "popularity", "original"):
+        ItemKNN(S, item_order=ok)
+    for bad in ("fast", "Auto", None, 1):
+        with pytest.raises((ValueError, TypeError), match="item_order"):
+            ItemKNN(S, item_order=bad)
+
+
+def test_item_orders_same_scores_ties_by_internal_order():
+    """Past the clustered head (16384 items): every order gives the same
+    scores; ties go to the lower internal id (the documented tie rule)."""
+    n, k = 20_000, 50
+    rng = np.random.default_rng(7)
+    S = sp.random_array((n, n), density=4 / n, rng=rng, format="csr", dtype=np.float64)
+    S.data = np.round(S.data * 3 + 1)  # small integers: exact sums in any order
+    counts = np.bincount(S.indices, minlength=n)
+    hists = [rng.choice(n, size=30) for _ in range(20)]
+    layout = {}
+    for order in ("auto", "clustered", "popularity", "original"):
+        rec = ItemKNN(S, item_order=order)
+        new_to_old = layout[order] = rec._model.parts()[3]
+        internal = np.full(n, -1)
+        internal[new_to_old] = np.arange(len(new_to_old))
+        for h in hists:
+            scores = np.asarray(S[h].sum(axis=0)).ravel()
+            keep = scores > 0
+            keep[h] = False
+            cols = np.flatnonzero(keep)
+            best = cols[np.lexsort((internal[cols], -scores[cols]))[:k]]
+            assert _same(rec.recommend(h, k=k), (best, scores[best].astype(np.float32))), order
+    pop = layout["popularity"]
+    assert np.all(np.diff(counts[pop]) <= 0) and np.all(np.diff(layout["original"]) > 0)
+    assert np.array_equal(layout["auto"], layout["clustered"])
+    assert np.array_equal(layout["clustered"][:16384], pop[:16384])
+    assert not np.array_equal(layout["clustered"], pop)
+
+
 def test_pickle_round_trip_keeps_layout_and_mask():
     rng = np.random.default_rng(5)
     S = _S(80, True, seed=5)

@@ -1,5 +1,5 @@
 //! The model: S in the internal layout and the id maps, built from S (one
-//! canonical copy, popularity order), from parts or from a saved directory,
+//! canonical copy, in an `ItemOrder`), from parts or from a saved directory,
 //! always through `Core::from_arrays` (the one check); views and trimmed
 //! copies of it.
 
@@ -12,6 +12,7 @@ use crate::csr::{CsrView, check_indptr};
 use crate::prep::{LEAF_NNZ, canonical_copy, canonical_counts, par_leaves_one};
 use crate::store::{self, Buf};
 use crate::{DEFAULT_BLOCK_SIZE, Error};
+use rayon::prelude::*;
 
 /// Saved model format (`meta.json`): a version reads every format up to its
 /// own; bump it when the files change meaning (Q1).
@@ -132,6 +133,79 @@ impl BlockSize {
     }
 }
 
+/// The internal item order of a build (D115): speed only, plus which of two
+/// exactly tied items comes first (the lower internal id) and float noise in
+/// the last bits (the history sums in internal order). A pure function of S.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemOrder {
+    /// The library's pick for typical recommender catalogs: `Clustered`
+    /// today; may change between versions, never with the machine.
+    Auto,
+    /// The `CLUSTER_HEAD` most popular items in popularity order, then the
+    /// rest by (popularity rank of the item's most popular neighbour, own
+    /// rank): items that share a popular neighbour sit side by side, so a
+    /// request touches fewer accumulator cache lines (`explore/gate5.md`).
+    Clustered,
+    /// Descending column count of the canonical S (how many items have the
+    /// item as a neighbour), ties to the lower column.
+    Popularity,
+    /// S's own column order.
+    Original,
+}
+
+/// Items kept in popularity order at the front of `Clustered`: the hottest
+/// accumulator slots stay dense (no head: ML-32M +3..7%). Provisional: 4k to
+/// 64k timed equal on the M2; the x86 day sweeps it (D115). Must stay below
+/// the smallest block `auto_block_size` picks (`DEFAULT_BLOCK_SIZE`), so the
+/// head never straddles two blocks.
+pub const CLUSTER_HEAD: usize = 16_384;
+const _: () = assert!(CLUSTER_HEAD <= DEFAULT_BLOCK_SIZE);
+
+/// Internal id → original id over the kept items (a row or a column once S
+/// is canonical), in `order`; `head` as `CLUSTER_HEAD`.
+fn serving_order(
+    s: &CsrView,
+    lens: &[u32],
+    counts: &[u32],
+    order: ItemOrder,
+    head: usize,
+) -> Vec<i32> {
+    let kept = |c: i32| lens[c as usize] > 0 || counts[c as usize] > 0;
+    let all = 0..s.n_cols() as i32;
+    if order == ItemOrder::Original {
+        return all.filter(|&c| kept(c)).collect();
+    }
+    let mut pop: Vec<i32> = all.collect();
+    pop.sort_by_key(|&c| std::cmp::Reverse(counts[c as usize])); // stable: ties to the lower column
+    pop.retain(|&c| kept(c));
+    if order == ItemOrder::Popularity || pop.len() <= head {
+        return pop;
+    }
+    let mut rank = vec![0u32; s.n_cols()];
+    for (r, &c) in pop.iter().enumerate() {
+        rank[c as usize] = r as u32;
+    }
+    // Over the canonical row (as the build copies it): a zero or a cancelling
+    // pair is no neighbour. Empty row: own rank.
+    let mut tail: Vec<(bool, u32, u32, i32)> = pop[head..]
+        .par_iter()
+        .map_init(
+            || (Vec::new(), Vec::new(), Vec::new()),
+            |(cols, vals, tmp), &c| {
+                let k = canonical_copy(s.arrays(), c as usize, cols, vals, tmp);
+                let own = rank[c as usize];
+                let anchor = cols[..k].iter().map(|&j| rank[j as usize]).min();
+                // Items with no column last: dead accumulator slots (n_active).
+                (counts[c as usize] == 0, anchor.unwrap_or(own), own, c)
+            },
+        )
+        .collect();
+    tail.par_sort_unstable(); // `own` is unique: one order
+    pop.truncate(head);
+    pop.extend(tail.into_iter().map(|t| t.3));
+    pop
+}
+
 /// What a model is made of (pickling, saving): S in internal ids, the
 /// layout, S's original item count, the external ids, the default mask and
 /// the block size as given; `Model::from_parts` takes the same back.
@@ -148,16 +222,35 @@ pub struct Parts<'a> {
 
 impl Model {
     /// From S (n × n CSR over the original ids, as given: unsorted rows,
-    /// duplicates and zeros are fine; read, never changed), in popularity
-    /// order. `ext`: external id per original id (unique), None = the ids are
-    /// S's column indices. No default mask. Peak memory: the model's own
-    /// arrays plus O(n) (no canonical copy of S).
-    pub fn new(s: CsrView, ext: Option<Vec<i64>>, block_size: BlockSize) -> Result<Self, Error> {
+    /// duplicates and zeros are fine; read, never changed), in `order`.
+    /// `ext`: external id per original id (unique), None = the ids are S's
+    /// column indices. No default mask. Peak memory: the model's own arrays
+    /// plus O(n) (no canonical copy of S).
+    pub fn new(
+        s: CsrView,
+        ext: Option<Vec<i64>>,
+        order: ItemOrder,
+        block_size: BlockSize,
+    ) -> Result<Self, Error> {
+        Self::new_with_head(s, ext, order, CLUSTER_HEAD, block_size)
+    }
+
+    /// As `new`, with `head` in place of `CLUSTER_HEAD` (tests: catalogs
+    /// smaller than the head would never reach the clustered tail).
+    pub fn new_with_head(
+        s: CsrView,
+        ext: Option<Vec<i64>>,
+        order: ItemOrder,
+        head: usize,
+        block_size: BlockSize,
+    ) -> Result<Self, Error> {
         check_square(&s)?;
         let (lens, counts) = canonical_counts(&s);
-        let mut order: Vec<i32> = (0..s.n_cols() as i32).collect();
-        order.sort_by_key(|&c| std::cmp::Reverse(counts[c as usize])); // stable: ties to the lower column
-        order.retain(|&c| lens[c as usize] > 0 || counts[c as usize] > 0);
+        let order = match order {
+            ItemOrder::Auto => ItemOrder::Clustered,
+            o => o,
+        };
+        let order = serving_order(&s, &lens, &counts, order, head);
         Self::build(s, &lens, &counts, order, ext, block_size)
     }
 
