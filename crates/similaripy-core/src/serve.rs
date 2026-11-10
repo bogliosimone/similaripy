@@ -4,8 +4,10 @@
 //! neither a row nor a column are dropped, the rest get internal ids in an
 //! `ItemOrder` (default: the most popular first, the rest clustered by their
 //! most popular neighbour; D115), rows and columns alike, so a history item's
-//! internal id is both its row and its column. Except in `Original` order,
-//! columns with entries come first, so the accumulator covers `0..n_active`.
+//! internal id is both its row and its column. Columns with entries come
+//! first in every order, so the accumulator covers `0..n_active`. A trimmed
+//! build (`candidate_items`) drops the other columns first and orders what is
+//! left (D116): `n_active` = the candidates with a column.
 //!
 //! A request: the caller's ids → internal ids (dense gather or hash; unknown
 //! ids ignored), history sorted with duplicates merged, the slots of seen and

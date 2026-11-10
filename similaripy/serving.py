@@ -15,7 +15,8 @@ dtypes aren't int32/float32) and copies S once into the model, made canonical
 on the way (rows sorted, duplicates summed, zeros dropped). Peak memory: S
 plus the model.
 
-Availability, three levels: `candidate_items` at build trims S (permanent
+Availability, three levels: `candidate_items` at build trims S before the
+items are ordered, so the candidates take the first internal ids (permanent
 until rebuilt); `view(include=, exclude=)` gives a model sharing S with a
 default mask (cheap to change: make a new view, swap the reference);
 `include=` / `exclude=` per call. They combine with AND.
@@ -135,7 +136,9 @@ class ItemKNN:
             the ids are S's column indices.
         candidate_items: only these items can ever be recommended: the other
             columns are dropped from the model (less memory and work; changing
-            it means a rebuild). Histories still use every item. For items
+            it means a rebuild). The `item_order` is computed on the trimmed
+            S, so the candidates sit together in memory. Histories still use
+            every item. For items
             that are never available, `target_cols` when computing S is
             better: it keeps k available neighbours per item. None = all.
         item_order: how items are laid out in memory: speed only, results
@@ -182,19 +185,25 @@ class ItemKNN:
             ext = _ids("item_ids", item_ids)
             if ext.shape != (n,):
                 raise ValueError(f"item_ids must have one id per item ({n}), got shape {np.shape(item_ids)}")
-        model = _core.ServeModel(
+        keep = None
+        if candidate_items is not None:  # a flag per column; unknown ids ignored
+            cand = _ids("candidate_items", candidate_items)
+            if ext is not None:
+                keep = np.isin(ext, cand)
+            else:
+                keep = np.zeros(n, dtype=bool)
+                keep[cand[(cand >= 0) & (cand < n)]] = True
+        self._model = _core.ServeModel(
             indptr=indptr,
             indices=indices,
             data=data,
             n=n,
             ext=ext,
+            keep=keep,
             item_order=item_order,
             block_size=block_size,
             num_threads=num_threads,
         )
-        if candidate_items is not None:
-            model = model.trimmed(_ids("candidate_items", candidate_items))
-        self._model = model
 
     @classmethod
     def _wrap(cls, model):

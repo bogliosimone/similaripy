@@ -78,10 +78,11 @@ pub struct PyModel(Model);
 #[pymethods]
 impl PyModel {
     /// S (n × n CSR over the original ids, any rows: read in place, never
-    /// changed) and `ext` (external id per original id, None = column
-    /// indices), in `item_order`.
+    /// changed), `ext` (external id per original id, None = column
+    /// indices) and `keep` (one flag per column, None = all: S trimmed to
+    /// them first, then ordered), in `item_order`.
     #[new]
-    #[pyo3(signature = (*, indptr, indices, data, n, ext, item_order, block_size, num_threads))]
+    #[pyo3(signature = (*, indptr, indices, data, n, ext, keep, item_order, block_size, num_threads))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -90,6 +91,7 @@ impl PyModel {
         data: PyReadonlyArray1<'_, f32>,
         n: usize,
         ext: Option<PyReadonlyArray1<'_, i64>>,
+        keep: Option<PyReadonlyArray1<'_, bool>>,
         item_order: &str,
         block_size: &Bound<'_, PyAny>,
         num_threads: usize,
@@ -98,9 +100,10 @@ impl PyModel {
         let block = self::block_size(block_size)?;
         let (indptr, indices, data) = (indptr.as_slice()?, indices.as_slice()?, data.as_slice()?);
         let ext = ext.map(|e| e.as_slice().map(<[i64]>::to_vec)).transpose()?;
+        let keep = slice(&keep)?;
         py.detach(|| {
             let s = CsrView::new("S", indptr, indices, data, n)?;
-            with_pool(num_threads, || Model::new(s, ext, order, block))
+            with_pool(num_threads, || Model::new(s, ext, keep, order, block))
         })
         .map(Self)
         .map_err(to_py)
@@ -177,12 +180,6 @@ impl PyModel {
     /// A copy of the external id per item; None: the ids are column indices.
     fn item_ids<'py>(&self, py: Python<'py>) -> Option<Arr<'py, i64>> {
         self.0.item_ids().map(|e| PyArray1::from_slice(py, e))
-    }
-
-    /// A copy whose S keeps only the `candidates`' columns.
-    fn trimmed(&self, py: Python<'_>, candidates: PyReadonlyArray1<'_, i64>) -> PyResult<Self> {
-        let ids = candidates.as_slice()?;
-        py.detach(|| self.0.trimmed(ids)).map(Self).map_err(to_py)
     }
 
     /// The same model (S shared) with `include` minus `exclude` as its

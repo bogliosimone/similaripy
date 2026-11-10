@@ -1,15 +1,14 @@
 //! The model: S in the internal layout and the id maps, built from S (one
 //! canonical copy, in an `ItemOrder`), from parts or from a saved directory,
-//! always through `Core::from_arrays` (the one check); views and trimmed
-//! copies of it.
+//! always through `Core::from_arrays` (the one check); views of it.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use super::ids::{ExtIds, dense_in};
-use super::{EMPTY, bit, invalid, words};
+use super::{EMPTY, invalid, words};
 use crate::csr::{CsrView, check_indptr};
-use crate::prep::{LEAF_NNZ, canonical_copy, canonical_counts, par_leaves_one};
+use crate::prep::{LEAF_NNZ, canonical_copy, par_leaves_one};
 use crate::store::{self, Buf};
 use crate::{DEFAULT_BLOCK_SIZE, Error};
 use rayon::prelude::*;
@@ -161,19 +160,64 @@ pub enum ItemOrder {
 pub const CLUSTER_HEAD: usize = 16_384;
 const _: () = assert!(CLUSTER_HEAD <= DEFAULT_BLOCK_SIZE);
 
+/// S's arrays and the columns a build keeps (None: all; `candidate_items`).
+type Src<'a> = ((&'a [i64], &'a [i32], &'a [f32]), Option<&'a [bool]>);
+
+/// Row `r` of S made canonical (`canonical_copy`), minus the columns `keep`
+/// drops (after the duplicate sums: a column's entries go together).
+fn row_copy(
+    (arrays, keep): Src<'_>,
+    r: usize,
+    cols: &mut Vec<i32>,
+    vals: &mut Vec<f32>,
+    tmp: &mut Vec<(i32, f32)>,
+) -> usize {
+    let k = canonical_copy(arrays, r, cols, vals, tmp);
+    let Some(keep) = keep else { return k };
+    let mut n = 0;
+    for j in 0..k {
+        if keep[cols[j] as usize] {
+            (cols[n], vals[n]) = (cols[j], vals[j]);
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Per row its `row_copy` length, per column its entry count: one
+/// sequential O(nnz) pass, no copy of S.
+fn row_col_counts(src: Src<'_>, n: usize) -> (Vec<u32>, Vec<u32>) {
+    let (mut lens, mut counts) = (vec![0u32; n], vec![0u32; n]);
+    let (mut cols, mut vals, mut tmp) = (Vec::new(), Vec::new(), Vec::new());
+    for (r, len) in lens.iter_mut().enumerate() {
+        let k = row_copy(src, r, &mut cols, &mut vals, &mut tmp);
+        *len = k as u32;
+        for &c in &cols[..k] {
+            counts[c as usize] += 1;
+        }
+    }
+    (lens, counts)
+}
+
 /// Internal id → original id over the kept items (a row or a column once S
 /// is canonical), in `order`; `head` as `CLUSTER_HEAD`.
 fn serving_order(
-    s: &CsrView,
+    src: Src<'_>,
     lens: &[u32],
     counts: &[u32],
     order: ItemOrder,
     head: usize,
 ) -> Vec<i32> {
+    let n = lens.len();
     let kept = |c: i32| lens[c as usize] > 0 || counts[c as usize] > 0;
-    let all = 0..s.n_cols() as i32;
+    let all = 0..n as i32;
     if order == ItemOrder::Original {
-        return all.filter(|&c| kept(c)).collect();
+        // Items with no column last (dead accumulator slots, n_active).
+        let (mut cols, rest): (Vec<i32>, Vec<i32>) = all
+            .filter(|&c| kept(c))
+            .partition(|&c| counts[c as usize] > 0);
+        cols.extend(rest);
+        return cols;
     }
     let mut pop: Vec<i32> = all.collect();
     pop.sort_by_key(|&c| std::cmp::Reverse(counts[c as usize])); // stable: ties to the lower column
@@ -181,7 +225,7 @@ fn serving_order(
     if order == ItemOrder::Popularity || pop.len() <= head {
         return pop;
     }
-    let mut rank = vec![0u32; s.n_cols()];
+    let mut rank = vec![0u32; n];
     for (r, &c) in pop.iter().enumerate() {
         rank[c as usize] = r as u32;
     }
@@ -192,7 +236,7 @@ fn serving_order(
         .map_init(
             || (Vec::new(), Vec::new(), Vec::new()),
             |(cols, vals, tmp), &c| {
-                let k = canonical_copy(s.arrays(), c as usize, cols, vals, tmp);
+                let k = row_copy(src, c as usize, cols, vals, tmp);
                 let own = rank[c as usize];
                 let anchor = cols[..k].iter().map(|&j| rank[j as usize]).min();
                 // Items with no column last: dead accumulator slots (n_active).
@@ -224,15 +268,20 @@ impl Model {
     /// From S (n × n CSR over the original ids, as given: unsorted rows,
     /// duplicates and zeros are fine; read, never changed), in `order`.
     /// `ext`: external id per original id (unique), None = the ids are S's
-    /// column indices. No default mask. Peak memory: the model's own arrays
-    /// plus O(n) (no canonical copy of S).
+    /// column indices. `keep`: one flag per original column, None = all: the
+    /// others are dropped first (S · diag(keep), `candidate_items`), then
+    /// the order is computed on what is left, so the kept columns get the
+    /// first internal ids (rows of the others stay: their history signal).
+    /// No default mask. Peak memory: the model's own arrays plus O(n) (no
+    /// canonical copy of S).
     pub fn new(
         s: CsrView,
         ext: Option<Vec<i64>>,
+        keep: Option<&[bool]>,
         order: ItemOrder,
         block_size: BlockSize,
     ) -> Result<Self, Error> {
-        Self::new_with_head(s, ext, order, CLUSTER_HEAD, block_size)
+        Self::new_with_head(s, ext, keep, order, CLUSTER_HEAD, block_size)
     }
 
     /// As `new`, with `head` in place of `CLUSTER_HEAD` (tests: catalogs
@@ -240,18 +289,23 @@ impl Model {
     pub fn new_with_head(
         s: CsrView,
         ext: Option<Vec<i64>>,
+        keep: Option<&[bool]>,
         order: ItemOrder,
         head: usize,
         block_size: BlockSize,
     ) -> Result<Self, Error> {
         check_square(&s)?;
-        let (lens, counts) = canonical_counts(&s);
+        if keep.is_some_and(|k| k.len() != s.n_cols()) {
+            return invalid("keep: one flag per item expected");
+        }
+        let src = (s.arrays(), keep);
+        let (lens, counts) = row_col_counts(src, s.n_cols());
         let order = match order {
             ItemOrder::Auto => ItemOrder::Clustered,
             o => o,
         };
-        let order = serving_order(&s, &lens, &counts, order, head);
-        Self::build(s, &lens, &counts, order, ext, block_size)
+        let order = serving_order(src, &lens, &counts, order, head);
+        Self::build(src, &lens, &counts, order, ext, block_size)
     }
 
     /// As `new`, in a given serving order: `new_to_old` = internal id →
@@ -264,21 +318,22 @@ impl Model {
         block_size: BlockSize,
     ) -> Result<Self, Error> {
         check_square(&s)?;
-        let (lens, counts) = canonical_counts(&s);
-        Self::build(s, &lens, &counts, new_to_old, ext, block_size)
+        let src = (s.arrays(), None);
+        let (lens, counts) = row_col_counts(src, s.n_cols());
+        Self::build(src, &lens, &counts, new_to_old, ext, block_size)
     }
 
     /// The one copy of S: each row made canonical in a small per-thread
-    /// buffer (as in `canonical_counts`), columns renumbered, sorted.
+    /// buffer (as in `row_col_counts`), columns renumbered, sorted.
     fn build(
-        s: CsrView,
+        src: Src<'_>,
         lens: &[u32],
         counts: &[u32],
         new_to_old: Vec<i32>,
         ext: Option<Vec<i64>>,
         block_size: BlockSize,
     ) -> Result<Self, Error> {
-        let n = s.n_cols();
+        let n = lens.len();
         let dense_in = dense_in(&new_to_old, n)?;
         if (0..n).any(|i| dense_in[i] == EMPTY && (lens[i] > 0 || counts[i] > 0)) {
             return invalid("new_to_old leaves out an item with entries");
@@ -291,21 +346,14 @@ impl Model {
             indptr.push(total as i64);
         }
         let mut pairs = vec![Entry::default(); total];
-        let (src_ptr, src_cols, src_vals) = s.arrays();
         par_leaves_one(&indptr, &mut pairs, LEAF_NNZ, &|row0, ip, out| {
             let base = ip[0] as usize;
             let (mut cols, mut vals, mut tmp) = (Vec::new(), Vec::new(), Vec::new());
             for (i, w) in ip.windows(2).enumerate() {
                 let old = new_to_old[row0 + i] as usize;
-                let k = canonical_copy(
-                    (src_ptr, src_cols, src_vals),
-                    old,
-                    &mut cols,
-                    &mut vals,
-                    &mut tmp,
-                );
+                let k = row_copy(src, old, &mut cols, &mut vals, &mut tmp);
                 let (a, z) = (w[0] as usize - base, w[1] as usize - base);
-                // Same row, same steps as in `canonical_counts`.
+                // Same row, same steps as in `row_col_counts`.
                 assert_eq!(k, z - a, "S changed during the build");
                 let row = &mut out[a..z];
                 for (e, (&c, &v)) in row.iter_mut().zip(cols[..k].iter().zip(&vals)) {
@@ -513,18 +561,6 @@ impl Model {
         }
     }
 
-    /// A model whose S keeps only the `candidates`' columns (S · diag(m), a
-    /// copy): the others can never be recommended, and their entries cost no
-    /// memory or work. Rows, layout and ids unchanged (rows of the other
-    /// items still count: their history signal stays). Unknown ids are
-    /// ignored; the default mask is kept.
-    pub fn trimmed(&self, candidates: &[i64]) -> Result<Self, Error> {
-        Ok(Self {
-            core: Arc::new(self.core.trimmed(&self.bits_of(candidates))?),
-            allowed: self.allowed.clone(),
-        })
-    }
-
     pub fn parts(&self) -> Parts<'_> {
         Parts {
             indptr: &self.indptr,
@@ -588,30 +624,6 @@ impl Core {
             dense_in,
             ext,
         })
-    }
-
-    fn trimmed(&self, allowed: &[u64]) -> Result<Self, Error> {
-        let ip: &[i64] = &self.indptr;
-        let mut indptr = Vec::with_capacity(ip.len());
-        indptr.push(0i64);
-        let mut pairs = Vec::new();
-        for w in ip.windows(2) {
-            for &e in &self.pairs[w[0] as usize..w[1] as usize] {
-                // SAFETY: e.col < n_items, the mask's size (`bits_of`).
-                if unsafe { bit(allowed, e.col as usize) } {
-                    pairs.push(e);
-                }
-            }
-            indptr.push(pairs.len() as i64);
-        }
-        Self::from_arrays(
-            indptr.into(),
-            pairs.into(),
-            self.new_to_old.clone(),
-            self.n_cols(),
-            self.ext.as_ref().map(|e| e.by_col.clone()),
-            self.block_size,
-        )
     }
 
     /// Items with an internal id (S's items minus those dropped at build).
