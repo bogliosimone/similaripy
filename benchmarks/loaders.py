@@ -22,7 +22,7 @@ import scipy.sparse as sp
 
 CACHE = Path(os.environ.get("SIMILARIPY_BENCH_DATA", Path.home() / ".cache" / "similaripy-bench"))
 
-DEFAULT_VERSIONS = {"synthetic": "10k", "movielens": "32m", "yambda": "50m", "hm": "full"}
+DEFAULT_VERSIONS = {"synthetic": "10k", "movielens": "32m", "yambda": "50m", "hm": "full", "otto": "full"}
 
 # (shape, nnz) of the URM as built below, by cache key
 EXPECTED = {
@@ -30,6 +30,7 @@ EXPECTED = {
     "yambda-50m-multi_event": ((10000, 934057), 13607096),
     "yambda-500m-multi_event": ((100000, 3004578), 137922244),
     "hm-full": ((1362281, 104547), 27306439),  # 31,788,324 purchases
+    "otto-full": ((12899779, 1855603), 133683868),  # 216,716,096 train events
 }
 
 MOVIELENS_URLS = {
@@ -41,6 +42,8 @@ YAMBDA_EVENTS = ("likes", "listens", "multi_event")
 # H&M Personalized Fashion Recommendations (Kaggle competition data: download it yourself, after
 # accepting the competition rules; numbers on it stay internal until the rules are checked, D75 Q1)
 HM_CSV = CACHE / "h-and-m" / "transactions_train.csv"
+# OTTO Recommender Systems Dataset (Kaggle `otto/recsys-dataset`, CC-BY 4.0: download it yourself)
+OTTO_JSONL = CACHE / "otto" / "otto-recsys-train.jsonl"
 
 
 def load(dataset, version=None, event_type="multi_event", verbose=True):
@@ -63,8 +66,12 @@ def load(dataset, version=None, event_type="multi_event", verbose=True):
             if version != "full":
                 raise ValueError("hm has one version: full")
             key, build = "hm-full", lambda: _hm(verbose)
+        elif dataset == "otto":
+            if version != "full":
+                raise ValueError("otto has one version: full")
+            key, build = "otto-full", lambda: _otto(verbose)
         else:
-            raise ValueError(f"unknown dataset {dataset!r}: synthetic, movielens, yambda, hm")
+            raise ValueError(f"unknown dataset {dataset!r}: synthetic, movielens, yambda, hm, otto")
         URM = _cached(key, build, verbose)
     info = {"dataset": dataset, "version": version, "key": key, "shape": list(URM.shape), "nnz": int(URM.nnz)}
     if dataset == "yambda":
@@ -182,4 +189,35 @@ def _hm(verbose):
     df = pd.read_csv(HM_CSV, usecols=["customer_id", "article_id"], dtype={"customer_id": str, "article_id": "int64"})
     users, _ = pd.factorize(df["customer_id"])  # 64-char hex ids -> integer codes
     URM, _, _ = interactions_to_urm(users, df["article_id"].to_numpy())
+    return sp.csr_array(URM, dtype=np.float32)
+
+
+def _otto(verbose, path=None):
+    """Train sessions: sessions x articles, value = event count (clicks, carts and orders alike; repeats summed)."""
+    import json
+
+    from similaripy.preprocessing import interactions_to_urm
+
+    path = path or OTTO_JSONL
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found: download the Kaggle dataset 'otto/recsys-dataset' (account) and unzip otto-recsys-train.jsonl there"
+        )
+    if verbose:
+        print(f"reading {path}")
+    parts, sessions, aids = [], [], []  # ~217M events: flushed to int32 arrays (a Python int costs ~7x)
+
+    def flush():
+        parts.append((np.array(sessions, dtype=np.int32), np.array(aids, dtype=np.int32)))
+        sessions.clear(), aids.clear()
+
+    with open(path) as f:
+        for line in f:
+            row = json.loads(line)
+            aids.extend(e["aid"] for e in row["events"])
+            sessions.extend([row["session"]] * len(row["events"]))
+            if len(aids) >= 10_000_000:
+                flush()
+    flush()
+    URM, _, _ = interactions_to_urm(*(np.concatenate(p) for p in zip(*parts, strict=True)))
     return sp.csr_array(URM, dtype=np.float32)

@@ -9,7 +9,7 @@ The benchmark harness: timing, peak memory and A/B comparisons of similaripy bui
 | `gate.py` | The core's gate: `abba.py` on a fixed list of steps (quick / full), never idle, one verdict per case |
 | `compare.py` | Reports side by side, the first as the reference |
 | `parity_kernel.py`, `parity_normalization.py` | Outputs of this install vs a reference install's (`--dump` / `--compare`) |
-| `loaders.py` | Datasets (synthetic, MovieLens, Yambda, H&M), cached as `.npz` |
+| `loaders.py` | Datasets (synthetic, MovieLens, Yambda, H&M, OTTO), cached as `.npz` |
 | `workloads.py` | The cases of each workload and the exact kwargs of each call |
 | `libraries.py` | Other libraries' item-item similarity for the `crosslib` workload (see "Other libraries") |
 | `crosslib-requirements.txt`, `crosslib-lock-*.txt` | Their pins, and every dependency pinned per platform |
@@ -79,6 +79,7 @@ Every call runs with `verbose=False` (no progress bar in the timed region) and t
 | `movielens` | `32m` (default), `25m` | downloaded from grouplens.org; ratings as values |
 | `yambda` | `50m` (default), `500m`; `--event-type likes / listens / multi_event` | Hugging Face `yandex/yambda` (local HF cache first); implicit, repeated events summed. The first build needs `--with datasets` (not in the bench group: it pulls pyarrow) |
 | `hm` | `full` | Kaggle "H&M Personalized Fashion Recommendations" `transactions_train.csv`: download it yourself (account + competition rules) into `$CACHE/h-and-m/`; purchase counts. Internal only until the competition rules are checked for publishing |
+| `otto` | `full` | Kaggle `otto/recsys-dataset` (CC-BY 4.0) `otto-recsys-train.jsonl` (11.3 GB; the zip of both files is 12 GB unpacked): download it yourself (account) and unzip into `$CACHE/otto/`; sessions as users, clicks + carts + orders counted alike. First build reads ~217M events (a few minutes) |
 
 Real datasets are built once and cached as `.npz` in **one directory shared by every checkout and worktree**: `~/.cache/similaripy-bench`, or `SIMILARIPY_BENCH_DATA`. Every side of an A/B then loads the same bytes, and 0.7.0 needs no pandas. Each cache is checked against the shape and nnz in `loaders.EXPECTED`: a changed source or loader fails the load instead of timing other data (add a new dataset's numbers there after its first load). Indices are int32 whenever they fit.
 

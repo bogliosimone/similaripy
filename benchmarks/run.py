@@ -66,7 +66,7 @@ def parser():
     common.add_argument(
         "--dataset",
         default=None,
-        choices=["synthetic", "movielens", "yambda", "hm"],
+        choices=["synthetic", "movielens", "yambda", "hm", "otto"],
         help="default: movielens (small: synthetic)",
     )
     common.add_argument("--version", default=None, help="dataset version (default: movielens 32m, yambda 50m)")
@@ -129,6 +129,7 @@ def parser():
         choices=["auto", "clustered", "popularity", "original"],
         help="every model's item_order (default: the library's, not passed)",
     )
+    v.add_argument("--transpose", action="store_true", help="serve ItemKNN(S.T) (docs/serving.md 'Orientation of S')")
     v.add_argument(
         "--callers", type=positive, nargs="+", default=[6], help="concurrent mode: Python threads (default: 6)"
     )

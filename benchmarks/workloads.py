@@ -264,7 +264,7 @@ def _concurrency_run(X, kwargs, reps, concurrent):
 
 
 def serve_cases(URM, opts):
-    """`similaripy.serving.ItemKNN` on S = cosine or rp3beta(URM.T, k=model_k), built once, untimed.
+    """`similaripy.serving.ItemKNN` on S = cosine or rp3beta(URM.T, k=model_k) (or S.T: --transpose), built once, untimed.
     Requests = URM rows (user histories), resampled with replacement in random order; a history cap N
     keeps N random items of the row. Every request excludes the history's own items."""
     if not compat.HAS_SERVING:
@@ -272,11 +272,13 @@ def serve_cases(URM, opts):
     from similaripy.serving import ItemKNN
 
     S, cached = _serve_model(URM, opts)
+    if opts["transpose"]:
+        S = S.T.tocsr()  # the cache keeps S itself: one cached model serves both
     io = compat.item_order_kwargs(opts["item_order"])
     rec = ItemKNN(S, **io, **compat.block_size_kwargs(opts["block_size"]))
     n_active = compat.serving_n_active(rec)
     info = {"model": opts["model"], "model_k": opts["model_k"], "s_nnz": int(S.nnz), "n_active": n_active}
-    info["block_size"], info["item_order"] = opts["block_size"], opts["item_order"]
+    info |= {key: opts[key] for key in ("block_size", "item_order", "transpose")}
     if cached:
         info["model_cache"] = cached
     rng = np.random.default_rng(opts["seed"])

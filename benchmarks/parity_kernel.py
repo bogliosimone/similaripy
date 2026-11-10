@@ -171,7 +171,7 @@ def main():
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dump", metavar="NPZ", help="save this install's outputs (run under the reference)")
     mode.add_argument("--compare", metavar="NPZ", help="check this install's outputs against a --dump file")
-    p.add_argument("--dataset", default="synthetic", choices=["synthetic", "movielens", "yambda", "hm"])
+    p.add_argument("--dataset", default="synthetic", choices=["synthetic", "movielens", "yambda", "hm", "otto"])
     p.add_argument("--version", default=None)
     p.add_argument("--similarities", nargs="+", default=["dot_product", "cosine", "rp3beta"], choices=SIMILARITIES)
     p.add_argument("--k", type=int, default=100)
