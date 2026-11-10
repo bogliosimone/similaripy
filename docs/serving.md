@@ -200,7 +200,7 @@ A minimal FastAPI service (`fetch_history` is your store):
 
 ```python
 from fastapi import FastAPI
-from similaripy.preprocessing import time_decay
+from similaripy.preprocessing import rank_decay
 from similaripy.serving import ItemKNN
 
 app = FastAPI()
@@ -209,8 +209,8 @@ model = ItemKNN.load("models/v3")    # mmap: one copy of S for every worker proc
 
 @app.get("/recommend/{user_id}")
 def recommend(user_id: int, k: int = 20):   # `def`: FastAPI runs it in its thread pool, in parallel
-    history, ts = fetch_history(user_id)    # item ids + epoch seconds
-    w = time_decay(ts, reference=ts.max(), scale=30 * 86400)
+    history, ts = fetch_history(user_id)    # item ids + their timestamps
+    w = rank_decay(timestamps=ts, scale=50) # half-life 50 events: the latest weighs 1
     ids, scores = model.recommend(history, weights=w, k=k)
     return {"items": ids.tolist(), "scores": scores.tolist()}
 ```
