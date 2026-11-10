@@ -206,6 +206,17 @@ def test_serve_model_cache(run, monkeypatch, tmp_path):
         run(*args, "--model-cache")
 
 
+def test_serve_item_order(run, monkeypatch):
+    # --item-order reaches every model (the one-block control too); unset passes nothing
+    from similaripy import serving
+
+    seen, real = [], serving.ItemKNN
+    monkeypatch.setattr(serving, "ItemKNN", lambda S, **kw: seen.append(kw) or real(S, **kw))
+    args = ("serve", "--mode", "block", "--block-threads", "1", "--model-k", "20", "--k", "10", "--rounds", "1")
+    assert run(*args, "--item-order", "original")["info"]["item_order"] == "original"
+    assert seen == [{"item_order": "original"}, {"item_order": "original", "block_size": None}]
+
+
 def test_serve_build(run):
     _needs_peak_memory()
     rep = run("serve", "--mode", "build", "--model-k", "20", "--rounds", "1")

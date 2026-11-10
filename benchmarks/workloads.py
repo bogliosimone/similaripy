@@ -272,11 +272,11 @@ def serve_cases(URM, opts):
     from similaripy.serving import ItemKNN
 
     S, cached = _serve_model(URM, opts)
-    bs = compat.block_size_kwargs(opts["block_size"])
-    rec = ItemKNN(S, **bs)
+    io = compat.item_order_kwargs(opts["item_order"])
+    rec = ItemKNN(S, **io, **compat.block_size_kwargs(opts["block_size"]))
     n_active = compat.serving_n_active(rec)
     info = {"model": opts["model"], "model_k": opts["model_k"], "s_nnz": int(S.nnz), "n_active": n_active}
-    info["block_size"] = opts["block_size"]
+    info["block_size"], info["item_order"] = opts["block_size"], opts["item_order"]
     if cached:
         info["model_cache"] = cached
     rng = np.random.default_rng(opts["seed"])
@@ -296,7 +296,7 @@ def serve_cases(URM, opts):
         batch_in = compat.serving_batch_inputs(URM)
         threads = list(dict.fromkeys(opts["block_threads"] or [1, os.cpu_count()]))  # no duplicate case names
         info["block_threads"] = threads
-        one = ItemKNN(S, block_size=None)
+        one = ItemKNN(S, **io, block_size=None)
         size = {"auto": compat.DEFAULT_BLOCK_SIZE, None: n_active}.get(opts["block_size"], opts["block_size"])
         info["block_control"] = n_active <= size  # both models run one block
         for t in threads:
@@ -309,7 +309,7 @@ def serve_cases(URM, opts):
         hists = _histories(URM, users, None, rng)
         callers = list(dict.fromkeys(opts["callers"]))
         info["callers"] = callers
-        one = ItemKNN(S, block_size=None)
+        one = ItemKNN(S, **io, block_size=None)
         kwargs = {"k": k, "exclude_seen": True}
         for c in callers:
             cases.append(
@@ -322,10 +322,10 @@ def serve_cases(URM, opts):
         info["s_mb"] = S.nnz * 8 / 2**20  # indices + data
 
         def build():
-            secs, base_mb, peak_mb = report.in_fresh_process(build_child, path)
+            secs, base_mb, peak_mb = report.in_fresh_process(build_child, path, io)
             return untimed(secs, rss_base_mb=base_mb, rss_peak_mb=peak_mb)
 
-        cases.append(Case("build", {"block_size": "auto"}, build))
+        cases.append(Case("build", {"block_size": "auto", **io}, build))
     return cases, info
 
 
@@ -445,14 +445,14 @@ def _batch_run(rec, batch_in, k, threads):
     return run
 
 
-def build_child(path):
-    """In a fresh process: (seconds, MB before, MB peak above it) of ItemKNN(S) with S loaded from path.
+def build_child(path, kwargs):
+    """In a fresh process: (seconds, MB before, MB peak above it) of ItemKNN(S, **kwargs) with S loaded from path.
     The seconds include the 1 ms memory sampler running alongside (one syscall per ms; the build releases the GIL)."""
     from similaripy.serving import ItemKNN
 
     S = sp.csr_array(sp.load_npz(path))
     start = time.perf_counter()
-    _, base_mb, peak_mb = report.peak_memory(lambda: ItemKNN(S))
+    _, base_mb, peak_mb = report.peak_memory(lambda: ItemKNN(S, **kwargs))
     return time.perf_counter() - start, base_mb, peak_mb
 
 

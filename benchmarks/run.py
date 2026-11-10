@@ -124,6 +124,12 @@ def parser():
         "--block-size", type=block_size, default="auto", help="the timed model's block_size: auto, none or an int > 0"
     )
     v.add_argument(
+        "--item-order",
+        default=None,
+        choices=["auto", "clustered", "popularity", "original"],
+        help="every model's item_order (default: the library's, not passed)",
+    )
+    v.add_argument(
         "--callers", type=positive, nargs="+", default=[6], help="concurrent mode: Python threads (default: 6)"
     )
     v.add_argument("--seed", type=int, default=0)
