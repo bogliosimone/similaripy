@@ -176,27 +176,60 @@ A few tips based on the similarity family:
 
 ## Use cases
 
-### Threaded service
+### In production
 
-When serving the model in a threaded service:
+A server that answers many users, one `recommend` per request:
 
-- Share one model across threads: `recommend` releases the GIL, so threads
+- **Share one model across threads.** `recommend` releases the GIL, so threads
   run requests in parallel (free-threaded Python too). Across worker
   processes, `load` with `mmap=True` shares one copy of S.
-- Long histories dominate the tail latency: cap them if your p99 matters
-  (e.g. the 1000 most recent items).
+- **Keep `block_size='auto'`** for a server with concurrent requests: a single
+  request sizes its work for every core being busy. A process that runs one
+  request at a time on an idle machine can use `block_size=None`.
+- **Short histories are cheap.** A request costs a few µs of fixed work plus a
+  little per history item (table below): cap long histories if your p99
+  matters (e.g. the 1000 most recent items), and drop the events a decay has
+  faded to almost nothing ([Preprocessing](preprocessing.md#shapes)).
+- **Batch when requests can wait.** `recommend_batch(histories, num_threads=n)`
+  scores many users in one call (offline scoring, or requests collected for a
+  millisecond or two): the per-call work is paid once.
+- **Deploy a new model version** by saving it to a new directory and switching
+  what the workers load ([Saving and loading](#saving-and-loading)).
+
+A minimal FastAPI service (`fetch_history` is your store):
+
+```python
+from fastapi import FastAPI
+from similaripy.preprocessing import rank_decay
+from similaripy.serving import ItemKNN
+
+app = FastAPI()
+model = ItemKNN.load("models/v3")    # mmap: one copy of S for every worker process
+
+
+@app.get("/recommend/{user_id}")
+def recommend(user_id: int, k: int = 20):   # `def`: FastAPI runs it in its thread pool, in parallel
+    history, ts = fetch_history(user_id)    # item ids + their timestamps
+    w = rank_decay(timestamps=ts, scale=50) # half-life 50 events: the latest weighs 1
+    ids, scores = model.recommend(history, weights=w, k=k)
+    return {"items": ids.tolist(), "scores": scores.tolist()}
+```
+
+An `async def` endpoint would run every request on the event loop thread, one
+at a time.
 
 Example of `recommend` latency by history cap:
 
-| History cap | MovieLens 32M (84k items) | Yambda 50M (934k items) |
-|-------------|---------------------------|-------------------------|
-| 50 | 10 µs / 17 µs | 26 µs / 37 µs |
-| 200 | 13 µs / 30 µs | 73 µs / 91 µs |
-| 1000 | 13 µs / 96 µs | 279 µs / 369 µs |
-| none | 13 µs / 124 µs | 309 µs / 1.9 ms |
+| History cap | MovieLens 32M (84k items) | Yambda 500M (3.0M items) |
+|-------------|---------------------------|--------------------------|
+| 10 | 5 µs / 7 µs | 9 µs / 13 µs |
+| 50 | 8 µs / 11 µs | 18 µs / 24 µs |
+| 200 | 10 µs / 24 µs | 49 µs / 60 µs |
+| 1000 | 10 µs / 80 µs | 185 µs / 250 µs |
 
 p50 / p99 of the Python call, warm; S = `cosine(k=100)`, `k=100`, history
-excluded; indicative, one Apple M2 Pro.
+excluded; indicative, one Apple M2 Pro. MovieLens histories are mostly
+shorter than 200 items, hence the flat p50.
 
 ### Evaluation framework
 
