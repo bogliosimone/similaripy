@@ -28,7 +28,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
   - [normalize.rs](crates/similaripy-core/src/normalize.rs) - Normalizations, in place over CSR data; `Decay` (the one decay formula, for a future server too) + `user_ages`
   - [prep.rs](crates/similaripy-core/src/prep.rs) - Canonical rows (`canonical_row`, shared by the Python prep and the serving build), renumber + sort, `group_interactions` (logs → CSR: counting sort by user, rows in parallel)
   - [csr.rs](crates/similaripy-core/src/csr.rs), [topk.rs](crates/similaripy-core/src/topk.rs) - CSR views, top-K buffer (cut by select)
-  - [serve.rs](crates/similaripy-core/src/serve.rs) - Serving engine, in [serve/](crates/similaripy-core/src/serve): `model.rs` (build, the one check `Core::from_arrays`, save/load, views), `ids.rs` (id maps, masks), `request.rs` (one history per call, batch = rayon over the same function)
+  - [serve.rs](crates/similaripy-core/src/serve.rs) - Serving engine, in [serve/](crates/similaripy-core/src/serve): `model.rs` (build: trim to `candidate_items`, then `ItemOrder` (clustered by default, D115/D116), the one check `Core::from_arrays`, save/load, views), `ids.rs` (id maps, masks), `request.rs` (one history per call, batch = rayon over the same function)
   - [store.rs](crates/similaripy-core/src/store.rs) - Saved models: `.npy` reader/writer, mapped (`memmap2`) or owned arrays, directory replace
 - **Bindings** ([crates/similaripy-py](crates/similaripy-py)): PyO3 module `similaripy._core`
   - [lib.rs](crates/similaripy-py/src/lib.rs) - kernel + prep bindings, thread pools; [normalize.rs](crates/similaripy-py/src/normalize.rs) - dtype dispatch; [progress.rs](crates/similaripy-py/src/progress.rs) - progress bar; [serve.rs](crates/similaripy-py/src/serve.rs) - `ServeModel` / `ServeMask`
@@ -99,7 +99,7 @@ Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend,
 - [tests/test_free_threading.py](tests/test_free_threading.py) - concurrent calls, identical bits across threads and blocking
 - [tests/test_benchmarks.py](tests/test_benchmarks.py) - the benchmark harness on the synthetic dataset (every workload, params recorded == passed, ABBA + compare)
 - [tests/test_serve.py](tests/test_serve.py) - `ItemKNN` vs a dense float64 reference, masks and views, unknown ids, batch == single bits, pickle, save/load round trips + corrupted files
-- [crates/similaripy-core/tests/serve.rs](crates/similaripy-core/tests/serve.rs) - serving proptest vs an f64 reference, bit-identity claims
+- [crates/similaripy-core/tests/serve.rs](crates/similaripy-core/tests/serve.rs) - serving proptest vs an f64 reference, bit-identity claims, every `ItemOrder` and trim vs a reference order
 - [crates/similaripy-core/tests/reference.rs](crates/similaripy-core/tests/reference.rs) - kernel proptest vs an f64 reference, `validate` errors; unit tests in each module
 
 ---
