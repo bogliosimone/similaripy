@@ -96,9 +96,13 @@ pub fn recommend(
     ids_out: &mut Vec<i64>,
     scores_out: &mut Vec<f32>,
 ) -> Result<(), Error> {
-    let mut out = Vec::new();
+    // Sized once: grown push by push, the three Vecs reallocated ~6 times each
+    // at k = 100 (allocation ~10% of a cap-10 request, 4d/profile.md).
+    let mut out = Vec::with_capacity(req.k.min(model.n_active));
     recommend_internal(model, req, &mut out)?;
     let id = caller_id(model);
+    ids_out.reserve(out.len());
+    scores_out.reserve(out.len());
     for (c, v) in out {
         ids_out.push(id(c));
         scores_out.push(v);
