@@ -137,6 +137,12 @@ def parser():
         help="trim every model to the N most popular items (candidate_items)",
     )
     v.add_argument(
+        "--load",
+        default="build",
+        choices=["build", "mmap", "read"],
+        help="time every model as built (default), or saved and loaded back: ItemKNN.load(mmap=True / False)",
+    )
+    v.add_argument(
         "--callers", type=positive, nargs="+", default=[6], help="concurrent mode: Python threads (default: 6)"
     )
     v.add_argument("--seed", type=int, default=0)
