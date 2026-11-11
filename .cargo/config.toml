@@ -1,0 +1,6 @@
+# Every function starts on a 64-byte boundary (D121, D124), so a code size change in one place (e.g. the kernel) can't
+# move unchanged hot code (e.g. serving) within its 64-byte blocks. Without it, a kernel-only change read ML-32M serving
+# +5..+9% slower with byte-identical serving instructions; with it, neutral. Padding only: the instructions don't change.
+# A RUSTFLAGS environment variable replaces this list: add the flag there when building with other flags.
+[build]
+rustflags = ["-C", "llvm-args=-align-all-functions=6"]

@@ -16,6 +16,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - ".cargo/config.toml"
       - ".github/workflows/pypi-publish.yml"
   pull_request:
     paths: *build-paths
