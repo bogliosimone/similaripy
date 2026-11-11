@@ -6,8 +6,7 @@
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::marker::PhantomData;
-use std::ops::{Deref, Range};
+use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -64,36 +63,62 @@ fn cast<T: Pod>(b: &[u8]) -> Option<&[T]> {
 }
 
 /// An array owned, or mapped read-only from a saved model's file (shared
-/// by the models made from it: its views).
-pub(crate) enum Buf<T> {
-    Owned(Vec<T>),
-    /// The byte range of the elements, checked by `cast` at load.
-    Mapped(Arc<Mmap>, Range<usize>, PhantomData<T>),
+/// by the models made from it: its views). The slice's address and length
+/// are kept next to the owner, so reading it is the same plain load either
+/// way: no match, no hop through the `Arc<Mmap>`, no re-check. With them, a
+/// mapped model served +1..+4% slower than a built one (Yambda 50M / 500M
+/// latency and batch); now within noise of it.
+pub(crate) struct Buf<T> {
+    ptr: *const T,
+    len: usize,
+    /// Keeps the memory alive; never read through.
+    _owner: Owner<T>,
 }
 
-impl<T: Pod> Deref for Buf<T> {
+enum Owner<T> {
+    Vec(Vec<T>),
+    /// Checked by `cast` at load: aligned, in bounds, whole elements.
+    Map(#[allow(dead_code)] Arc<Mmap>),
+}
+
+// SAFETY: read-only data owned by a `Vec` or an `Arc<Mmap>`, both Send + Sync;
+// the pointer is never written through.
+unsafe impl<T: Send + Sync> Send for Buf<T> {}
+// SAFETY: as Send.
+unsafe impl<T: Send + Sync> Sync for Buf<T> {}
+
+impl<T> Deref for Buf<T> {
     type Target = [T];
 
+    #[inline(always)]
     fn deref(&self) -> &[T] {
-        match self {
-            Buf::Owned(v) => v,
-            Buf::Mapped(map, range, _) => cast(&map[range.clone()]).expect("checked at load"),
-        }
+        // SAFETY: `ptr` / `len` describe memory `_owner` keeps alive and never
+        // changes: a Vec's heap buffer (a move doesn't move it) or a range of
+        // the map checked by `cast`.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
 
-impl<T: Pod> Clone for Buf<T> {
+impl<T: Clone> Clone for Buf<T> {
     fn clone(&self) -> Self {
-        match self {
-            Buf::Owned(v) => Buf::Owned(v.clone()),
-            Buf::Mapped(map, range, _) => Buf::Mapped(Arc::clone(map), range.clone(), PhantomData),
+        match &self._owner {
+            Owner::Vec(v) => v.clone().into(),
+            Owner::Map(map) => Buf {
+                ptr: self.ptr,
+                len: self.len,
+                _owner: Owner::Map(Arc::clone(map)),
+            },
         }
     }
 }
 
 impl<T> From<Vec<T>> for Buf<T> {
     fn from(v: Vec<T>) -> Self {
-        Buf::Owned(v)
+        Buf {
+            ptr: v.as_ptr(),
+            len: v.len(),
+            _owner: Owner::Vec(v),
+        }
     }
 }
 
@@ -205,14 +230,19 @@ pub(crate) fn read<T: Pod>(dir: &Path, name: &str, mmap: bool) -> Result<Buf<T>,
         if map.len() < end {
             return Err(bad(&path, "file changed while loading"));
         }
-        if cast::<T>(&map[start..end]).is_none() {
+        let Some(data) = cast::<T>(&map[start..end]) else {
             return Err(bad(&path, "data not aligned"));
-        }
-        Ok(Buf::Mapped(Arc::new(map), start..end, PhantomData))
+        };
+        let (ptr, len) = (data.as_ptr(), data.len());
+        Ok(Buf {
+            ptr,
+            len,
+            _owner: Owner::Map(Arc::new(map)),
+        })
     } else {
         let mut v = vec![T::default(); n];
         f.read_exact(bytes_mut(&mut v)).map_err(io(&path))?;
-        Ok(Buf::Owned(v))
+        Ok(v.into())
     }
 }
 
