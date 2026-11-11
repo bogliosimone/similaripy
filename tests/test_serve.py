@@ -91,7 +91,7 @@ def test_matches_dense_reference(signed, external, n):
             np.testing.assert_allclose(got[1], want[1], rtol=1e-6)
             unsorted = rec.recommend(hist, weights=weights, include=include, sorted=False, **opts)
             assert sorted(zip(unsorted[0], unsorted[1].view(np.int32))) == sorted(zip(got[0], got[1].view(np.int32)))
-            if include is not None:  # trimmed S == a view == the per-call include, bits
+            if include is not None:  # trimmed S == a view == the per-call include (small integers under the head: bits)
                 for other in (
                     ItemKNN(S, item_ids=ext if external else None, candidate_items=include),
                     rec.view(include=include),
@@ -241,6 +241,67 @@ def test_block_size_validation():
     for bad in (0, -1, "big", 1.5, True):
         with pytest.raises(ValueError, match="block_size"):
             ItemKNN(S, block_size=bad)
+
+
+def test_item_order_validation():
+    S = _S(10, False, seed=1)
+    for ok in ("auto", "clustered", "popularity", "original"):
+        ItemKNN(S, item_order=ok)
+    for bad in ("fast", "Auto", None, 1):
+        with pytest.raises((ValueError, TypeError), match="item_order"):
+            ItemKNN(S, item_order=bad)
+
+
+def test_item_orders_same_scores_ties_by_internal_order(tmp_path):
+    """Past the clustered head (16384 items): every order gives the same
+    scores; ties go to the lower internal id (the documented tie rule). A
+    trimmed model (`candidate_items`) is ordered after the trim: its
+    candidates with a column take the first internal ids (`n_active`), and it
+    answers as the full S with the candidates as include (D116). A clustered
+    tail survives pickle and save/load and doesn't depend on the threads."""
+    n, k = 20_000, 50
+    rng = np.random.default_rng(7)
+    S = sp.random_array((n, n), density=4 / n, rng=rng, format="csr", dtype=np.float64)
+    S.data = np.round(S.data * 3 + 1)  # small integers: exact sums in any order
+    counts = np.bincount(S.indices, minlength=n)
+    cand = rng.choice(n, size=n // 2, replace=False)
+    hists = [rng.choice(n, size=30) for _ in range(20)]
+    layout = {}
+    for order in ("auto", "clustered", "popularity", "original"):
+        for trim in (False, True):
+            opts = {"item_order": order, "candidate_items": cand if trim else None}
+            rec = ItemKNN(S, **opts)
+            new_to_old = rec._model.parts()[3]
+            if order == "clustered":
+                rec.save(tmp_path / str(trim))
+                for back in (pickle.loads(pickle.dumps(rec)), ItemKNN.load(tmp_path / str(trim))):
+                    for a, b in zip(rec._model.parts(), back._model.parts()):
+                        assert a == b if not isinstance(a, np.ndarray) else np.array_equal(a, b)
+                assert np.array_equal(ItemKNN(S, **opts, num_threads=1)._model.parts()[3], new_to_old)
+            if trim:
+                n_cand = np.count_nonzero(counts[cand])
+                assert rec._model.n_active == n_cand
+                assert set(new_to_old[:n_cand]) == set(cand[counts[cand] > 0])
+            else:
+                layout[order] = new_to_old
+            internal = np.full(n, -1)
+            internal[new_to_old] = np.arange(len(new_to_old))
+            for h in hists:
+                scores = np.asarray(S[h].sum(axis=0)).ravel()
+                keep = scores > 0
+                keep[h] = False
+                if trim:
+                    keep &= np.isin(np.arange(n), cand)
+                cols = np.flatnonzero(keep)
+                best = cols[np.lexsort((internal[cols], -scores[cols]))[:k]]
+                assert _same(rec.recommend(h, k=k), (best, scores[best].astype(np.float32))), (order, trim)
+    pop, orig = layout["popularity"], layout["original"]
+    assert np.all(np.diff(counts[pop]) <= 0)
+    n_col = np.count_nonzero(counts)  # 'original': S's order, items with no column last
+    assert np.all(counts[orig[:n_col]] > 0) and np.all(np.diff(orig[:n_col]) > 0) and np.all(np.diff(orig[n_col:]) > 0)
+    assert np.array_equal(layout["auto"], layout["clustered"])
+    assert np.array_equal(layout["clustered"][:16384], pop[:16384])
+    assert not np.array_equal(layout["clustered"], pop)
 
 
 def test_pickle_round_trip_keeps_layout_and_mask():

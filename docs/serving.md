@@ -47,7 +47,8 @@ Everything is on the `ItemKNN` class: build a `model`, then call its methods.
 |-----------|-------------|
 | `S` | Square sparse item-item matrix, e.g. `sim.cosine(URM.T, k=100)` or its transpose (see [Orientation of S](#orientation-of-s)). |
 | `item_ids` | One unique int64 id per item (column of S); histories, results and rules use them. `None` = S's column indices. String ids: [Ids](preprocessing.md#ids). *(default: `None`)* |
-| `candidate_items` | Only these items can ever be recommended; the others are dropped from the model (histories still use them). Changing it means a rebuild. *(default: `None` = all)* |
+| `candidate_items` | Only these items can ever be recommended; the others are dropped from the model (histories still use them). The model is laid out for the candidates only: its score array covers just them. Changing it means a rebuild. *(default: `None` = all)* |
+| `item_order` | How items are laid out in memory: speed only, the results are the same up to the order of exactly tied scores and float rounding in the last digits. `'auto'` = the library's choice for recommender catalogues (today `'clustered'`; it may change between versions). `'clustered'`: the most popular items first, the rest grouped by their most popular neighbour (fewer cache misses on large catalogues: −8..−17% latency on a 3M-item catalogue, neutral at 85k). `'popularity'`: the items with the most entries in their column of S first. `'original'`: S's own column order (usually slower; can help when S's ids already group similar items). Exactly tied scores follow the layout: under `'clustered'` the more popular item wins among the most popular ones, otherwise the order is unspecified. Fixed at build, saved with the model. *(default: `'auto'`)* |
 | `block_size` | As in the similarity functions: `'auto'`, `None` (no blocking) or an int > 0. Same results at any value. `'auto'` sizes a single request for a busy server (every core sharing its L2 cache at work): blocking is faster under concurrent requests, `None` for a lone request on an idle machine (e.g. one request at a time per process). *(default: `'auto'`)* |
 | `num_threads` | Threads for the build. `0` = all cores. *(default: `0`)* |
 
@@ -128,6 +129,9 @@ ids, scores = view_for(country, package).recommend(history, k=20, exclude=ignore
   the references. Requests in flight finish on the model they started with.
 - Each view holds one bit per item (e.g. 117 KB for 934k items): cheap, you can
   cache the views you use instead of building one per request.
+- A trimmed model and a view with the same items give the same results up to
+  the order of exactly tied scores and float rounding: the trimmed model has
+  its own layout.
 - **Tip:** for items that are never available, if S can be recomputed, pass
   `target_cols` when computing S: each item then keeps `k` neighbours that can
   all be recommended, while `candidate_items` and the rules only remove
@@ -151,7 +155,8 @@ model and build views after `load`.
 - **Load files you trust**: a corrupted file is an error, but sizes aren't capped.
 
 A saved model is a plain directory of `.npy` files plus `meta.json`, readable
-with `np.load`. A model saved by a newer format is a clear "upgrade
+with `np.load`. The model is saved as built: its `item_order` and
+`candidate_items` come with it (`load` has no such options). A model saved by a newer format is a clear "upgrade
 similaripy" error.
 
 ## Orientation of S

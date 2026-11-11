@@ -140,6 +140,22 @@ def test_cached_urm_gets_int32_indices(monkeypatch, tmp_path):
     assert URM.indices.dtype == URM.indptr.dtype == "int32"
 
 
+def test_otto_counts_every_event_type(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(BENCH))
+    import loaders
+
+    def ev(aid, kind):
+        return {"aid": aid, "ts": 1661200010000, "type": kind}
+
+    rows = [{"session": 7, "events": [ev(30, "clicks"), ev(30, "carts"), ev(5, "orders")]}]
+    rows.append({"session": 2, "events": [ev(5, "clicks")]})
+    path = tmp_path / "train.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    URM = loaders._otto(False, path)
+    # rows: sessions 2, 7; columns: aids 5, 30 (sorted vocabularies); a repeated aid sums
+    assert URM.dtype == np.float32 and URM.toarray().tolist() == [[1, 0], [1, 2]]
+
+
 def test_small_every_case(run):
     rep = run("small", "--cases", "all", "--reps", "1", "--rounds", "1")
     assert {"cosine_k10", "cosine_filter_array", "cosine_2x2_concurrent"} <= set(rep["cases"])
@@ -204,6 +220,42 @@ def test_serve_model_cache(run, monkeypatch, tmp_path):
     meta.write_text(json.dumps({**json.loads(meta.read_text()), "urm": {"shape": [1, 1], "nnz": 1, "checksum": ""}}))
     with pytest.raises(SystemExit):
         run(*args, "--model-cache")
+
+
+def test_serve_item_order(run, monkeypatch):
+    # --item-order reaches every model (the one-block control too); unset passes nothing
+    from similaripy import serving
+
+    seen, real = [], serving.ItemKNN
+    monkeypatch.setattr(serving, "ItemKNN", lambda S, **kw: seen.append(kw) or real(S, **kw))
+    args = ("serve", "--mode", "block", "--block-threads", "1", "--model-k", "20", "--k", "10", "--rounds", "1")
+    assert run(*args, "--item-order", "original")["info"]["item_order"] == "original"
+    assert seen == [{"item_order": "original"}, {"item_order": "original", "block_size": None}]
+    # SIMILARIPY_BENCH_ITEM_ORDER = the default when the flag is unset (one wheel, two sides); the flag wins
+    monkeypatch.setenv("SIMILARIPY_BENCH_ITEM_ORDER", "popularity")
+    seen.clear()
+    assert run(*args)["info"]["item_order"] == "popularity"
+    assert run(*args, "--item-order", "original")["info"]["item_order"] == "original"
+    assert [kw["item_order"] for kw in seen] == ["popularity"] * 2 + ["original"] * 2
+    monkeypatch.delenv("SIMILARIPY_BENCH_ITEM_ORDER")
+    # --candidates N trims every model to the N most popular items
+    seen.clear()
+    rep = run(*args, "--candidates", "50")
+    assert rep["info"]["candidates"] == 50 and rep["info"]["n_active"] <= 50
+    assert [kw["candidate_items"].size for kw in seen] == [50, 50]
+    assert run(*args)["info"]["item_order"] is None
+
+
+def test_serve_transpose(run, monkeypatch):
+    # --transpose serves S.T, recorded; the cached S stays S
+    from similaripy import serving
+
+    seen, real = [], serving.ItemKNN
+    monkeypatch.setattr(serving, "ItemKNN", lambda S, **kw: seen.append(S.copy()) or real(S, **kw))
+    args = ("serve", "--mode", "latency", "--caps", "10", "--requests", "20", "--model-k", "20", "--rounds", "1")
+    plain, flipped = run(*args), run(*args, "--transpose")
+    assert (plain["info"]["transpose"], flipped["info"]["transpose"]) == (False, True)
+    assert (seen[1] != seen[0].T).nnz == 0 and (seen[1] != seen[0]).nnz > 0  # cosine k=20: S isn't symmetric
 
 
 def test_serve_build(run):

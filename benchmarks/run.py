@@ -66,7 +66,7 @@ def parser():
     common.add_argument(
         "--dataset",
         default=None,
-        choices=["synthetic", "movielens", "yambda", "hm"],
+        choices=["synthetic", "movielens", "yambda", "hm", "otto"],
         help="default: movielens (small: synthetic)",
     )
     common.add_argument("--version", default=None, help="dataset version (default: movielens 32m, yambda 50m)")
@@ -122,6 +122,19 @@ def parser():
     v.add_argument("--block-threads", type=int, nargs="+", default=None, help="block mode (default: 1 and all cores)")
     v.add_argument(
         "--block-size", type=block_size, default="auto", help="the timed model's block_size: auto, none or an int > 0"
+    )
+    v.add_argument(
+        "--item-order",
+        default=None,
+        choices=["auto", "clustered", "popularity", "original"],
+        help="every model's item_order (default: the library's, not passed)",
+    )
+    v.add_argument("--transpose", action="store_true", help="serve ItemKNN(S.T) (docs/serving.md 'Orientation of S')")
+    v.add_argument(
+        "--candidates",
+        type=positive,
+        default=None,
+        help="trim every model to the N most popular items (candidate_items)",
     )
     v.add_argument(
         "--callers", type=positive, nargs="+", default=[6], help="concurrent mode: Python threads (default: 6)"

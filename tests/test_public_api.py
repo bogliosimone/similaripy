@@ -71,7 +71,8 @@ SIGNATURES = {
     "preprocessing.rank_decay": "(users=None, *, scale, timestamps=None, shape='exponential', exponent=None)",
     "preprocessing.time_decay": "(timestamps, *, reference, scale, shape='exponential', exponent=None, users=None)",
     "preprocessing.urm_to_histories": "(URM, *, item_ids=None)",
-    "ItemKNN.__init__": "(self, S, *, item_ids=None, candidate_items=None, block_size='auto', num_threads=0)",
+    "ItemKNN.__init__": "(self, S, *, item_ids=None, candidate_items=None, item_order='auto', block_size='auto', "
+    "num_threads=0)",
     "ItemKNN.load": "(path, *, mmap=True)",
     "ItemKNN.recommend": "(self, history, *, weights=None, k=10, exclude_seen=True, include=None, exclude=None, sorted=True)",
     "ItemKNN.recommend_batch": "(self, histories, *, weights=None, k=10, exclude_seen=True, include=None, exclude=None, "

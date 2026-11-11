@@ -1,12 +1,13 @@
 //! Property tests: serving against a naive dense f64 reference. Small
 //! integers keep every sum exact, so results must match exactly; float values
 //! check the bit-identity claims (batch == single for any block size, a
-//! trimmed S == a view == a per-call include, history order doesn't matter).
+//! view == a per-call include, history order doesn't matter); a trimmed S ==
+//! a model of S · diag(keep) in its own order, array for array.
 
 use proptest::prelude::*;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{
-    BatchRequest, BlockSize, Entry, Lists, Model, Request, recommend, recommend_batch,
+    BatchRequest, BlockSize, Entry, ItemOrder, Lists, Model, Request, recommend, recommend_batch,
 };
 
 #[derive(Debug, Clone)]
@@ -104,6 +105,36 @@ fn popularity(s: &[Vec<f32>]) -> Vec<i32> {
     order.sort_by_key(|&j| std::cmp::Reverse(count(j as usize)));
     order.retain(|&j| count(j as usize) > 0 || s[j as usize].iter().any(|&v| v != 0.0));
     order
+}
+
+/// The build's order from the dense S: `popularity`; S's own order (items
+/// with no column last); or
+/// clustered: the `head` most popular, then the rest by (no column first =
+/// false, popularity rank of the most popular neighbour (own rank without a
+/// row), own rank).
+fn reference_order(s: &[Vec<f32>], order: ItemOrder, head: usize) -> Vec<i32> {
+    let mut pop = popularity(s);
+    match order {
+        ItemOrder::Popularity => pop,
+        ItemOrder::Original => {
+            let no_col = |j: i32| s.iter().all(|r| r[j as usize] == 0.0);
+            pop.sort_by_key(|&j| (no_col(j), j));
+            pop
+        }
+        ItemOrder::Auto | ItemOrder::Clustered => {
+            let by_rank = pop.clone();
+            let rank = |j: usize| by_rank.iter().position(|&p| p as usize == j).unwrap();
+            let count = |j: usize| s.iter().filter(|r| r[j] != 0.0).count();
+            let key = |j: usize| {
+                let anchor = (0..s.len()).filter(|&i| s[j][i] != 0.0).map(rank).min();
+                (count(j) == 0, anchor.unwrap_or(rank(j)), rank(j))
+            };
+            let mut tail = pop.split_off(head.min(pop.len()));
+            tail.sort_by_key(|&j| key(j as usize));
+            pop.extend(tail);
+            pop
+        }
+    }
 }
 
 /// A model rebuilt from its own parts (the pickle / load path).
@@ -373,17 +404,12 @@ proptest! {
         let m = model(&c);
         let want = run(&c, &m);
         let (inc, exc) = (flagged(&c, &c.allowed), flagged(&c, &c.excluded));
-        // A trimmed S and a view == the per-call include / exclude, bit for
-        // bit; view + per-call include == the per-call AND.
+        // A view == the per-call include / exclude, bit for bit; view +
+        // per-call include == the per-call AND (a trimmed S: in
+        // `raw_input_orders_and_parts`, its own order).
         if let Some(inc) = &inc {
-            let trimmed = m.trimmed(inc).unwrap();
             let view = m.view(Some(inc), exc.as_deref());
-            for got in [
-                go(&c, &trimmed, None, exc.as_deref()),
-                go(&c, &view, None, None),
-                go(&c, &trimmed, Some(inc), exc.as_deref()),
-                go(&c, &view, Some(inc), exc.as_deref()),
-            ] {
+            for got in [go(&c, &view, None, None), go(&c, &view, Some(inc), exc.as_deref())] {
                 prop_assert_eq!(&got.0, &want.0);
                 prop_assert_eq!(bits(&got.1), bits(&want.1));
             }
@@ -445,20 +471,31 @@ proptest! {
         prop_assert_eq!(bits(&got_scores[l..]), bits(&want.1));
     }
 
-    // `new` on S as a caller may give it == the canonical S in popularity
-    // order, array for array; a model rebuilt from its parts answers the same.
+    // `new` on S as a caller may give it == the canonical S in the reference
+    // order (a small head: the catalogs are smaller than `CLUSTER_HEAD`),
+    // array for array; trimmed (`keep` = the include flags) == the same on
+    // S · diag(keep), its kept columns first (n_active = their count); a
+    // model rebuilt from its parts answers the same.
     #[test]
-    fn raw_input_popularity_and_parts(c in case(true)) {
+    fn raw_input_orders_and_parts(c in case(true), o in 0usize..4, head in 0usize..12) {
+        let order = [ItemOrder::Auto, ItemOrder::Clustered, ItemOrder::Popularity, ItemOrder::Original][o];
         let raw = messy(&c.s);
         let view = CsrView::new("S", &raw.indptr, &raw.indices, &raw.data, c.s.len()).unwrap();
-        let m = Model::new(view, c.ext.clone(), BlockSize::Auto).unwrap();
-        let want = build(&c.s, &popularity(&c.s), c.ext.as_deref()).unwrap();
+        let keep = c.allowed.as_deref();
+        let m = Model::new_with_head(view, c.ext.clone(), keep, order, head, BlockSize::Auto).unwrap();
+        let s: Vec<Vec<f32>> = c.s.iter().map(|r| {
+            r.iter().enumerate().map(|(j, &v)| if keep.is_none_or(|k| k[j]) { v } else { 0.0 }).collect()
+        }).collect();
+        let n_cols = (0..s.len()).filter(|&j| s.iter().any(|r| r[j] != 0.0)).count();
+        prop_assert_eq!(m.n_active(), n_cols);
+        let new_to_old = reference_order(&s, order, head);
+        let want = build(&s, &new_to_old, c.ext.as_deref()).unwrap();
         let (p, q) = (m.parts(), want.parts());
         prop_assert_eq!((p.indptr, p.new_to_old, p.n_cols), (q.indptr, q.new_to_old, q.n_cols));
         let cols_bits = |m: &[Entry]| m.iter().map(|e| (e.col, e.val.to_bits())).collect::<Vec<_>>();
         prop_assert_eq!(cols_bits(p.pairs), cols_bits(q.pairs));
         prop_assert_eq!(p.ext, q.ext);
-        let c2 = Case { new_to_old: popularity(&c.s), ..c.clone() };
+        let c2 = Case { s, new_to_old, ..c.clone() };
         let got = run(&c2, &m);
         let view = m.view(flagged(&c2, &c2.allowed).as_deref(), flagged(&c2, &c2.excluded).as_deref());
         let back = from_own_parts(&view);
@@ -682,9 +719,6 @@ fn save_load_round_trip_overwrite_and_versions() {
         let back = Model::load(&dir, mmap).unwrap();
         assert_eq!(Owned::of(&back), Owned::of(&m));
         assert_eq!(rec(&back), rec(&m));
-        // a trimmed model of a mapped one (shared mapped arrays, owned S)
-        let t = back.trimmed(&[11]).unwrap();
-        assert_eq!(Owned::of(&t).new_to_old, vec![1, 0, 2]);
     }
     // never into a non-empty directory unless it holds a saved model and overwrite
     assert!(m.save(&dir, "test", false).is_err());
