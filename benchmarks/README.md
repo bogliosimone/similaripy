@@ -63,7 +63,7 @@ python benchmarks/compare.py benchmarks/bench_results/before_*.json benchmarks/b
   - `block`: the core batch call over every user (prep outside the timing) with the default block size vs one block per request, on `--block-threads` (default 1 and all cores, `info.block_threads`; concurrency changes the answer, D65). `info.block_control`: the catalog fits one block, both run the same. (The Step 4 batch-vs-kernel `gate` mode was removed after D64 settled it.)
   - `build`: `ItemKNN(S)` time and peak memory in a fresh process (S saved to a temp file first). Peak memory is `phys_footprint` (see below), not the `ru_maxrss` of reports before D75: not comparable with them.
 
-  `--item-order` builds every model in that `item_order` (default: `SIMILARIPY_BENCH_ITEM_ORDER`, else not passed: the library's, so a base without it still runs; set on such a base: an error); `--transpose` serves `ItemKNN(S.T)`.
+  `--item-order` builds every model in that `item_order` (default: `SIMILARIPY_BENCH_ITEM_ORDER`, else not passed: the library's, so a base without it still runs; set on such a base: an error); `--transpose` serves `ItemKNN(S.T)`; `--candidates N` trims every model to the N most popular items (`candidate_items`: a smaller catalogue on real data).
 
   Serving times the core batch call through private API (`compat.py`, the one place to edit if it changes).
 

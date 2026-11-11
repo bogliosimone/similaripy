@@ -275,10 +275,15 @@ def serve_cases(URM, opts):
     if opts["transpose"]:
         S = S.T.tocsr()  # the cache keeps S itself: one cached model serves both
     io = compat.item_order_kwargs(opts["item_order"])
-    rec = ItemKNN(S, **io, **compat.block_size_kwargs(opts["block_size"]))
+    trim = {}
+    if opts["candidates"]:  # the N most popular items (entries per column of S): a smaller catalogue on real data
+        counts = np.bincount(S.indices, minlength=S.shape[0])
+        trim["candidate_items"] = np.argsort(-counts, kind="stable")[: opts["candidates"]]
+    rec = ItemKNN(S, **io, **trim, **compat.block_size_kwargs(opts["block_size"]))
     n_active = compat.serving_n_active(rec)
     info = {"model": opts["model"], "model_k": opts["model_k"], "s_nnz": int(S.nnz), "n_active": n_active}
     info |= {"block_size": opts["block_size"], "item_order": io.get("item_order"), "transpose": opts["transpose"]}
+    info["candidates"] = opts["candidates"]
     if cached:
         info["model_cache"] = cached
     rng = np.random.default_rng(opts["seed"])
@@ -298,7 +303,7 @@ def serve_cases(URM, opts):
         batch_in = compat.serving_batch_inputs(URM)
         threads = list(dict.fromkeys(opts["block_threads"] or [1, os.cpu_count()]))  # no duplicate case names
         info["block_threads"] = threads
-        one = ItemKNN(S, **io, block_size=None)
+        one = ItemKNN(S, **io, **trim, block_size=None)
         size = {"auto": compat.DEFAULT_BLOCK_SIZE, None: n_active}.get(opts["block_size"], opts["block_size"])
         info["block_control"] = n_active <= size  # both models run one block
         for t in threads:
@@ -311,7 +316,7 @@ def serve_cases(URM, opts):
         hists = _histories(URM, users, None, rng)
         callers = list(dict.fromkeys(opts["callers"]))
         info["callers"] = callers
-        one = ItemKNN(S, **io, block_size=None)
+        one = ItemKNN(S, **io, **trim, block_size=None)
         kwargs = {"k": k, "exclude_seen": True}
         for c in callers:
             cases.append(
@@ -324,10 +329,12 @@ def serve_cases(URM, opts):
         info["s_mb"] = S.nnz * 8 / 2**20  # indices + data
 
         def build():
-            secs, base_mb, peak_mb = report.in_fresh_process(build_child, path, io)
+            secs, base_mb, peak_mb = report.in_fresh_process(build_child, path, io | trim)
             return untimed(secs, rss_base_mb=base_mb, rss_peak_mb=peak_mb)
 
-        cases.append(Case("build", {"block_size": "auto", **io}, build))
+        cases.append(
+            Case("build", {"block_size": "auto", **io, **({"candidates": opts["candidates"]} if trim else {})}, build)
+        )
     return cases, info
 
 

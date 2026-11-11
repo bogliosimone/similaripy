@@ -238,6 +238,11 @@ def test_serve_item_order(run, monkeypatch):
     assert run(*args, "--item-order", "original")["info"]["item_order"] == "original"
     assert [kw["item_order"] for kw in seen] == ["popularity"] * 2 + ["original"] * 2
     monkeypatch.delenv("SIMILARIPY_BENCH_ITEM_ORDER")
+    # --candidates N trims every model to the N most popular items
+    seen.clear()
+    rep = run(*args, "--candidates", "50")
+    assert rep["info"]["candidates"] == 50 and rep["info"]["n_active"] <= 50
+    assert [kw["candidate_items"].size for kw in seen] == [50, 50]
     assert run(*args)["info"]["item_order"] is None
 
 

@@ -131,6 +131,12 @@ def parser():
     )
     v.add_argument("--transpose", action="store_true", help="serve ItemKNN(S.T) (docs/serving.md 'Orientation of S')")
     v.add_argument(
+        "--candidates",
+        type=positive,
+        default=None,
+        help="trim every model to the N most popular items (candidate_items)",
+    )
+    v.add_argument(
         "--callers", type=positive, nargs="+", default=[6], help="concurrent mode: Python threads (default: 6)"
     )
     v.add_argument("--seed", type=int, default=0)
