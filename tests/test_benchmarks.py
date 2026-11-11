@@ -309,6 +309,32 @@ def test_abba_and_compare(monkeypatch, tmp_path, capsys):
         )
 
 
+def test_abba_several_candidates(monkeypatch, tmp_path):
+    # One base run per pair shared by every candidate, order rotated pair to pair; one summary per candidate
+    monkeypatch.syspath_prepend(str(BENCH))
+    monkeypatch.chdir(tmp_path)
+    import abba
+
+    small = ["small", "--cases", "dot_product", "--reps", "1", "--rounds", "1", "--warmup", "0"]
+    py = sys.executable
+    abba.main(
+        ["--base", py, "--cand", f"a={py}", "--cand", f"b={py}", "--tag", "m", "--output-dir", str(tmp_path)]
+        + ["--", *small]
+    )
+    for c in ("a", "b"):
+        out = json.loads((tmp_path / f"abba_m-{c}.json").read_text())
+        assert len(out["pairs"]["total"]["dot_product"]) == 2
+    runs = sorted(tmp_path.glob("m-*.json"), key=lambda f: f.stat().st_mtime_ns)
+    notes = [json.loads(f.read_text())["config"]["note"] for f in runs]
+    assert notes == [
+        f"abba m {s} pair {i}" for i, s in [(1, "base"), (1, "a"), (1, "b"), (2, "b"), (2, "a"), (2, "base")]
+    ]
+    # Several candidates must be named, uniquely, and not "base": refused before running
+    for cands in ([py, py], [f"base={py}", f"a={py}"], [f"a={py}", f"a={py}"], [f"a-1={py}", f"b={py}"]):
+        with pytest.raises(SystemExit):
+            abba.main(["--base", py, *(a for c in cands for a in ("--cand", c)), "--tag", "x", "--", *small])
+
+
 GATE_OS = pytest.mark.skipif(sys.platform == "win32", reason="gate.py samples load and CPU with ps: macOS and Linux")
 
 
