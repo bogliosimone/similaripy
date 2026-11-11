@@ -59,8 +59,8 @@ thread_local! {
     static SCRATCH: Cell<Option<Scratch>> = const { Cell::new(None) };
 }
 
-/// The top `req.k` items of one history (score desc, then the more popular
-/// item, unless unsorted), appended as (internal id, score).
+/// The top `req.k` items of one history (score desc, then the lower internal
+/// id, unless unsorted), appended as (internal id, score).
 fn recommend_internal(
     model: &Model,
     req: &Request,
@@ -88,8 +88,9 @@ fn caller_id(model: &Model) -> impl Fn(u32) -> i64 + '_ {
 }
 
 /// The top `req.k` items of one history, best first (score desc, then the
-/// more popular item; unless `!req.sorted`), appended to the outputs as the
-/// caller's ids. Fewer than k when fewer items score > 0.
+/// lower internal id: the `ItemOrder`'s tie rule; unless `!req.sorted`),
+/// appended to the outputs as the caller's ids. Fewer than k when fewer
+/// items score > 0.
 pub fn recommend(
     model: &Model,
     req: &Request,
@@ -152,7 +153,9 @@ pub struct BatchRequest<'a> {
 pub type Batch = (Vec<i64>, Vec<i64>, Vec<f32>);
 
 /// Each history through the single-request path on the current rayon pool,
-/// so user u's results equal `recommend` of that history bit for bit.
+/// so user u's results equal `recommend` of that history bit for bit when
+/// sorted (unsorted: the same items and scores, maybe in another order:
+/// 'auto' picks the block size per call).
 pub fn recommend_batch(model: &Model, b: &BatchRequest) -> Result<Batch, Error> {
     let users = b.histories.offsets.len().saturating_sub(1);
     b.histories.check("histories", users)?;

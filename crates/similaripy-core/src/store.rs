@@ -1,15 +1,14 @@
 //! Saved models: one `.npy` file per array (header written and checked here,
 //! readable by `numpy.load`) plus `meta.json`. Arrays are read into a `Vec`
 //! or mapped read-only (`memmap2`). A mapped file must not change while
-//! mapped (SIGBUS), so saving never rewrites a file in place: it writes new
-//! files (`File::create_new`) and replaces a saved model by renaming
-//! directories.
+//! mapped (SIGBUS), so saving only creates new files (`File::create_new`)
+//! in a new or empty directory, never replacing a saved model.
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::ops::{Deref, Range};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use memmap2::Mmap;
@@ -65,7 +64,7 @@ fn cast<T: Pod>(b: &[u8]) -> Option<&[T]> {
 }
 
 /// An array owned, or mapped read-only from a saved model's file (shared
-/// by the models made from it: views, trimmed).
+/// by the models made from it: its views).
 pub(crate) enum Buf<T> {
     Owned(Vec<T>),
     /// The byte range of the elements, checked by `cast` at load.
@@ -225,106 +224,39 @@ pub(crate) fn write_text(dir: &Path, name: &str, text: &str) -> Result<(), Error
     f.sync_all().map_err(io(&path))
 }
 
-/// Runs `write` into a new sibling directory, then renames it to `dir`, so
-/// `dir` only ever appears complete (a failed or concurrent save never
-/// leaves a partial model there). `dir` may be missing or empty; a
-/// non-empty one is an error unless `overwrite` and `is_model` says it holds
-/// a saved model and nothing else: it is then renamed away first and
-/// removed, so readers that mapped the old files keep them. Between the two
-/// renames `dir` doesn't exist (a concurrent load fails): one saver at a
-/// time. Never through a symlink.
+/// Runs `write` into `dir`, which must be missing or empty: a saved model is
+/// never replaced (save each version to a new directory), so no file a
+/// reader may have mapped ever changes. Every file is new
+/// (`File::create_new`) and `write` puts `meta.json` last, so an interrupted
+/// save leaves no directory `load` accepts; a failed one removes the
+/// directory it created.
 pub(crate) fn save_dir(
     dir: &Path,
-    overwrite: bool,
-    is_model: impl Fn(&Path) -> bool,
     write: impl Fn(&Path) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let exists = |msg: &str| {
-        Err(Error::Io(
-            std::io::ErrorKind::AlreadyExists,
-            format!("{}: {msg}", dir.display()),
-        ))
-    };
-    if fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
-        return exists(
-            "a symlink: not replaced (save to a new directory and point the link at it)",
-        );
-    }
-    let occupied = dir.exists() && fs::read_dir(dir).map_err(io(dir))?.next().is_some();
-    if occupied && !overwrite {
-        return exists("not empty (overwrite=True replaces a saved model)");
-    }
-    if occupied && !is_model(dir) {
-        return exists("not only a saved model: not replaced");
-    }
     if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(io(parent))?;
     }
-    let new = sibling(dir, "new")?;
-    fs::create_dir(&new).map_err(io(&new))?;
-    if let Err(e) = write(&new) {
-        let _ = fs::remove_dir_all(&new);
-        return Err(e);
-    }
-    if !occupied {
-        if dir.exists() {
-            let _ = fs::remove_dir(dir); // empty: only an empty directory goes
-        }
-        if let Err(e) = fs::rename(&new, dir) {
-            let _ = fs::remove_dir_all(&new);
-            return Err(io(dir)(e));
-        }
-        return Ok(());
-    }
-    let old = sibling(dir, "old")?;
-    if let Err(e) = fs::rename(dir, &old) {
-        let _ = fs::remove_dir_all(&new);
-        return Err(io(dir)(e));
-    }
-    if let Err(e) = fs::rename(&new, dir) {
-        // Another saver got in between: leave its model, drop both copies.
-        // Nothing at `dir` and the old model can't go back: keep it.
-        let _ = fs::remove_dir_all(&new);
-        if fs::rename(&old, dir).is_err() {
-            if !dir.exists() {
-                return Err(Error::Io(
-                    e.kind(),
-                    format!(
-                        "not saved to {}; the replaced model is left at {}: {e}",
-                        dir.display(),
-                        old.display()
-                    ),
-                ));
-            }
-            let _ = fs::remove_dir_all(&old);
-        }
-        return Err(io(dir)(e));
-    }
-    fs::remove_dir_all(&old).map_err(|e| {
-        Error::Io(
-            e.kind(),
+    // Only the saver that created `dir` removes it on failure (never another's model).
+    let created = match fs::create_dir(dir) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(e) => return Err(io(dir)(e)),
+    };
+    if !created && fs::read_dir(dir).map_err(io(dir))?.next().is_some() {
+        return Err(Error::Io(
+            std::io::ErrorKind::AlreadyExists,
             format!(
-                "saved to {}, but the replaced model is left at {}: {e}",
-                dir.display(),
-                old.display()
+                "{}: not empty: save each model version to a new directory",
+                dir.display()
             ),
-        )
+        ));
+    }
+    write(dir).inspect_err(|_| {
+        if created {
+            let _ = fs::remove_dir_all(dir);
+        }
     })
-}
-
-/// `.name.tag-pid-nanos` next to `dir`.
-fn sibling(dir: &Path, tag: &str) -> Result<PathBuf, Error> {
-    let name = dir
-        .file_name()
-        .ok_or_else(|| Error::InvalidInput(format!("{}: not a directory name", dir.display())))?;
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    Ok(dir.with_file_name(format!(
-        ".{}.{tag}-{}-{nanos}",
-        name.to_string_lossy(),
-        std::process::id()
-    )))
 }
 
 #[cfg(test)]

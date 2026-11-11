@@ -77,7 +77,7 @@ SIGNATURES = {
     "ItemKNN.recommend": "(self, history, *, weights=None, k=10, exclude_seen=True, include=None, exclude=None, sorted=True)",
     "ItemKNN.recommend_batch": "(self, histories, *, weights=None, k=10, exclude_seen=True, include=None, exclude=None, "
     "sorted=True, num_threads=0)",
-    "ItemKNN.save": "(self, path, *, overwrite=False)",
+    "ItemKNN.save": "(self, path)",
     "ItemKNN.view": "(self, *, include=None, exclude=None)",
 }
 

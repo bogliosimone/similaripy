@@ -147,15 +147,8 @@ impl PyModel {
     }
 
     /// See `Model::save`.
-    fn save(
-        &self,
-        py: Python<'_>,
-        path: PathBuf,
-        written_by: &str,
-        overwrite: bool,
-    ) -> PyResult<()> {
-        py.detach(|| self.0.save(&path, written_by, overwrite))
-            .map_err(to_py)
+    fn save(&self, py: Python<'_>, path: PathBuf, written_by: &str) -> PyResult<()> {
+        py.detach(|| self.0.save(&path, written_by)).map_err(to_py)
     }
 
     /// See `Model::load`.

@@ -2,8 +2,8 @@
 
 import json
 import pickle
-import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -316,6 +316,14 @@ def test_pickle_round_trip_keeps_layout_and_mask():
         assert _same(rec.recommend(hist, k=15), back.recommend(hist, k=15))
 
 
+def test_pickle_from_another_version_is_refused():
+    func, (cls, fmt, *parts) = ItemKNN(_S(10, False, seed=1)).__reduce__()
+    assert func(cls, fmt, *parts).item_ids.size == 10
+    for other in (fmt + 1, parts[0]):  # a newer tag; an untagged tuple (indptr first)
+        with pytest.raises(ValueError, match="another similaripy version"):
+            func(cls, other, *parts)
+
+
 def test_rejects_bad_input():
     S = _S(10, False, seed=1)
     with pytest.raises(ValueError, match="square"):
@@ -348,6 +356,19 @@ def test_rejects_bad_input():
         rec.recommend_batch([[5, 6], [6]], weights=[[1.0], None])
     with pytest.raises(ValueError, match="finite"):
         rec.recommend_batch([[5]], weights=[[np.inf]])
+    # common mistakes get a message naming the argument
+    with pytest.raises(TypeError, match="sparse"):
+        ItemKNN(S.toarray())
+    with pytest.raises(ValueError, match="history must be 1-d, got a scalar"):
+        rec.recommend(5)
+    with pytest.raises(ValueError, match="weights must be 1-d, got a scalar"):
+        rec.recommend([5], weights=1.0)
+    with pytest.raises(ValueError, match=r"histories\[0\] must be 1-d, got a scalar"):
+        rec.recommend_batch([5, 6])
+    with pytest.raises(ValueError, match=r"weights\[0\] must be 1-d, got a scalar"):
+        rec.recommend_batch([[5]], weights=[1.0])
+    with pytest.raises(TypeError, match=r"histories\[1\] is None"):
+        rec.recommend_batch([[5], None])
 
 
 def test_caller_arrays_unchanged():
@@ -519,43 +540,40 @@ def test_load_files_written_by_numpy(tmp_path):
     assert np.array_equal(back.recommend([1, 2, 3])[0], rec.recommend([1, 2, 3])[0])
 
 
-def test_save_never_overwrites_by_default(tmp_path):
+def test_save_only_into_a_new_or_empty_directory(tmp_path):
     a, b = ItemKNN(_S(20, False, seed=1)), ItemKNN(_S(20, False, seed=2))
     a.save(tmp_path / "m")
-    with pytest.raises(FileExistsError, match="overwrite"):
-        b.save(tmp_path / "m")
     mapped = ItemKNN.load(tmp_path / "m")
     want = mapped.recommend([1, 2], k=5)
-    if sys.platform == "win32":
-        # Windows can't rename a directory with mapped files: refused, old model intact
-        with pytest.raises(PermissionError):
-            b.save(tmp_path / "m", overwrite=True)
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["m"]
-        assert np.array_equal(ItemKNN.load(tmp_path / "m", mmap=False).recommend([1, 2], k=5)[0], want[0])
-        del mapped  # unmapped: now it can be replaced
-        b.save(tmp_path / "m", overwrite=True)
-    else:
-        b.save(tmp_path / "m", overwrite=True)  # new files renamed into place
-        assert np.array_equal(mapped.recommend([1, 2], k=5)[0], want[0])  # the old mapping still reads
-    assert np.array_equal(ItemKNN.load(tmp_path / "m").recommend([1, 2], k=5)[0], b.recommend([1, 2], k=5)[0])
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["m"]  # no temp dirs left
+    with pytest.raises(FileExistsError, match="new directory"):
+        b.save(tmp_path / "m")  # a saved model is never replaced
+    assert _same(mapped.recommend([1, 2], k=5), want)
+    assert _same(ItemKNN.load(tmp_path / "m").recommend([1, 2], k=5), want)
     (tmp_path / "other").mkdir()
     (tmp_path / "other" / "keep.txt").write_text("x")
-    with pytest.raises(FileExistsError, match="not only a saved model"):
-        a.save(tmp_path / "other", overwrite=True)
-    assert (tmp_path / "other" / "keep.txt").exists()
-    # never deletes anything but a saved model: extra files, a foreign meta.json
-    (tmp_path / "m" / "NOTES.txt").write_text("mine")
-    with pytest.raises(FileExistsError, match="not only a saved model"):
-        a.save(tmp_path / "m", overwrite=True)
-    assert (tmp_path / "m" / "NOTES.txt").exists()
-    (tmp_path / "proj").mkdir()
-    (tmp_path / "proj" / "meta.json").write_text('{"name": "another tool"}')
-    with pytest.raises(FileExistsError, match="not only a saved model"):
-        a.save(tmp_path / "proj", overwrite=True)
-    assert (tmp_path / "proj" / "meta.json").exists()
+    with pytest.raises(FileExistsError, match="new directory"):
+        a.save(tmp_path / "other")
+    assert sorted(p.name for p in (tmp_path / "other").iterdir()) == ["keep.txt"]
     (tmp_path / "empty").mkdir()
     a.save(tmp_path / "empty")  # an empty directory is fine
+    a.save(tmp_path / "new" / "v1")  # parents are created
+    assert _same(ItemKNN.load(tmp_path / "new" / "v1").recommend([1, 2], k=5), want)
+
+
+def test_concurrent_saves_to_one_path_keep_one_model(tmp_path):
+    """Two savers on one path aren't supported (all but one fail), but the one
+    that wins keeps a complete model: a loser never removes it."""
+    a = ItemKNN(_S(20, False, seed=1))
+
+    def save():
+        try:
+            a.save(tmp_path / "m")
+        except OSError:
+            pass
+
+    with ThreadPoolExecutor(8) as ex:
+        list(ex.map(lambda _: save(), range(16)))
+    assert _same(ItemKNN.load(tmp_path / "m").recommend([1, 2], k=5), a.recommend([1, 2], k=5))
 
 
 def _corrupt(d, name, fn):
@@ -636,34 +654,17 @@ def test_load_rejects_corrupted_files(tmp_path, corrupt, error):
                 ItemKNN.load(d, mmap=mmap)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-def test_save_refuses_to_replace_a_symlink(tmp_path):
-    a = ItemKNN(_S(20, False, seed=1))
-    a.save(tmp_path / "v1")
-    (tmp_path / "current").symlink_to(tmp_path / "v1", target_is_directory=True)
-    with pytest.raises(FileExistsError, match="symlink"):
-        a.save(tmp_path / "current", overwrite=True)
-    assert (tmp_path / "current").is_symlink()
-
-
-@pytest.mark.parametrize("existing", [True, False])
-def test_concurrent_overwrites_leave_no_temp_dirs(tmp_path, existing):
-    """Two savers on one path aren't supported (some fail), but none leaves a
-    copy or a partial model behind: `m` only ever appears complete."""
-    a = ItemKNN(_S(20, False, seed=1))
-    if existing:
-        a.save(tmp_path / "m")
-
-    def save():
-        try:
-            a.save(tmp_path / "m", overwrite=True)
-        except OSError:
-            pass
-
-    with ThreadPoolExecutor(8) as ex:
-        list(ex.map(lambda _: save(), range(16)))
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["m"]
-    assert _same(ItemKNN.load(tmp_path / "m").recommend([1, 2], k=5), a.recommend([1, 2], k=5))
+@pytest.mark.parametrize("mmap", [True, False])
+def test_loads_a_committed_format_1_model(mmap):
+    # 1.x loads every older 1.x format: these files were written by format 1 and
+    # stay as they are. Changing what the files mean bumps the format instead.
+    model = ItemKNN.load(Path(__file__).parent / "data" / "itemknn-format1", mmap=mmap)
+    assert np.array_equal(model.item_ids, [10, 20, 30, 40, 50, 60, 70])
+    f32 = lambda x: np.array(x, dtype=np.float32)
+    assert _same(model.recommend([20, 40], k=3), ([30, 10, 50], f32([1.75, 0.75, 0.5])))
+    got = model.recommend([10, 50, 70], weights=[1.0, 0.5, 3.0], k=3)
+    assert _same(got, ([60, 40, 20], f32([1.0, 0.5, 0.5])))
+    assert model._model.parts()[-1] is None  # block_size as saved
 
 
 def test_strided_and_float64_coo_input():

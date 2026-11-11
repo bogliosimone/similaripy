@@ -25,7 +25,7 @@ default mask (cheap to change: make a new view, swap the reference);
 from typing import Literal
 
 import numpy as np
-from scipy.sparse import sparray, spmatrix
+from scipy.sparse import issparse, sparray, spmatrix
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
 from ._s_plus import SparseInput, _canonical_csr, _indptr_dtype
@@ -33,6 +33,9 @@ from ._s_plus import SparseInput, _canonical_csr, _indptr_dtype
 __all__ = ["ItemKNN"]
 
 _INT64_MAX = np.iinfo(np.int64).max
+# What `__reduce__` writes: pickles are same-version only, this makes another
+# version's pickle a clear error instead of a misread.
+_PICKLE_FORMAT = 1
 
 
 def _check_ids(name, ids) -> np.ndarray:
@@ -40,8 +43,7 @@ def _check_ids(name, ids) -> np.ndarray:
     ids only (a float id is a bug, not an id), uint64 only within int64's
     range (no silent wrap)."""
     a = np.asarray(ids)
-    if a.ndim > 1:
-        raise ValueError(f"{name} must be 1-d, got shape {a.shape}")
+    _check_1d(name, a)
     if a.size == 0:
         return np.empty(0, dtype=np.int64)
     if a.dtype.kind not in "iu":
@@ -54,6 +56,13 @@ def _check_ids(name, ids) -> np.ndarray:
     return a
 
 
+def _check_1d(name, a):
+    if a.ndim == 0:
+        raise ValueError(f"{name} must be 1-d, got a scalar")
+    if a.ndim > 1:
+        raise ValueError(f"{name} must be 1-d, got shape {a.shape}")
+
+
 def _ids(name, ids) -> np.ndarray:
     """A private 1-d int64 copy of `_check_ids`."""
     return np.array(_check_ids(name, ids), dtype=np.int64)
@@ -63,12 +72,11 @@ def _opt_ids(name, ids):
     return None if ids is None else _ids(name, ids)
 
 
-def _weights(weights):
+def _weights(weights, name="weights"):
     if weights is None:
         return None
     w = np.asarray(weights, dtype=np.float32)
-    if w.ndim > 1:
-        raise ValueError(f"weights must be 1-d, got shape {w.shape}")
+    _check_1d(name, w)
     return np.array(w)
 
 
@@ -78,20 +86,23 @@ def _check_k(k):
     return min(int(k), _INT64_MAX)  # clamped to the item count in Rust
 
 
-def _per_user(name, lists, n=None, convert=None):
+def _per_user(name, lists, n=None, convert=None, allow_none=True):
     """One entry per user, flattened: (offsets int64, values, flags of the
-    None entries or None). `n`: the expected user count."""
+    None entries or None). `n`: the expected user count; `convert(name, x)`
+    one entry (errors name it, e.g. `histories[3]`)."""
     if isinstance(lists, np.ndarray) or not isinstance(lists, (list, tuple)):
         shared = " (a rule for every user goes in view())" if name in ("include", "exclude") else ""
         raise TypeError(f"{name} must be a list with one entry per user{shared}, got {type(lists).__name__}")
     if n is not None and len(lists) != n:
         raise ValueError(f"{name} must have one entry per user ({n}), got {len(lists)}")
-    convert = convert or (lambda x: _ids(name, x))
-    arrays = [None if x is None else convert(x) for x in lists]
+    convert = convert or _ids
+    if not allow_none and any(x is None for x in lists):
+        raise TypeError(f"{name}[{[x is None for x in lists].index(True)}] is None: pass [] for no items")
+    arrays = [None if x is None else convert(f"{name}[{i}]", x) for i, x in enumerate(lists)]
     none = np.fromiter((a is None for a in arrays), bool, len(arrays))
     lens = np.fromiter((0 if a is None else a.size for a in arrays), np.int64, len(arrays))
     parts = [a for a in arrays if a is not None and a.size]
-    flat = np.concatenate(parts) if parts else convert([])
+    flat = np.concatenate(parts) if parts else convert(name, [])
     return np.r_[0, np.cumsum(lens)].astype(np.int64), flat, (none if none.any() else None)
 
 
@@ -102,6 +113,8 @@ def _csr_arrays(S: SparseInput, num_threads):
     them). Other formats take the similarity functions' route
     (`_canonical_csr`: one copy, values cast before duplicates are summed), so
     the model doesn't depend on the input format."""
+    if not issparse(S):
+        raise TypeError(f"S must be a scipy sparse matrix or array, got {type(S).__name__}")
     n = S.shape[0]
     if S.ndim != 2 or S.shape[1] != n:
         raise ValueError(f"S must be square (item x item), got shape {S.shape}")
@@ -163,7 +176,8 @@ class ItemKNN:
         num_threads: threads for the build (0 = all).
 
     Raises:
-        TypeError: on non-integer `item_ids` or `candidate_items`.
+        TypeError: on a dense S, or non-integer `item_ids` or
+            `candidate_items`.
         ValueError: on a non-square S, `item_ids` without one unique id
             per item, or an unknown `item_order`.
 
@@ -325,7 +339,8 @@ class ItemKNN:
         """
         `recommend` for many histories at once, in parallel: element u of the
         result equals `recommend(histories[u], weights=weights[u], ...)` bit
-        for bit.
+        for bit (with `sorted=False`: the same items and scores, maybe in
+        another order).
 
         Args:
             histories: a list with one array of item ids per user.
@@ -344,17 +359,17 @@ class ItemKNN:
             scores: one float32 array of scores per user.
 
         Raises:
-            TypeError: on non-integer ids, or rules that aren't a list with
-                one entry per user.
+            TypeError: on non-integer ids, a None history (pass [] for no
+                items), or rules that aren't a list with one entry per user.
             ValueError: on a negative `k`, lists without one entry per
                 user, or weights without one per history id.
         """
         k = _check_k(k)
-        offsets, ids, _ = _per_user("histories", histories)
+        offsets, ids, _ = _per_user("histories", histories, allow_none=False)
         n = len(offsets) - 1
         w = None
         if weights is not None:
-            w_offsets, w, none = _per_user("weights", weights, n, convert=_weights)
+            w_offsets, w, none = _per_user("weights", weights, n, convert=lambda nm, x: _weights(x, nm))
             sizes, given = np.diff(offsets), ~none if none is not None else np.ones(n, bool)
             if not np.array_equal(np.diff(w_offsets)[given], sizes[given]):
                 raise ValueError("weights: one weight per history id expected")
@@ -383,25 +398,24 @@ class ItemKNN:
         cuts = out_offsets[1:-1]
         return np.split(out_ids, cuts), np.split(out_scores, cuts)
 
-    def save(self, path, *, overwrite: bool = False) -> None:
+    def save(self, path) -> None:
         """
-        Saves the model to a directory, for `ItemKNN.load` in this or any
-        later 1.x version. A view can't be saved: save the base model and
-        build views after `load`. Details: the Serving guide.
+        Saves the model to a new directory, for `ItemKNN.load` in this or any
+        later 1.x version. A saved model is never replaced: save each version
+        to its own directory and switch what the workers load. A view can't be
+        saved: save the base model and build views after `load`. Details: the
+        Serving guide.
 
         Args:
-            path: the directory: missing or empty.
-            overwrite: replace a model saved there before (never other
-                files).
+            path: the directory: missing (created) or empty.
 
         Raises:
-            FileExistsError: on a non-empty directory without
-                `overwrite=True`, or one that holds more than a saved model.
+            FileExistsError: on a non-empty directory.
             ValueError: on a view.
         """
         from . import __version__
 
-        self._model.save(path, f"similaripy {__version__}", overwrite)
+        self._model.save(path, f"similaripy {__version__}")
 
     @classmethod
     def load(cls, path, *, mmap: bool = True) -> "ItemKNN":
@@ -424,14 +438,23 @@ class ItemKNN:
         Note:
             Load files you trust: the check makes a corrupted file an error,
             not a crash, but doesn't guard against resource exhaustion.
+            With `mmap=True` the files must not change while the model is
+            in use: changing or truncating a mapped file is undefined
+            behaviour (a crash or wrong results), not an error. Save new
+            versions to a new directory, or load with `mmap=False`.
         """
         return cls._wrap(_core.ServeModel.load(path, mmap))
 
     def __reduce__(self):
-        # Same-version pickles only (Q1): the model's arrays, re-checked on
-        # load (as a saved model); block size as given, default mask kept.
-        return (_from_parts, (type(self), *self._model.parts()))
+        # Same-version pickles only: the model's arrays, re-checked on load
+        # (as a saved model); block size as given, default mask kept.
+        return (_from_parts, (type(self), _PICKLE_FORMAT, *self._model.parts()))
 
 
-def _from_parts(cls, *parts):
+def _from_parts(cls, pickle_format, *parts):
+    if not isinstance(pickle_format, int) or pickle_format != _PICKLE_FORMAT:
+        raise ValueError(
+            "an ItemKNN pickled by another similaripy version: rebuild it, or move models between versions "
+            "with save() / ItemKNN.load()"
+        )
     return cls._wrap(_core.ServeModel.from_parts(*parts))
