@@ -36,6 +36,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
 **Config:**
 - [pyproject.toml](pyproject.toml) - Dependencies, build config (`[tool.maturin]`)
 - [Cargo.toml](Cargo.toml) + [rust-toolchain.toml](rust-toolchain.toml) - Rust workspace, pinned compiler
+- [.cargo/config.toml](.cargo/config.toml) - 64-byte function alignment for every build (D121, D124)
 - [Makefile](Makefile) - Development commands
 
 ---

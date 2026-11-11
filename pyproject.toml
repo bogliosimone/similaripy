@@ -52,6 +52,7 @@ module-name = "similaripy._core"
 include = [
   { path = "tests/**/*", format = "sdist" },
   { path = "rust-toolchain.toml", format = "sdist" },
+  { path = ".cargo/config.toml", format = "sdist" },
 ]
 exclude = [
   { path = "**/__pycache__/**/*", format = "sdist" },
@@ -66,6 +67,7 @@ cache-keys = [
   { file = "Cargo.lock" },
   { file = "crates/**/*.rs" },
   { file = "crates/**/Cargo.toml" },
+  { file = ".cargo/config.toml" },
 ]
 
 [tool.cibuildwheel]

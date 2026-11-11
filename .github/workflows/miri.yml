@@ -11,6 +11,7 @@ on:
       - "crates/similaripy-core/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".cargo/config.toml"
       - "Makefile"
       - ".github/workflows/miri.yml"
   pull_request:
