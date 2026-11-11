@@ -17,15 +17,6 @@ use rayon::prelude::*;
 /// own; bump it when the files change meaning (Q1).
 const FORMAT: u64 = 1;
 const KIND: &str = "ItemKNN";
-/// Every file a saved model may have.
-const FILES: [&str; 5] = [
-    "meta.json",
-    "indptr.npy",
-    "pairs.npy",
-    "new_to_old.npy",
-    "item_ids.npy",
-];
-
 /// One entry of S: column and value side by side, so a row start costs one
 /// cache miss, not one per array (perf gates L1: Y50M one block at 6 threads
 /// −12%). Saved as a numpy record array (`pairs.npy`).
@@ -49,23 +40,6 @@ fn check_square(s: &CsrView) -> Result<(), Error> {
         return invalid("more than 2^31 - 1 items");
     }
     Ok(())
-}
-
-/// A saved model and nothing else (`overwrite` replaces only that): a
-/// `meta.json` of this kind, model files only.
-fn is_saved_model(dir: &Path) -> bool {
-    let kind = std::fs::read_to_string(dir.join("meta.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .is_some_and(|m| m.get("kind").is_some_and(|k| k == KIND));
-    kind && std::fs::read_dir(dir).is_ok_and(|entries| {
-        entries.into_iter().all(|e| {
-            e.is_ok_and(|e| {
-                e.file_type().is_ok_and(|t| t.is_file())
-                    && FILES.contains(&e.file_name().to_string_lossy().as_ref())
-            })
-        })
-    })
 }
 
 /// The immutable part of a model: S in the internal layout and the id maps,
@@ -313,7 +287,8 @@ impl Model {
 
     /// As `new`, in a given serving order: `new_to_old` = internal id →
     /// original id for every kept item; items left out must have no entries
-    /// (once S is canonical).
+    /// (once S is canonical). Tests: a model in a layout of their own.
+    #[doc(hidden)]
     pub fn with_order(
         s: CsrView,
         new_to_old: Vec<i32>,
@@ -420,20 +395,15 @@ impl Model {
     /// Saves the model in `dir`: one `.npy` per array (S in internal ids,
     /// `new_to_old`, `item_ids` = the external id per original column) plus
     /// `meta.json`, written last. A view is an error: availability changes
-    /// faster than a model version, so views are built after `load`.
-    /// A missing or empty `dir` is filled; a non-empty one is an error unless
-    /// `overwrite` and it holds a saved model and nothing else (not a
-    /// symlink), which is then replaced by a new directory (renamed into
-    /// place: processes that mapped the old files keep them; on Windows the
-    /// rename is refused while any process maps them, and the old model
-    /// stays; `dir` is briefly missing, one saver at a time). `written_by`
-    /// goes into `meta.json`.
-    pub fn save(&self, dir: &Path, written_by: &str, overwrite: bool) -> Result<(), Error> {
+    /// faster than a model version, so views are built after `load`. `dir`
+    /// must be missing or empty: a saved model is never replaced (a new
+    /// version goes to a new directory). `written_by` goes into `meta.json`.
+    pub fn save(&self, dir: &Path, written_by: &str) -> Result<(), Error> {
         if self.allowed.is_some() {
             return invalid("a view can't be saved: save the base model, build views after load");
         }
         let p = self.parts();
-        store::save_dir(dir, overwrite, is_saved_model, |d| {
+        store::save_dir(dir, |d| {
             store::write(d, "indptr", p.indptr)?;
             store::write(d, "pairs", p.pairs)?;
             store::write(d, "new_to_old", p.new_to_old)?;
@@ -465,9 +435,10 @@ impl Model {
     /// mapped (`mmap`: the arrays stay in the page cache, shared by every
     /// process that maps them; the files must not change meanwhile) or read
     /// into memory, and checked as a build's output (O(nnz), which also pages
-    /// in a mapped S). A corrupted file is an error,
-    /// never an out-of-bounds read; resource exhaustion (a `meta.json` asking
-    /// for billions of items) is not guarded: load files you trust.
+    /// in a mapped S). A corrupted file is an error, never an out-of-bounds
+    /// read; a mapped file changed after the load is undefined behaviour.
+    /// Resource exhaustion (a `meta.json` asking for billions of items) is
+    /// not guarded: load files you trust.
     pub fn load(dir: &Path, mmap: bool) -> Result<Self, Error> {
         let path = dir.join("meta.json");
         let text = std::fs::read_to_string(&path).map_err(store::io(&path))?;
@@ -485,13 +456,16 @@ impl Model {
                 .as_bool()
                 .ok_or_else(|| bad(format!("{k:?} must be true or false")))
         };
+        if meta.get("kind").is_none_or(|k| k != KIND) {
+            return Err(bad(format!("not a saved {KIND} model")));
+        }
         let format = uint("format")?;
         if format > FORMAT {
             return Err(bad(format!(
                 "saved by a newer similaripy (model format {format}); this version reads formats up to {FORMAT}: upgrade similaripy"
             )));
         }
-        if format == 0 || field("kind")? != KIND {
+        if format == 0 {
             return Err(bad(format!("not a saved {KIND} model")));
         }
         match field("value_dtype")?.as_str() {

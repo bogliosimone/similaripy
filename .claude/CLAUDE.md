@@ -29,7 +29,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
   - [prep.rs](crates/similaripy-core/src/prep.rs) - Canonical rows (`canonical_row`, shared by the Python prep and the serving build), renumber + sort, `group_interactions` (logs → CSR: counting sort by user, rows in parallel)
   - [csr.rs](crates/similaripy-core/src/csr.rs), [topk.rs](crates/similaripy-core/src/topk.rs) - CSR views, top-K buffer (cut by select)
   - [serve.rs](crates/similaripy-core/src/serve.rs) - Serving engine, in [serve/](crates/similaripy-core/src/serve): `model.rs` (build: trim to `candidate_items`, then `ItemOrder` (clustered by default, D115/D116), the one check `Core::from_arrays`, save/load, views), `ids.rs` (id maps, masks), `request.rs` (one history per call, batch = rayon over the same function)
-  - [store.rs](crates/similaripy-core/src/store.rs) - Saved models: `.npy` reader/writer, mapped (`memmap2`) or owned arrays, directory replace
+  - [store.rs](crates/similaripy-core/src/store.rs) - Saved models: `.npy` reader/writer, mapped (`memmap2`) or owned arrays, saves into a new or empty directory only
 - **Bindings** ([crates/similaripy-py](crates/similaripy-py)): PyO3 module `similaripy._core`
   - [lib.rs](crates/similaripy-py/src/lib.rs) - kernel + prep bindings, thread pools; [normalize.rs](crates/similaripy-py/src/normalize.rs) - dtype dispatch; [progress.rs](crates/similaripy-py/src/progress.rs) - progress bar; [serve.rs](crates/similaripy-py/src/serve.rs) - `ServeModel` / `ServeMask`
 
@@ -99,7 +99,7 @@ Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend,
 - [tests/test_normalization.py](tests/test_normalization.py), [tests/test_progress_bar.py](tests/test_progress_bar.py)
 - [tests/test_free_threading.py](tests/test_free_threading.py) - concurrent calls, identical bits across threads and blocking
 - [tests/test_benchmarks.py](tests/test_benchmarks.py) - the benchmark harness on the synthetic dataset (every workload, params recorded == passed, ABBA + compare)
-- [tests/test_serve.py](tests/test_serve.py) - `ItemKNN` vs a dense float64 reference, masks and views, unknown ids, batch == single bits, pickle, save/load round trips + corrupted files
+- [tests/test_serve.py](tests/test_serve.py) - `ItemKNN` vs a dense float64 reference, masks and views, unknown ids, batch == single bits, pickle, save/load round trips + corrupted files + a committed format-1 model (`tests/data/itemknn-format1`)
 - [crates/similaripy-core/tests/serve.rs](crates/similaripy-core/tests/serve.rs) - serving proptest vs an f64 reference, bit-identity claims, every `ItemOrder` and trim vs a reference order
 - [crates/similaripy-core/tests/reference.rs](crates/similaripy-core/tests/reference.rs) - kernel proptest vs an f64 reference, `validate` errors; unit tests in each module
 
@@ -135,6 +135,10 @@ Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend,
 - All functions expect **CSR format** (converted automatically)
 - Inputs are canonicalized before use (summed duplicates, no explicit zeros: `_canonical_csr` in `_s_plus.py`, also used by `normalization.py`); never mutate the caller's matrices
 - **Prep owns its data:** `_canonical_csr` always copies each input once into `Csr` arrays (float32 for similarities / the input's float type for normalizations, int32 indices, indptr by `_indptr_dtype`, sorted, summed, no zeros); every later prep step assumes that form and may change the arrays in place. Prefer one copy over aliasing tricks in prep (cold code: clarity first)
+
+### Saved models
+- **Format 1 is frozen at 1.0:** 1.x loads every older 1.x format. Changing what a saved file means bumps `FORMAT` (`serve/model.rs`) and keeps a reader for the old one; `tests/data/itemknn-format1` is never regenerated after 1.0.
+- Pickles are same-version only (`_PICKLE_FORMAT` in `serving.py`): a change to `parts()` bumps it.
 
 ### Rust Development
 - `uv run` (e.g. `make test-dev`) rebuilds the extension after `.rs` edits (`[tool.uv] cache-keys`)

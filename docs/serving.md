@@ -147,11 +147,13 @@ model and build views after `load`.
 |--------|-------------|
 | `load(path, mmap=True)` | Maps the files read-only: one copy shared by every worker process. *(default)* |
 | `load(path, mmap=False)` | Reads the files into memory, e.g. on a network file system (NFS). |
-| `save(path, overwrite=False)` | Refuses a non-empty directory. *(default)* |
-| `save(path, overwrite=True)` | Replaces a saved model; processes that loaded the old one keep it. |
+| `save(path)` | Writes into a new (or empty) directory; refuses a non-empty one. |
 
-- **Never change a saved model's files in place**: save each version to a new
-  directory and switch what the workers load.
+- **A saved model is never changed**: save each version to its own directory
+  (e.g. `models/v4`) and switch what the workers load (a config value, or a
+  `current` symlink repointed by your deploy). With `mmap=True`, changing or
+  truncating a file that a process has loaded is undefined behaviour (a crash
+  or wrong results), not an error; `mmap=False` reads the files once.
 - **Load files you trust**: a corrupted file is an error, but sizes aren't capped.
 
 A saved model is a plain directory of `.npy` files plus `meta.json`, readable
@@ -195,6 +197,10 @@ A server that answers many users, one `recommend` per request:
   little per history item (table below): cap long histories if your p99
   matters (e.g. the 1000 most recent items), and drop the events a decay has
   faded to almost nothing ([Preprocessing](preprocessing.md#shapes)).
+- **Memory per thread.** Each thread that serves requests keeps a score buffer
+  of up to 4 bytes per item (with `block_size=None`; a block's worth with
+  `'auto'`), reused by its later requests: count it per thread of your
+  server's pool on a large catalogue.
 - **Batch when requests can wait.** `recommend_batch(histories, num_threads=n)`
   scores many users in one call (offline scoring, or requests collected for a
   millisecond or two): the per-call work is paid once.

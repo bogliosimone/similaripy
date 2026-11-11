@@ -687,7 +687,7 @@ fn tmp(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn save_load_round_trip_overwrite_and_versions() {
+fn save_load_round_trip_and_versions() {
     let s = vec![
         vec![0.0, 1.0, 2.0, 0.0],
         vec![1.0, 0.0, 0.5, 0.0],
@@ -697,9 +697,9 @@ fn save_load_round_trip_overwrite_and_versions() {
     let m = build_blocked(&s, &[1, 0, 2], Some(&[10, 11, 12, 13]), 2).unwrap();
     let v = m.view(Some(&[11, 12]), None);
     let dir = tmp("model");
-    let err = v.save(&dir, "test", false).unwrap_err().to_string();
+    let err = v.save(&dir, "test").unwrap_err().to_string();
     assert!(err.contains("save the base model"), "{err}");
-    m.save(&dir, "test", false).unwrap();
+    m.save(&dir, "test").unwrap();
     let rec = |m: &Model| {
         let mut out = (vec![], vec![]);
         let r = Request {
@@ -720,15 +720,16 @@ fn save_load_round_trip_overwrite_and_versions() {
         assert_eq!(Owned::of(&back), Owned::of(&m));
         assert_eq!(rec(&back), rec(&m));
     }
-    // never into a non-empty directory unless it holds a saved model and overwrite
-    assert!(m.save(&dir, "test", false).is_err());
-    m.save(&dir, "test", true).unwrap();
+    // never into a non-empty directory (a saved model is never replaced); an empty one is fine
+    assert!(m.save(&dir, "test").is_err());
     let other = tmp("other");
     std::fs::create_dir_all(&other).unwrap();
-    std::fs::write(other.join("keep.txt"), "x").unwrap();
-    assert!(m.save(&other, "test", true).is_err());
-    assert!(other.join("keep.txt").exists());
-    // Q1: a newer format is a clear error, an unknown value dtype too
+    m.save(&other, "test").unwrap();
+    assert_eq!(
+        Owned::of(&Model::load(&other, false).unwrap()),
+        Owned::of(&m)
+    );
+    // a newer format is a clear error, an unknown value dtype too
     let meta = std::fs::read_to_string(dir.join("meta.json")).unwrap();
     for (from, to, says) in [
         ("\"format\": 1", "\"format\": 2", "newer"),

@@ -1,0 +1,11 @@
+{
+  "block_size": null,
+  "format": 1,
+  "item_ids": true,
+  "kind": "ItemKNN",
+  "n_cols": 7,
+  "n_items": 6,
+  "nnz": 12,
+  "value_dtype": "float32",
+  "written_by": "similaripy 0.7.0"
+}
