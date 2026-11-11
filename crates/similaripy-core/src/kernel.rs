@@ -390,6 +390,14 @@ impl Params {
     /// denominator; with no denominator term the value is `xy_pow`, times the
     /// bayesian factor if set.
     ///
+    /// K1: `bound` is `k1_bound(floor)`. With a denominator (`COSINE`,
+    /// `FULL`) a column whose `xy_pow < bound * den` (den > 0) scores below
+    /// `floor` for sure and returns NaN before any division; every other
+    /// column takes the exact path. The caller's `val >= floor` drops the NaN
+    /// as it would have dropped the score (and LLVM folds that compare: the
+    /// reject branches straight to the next column): same pushes, same bits.
+    /// NaN `bound`: never rejects.
+    ///
     /// # Safety
     /// `col` is in range of every norm pair whose weight is non-zero; `x` is
     /// `row_terms` of the row. `POW` must equal `a1 != 1.0` (see
@@ -403,6 +411,7 @@ impl Params {
         x: &RowTerms,
         col: usize,
         xy: f32,
+        bound: f32,
     ) -> f32 {
         let xy_pow = if POW { xy.powf(self.a1) } else { xy };
         if MODE == DOT {
@@ -412,6 +421,9 @@ impl Params {
             // SAFETY: caller contract, checked in `validate`.
             let cs = self.l2 * (x.cosine * unsafe { n.y_cosine.get_unchecked(col) });
             let den = cs + self.stabilized_shrink;
+            if den > 0.0 && xy_pow < bound * den {
+                return f32::NAN;
+            }
             // den == 0 with l2 != 0: 0, as FULL.
             return if den != 0.0 { xy_pow / den } else { 0.0 };
         }
@@ -439,6 +451,20 @@ impl Params {
         // `_s_plus.py`), bar f32 underflow; the guard stays for direct core
         // callers.
         let den = tv + cs + dp + self.stabilized_shrink;
+        // With the bayesian factor x / (x + s) (x = xy_pow >= 0, s >= 0; 0 when
+        // off): val = x^2 / (den (x + s)), so reject x^2 < bound den (x + s). Most
+        // bayesian rejects come from the factor, not the quotient: a test on
+        // the quotient alone missed them (rp3beta_bayesian +7..+15%, df1).
+        // In f64: the f32 products are exact there and can't over/underflow,
+        // so the margin argument of `k1_bound` holds unchanged; s = 0 is the
+        // quotient test (x > 0). x < 0 (signed input, where the factor can
+        // exceed 1) takes the exact path.
+        if den > 0.0 && xy_pow >= 0.0 && {
+            let x = f64::from(xy_pow);
+            x * x < f64::from(bound) * f64::from(den) * (x + f64::from(self.bayesian_shrink))
+        } {
+            return f32::NAN;
+        }
         let mut val = if den != 0.0 {
             xy_pow / den
         } else if self.l1 == 0.0
@@ -722,6 +748,8 @@ unsafe fn drain_impl<const POW: bool, const MODE: u8>(
     // `val >= floor` is the threshold test until the top-K's first cut and
     // push's floor reject after it (the k-th best passed the threshold): same pushes.
     let mut floor = topk.floor(p.threshold);
+    let k1 = p.bayesian_shrink >= 0.0;
+    let mut bound = k1_bound(floor, k1);
     // Back to front: the floor rises sooner, 35-73% fewer top-K replacements
     // (perf gates T0 counters: ML-32M, Y50M, Y500M; cosine, rp3beta). Same
     // result: the top-K keeps a strict total order. Not in the serving drain:
@@ -738,12 +766,39 @@ unsafe fn drain_impl<const POW: bool, const MODE: u8>(
         };
         if keep {
             // SAFETY: col in range of the active norms (validate).
-            let val = unsafe { p.score::<POW, MODE>(&inp.norms, &x, col, xy) };
+            let val = unsafe { p.score::<POW, MODE>(&inp.norms, &x, col, xy, bound) };
             if val >= floor {
                 topk.push(col as i32, val);
-                floor = topk.floor(p.threshold);
+                // The floor moves only at a cut: the bound's call is as rare.
+                let f = topk.floor(p.threshold);
+                if f != floor {
+                    floor = f;
+                    bound = k1_bound(floor, k1);
+                }
             }
         }
+    }
+}
+
+/// K1's reject bound for `Params::score`: `floor * (1 - 2^-10)` for a normal
+/// `floor > 0`, NaN (no reject) otherwise or when `!ok` (a negative or NaN
+/// bayesian shrink, which can lift a score past its quotient). Why exact: the
+/// bound and its product with den round by <= 2^-23 relative (or below the f32
+/// grid that `xy_pow` sits on), so `xy_pow < bound * den` means
+/// `xy_pow / den < floor * (1 - 2^-11)`: thousands of ulps below `floor`, which
+/// the division's rounding can't cross. The 2^-10 margin only sends that band's
+/// columns down the exact path. Not for +inf (k = 0): an xy whose score
+/// overflows to +inf still passes.
+///
+/// Out of line and cold (once per drain and per top-K cut), like `cut_to_k`:
+/// its constants stay out of the drain loops' registers.
+#[cold]
+#[inline(never)]
+fn k1_bound(floor: f32, ok: bool) -> f32 {
+    if ok && floor > 0.0 && floor.is_normal() {
+        floor * (1.0 - 1.0 / 1024.0)
+    } else {
+        f32::NAN
     }
 }
 
@@ -928,11 +983,14 @@ mod tests {
         unsafe {
             let x = p.row_terms(n, 0);
             let m = match p.mode() {
-                DOT => p.score::<POW, DOT>(n, &x, 0, xy),
-                COSINE => p.score::<POW, COSINE>(n, &x, 0, xy),
-                _ => p.score::<POW, FULL>(n, &x, 0, xy),
+                DOT => p.score::<POW, DOT>(n, &x, 0, xy, f32::NAN),
+                COSINE => p.score::<POW, COSINE>(n, &x, 0, xy, f32::NAN),
+                _ => p.score::<POW, FULL>(n, &x, 0, xy, f32::NAN),
             };
-            (m.to_bits(), p.score::<POW, FULL>(n, &x, 0, xy).to_bits())
+            (
+                m.to_bits(),
+                p.score::<POW, FULL>(n, &x, 0, xy, f32::NAN).to_bits(),
+            )
         }
     }
 
@@ -1009,6 +1067,97 @@ mod tests {
             };
             prop_assert_eq!(swapped, full, "mode {} xy {}", p(w, 0.0).mode(), xy);
         }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 4096 }))]
+        // K1: `score` with `k1_bound` either returns the exact
+        // path's bits or NaN for a score the exact path puts below `floor`,
+        // in every mode, so the drain pushes the same columns with the same
+        // values. Three quarters of the cases put xy a few ulps from
+        // `floor * den`, within ~2^-16 of the reject edge (`floor * (1 - 2^-10)
+        // * den`) or at the bayesian edge (den as COSINE computes it), signed
+        // xy, floors from subnormal to +inf.
+        #[test]
+        fn k1_bound_keeps_the_exact_pushes(
+            w in proptest::array::uniform5(prop_oneof![Just(0.0f32), 0.125f32..2.0]),
+            t in proptest::array::uniform2(0.0f32..1.0),
+            pow in any::<bool>(),
+            norms in proptest::array::uniform6(prop_oneof![Just(0.0f32), 0.125f32..3.0]),
+            floor in prop_oneof![
+                Just(0.0f32), Just(-1.0f32), Just(f32::INFINITY), Just(f32::MIN_POSITIVE),
+                Just(1e-40f32), 1e-30f32..1e-25, 0.001f32..10.0
+            ],
+            edge in 0u8..4,
+            rel in -1.0f32..1.0,
+            ulps in -4i32..=4,
+            xy_free in prop_oneof![Just(0.0f32), -5.0f32..5.0, 1e-30f32..1e-25],
+            neg_shrink in any::<bool>(),
+        ) {
+            let pow = pow && !cfg!(miri); // see score_mode_matches_full_bitwise
+            let p = Params {
+                a1: if pow { 0.5 } else { 1.0 },
+                l1: w[0], l2: w[1], l3: w[2], t1: t[0], t2: t[1],
+                stabilized_shrink: w[3], bayesian_shrink: if neg_shrink { -w[4] } else { w[4] },
+                threshold: 0.0,
+            };
+            let xy = if edge > 0 {
+                let den = p.l2 * (norms[2] * norms[3]) + p.stabilized_shrink;
+                // 1: a few ulps around the floor itself; 2: around the reject
+                // edge; 3: around the bayesian edge x^2 = floor den (x + s)
+                let m = if edge == 1 { 1.0 } else { (1.0 - 1.0 / 1024.0) * (1.0 + rel / 65536.0) };
+                let q = if edge == 3 {
+                    let (fd, s) = (f64::from(floor) * f64::from(den), f64::from(p.bayesian_shrink));
+                    ((fd + (fd * fd + 4.0 * fd * s).sqrt()) / 2.0) as f32
+                } else {
+                    floor * den * m
+                };
+                let q = if pow { q * q } else { q }; // xy_pow = sqrt(xy)
+                f32::from_bits((q.to_bits() as i32).wrapping_add(ulps) as u32)
+            } else {
+                xy_free
+            };
+            let xy = if xy.is_finite() { xy } else { xy_free }; // floor = inf
+            let v: Vec<[f32; 1]> = norms.iter().map(|&x| [x]).collect();
+            let n = NormSlices {
+                x_tversky: &v[0], y_tversky: &v[1], x_cosine: &v[2],
+                y_cosine: &v[3], x_depop: &v[4], y_depop: &v[5],
+            };
+            let bound = k1_bound(floor, p.bayesian_shrink >= 0.0);
+            for mode in [p.mode(), FULL] {
+                // SAFETY: row 0 and col 0 exist in every norm slice.
+                let (fast, exact) = unsafe {
+                    let x = p.row_terms(&n, 0);
+                    macro_rules! both {
+                        ($pow:literal, $m:ident) => {
+                            (p.score::<$pow, $m>(&n, &x, 0, xy, bound), p.score::<$pow, $m>(&n, &x, 0, xy, f32::NAN))
+                        };
+                    }
+                    match (pow, mode) {
+                        (true, DOT) => both!(true, DOT),
+                        (true, COSINE) => both!(true, COSINE),
+                        (true, _) => both!(true, FULL),
+                        (false, DOT) => both!(false, DOT),
+                        (false, COSINE) => both!(false, COSINE),
+                        (false, _) => both!(false, FULL),
+                    }
+                };
+                if fast.is_nan() && !exact.is_nan() {
+                    prop_assert!(floor > 0.0 && exact < floor, "mode {} xy {} floor {} exact {}", mode, xy, floor, exact);
+                } else {
+                    prop_assert_eq!(fast.to_bits(), exact.to_bits(), "mode {} xy {} floor {}", mode, xy, floor);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn k1_bound_is_off_without_a_positive_normal_floor() {
+        for f in [0.0, -0.0, -1.0, 1e-40, f32::INFINITY, f32::NAN] {
+            assert!(k1_bound(f, true).is_nan(), "{f}");
+        }
+        assert_eq!(k1_bound(1.0, true), 1.0 - 1.0 / 1024.0);
+        assert!(k1_bound(1.0, false).is_nan());
     }
 
     #[test]
