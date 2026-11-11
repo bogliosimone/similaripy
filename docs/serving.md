@@ -155,6 +155,10 @@ model and build views after `load`.
   truncating a file that a process has loaded is undefined behaviour (a crash
   or wrong results), not an error; `mmap=False` reads the files once.
 - **Load files you trust**: a corrupted file is an error, but sizes aren't capped.
+- **Pickle vs save/load**: an `ItemKNN` pickles (multiprocessing, joblib, Ray),
+  but only to the same similaripy version, and every pickle is a full copy of S.
+  For storage, deploys and big models, pass the path and `ItemKNN.load` it in
+  each worker: one memory-mapped copy shared by all of them.
 
 A saved model is a plain directory of `.npy` files plus `meta.json`, readable
 with `np.load`. The model is saved as built: its `item_order` and
