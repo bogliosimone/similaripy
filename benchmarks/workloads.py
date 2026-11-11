@@ -279,11 +279,12 @@ def serve_cases(URM, opts):
     if opts["candidates"]:  # the N most popular items (entries per column of S): a smaller catalogue on real data
         counts = np.bincount(S.indices, minlength=S.shape[0])
         trim["candidate_items"] = np.argsort(-counts, kind="stable")[: opts["candidates"]]
-    rec = ItemKNN(S, **io, **trim, **compat.block_size_kwargs(opts["block_size"]))
+    rec = _loaded(ItemKNN(S, **io, **trim, **compat.block_size_kwargs(opts["block_size"])), opts["load"])
     n_active = compat.serving_n_active(rec)
     info = {"model": opts["model"], "model_k": opts["model_k"], "s_nnz": int(S.nnz), "n_active": n_active}
     info |= {"block_size": opts["block_size"], "item_order": io.get("item_order"), "transpose": opts["transpose"]}
     info["candidates"] = opts["candidates"]
+    info["load"] = opts["load"]
     if cached:
         info["model_cache"] = cached
     rng = np.random.default_rng(opts["seed"])
@@ -303,7 +304,7 @@ def serve_cases(URM, opts):
         batch_in = compat.serving_batch_inputs(URM)
         threads = list(dict.fromkeys(opts["block_threads"] or [1, os.cpu_count()]))  # no duplicate case names
         info["block_threads"] = threads
-        one = ItemKNN(S, **io, **trim, block_size=None)
+        one = _loaded(ItemKNN(S, **io, **trim, block_size=None), opts["load"])
         size = {"auto": compat.DEFAULT_BLOCK_SIZE, None: n_active}.get(opts["block_size"], opts["block_size"])
         info["block_control"] = n_active <= size  # both models run one block
         for t in threads:
@@ -316,7 +317,7 @@ def serve_cases(URM, opts):
         hists = _histories(URM, users, None, rng)
         callers = list(dict.fromkeys(opts["callers"]))
         info["callers"] = callers
-        one = ItemKNN(S, **io, **trim, block_size=None)
+        one = _loaded(ItemKNN(S, **io, **trim, block_size=None), opts["load"])
         kwargs = {"k": k, "exclude_seen": True}
         for c in callers:
             cases.append(
@@ -336,6 +337,17 @@ def serve_cases(URM, opts):
             Case("build", {"block_size": "auto", **io, **({"candidates": opts["candidates"]} if trim else {})}, build)
         )
     return cases, info
+
+
+def _loaded(model, how):
+    """`model` as timed: as built, or saved to a temp dir removed at exit and loaded back with `ItemKNN.load`
+    (mapped or read: the production path, whose arrays are `Buf::Mapped` / owned)."""
+    if how == "build":
+        return model
+    tmp = Path(tempfile.mkdtemp(prefix="similaripy-bench-")) / "model"
+    atexit.register(shutil.rmtree, tmp.parent, ignore_errors=True)
+    model.save(tmp)
+    return type(model).load(tmp, mmap=how == "mmap")
 
 
 def _save_tmp(S):

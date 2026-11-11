@@ -258,6 +258,23 @@ def test_serve_transpose(run, monkeypatch):
     assert (seen[1] != seen[0].T).nnz == 0 and (seen[1] != seen[0]).nnz > 0  # cosine k=20: S isn't symmetric
 
 
+def test_serve_load(run, monkeypatch):
+    # --load mmap / read: every model saved and loaded back with that mmap flag, recorded
+    from similaripy import serving
+
+    seen, real = [], serving.ItemKNN.load.__func__
+    monkeypatch.setattr(
+        serving.ItemKNN, "load", classmethod(lambda cls, p, mmap: seen.append(mmap) or real(cls, p, mmap=mmap))
+    )
+    args = ("serve", "--mode", "latency", "concurrent", "--caps", "10", "--requests", "20", "--model-k", "20")
+    args += ("--rounds", "1", "--callers", "2")
+    assert run(*args)["info"]["load"] == "build" and seen == []
+    for how, flag in (("mmap", True), ("read", False)):
+        seen.clear()
+        assert run(*args, "--load", how)["info"]["load"] == how
+        assert seen == [flag, flag]  # the timed model and the concurrent one-block control
+
+
 def test_serve_build(run):
     _needs_peak_memory()
     rep = run("serve", "--mode", "build", "--model-k", "20", "--rounds", "1")
