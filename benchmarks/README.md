@@ -5,7 +5,7 @@ The benchmark harness: timing, peak memory and A/B comparisons of similaripy bui
 | File | What it does |
 |---|---|
 | `run.py` | Benchmark one build: one workload on one dataset, a JSON report |
-| `abba.py` | Two builds, alternating processes (ABBA), the change per pair |
+| `abba.py` | Two builds, alternating processes (ABBA), the change per pair; several candidates share one base (`--cand NAME=PY`, rotated order) |
 | `gate.py` | The core's gate: `abba.py` on a fixed list of steps (quick / full), never idle, one verdict per case |
 | `compare.py` | Reports side by side, the first as the reference |
 | `parity_kernel.py`, `parity_normalization.py` | Outputs of this install vs a reference install's (`--dump` / `--compare`) |
@@ -103,7 +103,7 @@ Reports from before the rebuild (`tests/benchmarks/`, no `schema_version`) aren'
 - **Params recorded = params passed.** A harness option reaches a call only when it is set, and an option that a fixed-parameter entry also sets is an error. (The old harness passed `shrink=0` to every call, which silently overrode a `functools.partial`'s shrink and timed plain cosine.)
 - **Preflight:** a load above `--max-load` (default 3.0) or running on battery prints a warning and stores it in the report; `--strict` refuses to run. Check before timing: background apps, video calls and post-build Spotlight / `mediaanalysisd` runs move results by 5–25%.
 - **Peak memory (`--rss`):** each case's first call in a fresh spawned process, sampling every 1 ms. On macOS `phys_footprint` (Activity Monitor's "Memory"; RSS keeps freed pages, +1 MB for an ML-32M call), elsewhere psutil RSS (`pip install psutil`). A repeated call reuses the allocator's cached regions without counting them again: only a first call shows its peak.
-- **ABBA across builds (`abba.py`):** one process per (side, pair), order base-cand then cand-base. Both sides run this checkout's scripts. A worktree side is refused when its extension is older than its Rust sources (`.venv/bin/python` doesn't rebuild the way `uv run` does). `pypi:X` sides pin numpy/scipy to the running interpreter's versions. The dataset is cached first, by the running interpreter.
+- **ABBA across builds (`abba.py`):** one process per (side, pair), order base-cand then cand-base. Both sides run this checkout's scripts. A worktree side is refused when its extension is older than its Rust sources (`.venv/bin/python` doesn't rebuild the way `uv run` does). `pypi:X` sides pin numpy/scipy to the running interpreter's versions. The dataset is cached first, by the running interpreter. Several candidates (`--cand NAME=SPEC` repeated) share one base run per pair, order rotated (base, c1..ck, then ck..c1, base): k comparisons for k+1 runs per pair instead of 2k; one `abba_{tag}-{NAME}.json` each.
 
 ## The gate (`gate.py`)
 
