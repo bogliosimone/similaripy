@@ -26,7 +26,9 @@ mod model;
 mod request;
 
 pub use model::{BlockSize, CLUSTER_HEAD, Core, Entry, ItemOrder, Model, Parts};
-pub use request::{Batch, BatchRequest, Lists, Request, recommend, recommend_batch};
+pub use request::{
+    Batch, BatchRequest, Lists, Request, recommend, recommend_batch, score, score_batch,
+};
 
 use crate::Error;
 

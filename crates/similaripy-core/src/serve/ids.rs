@@ -110,7 +110,10 @@ impl Core {
 
     /// Appends (internal id, weight) per known id, in input order; ids the
     /// model doesn't have are skipped.
-    pub(super) fn lookup_into(
+    /// `COPY`: one instantiation per caller (recommend false, score true),
+    /// so each has a single caller and LLVM inlines recommend's as before
+    /// score existed (two callers moved recommend's registers; asm check).
+    pub(super) fn lookup_into<const COPY: bool>(
         &self,
         ids: &[i64],
         weights: Option<&[f32]>,

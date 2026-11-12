@@ -371,6 +371,78 @@ def test_rejects_bad_input():
         rec.recommend_batch([[5], None])
 
 
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("block", [7, None])
+def test_score_dense_reference_recommend_bits_and_masks(external, block):
+    n = 60
+    S = _S(n, True, seed=21)
+    rng = np.random.default_rng(2)
+    ext = rng.choice(10**9, size=n, replace=False) if external else np.arange(n)
+    rec = ItemKNN(S, item_ids=ext if external else None, block_size=block)
+    D = S.toarray()
+    pos = {e: i for i, e in enumerate(ext)}
+    unknown = -5 if external else n + 3
+    items = np.r_[ext[::-1], ext[5], unknown]  # every item, a duplicate, an unknown id
+    for trial in range(20):
+        hist = rng.choice(ext, size=rng.integers(0, 10))
+        w = rng.integers(-2, 4, size=hist.size).astype(np.float64) if trial % 2 else None
+        h = np.zeros(n)
+        for j, e in enumerate(hist):
+            h[pos[e]] += 1.0 if w is None else w[j]
+        want = np.r_[(h @ D)[::-1], (h @ D)[5], 0.0]
+        got = rec.score(hist, items, weights=w)
+        assert got.dtype == np.float32 and got.shape == items.shape
+        np.testing.assert_array_equal(got, want)  # small integers: exact, negatives and zeros kept
+        top = rec.recommend(hist, weights=w, k=n, exclude_seen=False)
+        assert np.array_equal(rec.score(hist, top[0], weights=w).view(np.int32), top[1].view(np.int32))
+        # model-level availability holds (a view, a trimmed build): 0.0 outside it
+        a = rng.choice(ext, size=n // 2, replace=False)
+        for other in (
+            rec.view(include=a),
+            rec.view(exclude=np.setdiff1d(ext, a)),
+            ItemKNN(S, item_ids=ext if external else None, candidate_items=a),
+        ):
+            np.testing.assert_array_equal(other.score(hist, items, weights=w), np.where(np.isin(items, a), want, 0.0))
+    assert rec.score([], items).tolist() == [0.0] * items.size
+    assert rec.score([ext[5]], []).size == 0
+
+
+def test_score_batch_matches_single_bits():
+    rng = np.random.default_rng(8)
+    S = sp.random_array((300, 300), density=0.05, rng=rng, format="csr")
+    ext = rng.choice(10**9, size=300, replace=False)
+    rec = ItemKNN(S, item_ids=ext, block_size=7).view(exclude=ext[:30])
+    users = 40
+    hists = [rng.choice(ext, size=rng.integers(0, 15)) for _ in range(users)]
+    items = [rng.choice(ext, size=rng.integers(0, 50)) for _ in range(users)]
+    weights = [None if u % 5 == 0 else rng.random(len(h)) * 3 for u, h in enumerate(hists)]
+    for w in (None, weights):
+        got = rec.score_batch(hists, items, weights=w, num_threads=2)
+        assert len(got) == users
+        for u in range(users):
+            want = rec.score(hists[u], items[u], weights=None if w is None else w[u])
+            assert np.array_equal(got[u].view(np.int32), want.view(np.int32))
+    assert rec.score_batch([], []) == []
+
+
+def test_score_rejects_bad_input():
+    rec = ItemKNN(_S(10, False, seed=1))
+    with pytest.raises(TypeError, match="items must be integer ids"):
+        rec.score([5], [1.5])
+    with pytest.raises(ValueError, match="len"):
+        rec.score([5, 6], [1], weights=[1.0])
+    with pytest.raises(ValueError, match="finite"):
+        rec.score([5], [1], weights=[np.nan])
+    with pytest.raises(TypeError):
+        rec.score([5], [1], [1.0])  # weights: by name
+    with pytest.raises(ValueError, match="items must have one entry per user"):
+        rec.score_batch([[5], [6]], [[1]])
+    with pytest.raises(TypeError, match=r"items\[1\] is None"):
+        rec.score_batch([[5], [6]], [[1], None])
+    with pytest.raises(ValueError, match="one weight per history id"):
+        rec.score_batch([[5, 6]], [[1]], weights=[[1.0]])
+
+
 def test_caller_arrays_unchanged():
     S = _S(20, True, seed=5)
     hists = [np.array([3, 4, 5]), np.array([6])]
