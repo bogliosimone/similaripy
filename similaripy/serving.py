@@ -2,7 +2,8 @@
 Serving engine, the online half: `ItemKNN`, a prepared item-item model built
 once from S (computed offline by the similarity functions, e.g. `sim.cosine`),
 then the top-k items of one history (`recommend`) or of many
-(`recommend_batch`), in Rust without the GIL. One import path:
+(`recommend_batch`), or the scores of given items (`score`, `score_batch`), in
+Rust without the GIL. One import path:
 `from similaripy.serving import ItemKNN`.
 
 Everything is in the caller's item ids (`item_ids`, or S's column indices
@@ -104,6 +105,24 @@ def _per_user(name, lists, n=None, convert=None, allow_none=True):
     parts = [a for a in arrays if a is not None and a.size]
     flat = np.concatenate(parts) if parts else convert(name, [])
     return np.r_[0, np.cumsum(lens)].astype(np.int64), flat, (none if none.any() else None)
+
+
+def _histories(histories, weights):
+    """`histories` and `weights` (one entry per user, an entry may be None:
+    all 1.0) flat: (offsets, ids, weights aligned with ids or None)."""
+    offsets, ids, _ = _per_user("histories", histories, allow_none=False)
+    n = len(offsets) - 1
+    if weights is None:
+        return offsets, ids, None
+    w_offsets, w, none = _per_user("weights", weights, n, convert=lambda nm, x: _weights(x, nm))
+    sizes, given = np.diff(offsets), ~none if none is not None else np.ones(n, bool)
+    if not np.array_equal(np.diff(w_offsets)[given], sizes[given]):
+        raise ValueError("weights: one weight per history id expected")
+    if not given.all():  # None entries: weight 1.0
+        full = np.ones(ids.size, dtype=np.float32)
+        full[np.repeat(given, sizes)] = w
+        w = full
+    return offsets, ids, w
 
 
 def _csr_arrays(S: SparseInput, num_threads):
@@ -365,18 +384,8 @@ class ItemKNN:
                 user, or weights without one per history id.
         """
         k = _check_k(k)
-        offsets, ids, _ = _per_user("histories", histories, allow_none=False)
+        offsets, ids, w = _histories(histories, weights)
         n = len(offsets) - 1
-        w = None
-        if weights is not None:
-            w_offsets, w, none = _per_user("weights", weights, n, convert=lambda nm, x: _weights(x, nm))
-            sizes, given = np.diff(offsets), ~none if none is not None else np.ones(n, bool)
-            if not np.array_equal(np.diff(w_offsets)[given], sizes[given]):
-                raise ValueError("weights: one weight per history id expected")
-            if not given.all():  # None entries: weight 1.0
-                full = np.ones(ids.size, dtype=np.float32)
-                full[np.repeat(given, sizes)] = w
-                w = full
         inc = (None, None, None) if include is None else _per_user("include", include, n)
         exc = (None, None, None) if exclude is None else _per_user("exclude", exclude, n)
         out_offsets, out_ids, out_scores = self._model.batch(
@@ -397,6 +406,75 @@ class ItemKNN:
             return [], []
         cuts = out_offsets[1:-1]
         return np.split(out_ids, cuts), np.split(out_scores, cuts)
+
+    def score(
+        self,
+        history: list[int] | np.ndarray,
+        items: list[int] | np.ndarray,
+        *,
+        weights: list[float] | np.ndarray | None = None,
+    ) -> np.ndarray:
+        """
+        The scores of the given items for one history, e.g. as a ranking
+        feature for candidates from other retrievers: `score[j] = sum_i w_i *
+        S[i, j]`, the same bits as `recommend`'s score of j. Every item gets
+        its score, in your order: no top-k, no threshold, history items
+        included, zero and negative scores as they are.
+
+        0.0 for an item the model doesn't have, one outside `candidate_items`,
+        or one the view excludes (a view's rules hold here too; compute
+        training features on the view you serve). To tell an unknown item from
+        a zero score: `np.isin(items, model.item_ids)`.
+
+        Args:
+            history: item ids, as `recommend`'s.
+            items: the item ids to score; duplicates are scored again.
+            weights: one finite weight per history id (None = all 1.0).
+
+        Returns:
+            scores: float32, one per item.
+
+        Raises:
+            TypeError: on non-integer ids.
+            ValueError: on weights without one per history id.
+        """
+        return self._model.score(_ids("history", history), _weights(weights), _ids("items", items))
+
+    def score_batch(
+        self,
+        histories: list[list[int] | np.ndarray],
+        items: list[list[int] | np.ndarray],
+        *,
+        weights: list[list[float] | np.ndarray | None] | None = None,
+        num_threads: int = 0,
+    ) -> list[np.ndarray]:
+        """
+        `score` for many histories at once, in parallel: element u equals
+        `score(histories[u], items[u], weights=weights[u])` bit for bit.
+
+        Args:
+            histories: a list with one array of item ids per user.
+            items: a list with one array of item ids to score per user.
+            weights: None, or a list with one array of weights per user (an
+                entry may be None: all 1.0).
+            num_threads: 0 = all cores (one shared pool), n = n threads.
+
+        Returns:
+            scores: one float32 array per user, aligned with its items.
+
+        Raises:
+            TypeError: on non-integer ids, or a None history or item list
+                (pass [] for no items).
+            ValueError: on lists without one entry per user, or weights
+                without one per history id.
+        """
+        offsets, ids, w = _histories(histories, weights)
+        n = len(offsets) - 1
+        item_offsets, item_ids, _ = _per_user("items", items, n, allow_none=False)
+        scores = self._model.score_batch(offsets, ids, w, item_offsets, item_ids, num_threads=num_threads)
+        if n == 0:  # np.split would give one empty piece
+            return []
+        return np.split(scores, item_offsets[1:-1])
 
     def save(self, path) -> None:
         """

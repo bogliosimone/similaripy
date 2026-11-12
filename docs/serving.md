@@ -34,6 +34,8 @@ Everything is on the `ItemKNN` class: build a `model`, then call its methods.
 | `model = ItemKNN(S)` | Constructor: builds the model from a square item-item matrix S. |
 | `model.recommend(history)` | The top-k items for one history: `(ids, scores)`. |
 | `model.recommend_batch(histories)` | `recommend` for a list of histories, in parallel: two lists, one array per user. |
+| `model.score(history, items)` | The scores of the given items for one history, in your order: e.g. ranking features. |
+| `model.score_batch(histories, items)` | `score` for a list of histories, in parallel: one array per user. |
 | `model.view(include=, exclude=)` | The same model (S shared, no copy) with availability rules for every request. |
 | `model.save(path)` | Writes the model to a directory. |
 | `model = ItemKNN.load(path)` | Class method: a saved model, memory-mapped by default. |
@@ -65,6 +67,13 @@ Everything is on the `ItemKNN` class: build a `model`, then call its methods.
 | `sorted` | Best first; `False` skips the final sort (a few % faster at k in the thousands); the order is then unspecified and can differ between calls. *(default: `True`)* |
 | `num_threads` | Batch only. `0` = all cores (one shared pool), `n` = `n` threads. *(default: `0`)* |
 
+**`score(history, items, ...)`, `score_batch(histories, items, ...)`**
+
+| Parameter | Description |
+|-----------|-------------|
+| `history`, `weights`, `num_threads` | As in `recommend` / `recommend_batch`. |
+| `items` | The item ids to score; duplicates are scored again. In batch: a list with one array per user. |
+
 ## Single and batch recommendation
 
 `recommend` serves one user; `recommend_batch` serves a list of users in parallel.
@@ -92,6 +101,29 @@ for a in range(0, len(histories), chunk):
         "score": np.concatenate(scores),
     }).to_parquet(f"recs/part-{a // chunk}.parquet")   # one file per chunk
 ```
+
+## Scoring given items (ranking features)
+
+`score` returns `sum_i w_i * S[i, j]` for each given item `j`, aligned with
+`items`: no top-k, no threshold, history items included, zero and negative
+scores as they are. The values are the same bits as `recommend`'s scores. Use
+it when another stage picks the candidates, e.g. as a feature for a ranker or to
+re-score the candidates of other retrievers.
+
+```python
+feat = model.score(history, candidates, weights=w)                      # one user (online)
+feats = model.score_batch(histories, candidates_per_user, weights=ws)   # many users (offline)
+
+# 0.0 means no evidence, an unknown item or one outside the model's availability;
+# to tell unknown items apart (e.g. a missing value for a tree ranker):
+feat = np.where(np.isin(candidates, model.item_ids), feat, np.nan)
+```
+
+Availability at the model level holds: items outside `candidate_items` or
+outside a view's rules score 0.0. There is no per-call `include` / `exclude`.
+Compute the training features on the same view you serve. Cost: about a
+`recommend` call without the top-k (the accumulation over the history
+dominates).
 
 ## Availability
 

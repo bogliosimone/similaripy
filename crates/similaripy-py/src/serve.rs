@@ -12,6 +12,7 @@ use pyo3::prelude::*;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{
     BatchRequest, BlockSize, Entry, ItemOrder, Lists, Model, Request, recommend, recommend_batch,
+    score, score_batch,
 };
 
 use crate::{Indptr, to_py, with_pool};
@@ -257,6 +258,57 @@ impl PyModel {
             .detach(|| with_pool(num_threads, || recommend_batch(model, &b)))
             .map_err(to_py)?;
         Ok((o.into_pyarray(py), i.into_pyarray(py), s.into_pyarray(py)))
+    }
+
+    /// The scores of `items` for one history, aligned with `items`.
+    #[pyo3(signature = (ids, weights, items))]
+    fn score<'py>(
+        &self,
+        py: Python<'py>,
+        ids: PyReadonlyArray1<'_, i64>,
+        weights: Option<PyReadonlyArray1<'_, f32>>,
+        items: PyReadonlyArray1<'_, i64>,
+    ) -> PyResult<Arr<'py, f32>> {
+        let (ids, weights, items) = (ids.as_slice()?, slice(&weights)?, items.as_slice()?);
+        let model = &self.0;
+        let out = py
+            .detach(|| score(model, ids, weights, items))
+            .map_err(to_py)?;
+        Ok(out.into_pyarray(py))
+    }
+
+    /// One history and one item list per user, flat as `batch`'s; the scores
+    /// flat, aligned with `item_ids`.
+    #[pyo3(signature = (offsets, ids, weights, item_offsets, item_ids, *, num_threads))]
+    #[allow(clippy::too_many_arguments)]
+    fn score_batch<'py>(
+        &self,
+        py: Python<'py>,
+        offsets: PyReadonlyArray1<'_, i64>,
+        ids: PyReadonlyArray1<'_, i64>,
+        weights: Option<PyReadonlyArray1<'_, f32>>,
+        item_offsets: PyReadonlyArray1<'_, i64>,
+        item_ids: PyReadonlyArray1<'_, i64>,
+        num_threads: usize,
+    ) -> PyResult<Arr<'py, f32>> {
+        let histories = Lists {
+            offsets: offsets.as_slice()?,
+            ids: ids.as_slice()?,
+        };
+        let items = Lists {
+            offsets: item_offsets.as_slice()?,
+            ids: item_ids.as_slice()?,
+        };
+        let weights = slice(&weights)?;
+        let model = &self.0;
+        let out = py
+            .detach(|| {
+                with_pool(num_threads, || {
+                    score_batch(model, histories, weights, items)
+                })
+            })
+            .map_err(to_py)?;
+        Ok(out.into_pyarray(py))
     }
 
     /// Copies of what the model is made of (pickling), the arguments of

@@ -8,6 +8,7 @@ use proptest::prelude::*;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{
     BatchRequest, BlockSize, Entry, ItemOrder, Lists, Model, Request, recommend, recommend_batch,
+    score, score_batch,
 };
 
 #[derive(Debug, Clone)]
@@ -504,6 +505,57 @@ proptest! {
         let again = run(&Case { allowed: None, excluded: None, ..c2.clone() }, &back);
         prop_assert_eq!(&again.0, &got.0);
         prop_assert_eq!(bits(&again.1), bits(&got.1));
+    }
+
+    // score == h · S per candidate (every item reversed, a duplicate, an
+    // unknown id), 0 where the view's mask (the case's include / exclude)
+    // says no.
+    #[test]
+    fn score_matches_reference(c in case(false), block in 0usize..6) {
+        let (inc, exc) = (flagged(&c, &c.allowed), flagged(&c, &c.excluded));
+        let m = build_blocked(&c.s, &c.new_to_old, c.ext.as_deref(), block)
+            .unwrap()
+            .view(inc.as_deref(), exc.as_deref());
+        let n = c.s.len();
+        let items: Vec<i64> = (0..n).rev().chain([0]).map(|j| ext_of(&c, j)).chain([unknown_id(&c)]).collect();
+        let got = score(&m, &ids(&c), c.weights.as_deref(), &items).unwrap();
+        let want: Vec<f32> = (0..n).rev().chain([0]).map(|j| {
+            let ok = kept(&c, j) && c.allowed.as_ref().is_none_or(|a| a[j])
+                && !c.excluded.as_ref().is_some_and(|x| x[j]);
+            let s: f64 = c.hist.iter().enumerate()
+                .filter_map(|(p, h)| h.filter(|&i| kept(&c, i))
+                    .map(|i| c.weights.as_ref().map_or(1.0, |w| f64::from(w[p])) * f64::from(c.s[i][j])))
+                .sum();
+            if ok { s as f32 } else { 0.0 }
+        }).chain([0.0]).collect();
+        prop_assert_eq!(got, want);
+    }
+
+    // score's bits == recommend's scores (any block size), batch == single.
+    #[test]
+    fn score_bits_recommend_and_batch(c in case(true), block in 0usize..6) {
+        let m = build_blocked(&c.s, &c.new_to_old, c.ext.as_deref(), block).unwrap();
+        let ids = ids(&c);
+        let mut rec = (vec![], vec![]);
+        let all = Request { k: c.s.len(), exclude_seen: false, include: None, exclude: None, ..req(&c, &ids, None, None) };
+        recommend(&m, &all, &mut rec.0, &mut rec.1).unwrap();
+        let got = score(&m, &ids, c.weights.as_deref(), &rec.0).unwrap();
+        prop_assert_eq!(bits(&got), bits(&rec.1));
+        // Batch [history, empty history with items, history with no items].
+        let items: Vec<i64> = (0..c.s.len()).map(|j| ext_of(&c, j)).collect();
+        let single = score(&m, &ids, c.weights.as_deref(), &items).unwrap();
+        let (h, k) = (ids.len() as i64, items.len() as i64);
+        let both: Vec<i64> = ids.iter().chain(&ids).copied().collect();
+        let w2 = c.weights.as_ref().map(|w| w.iter().chain(w).copied().collect::<Vec<_>>());
+        let it2: Vec<i64> = items.iter().chain(&items).copied().collect();
+        let flat = score_batch(
+            &m,
+            Lists { offsets: &[0, h, h, 2 * h], ids: &both },
+            w2.as_deref(),
+            Lists { offsets: &[0, k, 2 * k, 2 * k], ids: &it2 },
+        ).unwrap();
+        prop_assert_eq!(bits(&flat[..k as usize]), bits(&single));
+        prop_assert!(flat[k as usize..].iter().all(|&v| v == 0.0));
     }
 }
 

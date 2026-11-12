@@ -80,6 +80,74 @@ fn recommend_internal(
     Ok(())
 }
 
+// ponytail: `recommend_internal` keeps its own copy: calling this moved its
+// register allocation (asm check, score session).
+fn check_weights(ids: &[i64], weights: Option<&[f32]>) -> Result<(), Error> {
+    if let Some(w) = weights {
+        if w.len() != ids.len() {
+            return invalid("len(weights) != len(ids)");
+        }
+        if !w.iter().all(|x| x.is_finite()) {
+            return invalid("weights must be finite");
+        }
+    }
+    Ok(())
+}
+
+/// The scores of `items` for one history, aligned with `items` (duplicates
+/// repeated): `sum_i w_i * S[i, j]`, the same bits as `recommend`'s score of j
+/// (same accumulation; the block size changes no column's addition order). No
+/// top-K, no threshold. 0.0 for items the model doesn't have, items with no
+/// column (e.g. outside a trimmed build's candidates) and items the view's mask
+/// excludes; the request has no include / exclude (availability is retrieval's).
+pub fn score(
+    model: &Model,
+    ids: &[i64],
+    weights: Option<&[f32]>,
+    items: &[i64],
+) -> Result<Vec<f32>, Error> {
+    check_weights(ids, weights)?;
+    let mut out = vec![0.0; items.len()];
+    let mut s = SCRATCH.take().unwrap_or_default();
+    s.score(model, ids, weights, items, &mut out);
+    SCRATCH.set(Some(s));
+    Ok(out)
+}
+
+/// `score` per user on the current rayon pool (user u's scores equal
+/// `score` of that history and items bit for bit), flat: aligned with
+/// `items.ids` (user u's at `items.offsets[u]..items.offsets[u + 1]`).
+pub fn score_batch(
+    model: &Model,
+    histories: Lists,
+    weights: Option<&[f32]>,
+    items: Lists,
+) -> Result<Vec<f32>, Error> {
+    let users = histories.offsets.len().saturating_sub(1);
+    histories.check("histories", users)?;
+    items.check("items", users)?;
+    if weights.is_some_and(|w| w.len() != histories.ids.len()) {
+        return invalid("weights: one weight per history id expected");
+    }
+    let rows: Vec<Vec<f32>> = (0..users)
+        .into_par_iter()
+        .with_max_len(4)
+        .map(|u| {
+            let (a, z) = (
+                histories.offsets[u] as usize,
+                histories.offsets[u + 1] as usize,
+            );
+            score(
+                model,
+                &histories.ids[a..z],
+                weights.map(|w| &w[a..z]),
+                items.get(u),
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(rows.concat())
+}
+
 /// The internal → caller's id map of a model's results.
 fn caller_id(model: &Model) -> impl Fn(u32) -> i64 + '_ {
     let ext = model.ext.as_ref().map(|e| &e.out[..]);
@@ -216,8 +284,8 @@ pub fn recommend_batch(model: &Model, b: &BatchRequest) -> Result<Batch, Error> 
 impl Scratch {
     fn run(&mut self, m: &Model, req: &Request, out: &mut Vec<(u32, f32)>) {
         self.hist.clear();
-        m.lookup_into(req.ids, req.weights, &mut self.hist);
-        canonicalize(&mut self.hist);
+        m.lookup_into::<false>(req.ids, req.weights, &mut self.hist);
+        canonicalize::<false>(&mut self.hist);
         self.blocked.clear();
         if req.exclude_seen {
             self.blocked.extend(self.hist.iter().map(|&(id, _)| id));
@@ -243,25 +311,7 @@ impl Scratch {
             }
         }
         self.topk.set_k(req.k.min(m.n_active));
-        // 'auto' per call. A batch: its rayon pool's threads share the cache. A
-        // single request can't see the server's other callers, so it assumes
-        // every core on its L2 is busy (D65: one block wins alone, loses 9-38%
-        // under concurrent requests); usize::MAX clamps to the L2's cores.
-        let block = if m.block_size == BlockSize::Auto {
-            let threads =
-                rayon::current_thread_index().map_or(usize::MAX, |_| rayon::current_num_threads());
-            crate::block::auto_block_size(m.n_active, threads, 4)
-        } else {
-            m.block
-        };
-        let block = if block == 0 || block >= m.n_active {
-            m.n_active
-        } else {
-            block
-        };
-        if self.sums.len() < block {
-            self.sums.resize(block, 0.0);
-        }
+        let block = self.block(m);
         let allowed = Masks(m.allowed.as_deref(), req.include.map(|_| &include[..]));
         // SAFETY: hist / blocked ids < n_items (lookup); sums.len() >= block;
         // the view's mask and `include` hold >= words(n_items) words.
@@ -284,13 +334,97 @@ impl Scratch {
         );
     }
 
-    /// # Safety
-    /// See the call in `run`.
-    unsafe fn accumulate_all(&mut self, m: &Model, block: usize, allowed: Masks) {
+    /// The request's column block size (in `1..=n_active`), `sums` grown to it.
+    #[inline(always)]
+    fn block(&mut self, m: &Model) -> usize {
+        // 'auto' per call. A batch: its rayon pool's threads share the cache. A
+        // single request can't see the server's other callers, so it assumes
+        // every core on its L2 is busy (D65: one block wins alone, loses 9-38%
+        // under concurrent requests); usize::MAX clamps to the L2's cores.
+        let block = if m.block_size == BlockSize::Auto {
+            let threads =
+                rayon::current_thread_index().map_or(usize::MAX, |_| rayon::current_num_threads());
+            crate::block::auto_block_size(m.n_active, threads, 4)
+        } else {
+            m.block
+        };
+        let block = if block == 0 || block >= m.n_active {
+            m.n_active
+        } else {
+            block
+        };
+        if self.sums.len() < block {
+            self.sums.resize(block, 0.0);
+        }
+        block
+    }
+
+    /// Scores of `items` into `out` (zeros, one per item): see `score`.
+    fn score(
+        &mut self,
+        m: &Model,
+        ids: &[i64],
+        weights: Option<&[f32]>,
+        items: &[i64],
+        out: &mut [f32],
+    ) {
+        // (internal id, position in `items`) of the candidates with a slot the
+        // view allows, by internal id: the gather walks it block by block.
+        // ponytail: a Vec per call, not a scratch field (recommend's Scratch
+        // layout, and so its asm, stays as it is); cold next to the accumulate.
+        let mut cand: Vec<(u32, u32)> = items
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &id)| {
+                let i = m.internal(id)?;
+                // SAFETY: i < n_items; the mask holds words(n_items) words.
+                let allowed = m
+                    .allowed
+                    .as_deref()
+                    .is_none_or(|a| unsafe { bit(a, i as usize) });
+                ((i as usize) < m.n_active && allowed).then_some((i, pos as u32))
+            })
+            .collect();
+        cand.sort_unstable();
+        let Some(&(last, _)) = cand.last() else {
+            return;
+        };
+        self.hist.clear();
+        m.lookup_into::<true>(ids, weights, &mut self.hist);
+        canonicalize::<true>(&mut self.hist);
+        let block = self.block(m);
         let pairs: &[Entry] = &m.pairs;
-        let n_active = m.n_active;
-        // Per-row column blocks, as the kernel's `blocked_row`; one block (every
-        // catalog <= the block size) is this loop once.
+        // Blocks past the last candidate don't matter (left unaccumulated).
+        let end = last as usize + 1;
+        // SAFETY: hist ids < n_items (lookup).
+        unsafe { self.set_cursors(m) };
+        let (mut start, mut next) = (0, 0);
+        while start < end {
+            let hi = (start + block).min(m.n_active);
+            // SAFETY: as `accumulate_all` (sums.len() >= block >= hi - start).
+            unsafe { self.accumulate_block(pairs, start, hi, m.n_active) };
+            while let Some(&(c, pos)) = cand.get(next)
+                && (c as usize) < hi
+            {
+                out[pos as usize] = self.sums[c as usize - start];
+                next += 1;
+            }
+            for &local in &self.touched {
+                // SAFETY: touched < block <= sums.len().
+                unsafe { *self.sums.get_unchecked_mut(local as usize) = 0.0 };
+            }
+            self.touched.clear();
+            start = hi;
+        }
+    }
+
+    /// One cursor per history row: `(pos, end, column at pos)`.
+    ///
+    /// # Safety
+    /// Every `hist` id < n_items.
+    #[inline(always)]
+    unsafe fn set_cursors(&mut self, m: &Model) {
+        let pairs: &[Entry] = &m.pairs;
         self.cursor.clear();
         self.cursor.extend(self.hist.iter().map(|&(id, _)| {
             // SAFETY: id < n_items; the span is the row's.
@@ -299,10 +433,47 @@ impl Scratch {
                 (pos, end, next_col(pairs.get_unchecked(pos..end), 0))
             }
         }));
+    }
+
+    /// # Safety
+    /// See the call in `run`.
+    unsafe fn accumulate_all(&mut self, m: &Model, block: usize, allowed: Masks) {
+        let pairs: &[Entry] = &m.pairs;
+        let n_active = m.n_active;
+        // Per-row column blocks, as the kernel's `blocked_row`; one block (every
+        // catalog <= the block size) is this loop once.
+        // SAFETY: forwarded.
+        unsafe { self.set_cursors(m) };
         let mut start = 0;
         while start < n_active {
             let hi = (start + block).min(n_active);
             self.preset(start, hi, f32::NEG_INFINITY);
+            // SAFETY: forwarded.
+            unsafe { self.accumulate_block(pairs, start, hi, n_active) };
+            if !self.touched.is_empty() {
+                // SAFETY: forwarded.
+                unsafe { self.drain(start, allowed) };
+            }
+            // Even when the drain was skipped: the slots were set.
+            self.preset(start, hi, 0.0);
+            start = hi;
+        }
+    }
+
+    /// Every history row's segment in the column block `[start, hi)` into
+    /// `sums` (shared by `recommend` and `score`: one copy of the tuned loop).
+    ///
+    /// # Safety
+    /// The cursors are `set_cursors`' moved block by block; `hi - start <= sums.len()`.
+    #[inline(always)]
+    unsafe fn accumulate_block(
+        &mut self,
+        pairs: &[Entry],
+        start: usize,
+        hi: usize,
+        n_active: usize,
+    ) {
+        {
             for i in 0..self.cursor.len() {
                 // Prefetch the in-block part of a row PREFETCH_ROWS ahead: each history row of S starts at an
                 // unpredictable address the hardware prefetcher can't reach, and a k = 100 row is ~13 lines.
@@ -334,13 +505,6 @@ impl Scratch {
                     )
                 };
             }
-            if !self.touched.is_empty() {
-                // SAFETY: forwarded.
-                unsafe { self.drain(start, allowed) };
-            }
-            // Even when the drain was skipped: the slots were set.
-            self.preset(start, hi, 0.0);
-            start = hi;
         }
     }
 
@@ -508,7 +672,8 @@ unsafe fn drain_impl<const MASKS: u8>(
 /// Exception: 3+ copies of one id with different weights sum in an order the
 /// sort picks from the input (f32 addition isn't associative); the same input
 /// still gives the same bits.
-fn canonicalize(hist: &mut Vec<(u32, f32)>) {
+/// `COPY`: one instantiation per caller, as `Core::lookup_into`'s.
+fn canonicalize<const COPY: bool>(hist: &mut Vec<(u32, f32)>) {
     hist.sort_unstable_by_key(|&(i, _)| i);
     hist.dedup_by(|b, a| {
         let dup = a.0 == b.0;

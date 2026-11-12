@@ -7,6 +7,8 @@
           members:
             - recommend
             - recommend_batch
+            - score
+            - score_batch
             - view
             - save
             - load
