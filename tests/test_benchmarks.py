@@ -186,6 +186,20 @@ def test_serve_concurrent(run):
     assert c["cpu_us_per_request"] >= 0  # Windows: the CPU clock ticks every ~15 ms, a tiny run can read 0
 
 
+def test_serve_concurrent_caps(run):
+    # --concurrent-caps: one case pair per cap and caller count; "none" keeps the old names; the cap is recorded
+    rep = run(
+        "serve", "--mode", "concurrent", "--callers", "2", "--concurrent-caps", "5", "none", "--requests", "40",
+        "--model-k", "20", "--k", "10", "--rounds", "1",
+    )  # fmt: skip
+    cases = rep["cases"]
+    assert {"concurrent_default_cap5_c2", "concurrent_one_cap5_c2", "concurrent_default_c2"} <= set(cases)
+    assert (
+        cases["concurrent_one_cap5_c2"]["params"]["cap"] == "5"
+        and cases["concurrent_default_c2"]["params"]["cap"] == "none"
+    )
+
+
 def test_serve_block_size(run, monkeypatch):
     # --block-size reaches the timed model (the one-block control stays None); 'auto' passes nothing
     from similaripy import serving

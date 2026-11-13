@@ -145,6 +145,9 @@ def parser():
     v.add_argument(
         "--callers", type=positive, nargs="+", default=[6], help="concurrent mode: Python threads (default: 6)"
     )
+    v.add_argument(
+        "--concurrent-caps", nargs="+", default=["none"], help="concurrent mode: history caps (default: none = full)"
+    )
     v.add_argument("--seed", type=int, default=0)
     v.add_argument(
         "--model-cache",
