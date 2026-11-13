@@ -5,7 +5,8 @@ Checked by feature, never by version string: v1 builds report
 `__version__` 0.7.0 until the 1.0 release. What 0.7.0 (the last Cython
 release, PyPI wheel) lacks: `similaripy._s_plus` (phase timer, column order
 switch), `similaripy.serving`, `similaripy.preprocessing`; v1 builds before D115
-lack `ItemKNN(item_order=)`. Its similarity
+lack `ItemKNN(item_order=)`, builds before W1 `ItemKNN.load(block_size=)`
+(they saved it with the model). Its similarity
 signatures match v1 by name; it defaults to verbose=True and
 format_output='coo' (the harness always passes both) and spells the library's
 block size 0 (v1: 'auto'), so 'auto' is left out of the call.
@@ -33,8 +34,10 @@ if HAS_SERVING:
     from similaripy.serving import ItemKNN as _ItemKNN
 
     HAS_ITEM_ORDER = "item_order" in inspect.signature(_ItemKNN).parameters
+    # W1: the block size is a runtime setting that `load` takes; older builds saved it with the model.
+    HAS_LOAD_BLOCK_SIZE = "block_size" in inspect.signature(_ItemKNN.load).parameters
 else:
-    HAS_ITEM_ORDER = False
+    HAS_ITEM_ORDER = HAS_LOAD_BLOCK_SIZE = False
 
 
 def phase_times():
@@ -49,6 +52,11 @@ def set_column_order(order):
     if not hasattr(_s_plus, "_COLUMN_ORDER"):
         raise ValueError("--column-order: this build has no column order switch")
     _s_plus._COLUMN_ORDER = order
+
+
+def load_block_size_kwargs(block_size):
+    """`ItemKNN.load`'s block_size (W1) as `block_size_kwargs`; {} for a build that saved it with the model."""
+    return block_size_kwargs(block_size) if HAS_LOAD_BLOCK_SIZE else {}
 
 
 def item_order_kwargs(order):

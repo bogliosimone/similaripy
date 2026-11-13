@@ -14,12 +14,14 @@
 //! excluded items pre-set to `-inf` (never touched, never drained),
 //! `scores = h · S` accumulated, then drained through the view's mask and the
 //! request's include bits (tested only after the floor reject) into a top-K,
-//! best first, internal → caller's ids. Batch = rayon over users calling the
-//! same function, so a user gets the same bits from both. Choices measured in
+//! best first, internal → caller's ids. A `Worker` (one per serving thread)
+//! owns the per-request state and the block size, resolved once; the free
+//! functions use the calling thread's implicit one. Batch = rayon over users
+//! calling the same function, so a user gets the same bits from both. Choices measured in
 //! step 4.1 (`reports/step4-explore.md` in the planning notes, D64); API D69.
 //!
 //! Files: `model` (build, the one check, save/load, views), `ids` (id maps),
-//! `request` (one history, batch).
+//! `request` (the worker, one history, batch).
 
 mod ids;
 mod model;
@@ -27,7 +29,8 @@ mod request;
 
 pub use model::{BlockSize, CLUSTER_HEAD, Core, Entry, ItemOrder, Model, Parts};
 pub use request::{
-    Batch, BatchRequest, Lists, Request, recommend, recommend_batch, score, score_batch,
+    Batch, BatchRequest, Lists, Request, Stats, Worker, recommend, recommend_batch, score,
+    score_batch,
 };
 
 use crate::Error;

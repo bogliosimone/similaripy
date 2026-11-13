@@ -50,11 +50,6 @@ pub struct Core {
     pub(super) indptr: Buf<i64>,
     pub(super) pairs: Buf<Entry>,
     pub(super) n_active: usize,
-    /// As given (saved, pickled).
-    pub(super) block_size: BlockSize,
-    /// Column block size of a request, 0 = one block (`block_size` resolved;
-    /// unused for `Auto`, which picks per request: `request.rs`).
-    pub(super) block: usize,
     /// Internal id → S's original column.
     pub(super) new_to_old: Buf<i32>,
     /// Original column → internal id (`EMPTY`: dropped).
@@ -81,13 +76,13 @@ impl std::ops::Deref for Model {
     }
 }
 
-/// Column block size of every request, as the similarity functions'
-/// `block_size`. Kept as given (saved, pickled): `Auto` follows the library's
-/// choice of the version that loads it.
+/// Column block size of a worker's requests, as the similarity functions'
+/// `block_size`: a runtime setting of whoever serves the model (never saved,
+/// W1), resolved once per worker (`resolve`, W3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockSize {
-    /// `block::auto_block_size` per request (the threads that share the cache
-    /// depend on the caller, D65).
+    /// `block::auto_block_size` for the threads that serve the model at once
+    /// (D65: one block wins alone, loses 9-38% under concurrent requests).
     Auto,
     /// One block (no blocking): for a lone request on an idle machine.
     Off,
@@ -96,9 +91,12 @@ pub enum BlockSize {
 }
 
 impl BlockSize {
-    fn resolve(self) -> Result<usize, Error> {
+    /// The block for a model with `n_active` columns served by `threads`
+    /// threads at once (`usize::MAX`: every core on the L2 busy, clamped to
+    /// its cores); 0 = one block.
+    pub fn resolve(self, n_active: usize, threads: usize) -> Result<usize, Error> {
         match self {
-            BlockSize::Auto => Ok(DEFAULT_BLOCK_SIZE),
+            BlockSize::Auto => Ok(crate::block::auto_block_size(n_active, threads, 4)),
             BlockSize::Off => Ok(0),
             BlockSize::Size(0) => invalid("block_size must be > 0"),
             BlockSize::Size(n) => Ok(n),
@@ -226,8 +224,8 @@ fn serving_order(
 }
 
 /// What a model is made of (pickling, saving): S in internal ids, the
-/// layout, S's original item count, the external ids, the default mask and
-/// the block size as given; `Model::from_parts` takes the same back.
+/// layout, S's original item count, the external ids and the default mask;
+/// `Model::from_parts` takes the same back.
 pub struct Parts<'a> {
     pub indptr: &'a [i64],
     pub pairs: &'a [Entry],
@@ -236,7 +234,6 @@ pub struct Parts<'a> {
     pub ext: Option<&'a [i64]>,
     /// Bitset over internal ids, None = all allowed.
     pub allowed: Option<&'a [u64]>,
-    pub block_size: BlockSize,
 }
 
 impl Model {
@@ -255,9 +252,8 @@ impl Model {
         ext: Option<Vec<i64>>,
         keep: Option<&[bool]>,
         order: ItemOrder,
-        block_size: BlockSize,
     ) -> Result<Self, Error> {
-        Self::new_with_head(s, ext, keep, order, CLUSTER_HEAD, block_size)
+        Self::new_with_head(s, ext, keep, order, CLUSTER_HEAD)
     }
 
     /// As `new`, with `head` in place of `CLUSTER_HEAD` (tests: catalogs
@@ -269,7 +265,6 @@ impl Model {
         keep: Option<&[bool]>,
         order: ItemOrder,
         head: usize,
-        block_size: BlockSize,
     ) -> Result<Self, Error> {
         check_square(&s)?;
         if keep.is_some_and(|k| k.len() != s.n_cols()) {
@@ -282,7 +277,7 @@ impl Model {
             o => o,
         };
         let order = serving_order(src, &lens, &counts, order, head);
-        Self::build(src, &lens, &counts, order, ext, block_size)
+        Self::build(src, &lens, &counts, order, ext)
     }
 
     /// As `new`, in a given serving order: `new_to_old` = internal id →
@@ -293,12 +288,11 @@ impl Model {
         s: CsrView,
         new_to_old: Vec<i32>,
         ext: Option<Vec<i64>>,
-        block_size: BlockSize,
     ) -> Result<Self, Error> {
         check_square(&s)?;
         let src = (s.arrays(), None);
         let (lens, counts) = row_col_counts(src, s.n_cols());
-        Self::build(src, &lens, &counts, new_to_old, ext, block_size)
+        Self::build(src, &lens, &counts, new_to_old, ext)
     }
 
     /// The one copy of S: each row made canonical in a small per-thread
@@ -309,7 +303,6 @@ impl Model {
         counts: &[u32],
         new_to_old: Vec<i32>,
         ext: Option<Vec<i64>>,
-        block_size: BlockSize,
     ) -> Result<Self, Error> {
         let n = lens.len();
         let dense_in = dense_in(&new_to_old, n)?;
@@ -353,7 +346,6 @@ impl Model {
             new_to_old.into(),
             n,
             ext.map(Buf::from),
-            block_size,
         )?;
         Ok(Self {
             core: Arc::new(core),
@@ -370,7 +362,6 @@ impl Model {
         n_cols: usize,
         ext: Option<Vec<i64>>,
         allowed: Option<Vec<u64>>,
-        block_size: BlockSize,
     ) -> Result<Self, Error> {
         let core = Core::from_arrays(
             indptr.into(),
@@ -378,7 +369,6 @@ impl Model {
             new_to_old.into(),
             n_cols,
             ext.map(Buf::from),
-            block_size,
         )?;
         if allowed
             .as_ref()
@@ -410,11 +400,6 @@ impl Model {
             if let Some(e) = p.ext {
                 store::write(d, "item_ids", e)?;
             }
-            let block_size = match p.block_size {
-                BlockSize::Auto => serde_json::json!("auto"),
-                BlockSize::Off => serde_json::Value::Null,
-                BlockSize::Size(n) => serde_json::json!(n),
-            };
             let meta = serde_json::json!({
                 "format": FORMAT,
                 "kind": KIND,
@@ -424,7 +409,6 @@ impl Model {
                 "n_cols": p.n_cols,
                 "nnz": p.pairs.len(),
                 "item_ids": p.ext.is_some(),
-                "block_size": block_size,
             });
             let text = serde_json::to_string_pretty(&meta).expect("plain JSON values") + "\n";
             store::write_text(d, "meta.json", &text)
@@ -476,18 +460,6 @@ impl Model {
                 )));
             }
         }
-        let block_size = match field("block_size")? {
-            serde_json::Value::Null => BlockSize::Off,
-            v if v == "auto" => BlockSize::Auto,
-            v => match v.as_u64() {
-                Some(n) if n > 0 => BlockSize::Size(n as usize),
-                _ => {
-                    return Err(bad(format!(
-                        "block_size must be \"auto\", null or an integer > 0, got {v}"
-                    )));
-                }
-            },
-        };
         let n_cols =
             usize::try_from(uint("n_cols")?).map_err(|_| bad("n_cols too large".into()))?;
         let ext = flag("item_ids")?
@@ -499,7 +471,6 @@ impl Model {
             store::read(dir, "new_to_old", mmap)?,
             n_cols,
             ext,
-            block_size,
         )?;
         if (core.n_items() as u64, core.pairs.len() as u64) != (uint("n_items")?, uint("nnz")?) {
             return Err(bad("n_items / nnz don't match the arrays".into()));
@@ -546,7 +517,6 @@ impl Model {
             n_cols: self.dense_in.len(),
             ext: self.ext.as_ref().map(|e| &e.by_col[..]),
             allowed: self.allowed.as_deref(),
-            block_size: self.block_size,
         }
     }
 }
@@ -562,9 +532,7 @@ impl Core {
         new_to_old: Buf<i32>,
         n_cols: usize,
         ext: Option<Buf<i64>>,
-        block_size: BlockSize,
     ) -> Result<Self, Error> {
-        let block = block_size.resolve()?;
         // Before `dense_in` allocates n_cols slots (n_cols may come from a file).
         if ext.as_ref().is_some_and(|e| e.len() != n_cols) {
             return invalid(format!("item_ids must have one id per item ({n_cols})"));
@@ -595,8 +563,6 @@ impl Core {
             indptr,
             pairs,
             n_active,
-            block_size,
-            block,
             new_to_old,
             dense_in,
             ext,
