@@ -273,12 +273,15 @@ def test_serve_transpose(run, monkeypatch):
 
 
 def test_serve_load(run, monkeypatch):
-    # --load mmap / read: every model saved and loaded back with that mmap flag, recorded
+    # --load mmap / read: every model saved and loaded back with that mmap flag and its own block size (not
+    # saved: W1; 'auto' passes nothing), recorded
     from similaripy import serving
 
     seen, real = [], serving.ItemKNN.load.__func__
     monkeypatch.setattr(
-        serving.ItemKNN, "load", classmethod(lambda cls, p, mmap: seen.append(mmap) or real(cls, p, mmap=mmap))
+        serving.ItemKNN,
+        "load",
+        classmethod(lambda cls, p, mmap, **kw: seen.append((mmap, kw)) or real(cls, p, mmap=mmap, **kw)),
     )
     args = ("serve", "--mode", "latency", "concurrent", "--caps", "10", "--requests", "20", "--model-k", "20")
     args += ("--rounds", "1", "--callers", "2")
@@ -286,7 +289,7 @@ def test_serve_load(run, monkeypatch):
     for how, flag in (("mmap", True), ("read", False)):
         seen.clear()
         assert run(*args, "--load", how)["info"]["load"] == how
-        assert seen == [flag, flag]  # the timed model and the concurrent one-block control
+        assert seen == [(flag, {}), (flag, {"block_size": None})]  # the timed model, the one-block control
 
 
 def test_serve_build(run):

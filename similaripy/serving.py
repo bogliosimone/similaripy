@@ -191,7 +191,8 @@ class ItemKNN:
             functions': 'auto' (the library's choice), None (no blocking) or
             an int > 0. Results are the same; blocking is faster under
             concurrent requests, no blocking for a lone request on an idle
-            machine.
+            machine. A runtime setting: pickled, not saved (`load` takes its
+            own).
         num_threads: threads for the build (0 = all).
 
     Raises:
@@ -496,7 +497,7 @@ class ItemKNN:
         self._model.save(path, f"similaripy {__version__}")
 
     @classmethod
-    def load(cls, path, *, mmap: bool = True) -> "ItemKNN":
+    def load(cls, path, *, mmap: bool = True, block_size: int | Literal["auto"] | None = "auto") -> "ItemKNN":
         """
         A model saved by `save`, checked before use.
 
@@ -505,13 +506,14 @@ class ItemKNN:
             mmap: map the files read-only: one copy in the OS page cache,
                 shared by every process that loads them, and fast to load.
                 False reads them into memory (e.g. on a network file system).
+            block_size: as `ItemKNN`'s (not saved with the model).
 
         Returns:
             model: the `ItemKNN`.
 
         Raises:
             FileNotFoundError: on a missing directory or file.
-            ValueError: on a corrupted or unsupported file.
+            ValueError: on a corrupted or unsupported file, or an invalid `block_size`.
 
         Note:
             Load files you trust: the check makes a corrupted file an error,
@@ -521,7 +523,7 @@ class ItemKNN:
             behaviour (a crash or wrong results), not an error. Save new
             versions to a new directory, or load with `mmap=False`.
         """
-        return cls._wrap(_core.ServeModel.load(path, mmap))
+        return cls._wrap(_core.ServeModel.load(path, mmap, block_size))
 
     def __reduce__(self):
         # Same-version pickles only: the model's arrays, re-checked on load

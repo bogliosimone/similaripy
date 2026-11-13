@@ -7,8 +7,8 @@
 use proptest::prelude::*;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{
-    BatchRequest, BlockSize, Entry, ItemOrder, Lists, Model, Request, recommend, recommend_batch,
-    score, score_batch,
+    BatchRequest, BlockSize, Entry, ItemOrder, Lists, Model, Request, Stats, Worker, recommend,
+    recommend_batch, score, score_batch,
 };
 
 #[derive(Debug, Clone)]
@@ -55,20 +55,13 @@ fn csr(s: &[Vec<f32>]) -> Csr {
     m
 }
 
-fn build_blocked(
-    s: &[Vec<f32>],
-    new_to_old: &[i32],
-    ext: Option<&[i64]>,
-    block: usize,
-) -> Result<Model, similaripy_core::Error> {
-    let m = csr(s);
-    let view = CsrView::new("S", &m.indptr, &m.indices, &m.data, s.len())?;
-    let block = if block == 0 {
+/// A test's block (0 = one block) as a setting.
+fn block_size(block: usize) -> BlockSize {
+    if block == 0 {
         BlockSize::Off
     } else {
         BlockSize::Size(block)
-    };
-    Model::with_order(view, new_to_old.to_vec(), ext.map(<[i64]>::to_vec), block)
+    }
 }
 
 /// S as a caller may give it: rows reversed, each entry split into two halves
@@ -148,7 +141,6 @@ fn from_own_parts(m: &Model) -> Model {
         p.n_cols,
         p.ext.map(<[i64]>::to_vec),
         p.allowed.map(<[u64]>::to_vec),
-        p.block_size,
     )
     .unwrap()
 }
@@ -158,7 +150,9 @@ fn build(
     new_to_old: &[i32],
     ext: Option<&[i64]>,
 ) -> Result<Model, similaripy_core::Error> {
-    build_blocked(s, new_to_old, ext, 0)
+    let m = csr(s);
+    let view = CsrView::new("S", &m.indptr, &m.indices, &m.data, s.len())?;
+    Model::with_order(view, new_to_old.to_vec(), ext.map(<[i64]>::to_vec))
 }
 
 fn model(c: &Case) -> Model {
@@ -323,7 +317,14 @@ fn go(
 ) -> (Vec<i64>, Vec<f32>) {
     let ids = ids(c);
     let mut out = (vec![], vec![]);
-    recommend(m, &req(c, &ids, include, exclude), &mut out.0, &mut out.1).unwrap();
+    recommend(
+        m,
+        0,
+        &req(c, &ids, include, exclude),
+        &mut out.0,
+        &mut out.1,
+    )
+    .unwrap();
     out
 }
 
@@ -446,7 +447,6 @@ proptest! {
         let n = ids.len() as i64;
         let both: Vec<i64> = ids.iter().chain(&ids).copied().collect();
         let w2 = c.weights.as_ref().map(|w| w.iter().chain(w).copied().collect::<Vec<_>>());
-        let mb = build_blocked(&c.s, &c.new_to_old, c.ext.as_deref(), block).unwrap();
         let per_user = |l: &Option<Vec<i64>>| {
             l.as_ref().map(|l| {
                 let k = l.len() as i64;
@@ -454,7 +454,7 @@ proptest! {
             })
         };
         let (pi, pe) = (per_user(&inc), per_user(&exc));
-        let (o, got_ids, got_scores) = recommend_batch(&mb, &BatchRequest {
+        let (o, got_ids, got_scores) = recommend_batch(&m, block_size(block), &BatchRequest {
             histories: Lists { offsets: &[0, n, n, 2 * n], ids: &both },
             weights: w2.as_deref(),
             k: c.k,
@@ -483,7 +483,7 @@ proptest! {
         let raw = messy(&c.s);
         let view = CsrView::new("S", &raw.indptr, &raw.indices, &raw.data, c.s.len()).unwrap();
         let keep = c.allowed.as_deref();
-        let m = Model::new_with_head(view, c.ext.clone(), keep, order, head, BlockSize::Auto).unwrap();
+        let m = Model::new_with_head(view, c.ext.clone(), keep, order, head).unwrap();
         let s: Vec<Vec<f32>> = c.s.iter().map(|r| {
             r.iter().enumerate().map(|(j, &v)| if keep.is_none_or(|k| k[j]) { v } else { 0.0 }).collect()
         }).collect();
@@ -501,7 +501,6 @@ proptest! {
         let view = m.view(flagged(&c2, &c2.allowed).as_deref(), flagged(&c2, &c2.excluded).as_deref());
         let back = from_own_parts(&view);
         prop_assert_eq!(back.parts().allowed, view.parts().allowed);
-        prop_assert_eq!(back.parts().block_size, BlockSize::Auto);
         let again = run(&Case { allowed: None, excluded: None, ..c2.clone() }, &back);
         prop_assert_eq!(&again.0, &got.0);
         prop_assert_eq!(bits(&again.1), bits(&got.1));
@@ -513,12 +512,10 @@ proptest! {
     #[test]
     fn score_matches_reference(c in case(false), block in 0usize..6) {
         let (inc, exc) = (flagged(&c, &c.allowed), flagged(&c, &c.excluded));
-        let m = build_blocked(&c.s, &c.new_to_old, c.ext.as_deref(), block)
-            .unwrap()
-            .view(inc.as_deref(), exc.as_deref());
+        let m = model(&c).view(inc.as_deref(), exc.as_deref());
         let n = c.s.len();
         let items: Vec<i64> = (0..n).rev().chain([0]).map(|j| ext_of(&c, j)).chain([unknown_id(&c)]).collect();
-        let got = score(&m, &ids(&c), c.weights.as_deref(), &items).unwrap();
+        let got = score(&m, block, &ids(&c), c.weights.as_deref(), &items).unwrap();
         let want: Vec<f32> = (0..n).rev().chain([0]).map(|j| {
             let ok = kept(&c, j) && c.allowed.as_ref().is_none_or(|a| a[j])
                 && !c.excluded.as_ref().is_some_and(|x| x[j]);
@@ -534,22 +531,23 @@ proptest! {
     // score's bits == recommend's scores (any block size), batch == single.
     #[test]
     fn score_bits_recommend_and_batch(c in case(true), block in 0usize..6) {
-        let m = build_blocked(&c.s, &c.new_to_old, c.ext.as_deref(), block).unwrap();
+        let m = model(&c);
         let ids = ids(&c);
         let mut rec = (vec![], vec![]);
         let all = Request { k: c.s.len(), exclude_seen: false, include: None, exclude: None, ..req(&c, &ids, None, None) };
-        recommend(&m, &all, &mut rec.0, &mut rec.1).unwrap();
-        let got = score(&m, &ids, c.weights.as_deref(), &rec.0).unwrap();
+        recommend(&m, block, &all, &mut rec.0, &mut rec.1).unwrap();
+        let got = score(&m, block, &ids, c.weights.as_deref(), &rec.0).unwrap();
         prop_assert_eq!(bits(&got), bits(&rec.1));
         // Batch [history, empty history with items, history with no items].
         let items: Vec<i64> = (0..c.s.len()).map(|j| ext_of(&c, j)).collect();
-        let single = score(&m, &ids, c.weights.as_deref(), &items).unwrap();
+        let single = score(&m, block, &ids, c.weights.as_deref(), &items).unwrap();
         let (h, k) = (ids.len() as i64, items.len() as i64);
         let both: Vec<i64> = ids.iter().chain(&ids).copied().collect();
         let w2 = c.weights.as_ref().map(|w| w.iter().chain(w).copied().collect::<Vec<_>>());
         let it2: Vec<i64> = items.iter().chain(&items).copied().collect();
         let flat = score_batch(
             &m,
+            block_size(block),
             Lists { offsets: &[0, h, h, 2 * h], ids: &both },
             w2.as_deref(),
             Lists { offsets: &[0, k, 2 * k, 2 * k], ids: &it2 },
@@ -557,6 +555,100 @@ proptest! {
         prop_assert_eq!(bits(&flat[..k as usize]), bits(&single));
         prop_assert!(flat[k as usize..].iter().all(|&v| v == 0.0));
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 1000 }))]
+
+    // One worker (any block) across two models of different sizes and a view,
+    // in turns: each answer == the reference path's bits (sorted), the same
+    // items and scores unsorted; scores too.
+    #[test]
+    fn one_worker_across_models(a in case(true), b in case(true), block in 0usize..6) {
+        let (ma, mb) = (model(&a), model(&b));
+        let inc = flagged(&b, &b.allowed);
+        let vb = mb.view(inc.as_deref(), None);
+        let mut w = Worker::new(&ma, block_size(block), 1).unwrap();
+        prop_assert_eq!(w.block(), block);
+        for (c, m, view) in [(&a, &ma, false), (&b, &mb, false), (&b, &vb, true), (&a, &ma, false)] {
+            let c = Case { allowed: if view { c.allowed.clone() } else { None }, excluded: None, ..c.clone() };
+            let ids = ids(&c);
+            let want = reference(&c);
+            let mut got = (vec![], vec![]);
+            w.recommend(m, &req(&c, &ids, None, None), &mut got.0, &mut got.1).unwrap();
+            let got = by_score(&c, got, &want);
+            prop_assert_eq!(&got.0, &want.0);
+            let sorted = run(&Case { sorted: true, ..c.clone() }, m);
+            if c.sorted {
+                prop_assert_eq!(bits(&got.1), bits(&sorted.1));
+            } else {
+                // Unsorted: the same items and scores as sorted, any block.
+                let mut x: Vec<_> = got.0.iter().zip(bits(&got.1)).collect();
+                let mut y: Vec<_> = sorted.0.iter().zip(bits(&sorted.1)).collect();
+                x.sort();
+                y.sort();
+                prop_assert_eq!(x, y);
+            }
+            let mut sc = vec![1.0];
+            w.score(m, &ids, c.weights.as_deref(), &got.0, &mut sc).unwrap();
+            prop_assert_eq!(bits(&sc), bits(&score(m, 0, &ids, c.weights.as_deref(), &got.0).unwrap()));
+        }
+    }
+}
+
+#[test]
+fn worker_block_and_stats() {
+    // Item 2 has no column; item 3 is dropped (unknown).
+    let s = vec![
+        vec![0.0, 1.0, 0.0, 0.0],
+        vec![1.0, 0.0, 0.0, 0.0],
+        vec![1.0, 3.0, 0.0, 0.0],
+        vec![0.0; 4],
+    ];
+    let m = build(&s, &[1, 0, 2], None).unwrap();
+    assert_eq!(m.n_active(), 2);
+    let new = |b, t| Worker::new(&m, b, t).map(|w| w.block());
+    assert_eq!(new(BlockSize::Off, 8).unwrap(), 0);
+    assert_eq!(new(BlockSize::Size(7), 8).unwrap(), 7); // clamped per request, kept as given
+    assert!(new(BlockSize::Size(0), 1).is_err());
+    assert!(new(BlockSize::Auto, 1).is_ok());
+    let mut w = Worker::new(&m, BlockSize::Off, 1).unwrap();
+    let r = |ids, weights| Request {
+        ids,
+        weights,
+        k: 5,
+        exclude_seen: false,
+        include: None,
+        exclude: None,
+        sorted: true,
+    };
+    let mut out = (vec![], vec![]);
+    // ids 0, 0, 2 known (rows: 1 + 2 entries once merged), 3 and 9 unknown.
+    w.recommend(&m, &r(&[0, 3, 0, 2, 9], None), &mut out.0, &mut out.1)
+        .unwrap();
+    // The caller's outputs are appended to, the worker's own buffers reused.
+    w.recommend(&m, &r(&[1], None), &mut out.0, &mut out.1)
+        .unwrap();
+    assert_eq!(out, (vec![1, 0, 0], vec![5.0, 1.0, 1.0]));
+    assert!(
+        w.recommend(&m, &r(&[1], Some(&[f32::NAN])), &mut out.0, &mut out.1)
+            .is_err()
+    );
+    let mut sc = vec![];
+    w.score(&m, &[0, 9], None, &[1, 2, 3], &mut sc).unwrap();
+    assert_eq!(sc, vec![1.0, 0.0, 0.0]);
+    w.score(&m, &[0], None, &[2], &mut sc).unwrap(); // no candidate column: no lookup
+    assert_eq!(sc, vec![0.0]);
+    assert_eq!(
+        w.stats(),
+        Stats {
+            requests: 5,
+            errors: 1,
+            ids: 5 + 1 + 1 + 2 + 1,
+            known_ids: 3 + 1 + 1,
+            entries: 3 + 1 + 1,
+        }
+    );
 }
 
 #[test]
@@ -571,7 +663,7 @@ fn rejects_bad_input() {
     assert_eq!((m.n_items(), m.n_cols(), m.n_active()), (2, 3, 2));
     let run = |r: &Request| {
         let mut out = (vec![], vec![]);
-        recommend(&m, r, &mut out.0, &mut out.1).map(|()| out)
+        recommend(&m, 0, r, &mut out.0, &mut out.1).map(|()| out)
     };
     let r = |ids, w| Request {
         ids,
@@ -620,6 +712,7 @@ fn rejects_bad_input() {
     let batch = |offsets: &[i64], ids: &[i64], weights: Option<&[f32]>| {
         recommend_batch(
             &m,
+            BlockSize::Off,
             &BatchRequest {
                 histories: Lists { offsets, ids },
                 weights,
@@ -653,7 +746,6 @@ struct Owned {
     n_cols: usize,
     ext: Option<Vec<i64>>,
     allowed: Option<Vec<u64>>,
-    block_size: BlockSize,
 }
 
 impl Owned {
@@ -666,7 +758,6 @@ impl Owned {
             n_cols: p.n_cols,
             ext: p.ext.map(<[i64]>::to_vec),
             allowed: p.allowed.map(<[u64]>::to_vec),
-            block_size: p.block_size,
         }
     }
 
@@ -678,7 +769,6 @@ impl Owned {
             self.n_cols,
             self.ext,
             self.allowed,
-            self.block_size,
         )
     }
 }
@@ -724,7 +814,6 @@ fn from_parts_checks_every_invariant() {
     assert!(bad(&|o| o.ext.as_mut().unwrap().truncate(3)));
     assert!(bad(&|o| o.ext.as_mut().unwrap()[0] = 13)); // duplicate id
     assert!(bad(&|o| o.allowed.as_mut().unwrap().push(0))); // one bit per item
-    assert!(bad(&|o| o.block_size = BlockSize::Size(0)));
     // Not a corruption: an extra empty item at the end (no row, no column).
     let mut o = good.clone();
     o.n_cols = 5;
@@ -746,7 +835,7 @@ fn save_load_round_trip_and_versions() {
         vec![0.0, 3.0, 0.0, 0.0],
         vec![0.0; 4],
     ];
-    let m = build_blocked(&s, &[1, 0, 2], Some(&[10, 11, 12, 13]), 2).unwrap();
+    let m = build(&s, &[1, 0, 2], Some(&[10, 11, 12, 13])).unwrap();
     let v = m.view(Some(&[11, 12]), None);
     let dir = tmp("model");
     let err = v.save(&dir, "test").unwrap_err().to_string();
@@ -763,7 +852,7 @@ fn save_load_round_trip_and_versions() {
             exclude: None,
             sorted: true,
         };
-        recommend(m, &r, &mut out.0, &mut out.1).unwrap();
+        recommend(m, 2, &r, &mut out.0, &mut out.1).unwrap();
         out
     };
     // Miri can't map files; plain reads run under it
@@ -783,6 +872,12 @@ fn save_load_round_trip_and_versions() {
     );
     // a newer format is a clear error, an unknown value dtype too
     let meta = std::fs::read_to_string(dir.join("meta.json")).unwrap();
+    // The block size is the server's, not the model's (W1); a leftover key
+    // (files saved before) is ignored.
+    assert!(!meta.contains("block_size"), "{meta}");
+    let old = meta.replace("\"nnz\"", "\"block_size\": 7,\n  \"nnz\"");
+    std::fs::write(dir.join("meta.json"), &old).unwrap();
+    assert_eq!(Owned::of(&Model::load(&dir, false).unwrap()), Owned::of(&m));
     for (from, to, says) in [
         ("\"format\": 1", "\"format\": 2", "newer"),
         ("\"float32\"", "\"bfloat16\"", "value dtype"),

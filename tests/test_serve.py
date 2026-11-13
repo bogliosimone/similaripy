@@ -575,10 +575,15 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
     with pytest.raises(ValueError, match="save the base model"):
         rec.view(include=ext[5:60]).save(tmp_path / "v")
     rec.save(tmp_path / "m")
-    back = ItemKNN.load(tmp_path / "m", mmap=mmap)
+    back = ItemKNN.load(tmp_path / "m", mmap=mmap, block_size=block_size)
     for a, b in zip(rec._model.parts(), back._model.parts()):
         assert a == b if not isinstance(a, np.ndarray) else np.array_equal(a, b)
     assert back._model.parts()[-1] == block_size
+    # The block size is a runtime setting, not saved (W1): `load` takes its own.
+    assert ItemKNN.load(tmp_path / "m", mmap=mmap)._model.parts()[-1] == "auto"
+    assert ItemKNN.load(tmp_path / "m", mmap=mmap, block_size=3)._model.parts()[-1] == 3
+    with pytest.raises(ValueError, match="block_size"):
+        ItemKNN.load(tmp_path / "m", mmap=mmap, block_size=0)
     for _ in range(20):
         hist = rng.choice(ext, size=8)
         a, b = rec.recommend(hist, k=15), back.recommend(hist, k=15)
@@ -589,7 +594,7 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
     assert np.array_equal(back.item_ids, ext)
     # plain .npy + JSON: inspectable without similaripy
     meta = json.loads((tmp_path / "m" / "meta.json").read_text())
-    assert meta["format"] == 1 and meta["n_cols"] == 80 and meta["block_size"] == block_size
+    assert meta["format"] == 1 and meta["n_cols"] == 80 and "block_size" not in meta
     assert np.array_equal(np.load(tmp_path / "m" / "item_ids.npy"), ext)
     assert np.load(tmp_path / "m" / "indptr.npy").dtype == np.int64  # one dtype, whatever S's nnz
     pairs = np.load(tmp_path / "m" / "pairs.npy")  # S's entries: a record array, (col, val) side by side
@@ -707,7 +712,6 @@ def _swap_first_row(a):
         (lambda d: _meta(d, n_items=3), "match"),
         (lambda d: _meta(d, n_cols=10), "one id per item"),
         (lambda d: _meta(d, n_cols=10**12), "one id per item"),  # checked before allocating
-        (lambda d: _meta(d, block_size=0), "block_size"),
         (lambda d: _meta(d, item_ids=None), "true or false"),
     ],
 )
@@ -736,7 +740,7 @@ def test_loads_a_committed_format_1_model(mmap):
     assert _same(model.recommend([20, 40], k=3), ([30, 10, 50], f32([1.75, 0.75, 0.5])))
     got = model.recommend([10, 50, 70], weights=[1.0, 0.5, 3.0], k=3)
     assert _same(got, ([60, 40, 20], f32([1.0, 0.5, 0.5])))
-    assert model._model.parts()[-1] is None  # block_size as saved
+    assert model._model.parts()[-1] == "auto"  # its saved block_size (null) ignored: a runtime setting
 
 
 def test_strided_and_float64_coo_input():

@@ -1,5 +1,6 @@
 //! Serving bindings: `ServeModel` owns the core `Model` (Rust buffers, one
-//! copy at build, no numpy inside, D63). The build reads the caller's S
+//! copy at build, no numpy inside, D63) and its block size, a runtime setting
+//! (never saved, W1): resolved once for single calls, once per batch call. The build reads the caller's S
 //! arrays in place (the core makes them canonical during its one copy). Each
 //! call copies the ids in, runs pure Rust without the GIL and moves the
 //! results out. `similaripy/serving.py` wraps it as `ItemKNN`.
@@ -74,7 +75,26 @@ fn slice<'a, T: numpy::Element>(
 }
 
 #[pyclass(frozen, name = "ServeModel", module = "similaripy._core")]
-pub struct PyModel(Model);
+pub struct PyModel {
+    model: Model,
+    /// As given (pickled).
+    block_size: BlockSize,
+    /// For single calls: they can't see the server's other callers, so
+    /// 'auto' assumes every core on the L2 busy (usize::MAX clamps to its
+    /// cores; D65).
+    block: usize,
+}
+
+impl PyModel {
+    fn wrap(model: Model, block_size: BlockSize) -> Result<Self, similaripy_core::Error> {
+        let block = block_size.resolve(model.n_active(), usize::MAX)?;
+        Ok(Self {
+            model,
+            block_size,
+            block,
+        })
+    }
+}
 
 #[pymethods]
 impl PyModel {
@@ -104,9 +124,9 @@ impl PyModel {
         let keep = slice(&keep)?;
         py.detach(|| {
             let s = CsrView::new("S", indptr, indices, data, n)?;
-            with_pool(num_threads, || Model::new(s, ext, keep, order, block))
+            with_pool(num_threads, || Model::new(s, ext, keep, order))
+                .and_then(|m| Self::wrap(m, block))
         })
-        .map(Self)
         .map_err(to_py)
     }
 
@@ -142,38 +162,46 @@ impl PyModel {
         let allowed = allowed
             .map(|a| a.as_slice().map(<[u64]>::to_vec))
             .transpose()?;
-        py.detach(|| Model::from_parts(indptr, pairs, new_to_old, n_cols, ext, allowed, block))
-            .map(Self)
-            .map_err(to_py)
+        py.detach(|| {
+            Model::from_parts(indptr, pairs, new_to_old, n_cols, ext, allowed)
+                .and_then(|m| Self::wrap(m, block))
+        })
+        .map_err(to_py)
     }
 
     /// See `Model::save`.
     fn save(&self, py: Python<'_>, path: PathBuf, written_by: &str) -> PyResult<()> {
-        py.detach(|| self.0.save(&path, written_by)).map_err(to_py)
+        py.detach(|| self.model.save(&path, written_by))
+            .map_err(to_py)
     }
 
-    /// See `Model::load`.
+    /// See `Model::load`; `block_size` as `new`'s.
     #[staticmethod]
-    fn load(py: Python<'_>, path: PathBuf, mmap: bool) -> PyResult<Self> {
-        py.detach(|| Model::load(&path, mmap))
-            .map(Self)
+    fn load(
+        py: Python<'_>,
+        path: PathBuf,
+        mmap: bool,
+        block_size: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let block = self::block_size(block_size)?;
+        py.detach(|| Model::load(&path, mmap).and_then(|m| Self::wrap(m, block)))
             .map_err(to_py)
     }
 
     #[getter]
     fn n_cols(&self) -> usize {
-        self.0.n_cols()
+        self.model.n_cols()
     }
 
     /// Items with similarities (internal; the benchmark harness reports it).
     #[getter]
     fn n_active(&self) -> usize {
-        self.0.n_active()
+        self.model.n_active()
     }
 
     /// A copy of the external id per item; None: the ids are column indices.
     fn item_ids<'py>(&self, py: Python<'py>) -> Option<Arr<'py, i64>> {
-        self.0.item_ids().map(|e| PyArray1::from_slice(py, e))
+        self.model.item_ids().map(|e| PyArray1::from_slice(py, e))
     }
 
     /// The same model (S shared) with `include` minus `exclude` as its
@@ -181,7 +209,11 @@ impl PyModel {
     #[pyo3(signature = (include, exclude))]
     fn view(&self, py: Python<'_>, include: Ids<'_>, exclude: Ids<'_>) -> PyResult<Self> {
         let (include, exclude) = (slice(&include)?, slice(&exclude)?);
-        Ok(Self(py.detach(|| self.0.view(include, exclude))))
+        Ok(Self {
+            model: py.detach(|| self.model.view(include, exclude)),
+            block_size: self.block_size,
+            block: self.block,
+        })
     }
 
     #[pyo3(signature = (ids, weights, *, k, exclude_seen, include, exclude, sorted))]
@@ -206,11 +238,11 @@ impl PyModel {
             exclude: slice(&exclude)?,
             sorted,
         };
-        let model = &self.0;
+        let (model, block) = (&self.model, self.block);
         let (out_ids, out_scores) = py
             .detach(|| {
                 let mut out = (Vec::new(), Vec::new());
-                recommend(model, &req, &mut out.0, &mut out.1).map(|()| out)
+                recommend(model, block, &req, &mut out.0, &mut out.1).map(|()| out)
             })
             .map_err(to_py)?;
         Ok((out_ids.into_pyarray(py), out_scores.into_pyarray(py)))
@@ -253,9 +285,9 @@ impl PyModel {
             exclude: lists(slice(&exclude_offsets)?, slice(&exclude_ids)?),
             sorted,
         };
-        let model = &self.0;
+        let (model, block_size) = (&self.model, self.block_size);
         let (o, i, s) = py
-            .detach(|| with_pool(num_threads, || recommend_batch(model, &b)))
+            .detach(|| with_pool(num_threads, || recommend_batch(model, block_size, &b)))
             .map_err(to_py)?;
         Ok((o.into_pyarray(py), i.into_pyarray(py), s.into_pyarray(py)))
     }
@@ -270,9 +302,9 @@ impl PyModel {
         items: PyReadonlyArray1<'_, i64>,
     ) -> PyResult<Arr<'py, f32>> {
         let (ids, weights, items) = (ids.as_slice()?, slice(&weights)?, items.as_slice()?);
-        let model = &self.0;
+        let (model, block) = (&self.model, self.block);
         let out = py
-            .detach(|| score(model, ids, weights, items))
+            .detach(|| score(model, block, ids, weights, items))
             .map_err(to_py)?;
         Ok(out.into_pyarray(py))
     }
@@ -300,11 +332,11 @@ impl PyModel {
             ids: item_ids.as_slice()?,
         };
         let weights = slice(&weights)?;
-        let model = &self.0;
+        let (model, block_size) = (&self.model, self.block_size);
         let out = py
             .detach(|| {
                 with_pool(num_threads, || {
-                    score_batch(model, histories, weights, items)
+                    score_batch(model, block_size, histories, weights, items)
                 })
             })
             .map_err(to_py)?;
@@ -328,7 +360,7 @@ impl PyModel {
         Option<Arr<'py, u64>>,
         Py<PyAny>,
     )> {
-        let p = self.0.parts();
+        let p = self.model.parts();
         Ok((
             PyArray1::from_slice(py, p.indptr),
             PyArray1::from_iter(py, p.pairs.iter().map(|e| e.col)),
@@ -337,7 +369,7 @@ impl PyModel {
             p.n_cols,
             p.ext.map(|e| PyArray1::from_slice(py, e)),
             p.allowed.map(|a| PyArray1::from_slice(py, a)),
-            block_size_py(py, p.block_size)?,
+            block_size_py(py, self.block_size)?,
         ))
     }
 }

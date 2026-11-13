@@ -53,31 +53,192 @@ struct Scratch {
     vals: Vec<f32>,
 }
 
-thread_local! {
-    /// Taken out for a request, put back only on a normal return: a panic
-    /// mid-request drops the dirty scratch instead of reusing it (G4).
-    static SCRATCH: Cell<Option<Scratch>> = const { Cell::new(None) };
+/// A worker's counters, updated after each request (never inside its loops).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Calls, failed ones included.
+    pub requests: u64,
+    /// Calls rejected as invalid (weights).
+    pub errors: u64,
+    /// History ids as sent.
+    pub ids: u64,
+    /// History ids the model has, among those looked up (`ids - known_ids`
+    /// = unknown, ignored; except a `score` whose items have no column: no
+    /// lookup, none counted).
+    pub known_ids: u64,
+    /// S entries in the history rows (duplicates merged): the work's size.
+    pub entries: u64,
 }
 
-/// The top `req.k` items of one history (score desc, then the lower internal
-/// id, unless unsorted), appended as (internal id, score).
-fn recommend_internal(
-    model: &Model,
-    req: &Request,
-    out: &mut Vec<(u32, f32)>,
-) -> Result<(), Error> {
-    if let Some(w) = req.weights {
-        if w.len() != req.ids.len() {
-            return invalid("len(weights) != len(ids)");
-        }
-        if !w.iter().all(|x| x.is_finite()) {
-            return invalid("weights must be finite");
+/// One serving thread's state over immutable, shared `Model`s (what to
+/// compute): the scratch, the resolved block size, counters and reused
+/// buffers (how this thread computes). Owned by one thread, never shared;
+/// once warm a request allocates nothing but what the caller's outputs grow.
+/// Any model can be served (buffers grow to the largest one); the block is
+/// resolved once, for the model given to `new` (a new model = new workers, W3).
+pub struct Worker {
+    /// Taken out for a request, put back only on a normal return: a panic
+    /// mid-request drops the dirty scratch instead of reusing it (G4).
+    scratch: Option<Scratch>,
+    /// Column block size, 0 = one block (clamped to the model's columns).
+    block: usize,
+    stats: Stats,
+    /// `recommend`'s results in internal ids, before the id map.
+    out: Vec<(u32, f32)>,
+    /// `score`'s candidates: (internal id, position in `items`).
+    cand: Vec<(u32, u32)>,
+}
+
+impl Worker {
+    /// A worker for `model` served by `threads` threads at once (each with
+    /// its own worker): the block size resolved here, once (`BlockSize::resolve`).
+    /// No buffers until the first request.
+    pub fn new(model: &Model, block_size: BlockSize, threads: usize) -> Result<Self, Error> {
+        Ok(Self::with_block(
+            block_size.resolve(model.n_active, threads)?,
+        ))
+    }
+
+    const fn with_block(block: usize) -> Self {
+        Self {
+            scratch: None,
+            block,
+            stats: Stats {
+                requests: 0,
+                errors: 0,
+                ids: 0,
+                known_ids: 0,
+                entries: 0,
+            },
+            out: Vec::new(),
+            cand: Vec::new(),
         }
     }
-    let mut s = SCRATCH.take().unwrap_or_default();
-    s.run(model, req, out);
-    SCRATCH.set(Some(s));
-    Ok(())
+
+    /// The column block size of its requests, 0 = one block.
+    pub fn block(&self) -> usize {
+        self.block
+    }
+
+    pub fn stats(&self) -> Stats {
+        self.stats
+    }
+
+    /// The top `req.k` items of one history, best first (score desc, then
+    /// the lower internal id: the `ItemOrder`'s tie rule; unless
+    /// `!req.sorted`), appended to the outputs as the caller's ids. Fewer
+    /// than k when fewer items score > 0.
+    pub fn recommend(
+        &mut self,
+        model: &Model,
+        req: &Request,
+        ids_out: &mut Vec<i64>,
+        scores_out: &mut Vec<f32>,
+    ) -> Result<(), Error> {
+        let mut out = std::mem::take(&mut self.out);
+        out.clear();
+        // Sized once: grown push by push, the Vecs reallocated ~6 times each
+        // at k = 100 (allocation ~10% of a cap-10 request, 4d/profile.md).
+        out.reserve(req.k.min(model.n_active));
+        let r = self.recommend_internal(model, req, &mut out);
+        if r.is_ok() {
+            let id = caller_id(model);
+            ids_out.reserve(out.len());
+            scores_out.reserve(out.len());
+            for &(c, v) in &out {
+                ids_out.push(id(c));
+                scores_out.push(v);
+            }
+        }
+        self.out = out;
+        r
+    }
+
+    /// The top `req.k` items of one history (score desc, then the lower
+    /// internal id, unless unsorted), appended as (internal id, score).
+    fn recommend_internal(
+        &mut self,
+        model: &Model,
+        req: &Request,
+        out: &mut Vec<(u32, f32)>,
+    ) -> Result<(), Error> {
+        self.stats.requests += 1;
+        self.stats.ids += req.ids.len() as u64;
+        if let Some(w) = req.weights {
+            if w.len() != req.ids.len() {
+                self.stats.errors += 1;
+                return invalid("len(weights) != len(ids)");
+            }
+            if !w.iter().all(|x| x.is_finite()) {
+                self.stats.errors += 1;
+                return invalid("weights must be finite");
+            }
+        }
+        let mut s = self.scratch.take().unwrap_or_default();
+        let known = s.run(model, self.block, req, out);
+        self.count(model, &s, known);
+        self.scratch = Some(s);
+        Ok(())
+    }
+
+    /// The scores of `items` for one history into `out` (replaced), aligned
+    /// with `items` (duplicates repeated): `sum_i w_i * S[i, j]`, the same
+    /// bits as `recommend`'s score of j (same accumulation; the block size
+    /// changes no column's addition order). No top-K, no threshold. 0.0 for
+    /// items the model doesn't have, items with no column (e.g. outside a
+    /// trimmed build's candidates) and items the view's mask excludes; the
+    /// request has no include / exclude (availability is retrieval's).
+    pub fn score(
+        &mut self,
+        model: &Model,
+        ids: &[i64],
+        weights: Option<&[f32]>,
+        items: &[i64],
+        out: &mut Vec<f32>,
+    ) -> Result<(), Error> {
+        self.stats.requests += 1;
+        self.stats.ids += ids.len() as u64;
+        if let Err(e) = check_weights(ids, weights) {
+            self.stats.errors += 1;
+            return Err(e);
+        }
+        out.clear();
+        out.resize(items.len(), 0.0);
+        let mut s = self.scratch.take().unwrap_or_default();
+        let known = s.score(model, self.block, ids, weights, items, &mut self.cand, out);
+        self.count(model, &s, known);
+        self.scratch = Some(s);
+        Ok(())
+    }
+
+    /// After a request: `s.hist` holds its merged history (empty when the
+    /// request stopped before the lookup).
+    fn count(&mut self, m: &Model, s: &Scratch, known: usize) {
+        self.stats.known_ids += known as u64;
+        let ip: &[i64] = &m.indptr;
+        let entries: i64 = s
+            .hist
+            .iter()
+            .map(|&(id, _)| ip[id as usize + 1] - ip[id as usize])
+            .sum();
+        self.stats.entries += entries as u64;
+    }
+}
+
+thread_local! {
+    /// The calling thread's implicit worker (the free functions: Python,
+    /// batches); its block is set per call by the caller's resolved one.
+    static WORKER: Cell<Option<Worker>> = const { Cell::new(None) };
+}
+
+/// `f` on the calling thread's worker, with `block`. Taken out and put back
+/// only on a normal return (G4, as the worker's own scratch).
+fn with_worker<R>(block: usize, f: impl FnOnce(&mut Worker) -> R) -> R {
+    let mut w = WORKER.take().unwrap_or_else(|| Worker::with_block(block));
+    w.block = block;
+    let r = f(&mut w);
+    WORKER.set(Some(w));
+    r
 }
 
 // ponytail: `recommend_internal` keeps its own copy: calling this moved its
@@ -94,31 +255,27 @@ fn check_weights(ids: &[i64], weights: Option<&[f32]>) -> Result<(), Error> {
     Ok(())
 }
 
-/// The scores of `items` for one history, aligned with `items` (duplicates
-/// repeated): `sum_i w_i * S[i, j]`, the same bits as `recommend`'s score of j
-/// (same accumulation; the block size changes no column's addition order). No
-/// top-K, no threshold. 0.0 for items the model doesn't have, items with no
-/// column (e.g. outside a trimmed build's candidates) and items the view's mask
-/// excludes; the request has no include / exclude (availability is retrieval's).
+/// `Worker::score` on the calling thread's implicit worker, with a resolved
+/// `block` (`BlockSize::resolve`).
 pub fn score(
     model: &Model,
+    block: usize,
     ids: &[i64],
     weights: Option<&[f32]>,
     items: &[i64],
 ) -> Result<Vec<f32>, Error> {
-    check_weights(ids, weights)?;
-    let mut out = vec![0.0; items.len()];
-    let mut s = SCRATCH.take().unwrap_or_default();
-    s.score(model, ids, weights, items, &mut out);
-    SCRATCH.set(Some(s));
+    let mut out = Vec::new();
+    with_worker(block, |w| w.score(model, ids, weights, items, &mut out))?;
     Ok(out)
 }
 
 /// `score` per user on the current rayon pool (user u's scores equal
 /// `score` of that history and items bit for bit), flat: aligned with
-/// `items.ids` (user u's at `items.offsets[u]..items.offsets[u + 1]`).
+/// `items.ids` (user u's at `items.offsets[u]..items.offsets[u + 1]`). The
+/// block is resolved once, for the pool's threads.
 pub fn score_batch(
     model: &Model,
+    block_size: BlockSize,
     histories: Lists,
     weights: Option<&[f32]>,
     items: Lists,
@@ -129,6 +286,7 @@ pub fn score_batch(
     if weights.is_some_and(|w| w.len() != histories.ids.len()) {
         return invalid("weights: one weight per history id expected");
     }
+    let block = block_size.resolve(model.n_active, rayon::current_num_threads())?;
     let rows: Vec<Vec<f32>> = (0..users)
         .into_par_iter()
         .with_max_len(4)
@@ -139,6 +297,7 @@ pub fn score_batch(
             );
             score(
                 model,
+                block,
                 &histories.ids[a..z],
                 weights.map(|w| &w[a..z]),
                 items.get(u),
@@ -155,28 +314,16 @@ fn caller_id(model: &Model) -> impl Fn(u32) -> i64 + '_ {
     move |c| ext.map_or(i64::from(new_to_old[c as usize]), |e| e[c as usize])
 }
 
-/// The top `req.k` items of one history, best first (score desc, then the
-/// lower internal id: the `ItemOrder`'s tie rule; unless `!req.sorted`),
-/// appended to the outputs as the caller's ids. Fewer than k when fewer
-/// items score > 0.
+/// `Worker::recommend` on the calling thread's implicit worker, with a
+/// resolved `block` (`BlockSize::resolve`).
 pub fn recommend(
     model: &Model,
+    block: usize,
     req: &Request,
     ids_out: &mut Vec<i64>,
     scores_out: &mut Vec<f32>,
 ) -> Result<(), Error> {
-    // Sized once: grown push by push, the three Vecs reallocated ~6 times each
-    // at k = 100 (allocation ~10% of a cap-10 request, 4d/profile.md).
-    let mut out = Vec::with_capacity(req.k.min(model.n_active));
-    recommend_internal(model, req, &mut out)?;
-    let id = caller_id(model);
-    ids_out.reserve(out.len());
-    scores_out.reserve(out.len());
-    for (c, v) in out {
-        ids_out.push(id(c));
-        scores_out.push(v);
-    }
-    Ok(())
+    with_worker(block, |w| w.recommend(model, req, ids_out, scores_out))
 }
 
 /// One list per user, flat: user u's ids are `ids[offsets[u]..offsets[u + 1]]`.
@@ -221,10 +368,14 @@ pub struct BatchRequest<'a> {
 pub type Batch = (Vec<i64>, Vec<i64>, Vec<f32>);
 
 /// Each history through the single-request path on the current rayon pool,
-/// so user u's results equal `recommend` of that history bit for bit when
-/// sorted (unsorted: the same items and scores, maybe in another order:
-/// 'auto' picks the block size per call).
-pub fn recommend_batch(model: &Model, b: &BatchRequest) -> Result<Batch, Error> {
+/// the block resolved once for the pool's threads, so user u's results
+/// equal `recommend` of that history bit for bit when sorted (unsorted: the
+/// same items and scores, maybe in another order when the blocks differ).
+pub fn recommend_batch(
+    model: &Model,
+    block_size: BlockSize,
+    b: &BatchRequest,
+) -> Result<Batch, Error> {
     let users = b.histories.offsets.len().saturating_sub(1);
     b.histories.check("histories", users)?;
     if b.weights.is_some_and(|w| w.len() != b.histories.ids.len()) {
@@ -239,6 +390,7 @@ pub fn recommend_batch(model: &Model, b: &BatchRequest) -> Result<Batch, Error> 
     if let Some(l) = b.exclude {
         l.check("exclude", users)?;
     }
+    let block = block_size.resolve(model.n_active, rayon::current_num_threads())?;
     let rows: Vec<Vec<(u32, f32)>> = (0..users)
         .into_par_iter()
         // Small tasks: request cost varies 100x across users.
@@ -263,7 +415,7 @@ pub fn recommend_batch(model: &Model, b: &BatchRequest) -> Result<Batch, Error> 
             // Sized by the row's one exact-size `extend`, not k: every row
             // stays alive until the batch ends (k ~ n_items x many users).
             let mut out = Vec::new();
-            recommend_internal(model, &req, &mut out).map(|()| out)
+            with_worker(block, |w| w.recommend_internal(model, &req, &mut out)).map(|()| out)
         })
         .collect::<Result<_, _>>()?;
     let total: usize = rows.iter().map(Vec::len).sum();
@@ -282,9 +434,11 @@ pub fn recommend_batch(model: &Model, b: &BatchRequest) -> Result<Batch, Error> 
 }
 
 impl Scratch {
-    fn run(&mut self, m: &Model, req: &Request, out: &mut Vec<(u32, f32)>) {
+    /// Returns how many history ids the model has.
+    fn run(&mut self, m: &Model, block: usize, req: &Request, out: &mut Vec<(u32, f32)>) -> usize {
         self.hist.clear();
         m.lookup_into::<false>(req.ids, req.weights, &mut self.hist);
+        let known = self.hist.len();
         canonicalize::<false>(&mut self.hist);
         self.blocked.clear();
         if req.exclude_seen {
@@ -311,11 +465,13 @@ impl Scratch {
             }
         }
         self.topk.set_k(req.k.min(m.n_active));
-        let block = self.block(m);
+        let block = self.block(m, block);
         let allowed = Masks(m.allowed.as_deref(), req.include.map(|_| &include[..]));
         // SAFETY: hist / blocked ids < n_items (lookup); sums.len() >= block;
         // the view's mask and `include` hold >= words(n_items) words.
         unsafe { self.accumulate_all(m, block, allowed) };
+        #[cfg(test)]
+        tests::panic_if_asked();
         if req.include.is_some() {
             for &i in &self.included {
                 include[i as usize / 64] = 0;
@@ -332,22 +488,13 @@ impl Scratch {
                 .zip(&self.vals)
                 .map(|(&c, &v)| (c as u32, v)),
         );
+        known
     }
 
-    /// The request's column block size (in `1..=n_active`), `sums` grown to it.
+    /// The worker's `block` for this model (in `1..=n_active`), `sums`
+    /// grown to it.
     #[inline(always)]
-    fn block(&mut self, m: &Model) -> usize {
-        // 'auto' per call. A batch: its rayon pool's threads share the cache. A
-        // single request can't see the server's other callers, so it assumes
-        // every core on its L2 is busy (D65: one block wins alone, loses 9-38%
-        // under concurrent requests); usize::MAX clamps to the L2's cores.
-        let block = if m.block_size == BlockSize::Auto {
-            let threads =
-                rayon::current_thread_index().map_or(usize::MAX, |_| rayon::current_num_threads());
-            crate::block::auto_block_size(m.n_active, threads, 4)
-        } else {
-            m.block
-        };
+    fn block(&mut self, m: &Model, block: usize) -> usize {
         let block = if block == 0 || block >= m.n_active {
             m.n_active
         } else {
@@ -359,40 +506,43 @@ impl Scratch {
         block
     }
 
-    /// Scores of `items` into `out` (zeros, one per item): see `score`.
+    /// Scores of `items` into `out` (zeros, one per item): see
+    /// `Worker::score`. Returns how many history ids the model has (0 when
+    /// no item has a column: no lookup).
+    #[allow(clippy::too_many_arguments)]
     fn score(
         &mut self,
         m: &Model,
+        block: usize,
         ids: &[i64],
         weights: Option<&[f32]>,
         items: &[i64],
+        cand: &mut Vec<(u32, u32)>,
         out: &mut [f32],
-    ) {
+    ) -> usize {
         // (internal id, position in `items`) of the candidates with a slot the
         // view allows, by internal id: the gather walks it block by block.
-        // ponytail: a Vec per call, not a scratch field (recommend's Scratch
-        // layout, and so its asm, stays as it is); cold next to the accumulate.
-        let mut cand: Vec<(u32, u32)> = items
-            .iter()
-            .enumerate()
-            .filter_map(|(pos, &id)| {
-                let i = m.internal(id)?;
-                // SAFETY: i < n_items; the mask holds words(n_items) words.
-                let allowed = m
-                    .allowed
-                    .as_deref()
-                    .is_none_or(|a| unsafe { bit(a, i as usize) });
-                ((i as usize) < m.n_active && allowed).then_some((i, pos as u32))
-            })
-            .collect();
+        // The worker's, not a scratch field (recommend's Scratch layout, and
+        // so its asm, stays as it is).
+        cand.clear();
+        cand.extend(items.iter().enumerate().filter_map(|(pos, &id)| {
+            let i = m.internal(id)?;
+            // SAFETY: i < n_items; the mask holds words(n_items) words.
+            let allowed = m
+                .allowed
+                .as_deref()
+                .is_none_or(|a| unsafe { bit(a, i as usize) });
+            ((i as usize) < m.n_active && allowed).then_some((i, pos as u32))
+        }));
         cand.sort_unstable();
-        let Some(&(last, _)) = cand.last() else {
-            return;
-        };
         self.hist.clear();
+        let Some(&(last, _)) = cand.last() else {
+            return 0;
+        };
         m.lookup_into::<true>(ids, weights, &mut self.hist);
+        let known = self.hist.len();
         canonicalize::<true>(&mut self.hist);
-        let block = self.block(m);
+        let block = self.block(m, block);
         let pairs: &[Entry] = &m.pairs;
         // Blocks past the last candidate don't matter (left unaccumulated).
         let end = last as usize + 1;
@@ -416,6 +566,7 @@ impl Scratch {
             self.touched.clear();
             start = hi;
         }
+        known
     }
 
     /// One cursor per history row: `(pos, end, column at pos)`.
@@ -682,4 +833,64 @@ fn canonicalize<const COPY: bool>(hist: &mut Vec<(u32, f32)>) {
         }
         dup
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use super::*;
+    use crate::CsrView;
+
+    thread_local! {
+        static PANIC: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Called by `Scratch::run` mid-request (include bits set, top-K full).
+    pub(super) fn panic_if_asked() {
+        if PANIC.get() {
+            panic!("test: mid-request");
+        }
+    }
+
+    // A panic mid-request drops the dirty scratch (G4): the next request on
+    // the same worker answers as a fresh worker, its include bits not ORed
+    // with the panicked request's.
+    #[test]
+    fn panic_mid_request_then_clean() {
+        let (indptr, indices, data) = (vec![0i64, 2, 2, 2], vec![1, 2], vec![1.0f32, 2.0]);
+        let s = CsrView::new("S", &indptr, &indices, &data, 3).unwrap();
+        let m = Model::with_order(s, vec![0, 1, 2], None).unwrap();
+        let req = |include| Request {
+            ids: &[0],
+            weights: None,
+            k: 5,
+            exclude_seen: true,
+            include: Some(include),
+            exclude: None,
+            sorted: true,
+        };
+        let run = |w: &mut Worker, r: &Request| {
+            let mut out = (vec![], vec![]);
+            w.recommend(&m, r, &mut out.0, &mut out.1).map(|()| out)
+        };
+        let mut w = Worker::new(&m, BlockSize::Off, 1).unwrap();
+        run(&mut w, &req(&[1])).unwrap(); // warm
+        PANIC.set(true);
+        let hit = catch_unwind(AssertUnwindSafe(|| run(&mut w, &req(&[2]))));
+        PANIC.set(false);
+        assert!(hit.is_err());
+        let fresh = run(&mut Worker::new(&m, BlockSize::Off, 1).unwrap(), &req(&[1])).unwrap();
+        assert_eq!(fresh, (vec![1], vec![1.0]));
+        assert_eq!(run(&mut w, &req(&[1])).unwrap(), fresh);
+        // The implicit worker of the free functions too.
+        PANIC.set(true);
+        let hit = catch_unwind(|| recommend(&m, 0, &req(&[2]), &mut vec![], &mut vec![]));
+        PANIC.set(false);
+        assert!(hit.is_err());
+        let mut out = (vec![], vec![]);
+        recommend(&m, 0, &req(&[1]), &mut out.0, &mut out.1).unwrap();
+        assert_eq!(out, fresh);
+    }
 }
