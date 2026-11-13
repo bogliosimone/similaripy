@@ -65,8 +65,11 @@ cache-keys = [
   { file = "pyproject.toml" },
   { file = "Cargo.toml" },
   { file = "Cargo.lock" },
-  { file = "crates/**/*.rs" },
-  { file = "crates/**/Cargo.toml" },
+  # The extension's crates only: the internal server isn't in it
+  { file = "crates/similaripy-core/**/*.rs" },
+  { file = "crates/similaripy-py/**/*.rs" },
+  { file = "crates/similaripy-core/Cargo.toml" },
+  { file = "crates/similaripy-py/Cargo.toml" },
   { file = ".cargo/config.toml" },
 ]
 

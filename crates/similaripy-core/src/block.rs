@@ -48,31 +48,44 @@ pub fn l2_cache() -> Option<(usize, usize)> {
     *L2.get_or_init(detect)
 }
 
+/// Threads for a server: one per performance core. macOS: the P-cores
+/// (`hw.perflevel0.physicalcpu`; std counts the E-cores too); elsewhere
+/// `available_parallelism` (Linux: affinity- and cgroup-quota-aware).
+pub fn perf_cores() -> usize {
+    #[cfg(target_os = "macos")]
+    if let Some(n) = sysctl("hw.perflevel0.physicalcpu").filter(|v| v[0] > 0) {
+        return n[0] as usize;
+    }
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+#[cfg(target_os = "macos")]
+fn sysctl(name: &str) -> Option<Vec<u64>> {
+    let c = std::ffi::CString::new(name).ok()?;
+    let mut buf = [0u64; 16];
+    let mut len = std::mem::size_of_val(&buf);
+    // SAFETY: a valid C string, a writable buffer of `len` bytes.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (rc == 0 && len > 0).then(|| {
+        // 4-byte values (cpusperl2 is an int) or 8-byte arrays (cacheconfig)
+        if len == 4 {
+            vec![buf[0] & 0xffff_ffff]
+        } else {
+            buf[..len / 8].to_vec()
+        }
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn detect() -> Option<(usize, usize)> {
-    fn sysctl(name: &str) -> Option<Vec<u64>> {
-        let c = std::ffi::CString::new(name).ok()?;
-        let mut buf = [0u64; 16];
-        let mut len = std::mem::size_of_val(&buf);
-        // SAFETY: a valid C string, a writable buffer of `len` bytes.
-        let rc = unsafe {
-            libc::sysctlbyname(
-                c.as_ptr(),
-                buf.as_mut_ptr().cast(),
-                &mut len,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        (rc == 0 && len > 0).then(|| {
-            // 4-byte values (cpusperl2 is an int) or 8-byte arrays (cacheconfig)
-            if len == 4 {
-                vec![buf[0] & 0xffff_ffff]
-            } else {
-                buf[..len / 8].to_vec()
-            }
-        })
-    }
     // Apple silicon: perflevel0 = the performance cores; Intel Macs: hw.*
     let size = sysctl("hw.perflevel0.l2cachesize").or_else(|| sysctl("hw.l2cachesize"))?[0];
     let cpus = sysctl("hw.perflevel0.cpusperl2")

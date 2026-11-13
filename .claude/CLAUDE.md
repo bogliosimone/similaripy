@@ -32,6 +32,8 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
   - [store.rs](crates/similaripy-core/src/store.rs) - Saved models: `.npy` reader/writer, mapped (`memmap2`) or owned arrays, saves into a new or empty directory only
 - **Bindings** ([crates/similaripy-py](crates/similaripy-py)): PyO3 module `similaripy._core`
   - [lib.rs](crates/similaripy-py/src/lib.rs) - kernel + prep bindings, thread pools; [normalize.rs](crates/similaripy-py/src/normalize.rs) - dtype dispatch; [progress.rs](crates/similaripy-py/src/progress.rs) - progress bar; [serve.rs](crates/similaripy-py/src/serve.rs) - `ServeModel` (model + its block size: resolved once for single calls, per call for batches)
+- **Internal server** ([crates/similaripy-server](crates/similaripy-server), `publish = false`, not in the wheel; server plan S2): a design validator for the serving core, not released
+  - [lib.rs](crates/similaripy-server/src/lib.rs) - axum router (`POST /recommend`, `GET /metrics`, `GET /health`), N threads (current-thread tokio runtime + its own warmed `Worker` each), round-robin acceptor; JSON weights parsed as f64 then f32 (numpy's rounding); [metrics.rs](crates/similaripy-server/src/metrics.rs) - per-thread single-writer atomics, Prometheus text; [main.rs](crates/similaripy-server/src/main.rs) - CLI; [bin/loadgen.rs](crates/similaripy-server/src/bin/loadgen.rs) - open-loop load generator (rps at p99 <= budget, `--check` vs Python's answers)
 
 **Config:**
 - [pyproject.toml](pyproject.toml) - Dependencies, build config (`[tool.maturin]`)
@@ -89,7 +91,7 @@ make check
 # Small dataset for quick regression test (Movielens 32M)
 make benchmark-similarity-small
 ```
-Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend, small, serve; `--rss`), `abba.py` (two builds, alternating processes), `compare.py`, parity scripts; datasets cached in `~/.cache/similaripy-bench`. Its README has the protocol (which runs for which change).
+Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend, small, serve; `--rss`), `abba.py` (two builds, alternating processes), `compare.py`, parity scripts, `server_prep.py` (the internal server's loadgen inputs); datasets cached in `~/.cache/similaripy-bench`. Its README has the protocol (which runs for which change).
 
 **Test files:**
 - [tests/test_similarity.py](tests/test_similarity.py) - every similarity × shrink type against one dense float64 reference (`_dense_scores`), selectors, signed input
@@ -100,6 +102,7 @@ Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend,
 - [tests/test_free_threading.py](tests/test_free_threading.py) - concurrent calls, identical bits across threads and blocking
 - [tests/test_benchmarks.py](tests/test_benchmarks.py) - the benchmark harness on the synthetic dataset (every workload, params recorded == passed, ABBA + compare)
 - [tests/test_serve.py](tests/test_serve.py) - `ItemKNN` vs a dense float64 reference, masks and views, unknown ids, batch == single bits, pickle, save/load round trips + corrupted files + a committed format-1 model (`tests/data/itemknn-format1`)
+- [crates/similaripy-server/tests/http.rs](crates/similaripy-server/tests/http.rs) - the server over loopback HTTP: same ids + score bits as core `recommend` as Python calls it, JSON f32 rounding, edge rejections, a panicking connection, metrics
 - [crates/similaripy-core/tests/serve.rs](crates/similaripy-core/tests/serve.rs) - serving proptest vs an f64 reference, bit-identity claims, every `ItemOrder` and trim vs a reference order, one `Worker` across models / views / blocks, stats (panic mid-request: unit test in `request.rs`)
 - [crates/similaripy-core/tests/reference.rs](crates/similaripy-core/tests/reference.rs) - kernel proptest vs an f64 reference, `validate` errors; unit tests in each module
 

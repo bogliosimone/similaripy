@@ -76,12 +76,10 @@ def check_fresh(cmd, cwd):
     if not (root / "Cargo.toml").exists():
         return  # a wheel
     built = max((p.stat().st_mtime for p in package.glob("_core*")), default=0)
-    sources = [
-        root / "Cargo.toml",
-        root / "Cargo.lock",
-        *root.glob("crates/**/*.rs"),
-        *root.glob("crates/**/Cargo.toml"),
-    ]
+    # The extension's crates (as pyproject's uv cache-keys): the internal server isn't in it
+    sources = [root / "Cargo.toml", root / "Cargo.lock"]
+    for crate in ("similaripy-core", "similaripy-py"):
+        sources += [*root.glob(f"crates/{crate}/**/*.rs"), root / "crates" / crate / "Cargo.toml"]
     newest = max(p.stat().st_mtime for p in sources if p.exists())
     if newest > built:
         sys.exit(f"error: {root}: the extension is older than its Rust sources; rebuild it (make install-dev)")

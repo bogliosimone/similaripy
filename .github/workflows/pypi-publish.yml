@@ -13,6 +13,8 @@ on:
       - "similaripy/**"
       - "tests/**"
       - "crates/**"
+      # The internal server isn't in the wheel (its Cargo.lock changes still match)
+      - "!crates/similaripy-server/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
