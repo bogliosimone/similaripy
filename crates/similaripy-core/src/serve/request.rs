@@ -66,8 +66,10 @@ pub struct Stats {
     /// = unknown, ignored; except a `score` whose items have no column: no
     /// lookup, none counted).
     pub known_ids: u64,
-    /// S entries in the history rows (duplicates merged): the work's size.
-    pub entries: u64,
+    // ponytail: no count of S entries (the work's size): summing the history
+    // rows' lengths after the request re-read indptr, cold by then on Y500M
+    // full histories: batch / concurrent serving +3% (s1gate, 2026-11-13).
+    // Count it at the server's edge if a metric needs it.
 }
 
 /// One serving thread's state over immutable, shared `Model`s (what to
@@ -108,7 +110,6 @@ impl Worker {
                 errors: 0,
                 ids: 0,
                 known_ids: 0,
-                entries: 0,
             },
             out: Vec::new(),
             cand: Vec::new(),
@@ -176,7 +177,7 @@ impl Worker {
         }
         let mut s = self.scratch.take().unwrap_or_default();
         let known = s.run(model, self.block, req, out);
-        self.count(model, &s, known);
+        self.stats.known_ids += known as u64;
         self.scratch = Some(s);
         Ok(())
     }
@@ -206,22 +207,9 @@ impl Worker {
         out.resize(items.len(), 0.0);
         let mut s = self.scratch.take().unwrap_or_default();
         let known = s.score(model, self.block, ids, weights, items, &mut self.cand, out);
-        self.count(model, &s, known);
+        self.stats.known_ids += known as u64;
         self.scratch = Some(s);
         Ok(())
-    }
-
-    /// After a request: `s.hist` holds its merged history (empty when the
-    /// request stopped before the lookup).
-    fn count(&mut self, m: &Model, s: &Scratch, known: usize) {
-        self.stats.known_ids += known as u64;
-        let ip: &[i64] = &m.indptr;
-        let entries: i64 = s
-            .hist
-            .iter()
-            .map(|&(id, _)| ip[id as usize + 1] - ip[id as usize])
-            .sum();
-        self.stats.entries += entries as u64;
     }
 }
 

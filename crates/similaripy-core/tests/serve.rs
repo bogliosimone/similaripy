@@ -623,7 +623,7 @@ fn worker_block_and_stats() {
         sorted: true,
     };
     let mut out = (vec![], vec![]);
-    // ids 0, 0, 2 known (rows: 1 + 2 entries once merged), 3 and 9 unknown.
+    // ids 0, 0, 2 known, 3 and 9 unknown.
     w.recommend(&m, &r(&[0, 3, 0, 2, 9], None), &mut out.0, &mut out.1)
         .unwrap();
     // The caller's outputs are appended to, the worker's own buffers reused.
@@ -646,7 +646,6 @@ fn worker_block_and_stats() {
             errors: 1,
             ids: 5 + 1 + 1 + 2 + 1,
             known_ids: 3 + 1 + 1,
-            entries: 3 + 1 + 1,
         }
     );
 }
