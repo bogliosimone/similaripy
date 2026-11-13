@@ -313,17 +313,19 @@ def serve_cases(URM, opts):
 
     if "concurrent" in modes:
         # A loaded server: C Python threads send single requests at once (recommend releases the GIL in the
-        # core), full histories; the timed model vs one block (D65: one block wins alone, loses under load).
-        hists = _histories(URM, users, None, rng)
+        # core), histories capped per --concurrent-caps (default full); the timed model vs one block (D65: one
+        # block wins alone, loses under load). Full histories keep the case names of older runs.
         callers = list(dict.fromkeys(opts["callers"]))
         info["callers"] = callers
         one = _loaded(ItemKNN(S, **io, **trim, block_size=None), opts["load"])
         kwargs = {"k": k, "exclude_seen": True}
-        for c in callers:
-            cases.append(
-                Case(f"concurrent_default_c{c}", {**kwargs, "callers": c}, _concurrent_run(rec, hists, kwargs, c))
-            )
-            cases.append(Case(f"concurrent_one_c{c}", {**kwargs, "callers": c}, _concurrent_run(one, hists, kwargs, c)))
+        for cap in dict.fromkeys(opts["concurrent_caps"]):
+            hists = _histories(URM, users, None if cap == "none" else int(cap), rng)
+            sfx = "" if cap == "none" else f"_cap{cap}"
+            for c in callers:
+                p = {**kwargs, "callers": c, "cap": cap}
+                cases.append(Case(f"concurrent_default{sfx}_c{c}", p, _concurrent_run(rec, hists, kwargs, c)))
+                cases.append(Case(f"concurrent_one{sfx}_c{c}", p, _concurrent_run(one, hists, kwargs, c)))
 
     if "build" in modes:
         path = _save_tmp(S)
