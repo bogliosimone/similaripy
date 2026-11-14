@@ -136,6 +136,27 @@ uv run --group bench python benchmarks/gate.py quick --base ~/wt/base/.venv/bin/
 | Other libraries (adapter, pin bump) | `make bench-crosslib-test`, then `crosslib --check` on ML-32M per library (see "Other libraries") |
 | Release history / other versions | `abba.py --base pypi:0.7.0 ...` (total only; the PyPI wheel is not the `v1-cython-ref` local build behind older "vs cpp" numbers: different compiler and flags, not comparable) |
 
+## Internal server (`similaripy-server`, `loadgen`)
+
+The internal server (`crates/similaripy-server`, not released) over the network: `server_prep.py` writes a saved
+model (the serve workload's cached S), request bodies (URM rows, capped like the serve workload) and Python's
+answers; `loadgen` checks the server against them (`--check`: ids + score bits), then steps the rate up 1.5x and
+prints the best requests/s with p99 <= 10 ms. Open loop: request i is due at t0 + i / rate; a request whose
+connection was busy counts from its due time (queueing included), one sent on time from when it left. Server-side
+latency split (compute vs JSON + handler) in `GET /metrics`.
+
+```bash
+uv run --group bench python benchmarks/server_prep.py --dataset movielens --out ~/.cache/similaripy-bench/server/ml-32m
+cargo run --release -p similaripy-server -- --model ~/.cache/similaripy-bench/server/ml-32m/model
+cargo run --release -p similaripy-server --bin loadgen -- --requests ~/.cache/similaripy-bench/server/ml-32m/requests.jsonl \
+    --check ~/.cache/similaripy-bench/server/ml-32m/expected.jsonl
+cargo run --release -p similaripy-server --bin loadgen -- --requests ~/.cache/similaripy-bench/server/ml-32m/requests.jsonl
+```
+
+Server threads default to the P-cores on macOS (`hw.perflevel0.physicalcpu`), `available_parallelism` on Linux.
+On a laptop, loadgen shares the machine: macOS QoS puts the server threads on the P-cores and loadgen's on
+(mostly) the E-cores, a hint, not pinning. Production numbers are Linux (pin with `taskset` / cpusets).
+
 ## Other libraries
 
 The `crosslib` workload times other libraries' exact sparse top-k item-item similarity next to similaripy (D78). The libraries come from a pinned overlay, never a dependency group (LensKit pulls torch and needs numpy >= 2; the minimum-versions CI job runs numpy 1.23.5):
