@@ -15,6 +15,8 @@ allow = [
   # matchit (axum's router): MIT AND BSD-3-Clause; the internal server only
   "BSD-3-Clause",
   "Unicode-3.0",
+  # foldhash (petgraph via prost-build: the server's gRPC codegen, build time)
+  "Zlib",
 ]
 
 [bans]

@@ -1,9 +1,12 @@
 //! The internal server (server plan S2; a design validator, not released):
-//! `POST /recommend`, `GET /metrics`, `GET /health` on N threads, each a
-//! single-threaded tokio runtime with its own `Worker`. An acceptor hands
-//! connections round-robin to the threads (with keep-alive a connection
-//! stays on its thread for life); a request runs to completion on the thread
-//! that read it (E3), its `Worker` used synchronously from a `thread_local`.
+//! `POST /recommend` (JSON), gRPC `similaripy.v1.Recommender/Recommend`
+//! (proto/, S4 P1), `GET /metrics`, `GET /health`, all on one port and N
+//! threads, each a single-threaded tokio runtime with its own `Worker`. An
+//! acceptor hands connections round-robin to the threads (with keep-alive a
+//! connection stays on its thread for life; HTTP/1.1 or h2c by the client's
+//! preface); a request runs to completion on the thread that read it (E3),
+//! its `Worker` used synchronously from a `thread_local`. JSON and gRPC run
+//! the same `App::run`: same limits, cut and answers.
 
 use std::cell::{Cell, RefCell};
 use std::io;
@@ -17,17 +20,35 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use serde::{Deserialize, Serialize};
 use similaripy_core::Error;
 use similaripy_core::serve::{BlockSize, Model, Request, Stats, Worker};
 
+use metrics::Proto;
+
 pub mod client;
 mod metrics;
 
-/// Request bodies over this are rejected (413).
+/// The gRPC messages, client and server (build.rs, from proto/).
+pub mod pb {
+    tonic::include_proto!("similaripy.v1");
+}
+
+/// Request bodies over this are rejected (JSON 413, gRPC OUT_OF_RANGE).
 pub const BODY_LIMIT: usize = 1 << 20;
+
+/// Python's `ItemKNN.recommend` defaults, for both formats (exclude_seen
+/// and sorted default to true).
+const DEFAULT_K: usize = 10;
+
+/// A request with no answer: 400 / INVALID_ARGUMENT or 500 / INTERNAL.
+enum Fail {
+    Invalid(String),
+    Internal(String),
+}
 
 pub struct Config {
     /// Server threads (one `Worker` each); `block::perf_cores()` by default.
@@ -66,41 +87,41 @@ impl App {
         self.block
     }
 
-    fn recommend(&self, m: &metrics::Thread, body: &[u8]) -> Response {
-        let q: Query = match serde_json::from_slice(body) {
-            Ok(q) => q,
-            Err(e) => return bad_request(m, e),
-        };
+    /// `q` (the whole history) through the edge checks, the history cap and
+    /// this thread's worker; `encode` turns the answer into the response
+    /// while the worker's buffers are borrowed.
+    fn run<T>(
+        &self,
+        m: &metrics::Thread,
+        p: Proto,
+        q: &Request,
+        encode: impl FnOnce(&[i64], &[f32]) -> T,
+    ) -> Result<T, Fail> {
         if q.k > self.cfg.k_max {
-            return bad_request(m, format!("k = {} > k_max = {}", q.k, self.cfg.k_max));
+            m.bad_request();
+            return Err(Fail::Invalid(format!(
+                "k = {} > k_max = {}",
+                q.k, self.cfg.k_max
+            )));
         }
         let n = q.ids.len();
         let cut = n.saturating_sub(self.cfg.max_history);
         if cut > 0 {
             m.truncated();
         }
-        // Python's rounding: numpy.float32(a Python float), not serde's
-        // direct f32 parse (it rounds a decimal just above an f32 halfway
-        // point up, numpy's f64 → f32 to even; test json_f32_parsed_as_python).
-        let weights: Option<Vec<f32>> = q.weights.map(|w| w.iter().map(|&x| x as f32).collect());
         // Weights of another length aren't cut: the worker rejects them.
-        let weights = weights
-            .as_deref()
-            .map(|w| if w.len() == n { &w[cut..] } else { w });
+        let weights = q.weights.map(|w| if w.len() == n { &w[cut..] } else { w });
         // Cut ids are still seen: excluded with the request's own (an
         // allocation only for a cut history).
-        let exclude = match (cut, q.exclude_seen, q.exclude) {
-            (0, _, e) | (_, false, e) => e,
-            (_, true, e) => Some([&q.ids[..cut], e.as_deref().unwrap_or_default()].concat()),
+        let exclude = match (cut, q.exclude_seen) {
+            (0, _) | (_, false) => None,
+            (_, true) => Some([&q.ids[..cut], q.exclude.unwrap_or_default()].concat()),
         };
         let req = Request {
             ids: &q.ids[cut..],
             weights,
-            k: q.k,
-            exclude_seen: q.exclude_seen,
-            include: q.include.as_deref(),
-            exclude: exclude.as_deref(),
-            sorted: q.sorted,
+            exclude: exclude.as_deref().or(q.exclude),
+            ..*q
         };
         LOCAL.with_borrow_mut(|l| {
             let l = l.as_mut().expect("a request on a server thread");
@@ -110,19 +131,67 @@ impl App {
             let r = l
                 .worker
                 .recommend(&self.model, &req, &mut l.ids, &mut l.scores);
-            m.compute.record(t.elapsed());
+            m.compute[p as usize].record(t.elapsed());
             m.set_stats(since(l.worker.stats(), l.base));
             match r {
-                Ok(()) => json(
-                    StatusCode::OK,
-                    &Reply {
-                        ids: &l.ids,
-                        scores: &l.scores,
-                    },
-                ),
-                Err(e @ Error::InvalidInput(_)) => error(StatusCode::BAD_REQUEST, e),
-                Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+                Ok(()) => Ok(encode(&l.ids, &l.scores)),
+                Err(e @ Error::InvalidInput(_)) => Err(Fail::Invalid(e.to_string())),
+                Err(e) => Err(Fail::Internal(e.to_string())),
             }
+        })
+    }
+
+    fn recommend_json(&self, m: &metrics::Thread, body: &[u8]) -> Response {
+        let q: Query = match serde_json::from_slice(body) {
+            Ok(q) => q,
+            Err(e) => return bad_request(m, e),
+        };
+        // Python's rounding: numpy.float32(a Python float), not serde's
+        // direct f32 parse (it rounds a decimal just above an f32 halfway
+        // point up, numpy's f64 → f32 to even; test json_f32_parsed_as_python).
+        let weights: Option<Vec<f32>> = q.weights.map(|w| w.iter().map(|&x| x as f32).collect());
+        let req = Request {
+            ids: &q.ids,
+            weights: weights.as_deref(),
+            k: q.k,
+            exclude_seen: q.exclude_seen,
+            include: q.include.as_deref(),
+            exclude: q.exclude.as_deref(),
+            sorted: q.sorted,
+        };
+        let r = self.run(m, Proto::Json, &req, |ids, scores| {
+            json(StatusCode::OK, &Reply { ids, scores })
+        });
+        match r {
+            Ok(r) => r,
+            Err(Fail::Invalid(e)) => error(StatusCode::BAD_REQUEST, e),
+            Err(Fail::Internal(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        }
+    }
+
+    fn recommend_grpc(
+        &self,
+        m: &metrics::Thread,
+        q: &pb::RecommendRequest,
+    ) -> Result<pb::RecommendResponse, tonic::Status> {
+        let req = Request {
+            ids: &q.ids,
+            // proto3: an empty list is not sent; unweighted (T17)
+            weights: (!q.weights.is_empty()).then_some(&q.weights[..]),
+            k: q.k.map_or(DEFAULT_K, |k| k as usize),
+            exclude_seen: q.exclude_seen.unwrap_or(true),
+            include: q.include.as_ref().map(|l| &l.ids[..]),
+            exclude: (!q.exclude.is_empty()).then_some(&q.exclude[..]),
+            sorted: q.sorted.unwrap_or(true),
+        };
+        // T18: one copy of the answer, prost's default codec encodes it
+        let r = self.run(m, Proto::Grpc, &req, |ids, scores| pb::RecommendResponse {
+            ids: ids.to_vec(),
+            scores: scores.to_vec(),
+        });
+        r.map_err(|e| match e {
+            Fail::Invalid(e) => tonic::Status::invalid_argument(e),
+            Fail::Internal(e) => tonic::Status::internal(e),
         })
     }
 
@@ -174,8 +243,30 @@ struct Query {
     sorted: bool,
 }
 
+/// A `POST /recommend` body as the gRPC request with the same answer
+/// (loadgen, tests): weights rounded to f32 as the server does, `include`
+/// kept apart from an empty list. A JSON `"weights": []` (a 400 in JSON for
+/// a non-empty history) becomes unweighted.
+pub fn proto_from_json(body: &[u8]) -> Result<pb::RecommendRequest, serde_json::Error> {
+    let q: Query = serde_json::from_slice(body)?;
+    Ok(pb::RecommendRequest {
+        weights: q
+            .weights
+            .unwrap_or_default()
+            .iter()
+            .map(|&x| x as f32)
+            .collect(),
+        k: Some(q.k.try_into().unwrap_or(u32::MAX)),
+        exclude_seen: Some(q.exclude_seen),
+        include: q.include.map(|ids| pb::IdList { ids }),
+        exclude: q.exclude.unwrap_or_default(),
+        sorted: Some(q.sorted),
+        ids: q.ids,
+    })
+}
+
 fn ten() -> usize {
-    10
+    DEFAULT_K
 }
 
 fn yes() -> bool {
@@ -226,22 +317,44 @@ thread_local! {
     static LOCAL: RefCell<Option<Local>> = const { RefCell::new(None) };
 }
 
-/// The routes, over `app`.
+/// The routes, over `app`: JSON and gRPC (tonic's decode limit is its own:
+/// `DefaultBodyLimit` doesn't reach it).
 pub fn router(app: Arc<App>) -> Router {
+    let grpc = pb::recommender_server::RecommenderServer::new(Grpc(app.clone()))
+        .max_decoding_message_size(BODY_LIMIT);
     Router::new()
         .route("/recommend", post(recommend))
         .route("/metrics", get(metrics))
         .route("/health", get(|| async { "ok" }))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .with_state(app)
+        .merge(tonic::service::Routes::new(grpc).into_axum_router())
 }
 
 async fn recommend(State(app): State<Arc<App>>, body: Bytes) -> Response {
     let t = Instant::now();
     let m = &app.metrics[THREAD.get()];
-    let r = app.recommend(m, &body);
-    m.total.record(t.elapsed());
+    let r = app.recommend_json(m, &body);
+    m.total[Proto::Json as usize].record(t.elapsed());
     r
+}
+
+struct Grpc(Arc<App>);
+
+#[tonic::async_trait]
+impl pb::recommender_server::Recommender for Grpc {
+    /// Handler time excludes the request's decode and the response's encode
+    /// (tonic's, around this): compare formats on CPU per request.
+    async fn recommend(
+        &self,
+        r: tonic::Request<pb::RecommendRequest>,
+    ) -> Result<tonic::Response<pb::RecommendResponse>, tonic::Status> {
+        let t = Instant::now();
+        let m = &self.0.metrics[THREAD.get()];
+        let r = self.0.recommend_grpc(m, r.get_ref());
+        m.total[Proto::Grpc as usize].record(t.elapsed());
+        r.map(tonic::Response::new)
+    }
 }
 
 async fn metrics(State(app): State<Arc<App>>) -> String {
@@ -299,10 +412,12 @@ pub fn serve(listener: TcpListener, app: Arc<App>, router: Router) -> io::Result
                             continue;
                         };
                         let svc = TowerToHyperService::new(router.clone());
+                        // HTTP/1.1 or h2c by the preface; h2 spawns its
+                        // streams on this thread's runtime (current-thread)
                         tokio::spawn(async move {
-                            let conn = hyper::server::conn::http1::Builder::new()
-                                .serve_connection(TokioIo::new(s), svc);
-                            let _ = conn.await;
+                            let _ = auto::Builder::new(TokioExecutor::new())
+                                .serve_connection(TokioIo::new(s), svc)
+                                .await;
                         });
                     }
                 });

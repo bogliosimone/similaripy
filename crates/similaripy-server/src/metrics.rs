@@ -20,6 +20,15 @@ fn add(a: &AtomicU64, v: u64) {
     a.store(a.load(Relaxed).wrapping_add(v), Relaxed);
 }
 
+/// The request's format: the `proto` label of the request histograms.
+#[derive(Clone, Copy)]
+pub enum Proto {
+    Json,
+    Grpc,
+}
+
+const PROTOS: [&str; 2] = ["json", "grpc"];
+
 #[derive(Default)]
 pub struct Histogram {
     /// Per bucket (not cumulative), the last one = over the largest bound.
@@ -54,11 +63,12 @@ pub struct Thread {
     pub bad_requests: AtomicU64,
     /// Histories cut to their last `max_history` ids.
     pub truncated: AtomicU64,
-    /// `Worker::recommend` alone.
-    pub compute: Histogram,
-    /// The handler: body parsed → response serialized (queue wait and HTTP
-    /// reads are not in it: loadgen latency - this).
-    pub total: Histogram,
+    /// `Worker::recommend` alone, per `Proto`.
+    pub compute: [Histogram; 2],
+    /// The handler, per `Proto`: JSON body parsed → response serialized;
+    /// gRPC message decoded → answer copied (tonic's decode and encode are
+    /// outside). Queue wait and HTTP reads are not in it.
+    pub total: [Histogram; 2],
 }
 
 impl Thread {
@@ -132,7 +142,7 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
         ),
         (
             "bad_requests_total",
-            "Requests rejected at the edge (JSON, k).",
+            "Requests rejected at the edge (JSON, k; not gRPC decode errors).",
             |t| &t.bad_requests,
         ),
         (
@@ -156,15 +166,13 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
         let v: u64 = threads.iter().map(|t| f(t).load(Relaxed)).sum();
         let _ = writeln!(o, "similaripy_server_{name} {v}");
     }
-    histogram(
-        &mut o,
-        "compute_seconds",
-        "Worker::recommend time.",
-        threads,
-        |t| &t.compute,
-    );
-    let help = "Handler time: JSON parsed, computed, serialized.";
-    histogram(&mut o, "request_seconds", help, threads, |t| &t.total);
+    let help = "Worker::recommend time, per request format.";
+    histogram(&mut o, "compute_seconds", help, threads, |t, p| {
+        &t.compute[p]
+    });
+    let help = "Handler time, per request format: JSON parsed, computed, serialized; \
+        gRPC computed, answer copied (decode and encode outside).";
+    histogram(&mut o, "request_seconds", help, threads, |t, p| &t.total[p]);
     o
 }
 
@@ -197,22 +205,24 @@ fn histogram(
     name: &str,
     help: &str,
     threads: &[Thread],
-    h: fn(&Thread) -> &Histogram,
+    h: fn(&Thread, usize) -> &Histogram,
 ) {
     head(o, name, "histogram", help);
     let name = format!("similaripy_server_{name}");
-    let mut cum = 0;
-    for b in 0..=BUCKETS_US.len() {
-        cum += threads
-            .iter()
-            .map(|t| h(t).counts[b].load(Relaxed))
-            .sum::<u64>();
-        let le = BUCKETS_US
-            .get(b)
-            .map_or("+Inf".to_string(), |&us| (us as f64 / 1e6).to_string());
-        let _ = writeln!(o, "{name}_bucket{{le=\"{le}\"}} {cum}");
+    for (p, proto) in PROTOS.iter().enumerate() {
+        let mut cum = 0;
+        for b in 0..=BUCKETS_US.len() {
+            cum += threads
+                .iter()
+                .map(|t| h(t, p).counts[b].load(Relaxed))
+                .sum::<u64>();
+            let le = BUCKETS_US
+                .get(b)
+                .map_or("+Inf".to_string(), |&us| (us as f64 / 1e6).to_string());
+            let _ = writeln!(o, "{name}_bucket{{proto=\"{proto}\",le=\"{le}\"}} {cum}");
+        }
+        let ns: u64 = threads.iter().map(|t| h(t, p).sum_ns.load(Relaxed)).sum();
+        let _ = writeln!(o, "{name}_sum{{proto=\"{proto}\"}} {}", ns as f64 / 1e9);
+        let _ = writeln!(o, "{name}_count{{proto=\"{proto}\"}} {cum}");
     }
-    let ns: u64 = threads.iter().map(|t| h(t).sum_ns.load(Relaxed)).sum();
-    let _ = writeln!(o, "{name}_sum {}", ns as f64 / 1e9);
-    let _ = writeln!(o, "{name}_count {cum}");
 }
