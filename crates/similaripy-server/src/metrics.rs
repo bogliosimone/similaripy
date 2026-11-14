@@ -108,6 +108,11 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
         head(&mut o, name, "gauge", help);
         let _ = writeln!(o, "similaripy_server_{name} {v}");
     }
+    if let Some(cpu) = process_cpu_seconds() {
+        let help = "# HELP process_cpu_seconds_total User and system CPU time of the process.";
+        let _ = writeln!(o, "{help}\n# TYPE process_cpu_seconds_total counter");
+        let _ = writeln!(o, "process_cpu_seconds_total {cpu}");
+    }
     head(
         &mut o,
         "requests_total",
@@ -161,6 +166,25 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
     let help = "Handler time: JSON parsed, computed, serialized.";
     histogram(&mut o, "request_seconds", help, threads, |t| &t.total);
     o
+}
+
+/// The process's user + system CPU time (every thread: the acceptor's is
+/// near zero with keep-alive): CPU per request = its change / requests.
+#[cfg(unix)]
+fn process_cpu_seconds() -> Option<f64> {
+    // SAFETY: rusage is plain integers: all-zero is a valid value.
+    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: getrusage writes only into the struct we pass.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) } != 0 {
+        return None;
+    }
+    let s = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
+    Some(s(u.ru_utime) + s(u.ru_stime))
+}
+
+#[cfg(not(unix))]
+fn process_cpu_seconds() -> Option<f64> {
+    None
 }
 
 fn head(o: &mut String, name: &str, kind: &str, help: &str) {

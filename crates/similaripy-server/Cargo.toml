@@ -24,6 +24,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 tokio = { version = "1.54", features = ["net", "rt", "rt-multi-thread", "sync", "time"] }
 
-# Thread QoS (P-cores for the server, E-cores for loadgen on a laptop)
-[target.'cfg(target_os = "macos")'.dependencies]
+# Thread QoS on macOS (P-cores for the server, E-cores for loadgen on a
+# laptop); process CPU time (getrusage) for /metrics
+[target.'cfg(unix)'.dependencies]
 libc = "0.2.190"

@@ -15,7 +15,7 @@ similaripy-server --model DIR [options]   (internal: no auth, no TLS; private ne
   --threads N          server threads, one Worker each; default: P-cores (macOS), available CPUs (Linux)
   --block-size B       auto | off | N entries; default auto (from --threads)
   --max-history N      keep the last N history ids; default 200
-  --k-max N            reject a larger k; default 1000
+  --k-max N            reject a larger k; default 2000
   --no-mmap            read the model into memory instead of mapping it";
 
 fn main() {
@@ -32,7 +32,7 @@ fn run() -> Result<(), String> {
         threads: perf_cores(),
         block_size: BlockSize::Auto,
         max_history: 200,
-        k_max: 1000,
+        k_max: 2000,
     };
     let mut mmap = true;
     let mut args = std::env::args().skip(1);

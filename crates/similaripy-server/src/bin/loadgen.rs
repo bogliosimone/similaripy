@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use bytes::Bytes;
 use serde::Deserialize;
-use similaripy_server::client::{connect, send};
+use similaripy_server::client::{connect, metric, send};
 use similaripy_server::set_qos;
 
 const USAGE: &str = "\
@@ -98,23 +98,38 @@ fn run() -> Result<(), String> {
             return check_responses(&opts, &bodies, &check).await;
         }
         println!(
-            "{:>10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>7} {:>8}",
-            "target/s", "achieved/s", "p50 ms", "p95 ms", "p99 ms", "max ms", "errors", "late ms"
+            "{:>10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>7} {:>8} {:>8} {:>8} {:>8}",
+            "target/s",
+            "achieved/s",
+            "p50 ms",
+            "p95 ms",
+            "p99 ms",
+            "max ms",
+            "errors",
+            "late ms",
+            "cpu us",
+            "handler",
+            "compute"
         );
         let mut rate_now = rate.unwrap_or(start);
         let mut best = None;
         loop {
+            let before = server_costs(opts.addr).await;
             let s = step(&opts, &bodies, rate_now).await?;
+            let costs = server_costs(opts.addr).await.per_request(&before);
             let ms = |d: Duration| d.as_secs_f64() * 1e3;
             println!(
-                "{rate_now:>10.0} {:>10.0} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>7} {:>8.3}",
+                "{rate_now:>10.0} {:>10.0} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>7} {:>8.3} {:>8.1} {:>8.1} {:>8.1}",
                 s.achieved,
                 ms(s.p50),
                 ms(s.p95),
                 ms(s.p99),
                 ms(s.max),
                 s.errors,
-                ms(s.late)
+                ms(s.late),
+                costs[0],
+                costs[1],
+                costs[2]
             );
             let ok = s.p99 <= opts.budget && s.errors == 0 && s.achieved >= 0.95 * rate_now;
             if ok {
@@ -131,6 +146,42 @@ fn run() -> Result<(), String> {
         }
         Ok(())
     })
+}
+
+/// The server's cumulative costs from /metrics (NaN if missing).
+struct Costs {
+    requests: f64,
+    /// Process CPU, handler time, Worker::recommend time (seconds).
+    seconds: [f64; 3],
+}
+
+impl Costs {
+    /// µs per request since `before`: CPU (everything: HTTP, JSON,
+    /// compute, syscalls), handler (JSON + compute), compute.
+    fn per_request(&self, before: &Costs) -> [f64; 3] {
+        let n = self.requests - before.requests;
+        std::array::from_fn(|i| (self.seconds[i] - before.seconds[i]) / n * 1e6)
+    }
+}
+
+async fn server_costs(addr: SocketAddr) -> Costs {
+    let text = match connect(addr).await {
+        Ok(mut c) => send(&mut c, "/metrics", None)
+            .await
+            .map(|(_, b)| b)
+            .unwrap_or_default(),
+        Err(_) => Bytes::new(),
+    };
+    let text = String::from_utf8_lossy(&text);
+    let m = |name| metric(&text, name).unwrap_or(f64::NAN);
+    Costs {
+        requests: m("similaripy_server_request_seconds_count"),
+        seconds: [
+            m("process_cpu_seconds_total"),
+            m("similaripy_server_request_seconds_sum"),
+            m("similaripy_server_compute_seconds_sum"),
+        ],
+    }
 }
 
 struct Step {

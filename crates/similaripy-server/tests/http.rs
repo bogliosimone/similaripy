@@ -13,7 +13,7 @@ use bytes::Bytes;
 use serde::Deserialize;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{BlockSize, ItemOrder, Model, Request, recommend};
-use similaripy_server::client::{connect, send};
+use similaripy_server::client::{connect, metric, send};
 use similaripy_server::{App, BODY_LIMIT, Config, router, serve};
 
 const N: usize = 60;
@@ -313,6 +313,15 @@ fn metrics_count_served_requests_per_thread() {
         ] {
             assert!(m.contains(line), "{line:?} not in\n{m}");
         }
+        #[cfg(unix)]
+        assert!(
+            metric(&m, "process_cpu_seconds_total").is_some_and(|s| s > 0.0),
+            "{m}"
+        );
+        assert_eq!(
+            metric(&m, "similaripy_server_compute_seconds_count"),
+            Some(2.0)
+        );
     });
 }
 
