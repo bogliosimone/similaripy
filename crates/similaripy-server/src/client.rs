@@ -44,9 +44,18 @@ pub async fn send(
     Ok((status, res.into_body().collect().await?.to_bytes()))
 }
 
-/// The value of an unlabelled sample `name` in Prometheus text (`/metrics`).
+/// The sum of `name`'s samples in Prometheus text (`/metrics`): unlabelled,
+/// or over every label set (`{proto="json"}` + `{proto="grpc"}`). None if
+/// there is none.
 pub fn metric(text: &str, name: &str) -> Option<f64> {
     text.lines()
-        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' '))
-        .and_then(|v| v.parse().ok())
+        .filter_map(|l| {
+            let rest = l.strip_prefix(name)?;
+            let v = match rest.strip_prefix('{') {
+                Some(r) => r.split_once("} ")?.1,
+                None => rest.strip_prefix(' ')?,
+            };
+            v.parse::<f64>().ok()
+        })
+        .reduce(|a, b| a + b)
 }

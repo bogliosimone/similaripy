@@ -5,6 +5,9 @@
 //! falls under 95% of the target; prints the best rate that met the budget.
 //! `--check FILE`: the first requests' ids and score bits vs the expected
 //! ones (`benchmarks/server_prep.py`: Python `ItemKNN.recommend`).
+//! `--grpc`: the same requests as gRPC calls (`proto_from_json`), one
+//! HTTP/2 connection per caller unless `--channels` says fewer (then the
+//! callers' streams share them: the multiplexed case).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,14 +17,19 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use bytes::Bytes;
 use serde::Deserialize;
-use similaripy_server::client::{connect, metric, send};
-use similaripy_server::set_qos;
+use similaripy_server::client::{Conn, connect, metric, send};
+use similaripy_server::pb::RecommendRequest;
+use similaripy_server::pb::recommender_client::RecommenderClient;
+use similaripy_server::{proto_from_json, set_qos};
+use tonic::transport::{Channel, Endpoint};
 
 const USAGE: &str = "\
 loadgen --requests FILE [options]
   --requests FILE   one /recommend body per line (benchmarks/server_prep.py)
   --addr HOST:PORT  default 127.0.0.1:8080
-  --conns N         keep-alive connections; default 64 (>= server threads x callers)
+  --conns N         callers, one keep-alive connection each; default 64 (>= server threads x callers)
+  --grpc            send gRPC calls (similaripy.v1.Recommender/Recommend) instead of JSON
+  --channels N      --grpc: HTTP/2 connections the callers share; default = --conns (one stream at a time each)
   --threads N       loadgen threads; default 4
   --duration S      seconds per step; default 10
   --rate R          one step at R requests/s (default: ramp from --start)
@@ -39,12 +47,100 @@ fn main() {
 struct Opts {
     addr: SocketAddr,
     conns: usize,
+    /// gRPC connections (`--channels`), None = JSON.
+    grpc: Option<usize>,
     duration: f64,
     budget: Duration,
 }
 
+/// The request lines, in the format sent.
+enum Bodies {
+    Json(Vec<Bytes>),
+    Grpc(Vec<RecommendRequest>),
+}
+
+impl Bodies {
+    fn len(&self) -> usize {
+        match self {
+            Bodies::Json(b) => b.len(),
+            Bodies::Grpc(b) => b.len(),
+        }
+    }
+}
+
+/// One caller's connection (gRPC: a channel, maybe shared).
+enum Client {
+    Http(Conn),
+    Grpc(RecommenderClient<Channel>),
+}
+
+enum Sent {
+    /// The answer, when asked for.
+    Ok(Option<(Vec<i64>, Vec<f32>)>),
+    Rejected(String),
+    /// The HTTP/1.1 connection broke (a gRPC channel reconnects itself).
+    Broken,
+}
+
+impl Client {
+    async fn call(&mut self, bodies: &Bodies, i: usize, read: bool) -> Sent {
+        match (self, bodies) {
+            (Client::Http(c), Bodies::Json(b)) => {
+                match send(c, "/recommend", Some(b[i].clone())).await {
+                    Ok((StatusCode::OK, body)) if read => {
+                        match serde_json::from_slice::<Reply>(&body) {
+                            Ok(r) => Sent::Ok(Some((r.ids, r.scores))),
+                            Err(e) => Sent::Rejected(e.to_string()),
+                        }
+                    }
+                    Ok((StatusCode::OK, _)) => Sent::Ok(None),
+                    Ok((status, body)) => {
+                        Sent::Rejected(format!("{status} {}", String::from_utf8_lossy(&body)))
+                    }
+                    Err(_) => Sent::Broken,
+                }
+            }
+            (Client::Grpc(c), Bodies::Grpc(b)) => match c.recommend(b[i].clone()).await {
+                Ok(r) => Sent::Ok(read.then(|| {
+                    let r = r.into_inner();
+                    (r.ids, r.scores)
+                })),
+                Err(s) => Sent::Rejected(s.to_string()),
+            },
+            _ => unreachable!("a client of the bodies' format"),
+        }
+    }
+}
+
+/// `n` callers' clients: a connection each (JSON), or `opts.grpc` channels
+/// shared round-robin.
+async fn clients(opts: &Opts, n: usize) -> Result<Vec<Client>, String> {
+    let err = |e: &dyn std::fmt::Display| format!("{}: {e}", opts.addr);
+    let Some(channels) = opts.grpc else {
+        let mut v = Vec::with_capacity(n);
+        for _ in 0..n {
+            v.push(Client::Http(connect(opts.addr).await.map_err(|e| err(&e))?));
+        }
+        return Ok(v);
+    };
+    let mut chans = Vec::with_capacity(channels);
+    for _ in 0..channels.clamp(1, n) {
+        let c = Endpoint::from_shared(format!("http://{}", opts.addr))
+            .map_err(|e| err(&e))?
+            .tcp_nodelay(true)
+            .connect()
+            .await
+            .map_err(|e| err(&e))?;
+        chans.push(c);
+    }
+    Ok((0..n)
+        .map(|i| Client::Grpc(RecommenderClient::new(chans[i % chans.len()].clone())))
+        .collect())
+}
+
 fn run() -> Result<(), String> {
     let (mut requests, mut check, mut rate) = (None, None, None);
+    let (mut grpc, mut channels) = (false, None);
     let mut addr = "127.0.0.1:8080".to_string();
     let (mut conns, mut threads, mut duration, mut start, mut budget_ms) =
         (64usize, 4usize, 10f64, 1000f64, 10f64);
@@ -57,6 +153,8 @@ fn run() -> Result<(), String> {
             "--check" => check = Some(value()?),
             "--addr" => addr = value()?,
             "--conns" => conns = value()?.parse().map_err(|e| err(&e))?,
+            "--grpc" => grpc = true,
+            "--channels" => channels = Some(value()?.parse().map_err(|e| err(&e))?),
             "--threads" => threads = value()?.parse().map_err(|e| err(&e))?,
             "--duration" => duration = value()?.parse().map_err(|e| err(&e))?,
             "--rate" => rate = Some(value()?.parse::<f64>().map_err(|e| err(&e))?),
@@ -70,20 +168,26 @@ fn run() -> Result<(), String> {
         }
     }
     let path = requests.ok_or(format!("--requests is required\n{USAGE}"))?;
-    let bodies: Arc<Vec<Bytes>> = Arc::new(
-        std::fs::read_to_string(&path)
-            .map_err(|e| format!("{path}: {e}"))?
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(|l| Bytes::from(l.to_string()))
-            .collect(),
-    );
-    if bodies.is_empty() {
+    let lines: Vec<Bytes> = std::fs::read_to_string(&path)
+        .map_err(|e| format!("{path}: {e}"))?
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| Bytes::from(l.to_string()))
+        .collect();
+    if lines.is_empty() {
         return Err(format!("{path}: no requests"));
     }
+    let conns = conns.max(1);
+    let bodies = Arc::new(if grpc {
+        let q: Result<Vec<_>, _> = lines.iter().map(|l| proto_from_json(l)).collect();
+        Bodies::Grpc(q.map_err(|e| format!("{path}: {e}"))?)
+    } else {
+        Bodies::Json(lines)
+    });
     let opts = Opts {
         addr: addr.parse().map_err(|e| format!("--addr {addr}: {e}"))?,
-        conns: conns.max(1),
+        conns,
+        grpc: grpc.then(|| channels.unwrap_or(conns)),
         duration,
         budget: Duration::from_secs_f64(budget_ms / 1e3),
     };
@@ -208,16 +312,9 @@ struct Step {
 // ponytail: tokio's timer is ~1 ms granular, so requests leave in ~1 ms
 // bursts (rate / 1000 at once); µs-level numbers come from the server's own
 // histograms (/metrics).
-async fn step(opts: &Opts, bodies: &Arc<Vec<Bytes>>, rate: f64) -> Result<Step, String> {
+async fn step(opts: &Opts, bodies: &Arc<Bodies>, rate: f64) -> Result<Step, String> {
     let total = (rate * opts.duration).ceil() as u64;
-    let mut conns = Vec::with_capacity(opts.conns);
-    for _ in 0..opts.conns {
-        conns.push(
-            connect(opts.addr)
-                .await
-                .map_err(|e| format!("{}: {e}", opts.addr))?,
-        );
-    }
+    let conns = clients(opts, opts.conns).await?;
     let next = Arc::new(AtomicU64::new(0));
     let t0 = Instant::now();
     let mut tasks = tokio::task::JoinSet::new();
@@ -243,14 +340,13 @@ async fn step(opts: &Opts, bodies: &Arc<Vec<Bytes>>, rate: f64) -> Result<Step, 
                 } else {
                     due
                 };
-                let body = bodies[i as usize % bodies.len()].clone();
-                match send(&mut c, "/recommend", Some(body)).await {
-                    Ok((StatusCode::OK, _)) => lat.push(start.elapsed()),
-                    Ok(_) => errors += 1,
-                    Err(_) => {
+                match c.call(&bodies, i as usize % bodies.len(), false).await {
+                    Sent::Ok(_) => lat.push(start.elapsed()),
+                    Sent::Rejected(_) => errors += 1,
+                    Sent::Broken => {
                         errors += 1;
                         match connect(addr).await {
-                            Ok(new) => c = new,
+                            Ok(new) => c = Client::Http(new),
                             Err(_) => break,
                         }
                     }
@@ -297,27 +393,23 @@ struct Expected {
 
 /// Request i (one connection, one at a time) against line i of `path`:
 /// the same ids, and scores with the same f32 bits.
-async fn check_responses(opts: &Opts, bodies: &[Bytes], path: &str) -> Result<(), String> {
+async fn check_responses(opts: &Opts, bodies: &Bodies, path: &str) -> Result<(), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-    let mut c = connect(opts.addr).await.map_err(|e| e.to_string())?;
+    let mut c = clients(opts, 1).await?.pop().expect("one client");
     let (mut n, mut bad) = (0, 0);
     for (i, line) in text.lines().filter(|l| !l.is_empty()).enumerate() {
         let want: Expected =
             serde_json::from_str(line).map_err(|e| format!("{path}:{}: {e}", i + 1))?;
-        let body = bodies
-            .get(i)
-            .ok_or(format!("{path} has more lines than --requests"))?;
-        let (status, got) = send(&mut c, "/recommend", Some(body.clone()))
-            .await
-            .map_err(|e| e.to_string())?;
-        let got: Reply = serde_json::from_slice(&got).map_err(|e| {
-            format!(
-                "request {i}: {status} {}: {e}",
-                String::from_utf8_lossy(&got)
-            )
-        })?;
-        let bits: Vec<u32> = got.scores.iter().map(|s| s.to_bits()).collect();
-        if got.ids != want.ids || bits != want.score_bits {
+        if i >= bodies.len() {
+            return Err(format!("{path} has more lines than --requests"));
+        }
+        let (ids, scores) = match c.call(bodies, i, true).await {
+            Sent::Ok(r) => r.expect("asked for the answer"),
+            Sent::Rejected(e) => return Err(format!("request {i}: {e}")),
+            Sent::Broken => return Err(format!("request {i}: connection closed")),
+        };
+        let bits: Vec<u32> = scores.iter().map(|s| s.to_bits()).collect();
+        if ids != want.ids || bits != want.score_bits {
             bad += 1;
             if bad <= 5 {
                 eprintln!("request {i}: ids or score bits differ");

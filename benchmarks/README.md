@@ -156,6 +156,32 @@ cargo run --release -p similaripy-server --bin loadgen -- \
     --requests ~/.cache/similaripy-bench/server/ml-32m/requests-c200-k100.jsonl
 ```
 
+**gRPC on the same port** (h2c, no TLS): `similaripy.v1.Recommender/Recommend`, schema
+[`recommender.proto`](../crates/similaripy-server/proto/similaripy/v1/recommender.proto), the same answers as JSON
+(same function, same limits). loadgen sends the same request files as gRPC calls with `--grpc` (`--check` too);
+`--channels N` shares N HTTP/2 connections among the `--conns` callers (`--channels 1`: every call multiplexed on
+one connection, so on one server thread). What differs from JSON:
+- proto3 presence: empty `weights` = unweighted; `include` is a message (`IdList`) so an absent filter and an empty
+  one (= no item) differ; `exclude` empty = none. Unknown fields are ignored (JSON rejects them).
+- ids are `sfixed64` (a copy to encode; varint cost 7 us more at k 2000), scores packed `float`: f32 bits exact.
+- errors: `INVALID_ARGUMENT` for JSON's 400s (same messages), `INTERNAL` for 500s, `OUT_OF_RANGE` over 1 MB. A
+  message that doesn't decode is `INTERNAL` (tonic's mapping, not JSON's 400) and isn't in `bad_requests_total`.
+- loadgen's handler column leaves out tonic's decode and encode under `--grpc`: compare formats on CPU per request.
+- one HTTP/2 connection = one server thread for life: a client sends from several channels (grpcio: a channel per
+  thread or a pool) and a Kubernetes balancer must be HTTP/2-aware.
+
+```python
+# pip install grpcio grpcio-tools; flat modules (a generated similaripy/ folder would shadow the package):
+# python -m grpc_tools.protoc -I crates/similaripy-server/proto/similaripy/v1 \
+#     --python_out=. --grpc_python_out=. recommender.proto
+import grpc
+import recommender_pb2 as pb, recommender_pb2_grpc as rpc
+
+stub = rpc.RecommenderStub(grpc.insecure_channel("127.0.0.1:8080"))
+r = stub.Recommend(pb.RecommendRequest(ids=[12, 7, 99], weights=[1.0, 0.5, 2.0], k=100))
+r.ids, r.scores  # a float field rounds a Python float to f32 (as numpy.float32) on assignment
+```
+
 Server threads default to the P-cores on macOS (`hw.perflevel0.physicalcpu`), `available_parallelism` on Linux.
 On a laptop, loadgen shares the machine: macOS QoS puts the server threads on the P-cores and loadgen's on
 (mostly) the E-cores, a hint, not pinning. Production numbers are Linux (pin with `taskset` / cpusets).

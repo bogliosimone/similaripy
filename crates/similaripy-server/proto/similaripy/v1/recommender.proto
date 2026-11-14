@@ -1,0 +1,38 @@
+// The internal server's gRPC contract (server plan S4 P1). The same request
+// and answer as `POST /recommend` (JSON), with the same defaults and limits.
+syntax = "proto3";
+
+package similaripy.v1;
+
+service Recommender {
+  rpc Recommend(RecommendRequest) returns (RecommendResponse);
+}
+
+// A list whose presence matters: absent = no filter, empty = nothing.
+message IdList {
+  repeated int64 ids = 1;
+}
+
+// Unknown fields are ignored (protobuf's rule; JSON rejects them).
+message RecommendRequest {
+  // The user's history, oldest -> newest; unknown ids are ignored.
+  repeated int64 ids = 1;
+  // One per id; empty = unweighted (proto3 can't tell empty from absent).
+  repeated float weights = 2;
+  // Default 10.
+  optional uint32 k = 3;
+  // Default true.
+  optional bool exclude_seen = 4;
+  // Absent = every item; an empty list = no item.
+  IdList include = 5;
+  repeated int64 exclude = 6;
+  // Default true: by score, descending.
+  optional bool sorted = 7;
+}
+
+// Fixed-width ids: encoding them is a copy (varint int64 cost 7 us more at
+// k 2000).
+message RecommendResponse {
+  repeated sfixed64 ids = 1;
+  repeated float scores = 2;
+}

@@ -2,7 +2,8 @@
 //! `serve::recommend` as the Python binding calls it (block resolved for
 //! every core busy; the server's block differs on purpose: same bits), JSON
 //! f32 parsed as Python + numpy do, edge rejections, a panicking connection,
-//! metrics.
+//! metrics; gRPC on the same port: the same answers (ids and f32 bits) as
+//! JSON, proto3 presence rules, errors as status codes.
 
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
@@ -14,7 +15,11 @@ use serde::Deserialize;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{BlockSize, ItemOrder, Model, Request, recommend};
 use similaripy_server::client::{connect, metric, send};
-use similaripy_server::{App, BODY_LIMIT, Config, router, serve};
+use similaripy_server::pb::recommender_client::RecommenderClient;
+use similaripy_server::pb::{IdList, RecommendRequest};
+use similaripy_server::{App, BODY_LIMIT, Config, proto_from_json, router, serve};
+use tonic::Code;
+use tonic::transport::Channel;
 
 const N: usize = 60;
 
@@ -308,8 +313,9 @@ fn metrics_count_served_requests_per_thread() {
             "similaripy_server_truncated_total 1\n",
             "similaripy_server_history_ids_total 23\n", // 3 + the last 20
             "similaripy_server_known_ids_total 22\n",   // 99 is unknown
-            "similaripy_server_compute_seconds_count 2\n",
-            "similaripy_server_request_seconds_bucket{le=\"+Inf\"} 2\n",
+            "similaripy_server_compute_seconds_count{proto=\"json\"} 2\n",
+            "similaripy_server_compute_seconds_count{proto=\"grpc\"} 0\n",
+            "similaripy_server_request_seconds_bucket{proto=\"json\",le=\"+Inf\"} 2\n",
         ] {
             assert!(m.contains(line), "{line:?} not in\n{m}");
         }
@@ -327,4 +333,164 @@ fn metrics_count_served_requests_per_thread() {
 
 async fn panics() -> &'static str {
     panic!("a handler panic (test)")
+}
+
+async fn grpc(addr: SocketAddr) -> RecommenderClient<Channel> {
+    RecommenderClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap()
+}
+
+/// (ids, score bits) of a gRPC answer.
+async fn ask(c: &mut RecommenderClient<Channel>, q: RecommendRequest) -> (Vec<i64>, Vec<u32>) {
+    let r = c.recommend(q).await.unwrap().into_inner();
+    (r.ids, r.scores.iter().map(|s| s.to_bits()).collect())
+}
+
+/// (ids, score bits) of a JSON answer.
+async fn ask_json(addr: SocketAddr, body: &str) -> (Vec<i64>, Vec<u32>) {
+    let (status, text) = post(addr, body).await;
+    assert_eq!(status, StatusCode::OK, "{body}: {text}");
+    let r: Reply = serde_json::from_str(&text).unwrap();
+    (r.ids, r.scores.iter().map(|s| s.to_bits()).collect())
+}
+
+#[test]
+fn grpc_answers_equal_json() {
+    // Random requests both ways on one port: sorted / unsorted, weighted,
+    // empty histories, k past the candidates, histories past max_history
+    // (cut ids still excluded), include / exclude.
+    let addr = start(config(2), false);
+    let mut rng = Rng(11);
+    block_on(async {
+        let mut c = grpc(addr).await;
+        let mut sizes = [0usize; 3]; // empty answers, short answers, cut histories
+        for case in 0..300 {
+            let len = rng.below(31);
+            let ids: Vec<i64> = (0..len)
+                .map(|_| 1000 + rng.below(N + 5) as i64 * 7)
+                .collect();
+            let weights: Option<Vec<f32>> =
+                (case % 2 == 0).then(|| (0..len).map(|_| rng.unit() * 3.0).collect());
+            let include: Option<Vec<i64>> =
+                (case % 5 == 1).then(|| (0..30).map(|_| 1000 + rng.below(N) as i64 * 7).collect());
+            let exclude: Option<Vec<i64>> =
+                (case % 7 == 2).then(|| (0..5).map(|_| 1000 + rng.below(N) as i64 * 7).collect());
+            let k = 1 + rng.below(50);
+            let body = serde_json::json!({
+                "ids": ids, "weights": weights, "k": k,
+                "exclude_seen": case % 3 != 0, "include": include, "exclude": exclude,
+                "sorted": case % 4 != 3,
+            })
+            .to_string();
+            let want = ask_json(addr, &body).await;
+            let got = ask(&mut c, proto_from_json(body.as_bytes()).unwrap()).await;
+            assert_eq!(got, want, "case {case}: {body}");
+            sizes[0] += want.0.is_empty() as usize;
+            sizes[1] += (!want.0.is_empty() && want.0.len() < k) as usize;
+            sizes[2] += (len > 20) as usize;
+        }
+        assert!(sizes.iter().all(|&n| n > 5), "{sizes:?}");
+    });
+}
+
+#[test]
+fn grpc_presence_rules() {
+    let addr = start(config(1), false);
+    let ids = vec![1000, 1007, 1014, 1070];
+    block_on(async {
+        let mut c = grpc(addr).await;
+        // Nothing but ids: JSON's defaults (k 10, exclude_seen, sorted).
+        let only_ids = RecommendRequest {
+            ids: ids.clone(),
+            ..Default::default()
+        };
+        let defaults = ask(&mut c, only_ids.clone()).await;
+        assert_eq!(defaults.0.len(), 10);
+        assert_eq!(
+            defaults,
+            ask_json(addr, r#"{"ids": [1000, 1007, 1014, 1070]}"#).await
+        );
+        // Empty weights = not sent = unweighted.
+        let unweighted = RecommendRequest {
+            weights: vec![],
+            ..only_ids.clone()
+        };
+        assert_eq!(ask(&mut c, unweighted).await, defaults);
+        // include absent = every item; an empty IdList = no item.
+        let none = RecommendRequest {
+            include: Some(IdList { ids: vec![] }),
+            ..only_ids.clone()
+        };
+        assert_eq!(ask(&mut c, none).await, (vec![], vec![]));
+        let json = ask_json(addr, r#"{"ids": [1000, 1007, 1014, 1070], "include": []}"#).await;
+        assert_eq!(json, (vec![], vec![]));
+        // An empty history: an empty answer, not an error.
+        let empty = ask(&mut c, RecommendRequest::default()).await;
+        assert_eq!(empty, (vec![], vec![]));
+    });
+}
+
+#[test]
+fn grpc_errors_are_status_codes() {
+    let addr = start(config(1), false);
+    block_on(async {
+        let mut c = grpc(addr).await;
+        for (q, msg) in [
+            (
+                RecommendRequest {
+                    ids: vec![1000],
+                    k: Some(51),
+                    ..Default::default()
+                },
+                "k_max",
+            ),
+            (
+                RecommendRequest {
+                    ids: vec![1000, 1007],
+                    weights: vec![1.0],
+                    ..Default::default()
+                },
+                "len(weights)",
+            ),
+        ] {
+            let e = c.recommend(q).await.unwrap_err();
+            assert_eq!(e.code(), Code::InvalidArgument, "{e:?}");
+            assert!(e.message().contains(msg), "{e:?}");
+        }
+        // Over the 1 MB limit (tonic's own, not DefaultBodyLimit's).
+        let big = RecommendRequest {
+            ids: vec![i64::MAX; BODY_LIMIT / 8], // 9 bytes each as a varint
+            ..Default::default()
+        };
+        let e = c.recommend(big).await.unwrap_err();
+        assert_eq!(e.code(), Code::OutOfRange, "{e:?}");
+        // The connection still serves; JSON on the same port too.
+        let q = RecommendRequest {
+            ids: vec![1000, 1007],
+            ..Default::default()
+        };
+        assert!(!ask(&mut c, q).await.0.is_empty());
+        assert!(
+            !ask_json(addr, r#"{"ids": [1000, 1007]}"#)
+                .await
+                .0
+                .is_empty()
+        );
+        let m = get_text(addr, "/metrics").await;
+        for line in [
+            "similaripy_server_bad_requests_total 1\n", // k
+            "similaripy_server_errors_total 1\n",       // weights
+            "similaripy_server_compute_seconds_count{proto=\"grpc\"} 2\n",
+            "similaripy_server_compute_seconds_count{proto=\"json\"} 1\n",
+            "similaripy_server_request_seconds_count{proto=\"grpc\"} 3\n",
+        ] {
+            assert!(m.contains(line), "{line:?} not in\n{m}");
+        }
+        // Label-aware reads sum the formats.
+        assert_eq!(
+            metric(&m, "similaripy_server_compute_seconds_count"),
+            Some(3.0)
+        );
+    });
 }
