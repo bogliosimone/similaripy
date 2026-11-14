@@ -44,7 +44,7 @@ def main():
     opts = {"model": "cosine", "model_k": 100, "model_cache": True, "dataset_key": dataset["key"]}
     S, _ = workloads._serve_model(URM, opts)
     args.out.mkdir(parents=True, exist_ok=True)
-    if not (args.out / "model").exists():  # a rerun keeps it: expected.jsonl is computed from what is there
+    if not (args.out / "model").exists():  # a rerun keeps it: expected-*.jsonl are computed from what is there
         ItemKNN(S).save(args.out / "model")
 
     rec = ItemKNN.load(args.out / "model")  # what the server loads

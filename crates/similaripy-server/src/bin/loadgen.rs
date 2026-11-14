@@ -150,7 +150,8 @@ fn run() -> Result<(), String> {
 
 /// The server's cumulative costs from /metrics (NaN if missing).
 struct Costs {
-    requests: f64,
+    /// Handled requests (400s included), and those the worker computed.
+    counts: [f64; 2],
     /// Process CPU, handler time, Worker::recommend time (seconds).
     seconds: [f64; 3],
 }
@@ -159,8 +160,11 @@ impl Costs {
     /// µs per request since `before`: CPU (everything: HTTP, JSON,
     /// compute, syscalls), handler (JSON + compute), compute.
     fn per_request(&self, before: &Costs) -> [f64; 3] {
-        let n = self.requests - before.requests;
-        std::array::from_fn(|i| (self.seconds[i] - before.seconds[i]) / n * 1e6)
+        // Compute over computed requests (an edge 400 never reaches the worker)
+        std::array::from_fn(|i| {
+            let c = (i == 2) as usize;
+            (self.seconds[i] - before.seconds[i]) / (self.counts[c] - before.counts[c]) * 1e6
+        })
     }
 }
 
@@ -175,7 +179,10 @@ async fn server_costs(addr: SocketAddr) -> Costs {
     let text = String::from_utf8_lossy(&text);
     let m = |name| metric(&text, name).unwrap_or(f64::NAN);
     Costs {
-        requests: m("similaripy_server_request_seconds_count"),
+        counts: [
+            m("similaripy_server_request_seconds_count"),
+            m("similaripy_server_compute_seconds_count"),
+        ],
         seconds: [
             m("process_cpu_seconds_total"),
             m("similaripy_server_request_seconds_sum"),
