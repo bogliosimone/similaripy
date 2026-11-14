@@ -146,11 +146,14 @@ connection was busy counts from its due time (queueing included), one sent on ti
 latency split (compute vs JSON + handler) in `GET /metrics`.
 
 ```bash
+# --caps / --ks: one requests-c{CAP}-k{K}.jsonl (+ expected-...) per pair; default cap 200, k 100
 uv run --group bench python benchmarks/server_prep.py --dataset movielens --out ~/.cache/similaripy-bench/server/ml-32m
 cargo run --release -p similaripy-server -- --model ~/.cache/similaripy-bench/server/ml-32m/model
-cargo run --release -p similaripy-server --bin loadgen -- --requests ~/.cache/similaripy-bench/server/ml-32m/requests.jsonl \
-    --check ~/.cache/similaripy-bench/server/ml-32m/expected.jsonl
-cargo run --release -p similaripy-server --bin loadgen -- --requests ~/.cache/similaripy-bench/server/ml-32m/requests.jsonl
+cargo run --release -p similaripy-server --bin loadgen -- \
+    --requests ~/.cache/similaripy-bench/server/ml-32m/requests-c200-k100.jsonl \
+    --check ~/.cache/similaripy-bench/server/ml-32m/expected-c200-k100.jsonl
+cargo run --release -p similaripy-server --bin loadgen -- \
+    --requests ~/.cache/similaripy-bench/server/ml-32m/requests-c200-k100.jsonl
 ```
 
 Server threads default to the P-cores on macOS (`hw.perflevel0.physicalcpu`), `available_parallelism` on Linux.

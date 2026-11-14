@@ -43,3 +43,10 @@ pub async fn send(
     let status = res.status();
     Ok((status, res.into_body().collect().await?.to_bytes()))
 }
+
+/// The value of an unlabelled sample `name` in Prometheus text (`/metrics`).
+pub fn metric(text: &str, name: &str) -> Option<f64> {
+    text.lines()
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' '))
+        .and_then(|v| v.parse().ok())
+}
