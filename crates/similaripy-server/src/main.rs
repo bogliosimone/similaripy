@@ -1,22 +1,30 @@
 //! `similaripy-server --model DIR`: serves an `ItemKNN.save` directory.
 
 use std::net::TcpListener;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use similaripy_core::block::perf_cores;
-use similaripy_core::serve::{BlockSize, Model};
-use similaripy_server::{App, Config, router, serve};
+use similaripy_core::serve::Model;
+use similaripy_server::config::{Cli, parse, version};
+use similaripy_server::{App, router, serve};
 
 const USAGE: &str = "\
-similaripy-server --model DIR [options]   (internal: no auth, no TLS; private networks only)
-  --model DIR          an ItemKNN.save directory
-  --addr HOST:PORT     default 127.0.0.1:8080
-  --threads N          server threads, one Worker each; default: P-cores (macOS), available CPUs (Linux)
-  --block-size B       auto | off | N entries; default auto (from --threads)
-  --max-history N      keep the last N history ids; default 200
-  --k-max N            reject a larger k; default 2000
-  --no-mmap            read the model into memory instead of mapping it";
+similaripy-server [--config FILE] [--section.key VALUE ...]
+  (experimental: no auth, no TLS; private networks only)
+
+Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flags.
+  --model.path DIR            an ItemKNN.save directory (required)
+  --model.mmap BOOL           map the model's files; default true
+  --server.addr HOST:PORT     default 127.0.0.1:8080
+  --server.threads N          one Worker each; default: P-cores (macOS), available CPUs (Linux)
+  --server.block_size B       auto | off | N entries; default auto (from threads)
+  --limits.k_max N            reject a larger k; default 2000
+  --limits.max_history N      default 200
+  --limits.history_policy P   truncate (keep the last max_history ids) | reject; default truncate
+  --defaults.sorted BOOL      a request's sorted when it doesn't send one; default true
+  e.g. SIMILARIPY_LIMITS__K_MAX=500 = --limits.k_max 500 = [limits] k_max = 500
+Short forms: --model, --addr, --threads, --block-size, --max-history, --k-max, --no-mmap.
+  --print-config   print the resolved config (TOML) and exit
+  --version, --help";
 
 fn main() {
     if let Err(e) = run() {
@@ -26,46 +34,33 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let mut model = None;
-    let mut addr = "127.0.0.1:8080".to_string();
-    let mut cfg = Config {
-        threads: perf_cores(),
-        block_size: BlockSize::Auto,
-        max_history: 200,
-        k_max: 2000,
-    };
-    let mut mmap = true;
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
-        let mut value = || args.next().ok_or(format!("{a} needs a value\n{USAGE}"));
-        let num = |v: String| v.parse::<usize>().map_err(|e| format!("{a} {v}: {e}"));
-        match a.as_str() {
-            "--model" => model = Some(PathBuf::from(value()?)),
-            "--addr" => addr = value()?,
-            "--threads" => cfg.threads = num(value()?)?.max(1),
-            "--max-history" => cfg.max_history = num(value()?)?,
-            "--k-max" => cfg.k_max = num(value()?)?,
-            "--block-size" => {
-                cfg.block_size = match value()?.as_str() {
-                    "auto" => BlockSize::Auto,
-                    "off" => BlockSize::Off,
-                    v => BlockSize::Size(num(v.to_string())?),
-                }
-            }
-            "--no-mmap" => mmap = false,
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                return Ok(());
-            }
-            _ => return Err(format!("unknown argument {a}\n{USAGE}")),
+    // Non-UTF-8 env vars can't be config (names are ASCII): skipped.
+    let env = std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
+    let cli =
+        parse(std::env::args().skip(1), env).map_err(|e| format!("{e} (--help for usage)"))?;
+    let cfg = match cli {
+        Cli::Help => {
+            println!("{USAGE}");
+            return Ok(());
         }
-    }
-    let dir = model.ok_or(format!("--model is required\n{USAGE}"))?;
+        Cli::Version => {
+            println!("{}", version());
+            return Ok(());
+        }
+        Cli::PrintConfig(cfg) => {
+            print!("{}", cfg.to_toml());
+            return Ok(());
+        }
+        Cli::Run(cfg) => cfg,
+    };
+    eprint!("{}\nconfig:\n{}", version(), cfg.to_toml());
+    let (dir, addr) = (cfg.model.path.clone(), cfg.server.addr.clone());
     let t = std::time::Instant::now();
-    let model = Model::load(&dir, mmap).map_err(|e| e.to_string())?;
+    let model = Model::load(&dir, cfg.model.mmap).map_err(|e| e.to_string())?;
     let loaded = t.elapsed();
     let (items, active) = (model.n_items(), model.n_active());
-    let threads = cfg.threads;
+    let threads = cfg.server.threads;
     let app = Arc::new(App::new(model, cfg).map_err(|e| e.to_string())?);
     let listener = TcpListener::bind(&addr).map_err(|e| format!("{addr}: {e}"))?;
     eprintln!(

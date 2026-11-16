@@ -1,6 +1,7 @@
 //! The internal server (server plan S2; a design validator, not released):
 //! `POST /recommend` (JSON), gRPC `similaripy.v1.Recommender/Recommend`
-//! (proto/, S4 P1), `GET /metrics`, `GET /health`, all on one port and N
+//! (proto/, S4 P1), `GET /metrics`, `GET /health`, `GET /config` (the
+//! resolved [`Config`]), all on one port and N
 //! threads, each a single-threaded tokio runtime with its own `Worker`. An
 //! acceptor hands connections round-robin to the threads (with keep-alive a
 //! connection stays on its thread for life; HTTP/1.1 or h2c by the client's
@@ -25,11 +26,15 @@ use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use serde::{Deserialize, Serialize};
 use similaripy_core::Error;
-use similaripy_core::serve::{BlockSize, Model, Request, Stats, Worker};
+use similaripy_core::serve::{Model, Request, Stats, Worker};
+
+pub use config::Config;
+use config::HistoryPolicy;
 
 use metrics::Proto;
 
 pub mod client;
+pub mod config;
 mod metrics;
 
 /// The gRPC messages, client and server (build.rs, from proto/).
@@ -41,7 +46,7 @@ pub mod pb {
 pub const BODY_LIMIT: usize = 1 << 20;
 
 /// Python's `ItemKNN.recommend` defaults, for both formats (exclude_seen
-/// and sorted default to true).
+/// defaults to true; sorted to `defaults.sorted`).
 const DEFAULT_K: usize = 10;
 
 /// A request with no answer: 400 / INVALID_ARGUMENT or 500 / INTERNAL.
@@ -50,18 +55,7 @@ enum Fail {
     Internal(String),
 }
 
-pub struct Config {
-    /// Server threads (one `Worker` each); `block::perf_cores()` by default.
-    pub threads: usize,
-    pub block_size: BlockSize,
-    /// A longer history keeps its last `max_history` ids (client order =
-    /// oldest → newest, Q4); the cut ids stay excluded under `exclude_seen`.
-    pub max_history: usize,
-    /// A larger k is rejected (400).
-    pub k_max: usize,
-}
-
-/// What every thread shares: the model, the limits, the metrics.
+/// What every thread shares: the model, the config, the metrics.
 pub struct App {
     model: Model,
     cfg: Config,
@@ -71,8 +65,13 @@ pub struct App {
 
 impl App {
     pub fn new(model: Model, cfg: Config) -> Result<Self, Error> {
-        let block = cfg.block_size.resolve(model.n_active(), cfg.threads)?;
-        let metrics = (0..cfg.threads).map(|_| Default::default()).collect();
+        let block = cfg
+            .server
+            .block_size
+            .resolve(model.n_active(), cfg.server.threads)?;
+        let metrics = (0..cfg.server.threads)
+            .map(|_| Default::default())
+            .collect();
         Ok(Self {
             model,
             cfg,
@@ -97,16 +96,24 @@ impl App {
         q: &Request,
         encode: impl FnOnce(&[i64], &[f32]) -> T,
     ) -> Result<T, Fail> {
-        if q.k > self.cfg.k_max {
+        let limits = &self.cfg.limits;
+        if q.k > limits.k_max {
             m.bad_request();
             return Err(Fail::Invalid(format!(
                 "k = {} > k_max = {}",
-                q.k, self.cfg.k_max
+                q.k, limits.k_max
             )));
         }
         let n = q.ids.len();
-        let cut = n.saturating_sub(self.cfg.max_history);
+        let cut = n.saturating_sub(limits.max_history);
         if cut > 0 {
+            if limits.history_policy == HistoryPolicy::Reject {
+                m.bad_request();
+                return Err(Fail::Invalid(format!(
+                    "{n} history ids > max_history = {}",
+                    limits.max_history
+                )));
+            }
             m.truncated();
         }
         // Weights of another length aren't cut: the worker rejects them.
@@ -157,7 +164,7 @@ impl App {
             exclude_seen: q.exclude_seen,
             include: q.include.as_deref(),
             exclude: q.exclude.as_deref(),
-            sorted: q.sorted,
+            sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
         };
         let r = self.run(m, Proto::Json, &req, |ids, scores| {
             json(StatusCode::OK, &Reply { ids, scores })
@@ -182,7 +189,7 @@ impl App {
             exclude_seen: q.exclude_seen.unwrap_or(true),
             include: q.include.as_ref().map(|l| &l.ids[..]),
             exclude: (!q.exclude.is_empty()).then_some(&q.exclude[..]),
-            sorted: q.sorted.unwrap_or(true),
+            sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
         };
         // T18: one copy of the answer, prost's default codec encodes it
         let r = self.run(m, Proto::Grpc, &req, |ids, scores| pb::RecommendResponse {
@@ -199,7 +206,7 @@ impl App {
     /// max_history ids, include bits): buffers made before the first accept,
     /// no first-request spike (W2).
     fn warm(&self, w: &mut Worker) -> Result<(), Error> {
-        let n = self.cfg.max_history.min(self.model.n_items());
+        let n = self.cfg.limits.max_history.min(self.model.n_items());
         let ids: Vec<i64> = match self.model.item_ids() {
             Some(e) => e.iter().take(n).copied().collect(),
             None => (0..n as i64).collect(),
@@ -209,7 +216,7 @@ impl App {
             let req = Request {
                 ids: &ids,
                 weights: None,
-                k: self.cfg.k_max,
+                k: self.cfg.limits.k_max,
                 exclude_seen: true,
                 include,
                 exclude: None,
@@ -221,7 +228,8 @@ impl App {
     }
 }
 
-/// `POST /recommend`'s body; defaults = Python's `ItemKNN.recommend`.
+/// `POST /recommend`'s body; defaults = Python's `ItemKNN.recommend`, but
+/// `sorted` absent = `defaults.sorted`.
 /// Unknown fields are an error (a typo like "weight" would otherwise serve
 /// unweighted).
 #[derive(Deserialize)]
@@ -239,8 +247,8 @@ struct Query {
     include: Option<Vec<i64>>,
     #[serde(default)]
     exclude: Option<Vec<i64>>,
-    #[serde(default = "yes")]
-    sorted: bool,
+    #[serde(default)]
+    sorted: Option<bool>,
 }
 
 /// A `POST /recommend` body as the gRPC request with the same answer
@@ -260,7 +268,7 @@ pub fn proto_from_json(body: &[u8]) -> Result<pb::RecommendRequest, serde_json::
         exclude_seen: Some(q.exclude_seen),
         include: q.include.map(|ids| pb::IdList { ids }),
         exclude: q.exclude.unwrap_or_default(),
-        sorted: Some(q.sorted),
+        sorted: q.sorted,
         ids: q.ids,
     })
 }
@@ -326,6 +334,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/recommend", post(recommend))
         .route("/metrics", get(metrics))
         .route("/health", get(|| async { "ok" }))
+        .route("/config", get(config))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .with_state(app)
         .merge(tonic::service::Routes::new(grpc).into_axum_router())
@@ -357,9 +366,13 @@ impl pb::recommender_server::Recommender for Grpc {
     }
 }
 
+async fn config(State(app): State<Arc<App>>) -> Response {
+    json(StatusCode::OK, &app.cfg)
+}
+
 async fn metrics(State(app): State<Arc<App>>) -> String {
     let info = metrics::Info {
-        threads: app.cfg.threads,
+        threads: app.cfg.server.threads,
         block: app.block,
         items: app.model.n_items(),
         active_items: app.model.n_active(),
@@ -371,7 +384,7 @@ async fn metrics(State(app): State<Arc<App>>) -> String {
 /// `app`'s threads, each warmed before the first accept. Returns only on a
 /// thread's start-up error.
 pub fn serve(listener: TcpListener, app: Arc<App>, router: Router) -> io::Result<()> {
-    let n = app.cfg.threads;
+    let n = app.cfg.server.threads;
     let (ready_tx, ready) = mpsc::channel();
     let mut threads = Vec::with_capacity(n);
     for i in 0..n {
@@ -386,15 +399,15 @@ pub fn serve(listener: TcpListener, app: Arc<App>, router: Router) -> io::Result
                     .build();
                 let start = || -> Result<_, String> {
                     let rt = rt.map_err(|e| e.to_string())?;
-                    let mut worker = Worker::new(&app.model, app.cfg.block_size, n)
+                    let mut worker = Worker::new(&app.model, app.cfg.server.block_size, n)
                         .map_err(|e| e.to_string())?;
                     app.warm(&mut worker).map_err(|e| format!("warm-up: {e}"))?;
                     THREAD.set(i);
                     LOCAL.set(Some(Local {
                         base: worker.stats(),
                         worker,
-                        ids: Vec::with_capacity(app.cfg.k_max),
-                        scores: Vec::with_capacity(app.cfg.k_max),
+                        ids: Vec::with_capacity(app.cfg.limits.k_max),
+                        scores: Vec::with_capacity(app.cfg.limits.k_max),
                     }));
                     Ok(rt)
                 };

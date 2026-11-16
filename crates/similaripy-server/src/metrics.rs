@@ -59,7 +59,8 @@ pub struct Thread {
     errors: AtomicU64,
     ids: AtomicU64,
     known_ids: AtomicU64,
-    /// Rejected at the edge (bad JSON, k > k_max): never reached the worker.
+    /// Rejected at the edge (bad JSON, k > k_max, history over max_history
+    /// under `reject`): never reached the worker.
     pub bad_requests: AtomicU64,
     /// Histories cut to their last `max_history` ids.
     pub truncated: AtomicU64,
@@ -142,7 +143,7 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
         ),
         (
             "bad_requests_total",
-            "Requests rejected at the edge (JSON, k; not gRPC decode errors).",
+            "Requests rejected at the edge (JSON, k, history; not gRPC decode errors).",
             |t| &t.bad_requests,
         ),
         (

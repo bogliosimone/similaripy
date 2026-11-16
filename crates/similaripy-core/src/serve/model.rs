@@ -15,7 +15,7 @@ use rayon::prelude::*;
 
 /// Saved model format (`meta.json`): a version reads every format up to its
 /// own; bump it when the files change meaning (Q1).
-const FORMAT: u64 = 1;
+pub const FORMAT: u64 = 1;
 const KIND: &str = "ItemKNN";
 /// One entry of S: column and value side by side, so a row start costs one
 /// cache miss, not one per array (perf gates L1: Y50M one block at 6 threads

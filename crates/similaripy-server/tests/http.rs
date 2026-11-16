@@ -15,6 +15,7 @@ use serde::Deserialize;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{BlockSize, ItemOrder, Model, Request, recommend};
 use similaripy_server::client::{connect, metric, send};
+use similaripy_server::config::HistoryPolicy;
 use similaripy_server::pb::recommender_client::RecommenderClient;
 use similaripy_server::pb::{IdList, RecommendRequest};
 use similaripy_server::{App, BODY_LIMIT, Config, proto_from_json, router, serve};
@@ -64,13 +65,13 @@ fn model() -> Model {
 }
 
 fn config(threads: usize) -> Config {
-    Config {
-        threads,
-        // Several blocks here, one block in the Python reference: same bits.
-        block_size: BlockSize::Size(16),
-        max_history: 20,
-        k_max: 50,
-    }
+    let mut c = Config::default();
+    c.server.threads = threads;
+    // Several blocks here, one block in the Python reference: same bits.
+    c.server.block_size = BlockSize::Size(16);
+    c.limits.max_history = 20;
+    c.limits.k_max = 50;
+    c
 }
 
 /// A server on a free loopback port (its threads live until the test
@@ -492,5 +493,53 @@ fn grpc_errors_are_status_codes() {
             metric(&m, "similaripy_server_compute_seconds_count"),
             Some(3.0)
         );
+    });
+}
+
+#[test]
+fn config_sets_sorted_default_and_history_policy() {
+    let mut cfg = config(1);
+    cfg.defaults.sorted = false;
+    cfg.limits.history_policy = HistoryPolicy::Reject;
+    let addr = start(cfg.clone(), false);
+    let ids: Vec<i64> = (0..20).map(|i| 1000 + 7 * i).collect(); // = max_history
+    let body = |extra: &str| format!(r#"{{"ids": {ids:?}, "k": 50{extra}}}"#);
+    block_on(async {
+        // `sorted` not sent = the server's default (false), both formats.
+        let absent = ask_json(addr, &body("")).await;
+        assert_eq!(absent, ask_json(addr, &body(r#", "sorted": false"#)).await);
+        let sorted = ask_json(addr, &body(r#", "sorted": true"#)).await;
+        assert_ne!(absent, sorted);
+        let mut c = grpc(addr).await;
+        let q = RecommendRequest {
+            ids: ids.clone(),
+            k: Some(50),
+            ..Default::default()
+        };
+        assert_eq!(ask(&mut c, q.clone()).await, absent);
+        let q_sorted = RecommendRequest {
+            sorted: Some(true),
+            ..q.clone()
+        };
+        assert_eq!(ask(&mut c, q_sorted).await, sorted);
+        // reject: one id past max_history is a 400 / INVALID_ARGUMENT.
+        let long = [&ids[..], &[1140]].concat();
+        let (status, text) = post(addr, &serde_json::json!({ "ids": long }).to_string()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("21 history ids > max_history = 20"), "{text}");
+        let e = c
+            .recommend(RecommendRequest { ids: long, ..q })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument, "{e:?}");
+        let m = get_text(addr, "/metrics").await;
+        assert!(
+            m.contains("similaripy_server_bad_requests_total 2\n"),
+            "{m}"
+        );
+        assert!(m.contains("similaripy_server_truncated_total 0\n"), "{m}");
+        // GET /config: the resolved config.
+        let got: Config = serde_json::from_str(&get_text(addr, "/config").await).unwrap();
+        assert_eq!(got, cfg);
     });
 }
