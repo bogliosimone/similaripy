@@ -22,6 +22,10 @@ Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flag
   --limits.max_history N      default 200
   --limits.history_policy P   truncate (keep the last max_history ids) | reject; default truncate
   --defaults.sorted BOOL      a request's sorted when it doesn't send one; default true
+  --defaults.view NAME        a request's view when it doesn't send one; default empty (the whole model)
+  --views.NAME.include_file F  view NAME allows only the ids in F (one per line)
+  --views.NAME.exclude_file F  view NAME never returns the ids in F; either or both
+                               (NAME: 1-64 of a-z 0-9 _ -; F relative to the working directory)
   e.g. SIMILARIPY_LIMITS__K_MAX=500 = --limits.k_max 500 = [limits] k_max = 500
 Short forms: --model, --addr, --threads, --block-size, --max-history, --k-max, --no-mmap.
   --print-config   print the resolved config (TOML) and exit
@@ -83,5 +87,8 @@ fn run() -> Result<(), String> {
         dir.display(),
         app.block(),
     );
+    for line in app.describe_views() {
+        eprintln!("similaripy-server: {line}");
+    }
     serve(listener, app.clone(), router(app)).map_err(|e| e.to_string())
 }

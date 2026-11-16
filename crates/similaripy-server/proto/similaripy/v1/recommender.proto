@@ -31,6 +31,10 @@ message RecommendRequest {
   repeated int64 exclude = 6;
   // Default true: by score, descending.
   optional bool sorted = 7;
+  // A named view (`GET /v1/views`): absent = the `defaults.view` config key;
+  // "" = the whole model; an unknown name = INVALID_ARGUMENT. ANDed with
+  // include / exclude.
+  optional string view = 8;
 }
 
 // Fixed-width ids: encoding them is a copy (varint int64 cost 7 us more at

@@ -48,6 +48,21 @@ impl Histogram {
     }
 }
 
+/// A counter written by one server thread, on its own cache line.
+#[repr(align(128))]
+#[derive(Default)]
+pub struct Counter(AtomicU64);
+
+impl Counter {
+    pub fn add(&self) {
+        add(&self.0, 1);
+    }
+
+    pub fn get(&self) -> u64 {
+        self.0.load(Relaxed)
+    }
+}
+
 /// One server thread's metrics. 128-byte aligned: two threads never write
 /// the same cache line (128 B on Apple silicon, 64 B on x86).
 #[repr(align(128))]
@@ -89,12 +104,15 @@ impl Thread {
     }
 }
 
-/// Fixed facts about the server, as gauges.
-pub struct Info {
+/// Fixed facts about the server, as gauges, and the requests per view.
+pub struct Info<'a> {
     pub threads: usize,
     pub block: usize,
     pub items: usize,
     pub active_items: usize,
+    /// (name, requests over every thread); names need no escaping
+    /// (`Config::check_views`).
+    pub views: Vec<(&'a str, u64)>,
 }
 
 /// Prometheus text exposition of every thread's metrics, summed (requests
@@ -166,6 +184,18 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
         head(&mut o, name, "counter", help);
         let v: u64 = threads.iter().map(|t| f(t).load(Relaxed)).sum();
         let _ = writeln!(o, "similaripy_server_{name} {v}");
+    }
+    head(
+        &mut o,
+        "view_requests_total",
+        "counter",
+        "Requests per named view (the rest used the whole model).",
+    );
+    for (name, v) in &info.views {
+        let _ = writeln!(
+            o,
+            "similaripy_server_view_requests_total{{view=\"{name}\"}} {v}"
+        );
     }
     let help = "Worker::recommend time, per request format.";
     histogram(&mut o, "compute_seconds", help, threads, |t, p| {
