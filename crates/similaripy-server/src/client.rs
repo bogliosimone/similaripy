@@ -3,7 +3,7 @@
 use std::io;
 use std::net::SocketAddr;
 
-use axum::http::{Method, Request, StatusCode, header};
+use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1::{SendRequest, handshake};
@@ -26,22 +26,41 @@ pub async fn send(
     path: &str,
     body: Option<Bytes>,
 ) -> Result<(StatusCode, Bytes), hyper::Error> {
+    let (status, _, body) = send_with(c, path, body, &[]).await?;
+    Ok((status, body))
+}
+
+/// `send` with extra request headers, returning the response's too.
+pub async fn send_with(
+    c: &mut Conn,
+    path: &str,
+    body: Option<Bytes>,
+    headers: &[(&str, &str)],
+) -> Result<(StatusCode, HeaderMap, Bytes), hyper::Error> {
     c.ready().await?;
     let method = if body.is_some() {
         Method::POST
     } else {
         Method::GET
     };
-    let req = Request::builder()
+    let mut req = Request::builder()
         .method(method)
         .uri(path)
         .header(header::HOST, "localhost")
-        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CONTENT_TYPE, "application/json");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let req = req
         .body(Full::new(body.unwrap_or_default()))
         .expect("a valid request");
     let res = c.send_request(req).await?;
-    let status = res.status();
-    Ok((status, res.into_body().collect().await?.to_bytes()))
+    let (parts, body) = res.into_parts();
+    Ok((
+        parts.status,
+        parts.headers,
+        body.collect().await?.to_bytes(),
+    ))
 }
 
 /// The sum of `name`'s samples in Prometheus text (`/metrics`): unlabelled,

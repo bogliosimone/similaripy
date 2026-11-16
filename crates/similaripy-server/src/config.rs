@@ -29,6 +29,9 @@ pub struct ModelConfig {
     pub path: PathBuf,
     /// Map the model's files instead of reading them into memory.
     pub mmap: bool,
+    /// The `model.name` of every response (V6); "" = the directory's
+    /// basename (a saved model is never replaced: the directory is a version).
+    pub name: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -77,6 +80,7 @@ impl Default for ModelConfig {
         Self {
             path: PathBuf::new(),
             mmap: true,
+            name: String::new(),
         }
     }
 }
@@ -104,6 +108,24 @@ impl Default for Limits {
 impl Default for Defaults {
     fn default() -> Self {
         Self { sorted: true }
+    }
+}
+
+impl ModelConfig {
+    /// An empty `name` = the directory's basename (`/models/x/` and `x` too;
+    /// `.` / `..` by the directory they name; no last part at all (`/`, or
+    /// `..` not found) as written). `parse` and `App::new` both call it.
+    pub fn fill_name(&mut self) {
+        if !self.name.is_empty() {
+            return;
+        }
+        let path = &self.path;
+        let full = path.file_name().is_none().then(|| path.canonicalize().ok());
+        let named = full.flatten().unwrap_or_else(|| path.clone());
+        self.name = match named.file_name() {
+            Some(n) => n.to_string_lossy().into_owned(),
+            None => path.display().to_string(),
+        };
     }
 }
 
@@ -206,7 +228,7 @@ pub fn parse(
     for (key, v, source) in env.into_iter().chain(flags) {
         set(&mut table, &defaults, &key, v).map_err(|e| format!("{source}: {e}"))?;
     }
-    let cfg: Config = Value::Table(table)
+    let mut cfg: Config = Value::Table(table)
         .try_into()
         .map_err(|e| format!("config: {}", e.to_string().trim_end().replace('\n', " ")))?;
     if cfg.model.path.as_os_str().is_empty() {
@@ -214,6 +236,7 @@ pub fn parse(
             "model.path is required (--model DIR, SIMILARIPY_MODEL__PATH or [model] path)".into(),
         );
     }
+    cfg.model.fill_name();
     if cfg.server.threads == 0 {
         return Err("server.threads must be >= 1".into());
     }
@@ -369,6 +392,7 @@ mod tests {
             model: ModelConfig {
                 path: "/models/x".into(),
                 mmap: false,
+                name: "knn-7".into(),
             },
             server: ServerConfig {
                 addr: "0.0.0.0:9".into(),
@@ -385,6 +409,7 @@ mod tests {
         let keys = [
             ("model.path", "/models/x"),
             ("model.mmap", "false"),
+            ("model.name", "knn-7"),
             ("server.addr", "0.0.0.0:9"),
             ("server.threads", "3"),
             ("server.block_size", "64"),
@@ -503,6 +528,26 @@ mod tests {
             cfg(&["--model", "/m"], &env).unwrap().model.path.to_str(),
             Some("/m")
         );
+    }
+
+    #[test]
+    fn model_name_defaults_to_the_directory() {
+        let name = |args: &[&str]| cfg(args, &[]).unwrap().model.name;
+        assert_eq!(
+            name(&["--model", "/models/knn-2026-11-16"]),
+            "knn-2026-11-16"
+        );
+        assert_eq!(
+            name(&["--model", "/models/knn-2026-11-16/"]),
+            "knn-2026-11-16"
+        );
+        assert_eq!(name(&["--model", "/"]), "/");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            name(&["--model", "."]),
+            cwd.file_name().unwrap().to_str().unwrap()
+        );
+        assert_eq!(name(&["--model", "/m", "--model.name", "a"]), "a");
     }
 
     #[test]

@@ -14,6 +14,7 @@ similaripy-server [--config FILE] [--section.key VALUE ...]
 Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flags.
   --model.path DIR            an ItemKNN.save directory (required)
   --model.mmap BOOL           map the model's files; default true
+  --model.name NAME           the model name in every answer; default the directory's name
   --server.addr HOST:PORT     default 127.0.0.1:8080
   --server.threads N          one Worker each; default: P-cores (macOS), available CPUs (Linux)
   --server.block_size B       auto | off | N entries; default auto (from threads)
@@ -59,13 +60,26 @@ fn run() -> Result<(), String> {
     let t = std::time::Instant::now();
     let model = Model::load(&dir, cfg.model.mmap).map_err(|e| e.to_string())?;
     let loaded = t.elapsed();
+    // Which similaripy saved it: the start-up log only (V6 revised)
+    let written_by = std::fs::read_to_string(dir.join("meta.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|m| m["written_by"].as_str().map(String::from))
+        .unwrap_or_else(|| "?".into());
+    if cfg.model.name == "model" {
+        eprintln!(
+            "similaripy-server: warning: model.name is \"model\" (the directory's name): \
+             set model.name to tell model versions apart in answers"
+        );
+    }
+    let name = cfg.model.name.clone();
     let (items, active) = (model.n_items(), model.n_active());
     let threads = cfg.server.threads;
     let app = Arc::new(App::new(model, cfg).map_err(|e| e.to_string())?);
     let listener = TcpListener::bind(&addr).map_err(|e| format!("{addr}: {e}"))?;
     eprintln!(
-        "similaripy-server: {} ({items} items, {active} active, loaded in {loaded:.1?}), \
-         {threads} threads, block {}, listening on {addr}",
+        "similaripy-server: model {name:?} = {} ({items} items, {active} active, written by \
+         {written_by}, loaded in {loaded:.1?}), {threads} threads, block {}, listening on {addr}",
         dir.display(),
         app.block(),
     );

@@ -25,7 +25,7 @@ use tonic::transport::{Channel, Endpoint};
 
 const USAGE: &str = "\
 loadgen --requests FILE [options]
-  --requests FILE   one /recommend body per line (benchmarks/server_prep.py)
+  --requests FILE   one /v1/recommend body per line (benchmarks/server_prep.py)
   --addr HOST:PORT  default 127.0.0.1:8080
   --conns N         callers, one keep-alive connection each; default 64 (>= server threads x callers)
   --grpc            send gRPC calls (similaripy.v1.Recommender/Recommend) instead of JSON
@@ -86,10 +86,12 @@ impl Client {
     async fn call(&mut self, bodies: &Bodies, i: usize, read: bool) -> Sent {
         match (self, bodies) {
             (Client::Http(c), Bodies::Json(b)) => {
-                match send(c, "/recommend", Some(b[i].clone())).await {
+                match send(c, "/v1/recommend", Some(b[i].clone())).await {
                     Ok((StatusCode::OK, body)) if read => {
                         match serde_json::from_slice::<Reply>(&body) {
-                            Ok(r) => Sent::Ok(Some((r.ids, r.scores))),
+                            Ok(r) => {
+                                Sent::Ok(Some(r.items.iter().map(|x| (x.id, x.score)).unzip()))
+                            }
                             Err(e) => Sent::Rejected(e.to_string()),
                         }
                     }
@@ -381,8 +383,13 @@ async fn step(opts: &Opts, bodies: &Arc<Bodies>, rate: f64) -> Result<Step, Stri
 
 #[derive(Deserialize)]
 struct Reply {
-    ids: Vec<i64>,
-    scores: Vec<f32>,
+    items: Vec<Item>,
+}
+
+#[derive(Deserialize)]
+struct Item {
+    id: i64,
+    score: f32,
 }
 
 #[derive(Deserialize)]
