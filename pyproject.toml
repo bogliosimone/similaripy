@@ -60,7 +60,7 @@ exclude = [
 ]
 
 [tool.uv]
-# Rebuild the editable install when the Rust sources change
+# Rebuild the editable install when the Rust sources or the compiler change
 cache-keys = [
   { file = "pyproject.toml" },
   { file = "Cargo.toml" },
@@ -71,6 +71,8 @@ cache-keys = [
   { file = "crates/similaripy-core/Cargo.toml" },
   { file = "crates/similaripy-py/Cargo.toml" },
   { file = ".cargo/config.toml" },
+  # A toolchain-only bump changes no other key: without it the old compiler's .so stays
+  { file = "rust-toolchain.toml" },
 ]
 
 [tool.cibuildwheel]
