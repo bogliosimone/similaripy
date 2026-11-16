@@ -27,7 +27,7 @@ mod ids;
 mod model;
 mod request;
 
-pub use model::{BlockSize, CLUSTER_HEAD, Core, Entry, ItemOrder, Model, Parts};
+pub use model::{BlockSize, CLUSTER_HEAD, Core, Entry, FORMAT, ItemOrder, Model, Parts};
 pub use request::{
     Batch, BatchRequest, Lists, Request, Stats, Worker, recommend, recommend_batch, score,
     score_batch,
