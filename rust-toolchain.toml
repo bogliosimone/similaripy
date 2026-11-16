@@ -1,7 +1,7 @@
-# Pinned: the D14 codegen fixes were benchmarked on 1.99.0; 1.99.1 (a fix for an
-# x86_64 miscompile) emits the same kernel instructions.
+# Pinned: benchmarked on 1.100.0-beta.8 against 1.99.1 (Yambda 50M + 500M, neutral); 1.100.0
+# emits the same hot-loop instructions as that beta.
 # Upgrading = rerun Yambda 500M (benchmarks/README.md, "Codegen-sensitive hot loops").
 [toolchain]
-channel = "1.99.1"
+channel = "1.100.0"
 components = ["clippy", "rustfmt"]
 profile = "minimal"
