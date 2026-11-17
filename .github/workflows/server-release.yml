@@ -1,0 +1,233 @@
+# similaripy-server release (server plan S5f): its own artifact, apart from the
+# wheels. Pushing a tag `server-v<version>` (or `server-v<version>-rc.N`, a dry
+# run) builds the binaries, smoke-tests them, pushes the image to GHCR and makes
+# a GitHub pre-release. A Release made here with the workflow's token starts no
+# other workflow (pypi-publish.yml also skips `server-v*` releases).
+# On PRs that touch the server's inputs: the Linux binaries and the image are
+# built and smoke-tested, nothing is pushed or released.
+
+name: Server release
+
+on:
+  push:
+    tags: [ "server-v*" ]
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/config.toml"
+      - "tests/data/itemknn-format1/**"
+      - ".github/workflows/server-release.yml"
+
+# A new push cancels the outdated run of the same PR; tag runs are never cancelled
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Read-only token unless a job asks for more
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/similaripy-server
+
+jobs:
+  check:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      image_tags: ${{ steps.v.outputs.image_tags }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag matches the crate version
+        # server-v1.0.0 -> image :1.0.0 + :1.0; server-v1.0.0-rc.1 -> :1.0.0-rc.1 only
+        id: v
+        run: |
+          version=$(grep -m1 '^version = ' crates/similaripy-server/Cargo.toml | cut -d'"' -f2)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            tag=${GITHUB_REF_NAME#server-v}
+            case $tag in
+              "$version") tags="$IMAGE:$version $IMAGE:${version%.*}" ;;
+              "$version"-rc.[0-9]*) tags="$IMAGE:$tag" ;;
+              *) echo "Tag $GITHUB_REF_NAME does not match server version $version (server-v$version or server-v$version-rc.N)"; exit 1 ;;
+            esac
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "image_tags=$tags" >> "$GITHUB_OUTPUT"
+          fi
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, os: ubuntu-latest }
+          - { arch: aarch64, os: ubuntu-24.04-arm }
+    env:
+      NAME: similaripy-server-${{ needs.check.outputs.version }}-${{ matrix.arch }}-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build in the manylinux_2_28 container
+        # glibc 2.28, as the wheels: runs on RHEL / Alma 8+, Debian 10+, Ubuntu 18.10+.
+        # The image has no Rust: rustup, then the rust-toolchain.toml pin (as
+        # cibuildwheel's before-all). No RUSTFLAGS: it would replace
+        # .cargo/config.toml's function alignment (D124).
+        run: |
+          docker run --rm -v "$PWD":/io -w /io quay.io/pypa/manylinux_2_28_${{ matrix.arch }}:latest bash -euxc '
+            curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            export PATH=$HOME/.cargo/bin:$PATH
+            rustup toolchain install
+            cargo build --release --locked -p similaripy-server'
+
+      - name: Smoke test on the oldest and a common distro
+        # The binary alone in clean containers: almalinux:8 = glibc 2.28, the floor
+        run: |
+          for distro in almalinux:8 ubuntu:22.04; do
+            docker run -d --name smoke -p 8080:8080 \
+              -v "$PWD/target/release/similaripy-server:/usr/local/bin/similaripy-server:ro" \
+              -v "$PWD/tests/data/itemknn-format1:/model:ro" \
+              "$distro" similaripy-server --model /model --addr 0.0.0.0:8080
+            crates/similaripy-server/smoke.sh || { docker logs smoke; exit 1; }
+            docker rm -f smoke
+          done
+
+      - name: Archive
+        # An artifact loses the executable bit: the archive keeps it
+        run: |
+          mkdir -p "dist/$NAME"
+          cp target/release/similaripy-server LICENSE crates/similaripy-server/proto/similaripy/v1/recommender.proto "dist/$NAME/"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.NAME }}
+          path: dist/${{ env.NAME }}.tar.gz
+
+  macos:
+    # Tags only: macOS arm64 runners are the scarce ones (PR jobs were cancelled
+    # before running), and the Linux jobs already check the code on PRs
+    name: macOS arm64
+    if: github.event_name == 'push'
+    needs: check
+    runs-on: macos-latest
+    env:
+      NAME: similaripy-server-${{ needs.check.outputs.version }}-aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        # One retry after cleaning up a half-installed pin, as in the other workflows
+        run: |
+          rustup toolchain install || {
+            rustup toolchain uninstall "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+            rustup toolchain install
+          }
+
+      - name: Build
+        run: cargo build --release --locked -p similaripy-server
+
+      - name: Smoke test
+        run: |
+          target/release/similaripy-server --model tests/data/itemknn-format1 &
+          crates/similaripy-server/smoke.sh
+          kill $!
+
+      - name: Archive
+        run: |
+          mkdir -p "dist/$NAME"
+          cp target/release/similaripy-server LICENSE crates/similaripy-server/proto/similaripy/v1/recommender.proto "dist/$NAME/"
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.NAME }}
+          path: dist/${{ env.NAME }}.tar.gz
+
+  image:
+    # The Linux binaries copied into distroless/cc (nonroot): nothing is compiled
+    # or emulated here, so the image runs exactly the binaries tested above
+    name: Image
+    # After every binary (macOS too on tags), so a failed build never leaves a
+    # pushed image without its release; macOS is skipped on PRs, which is fine
+    needs: [check, linux, macos]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: similaripy-server-*-linux-gnu
+          path: dist
+          merge-multiple: true
+
+      - name: Build context
+        run: |
+          for pair in amd64:x86_64 arm64:aarch64; do
+            mkdir -p "ctx/${pair%%:*}"
+            tar -xzf dist/*-"${pair#*:}"-unknown-linux-gnu.tar.gz -C "ctx/${pair%%:*}" --strip-components 1
+          done
+
+      - name: Smoke test the amd64 image
+        run: |
+          docker build -t similaripy-server:smoke -f crates/similaripy-server/Dockerfile ctx
+          docker run -d --name smoke -p 8080:8080 -v "$PWD/tests/data/itemknn-format1:/model:ro" similaripy-server:smoke --model /model
+          crates/similaripy-server/smoke.sh || { docker logs smoke; exit 1; }
+          docker rm -f smoke
+
+      - name: Push the multi-arch image
+        if: github.event_name == 'push'
+        # The first push creates a private package: making it public is a
+        # one-time click in the package settings (and can't be undone)
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAGS: ${{ needs.check.outputs.image_tags }}
+          VERSION: ${{ needs.check.outputs.tag }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --use
+          docker buildx build --push --platform linux/amd64,linux/arm64 \
+            --label "org.opencontainers.image.version=$VERSION" \
+            $(printf -- '-t %s ' $TAGS) -f crates/similaripy-server/Dockerfile ctx
+
+  release:
+    name: GitHub release
+    if: github.event_name == 'push'
+    needs: [check, linux, macos, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: similaripy-server-*
+          path: dist
+          merge-multiple: true
+
+      - name: Pre-release with the archives
+        # Pre-release and not "latest": the library's release stays the latest one
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --prerelease --latest=false --title "similaripy-server $TAG (experimental)" \
+            --notes "Experimental HTTP/JSON + gRPC server for models saved by similaripy 1.x (saved format 1). No auth, no TLS: private networks only.
+
+          Image: \`docker pull $IMAGE:$TAG\`
+          Binaries: Linux x86_64 / arm64 (glibc >= 2.28), macOS arm64 (unsigned: \`xattr -d com.apple.quarantine similaripy-server\`). Checksums in SHA256SUMS." \
+            *.tar.gz SHA256SUMS
