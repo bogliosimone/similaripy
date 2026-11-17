@@ -692,7 +692,9 @@
         "required": [
           "allowed",
           "include",
-          "exclude"
+          "exclude",
+          "error",
+          "error"
         ],
         "properties": {
           "allowed": {
@@ -718,6 +720,13 @@
                 "type": "null"
               }
             ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last failed read of this view's files (null: none); the view still serves the files as described here."
           }
         }
       },
@@ -726,7 +735,9 @@
         "required": [
           "file",
           "ids",
-          "known"
+          "known",
+          "modified",
+          "modified"
         ],
         "properties": {
           "file": {
@@ -739,6 +750,13 @@
           "known": {
             "type": "integer",
             "description": "Of which the model has."
+          },
+          "modified": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "The file's modification time when read (Unix seconds; null if the file system has none): an edit is served once this changes."
           }
         }
       },
