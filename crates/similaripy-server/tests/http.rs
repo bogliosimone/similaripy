@@ -1343,7 +1343,9 @@ fn binary_exits_0_on_sigterm() {
     use std::process::{Command, Stdio};
     let dir = std::env::temp_dir().join(format!("similaripy-server-bin-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    model().save(&dir, "test").unwrap();
+    model().save(&dir.join("v1"), "test").unwrap();
+    // Served through a symlink: loaded from the directory it names (V22).
+    std::os::unix::fs::symlink("v1", dir.join("current")).unwrap();
     /// Killed and its model removed however the test ends.
     struct Child(std::process::Child, std::path::PathBuf);
     impl Drop for Child {
@@ -1353,8 +1355,10 @@ fn binary_exits_0_on_sigterm() {
             let _ = std::fs::remove_dir_all(&self.1);
         }
     }
+    let link = dir.join("current");
+    let resolved = dir.join("v1").canonicalize().unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_similaripy-server"))
-        .args(["--model", dir.to_str().unwrap(), "--addr", "127.0.0.1:0"])
+        .args(["--model", link.to_str().unwrap(), "--addr", "127.0.0.1:0"])
         .args(["--threads", "1", "--timeouts.shutdown_grace", "3"])
         .stderr(Stdio::piped())
         .spawn()
@@ -1365,6 +1369,8 @@ fn binary_exits_0_on_sigterm() {
     let addr: SocketAddr = loop {
         let line = log.next().expect("a listening line").unwrap();
         if let Some((_, a)) = line.split_once("listening on ") {
+            let shown = format!("= {} (", resolved.display());
+            assert!(line.contains(&shown), "{line}");
             break a.trim().parse().unwrap();
         }
     };
