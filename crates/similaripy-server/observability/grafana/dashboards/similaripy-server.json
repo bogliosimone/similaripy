@@ -14,6 +14,48 @@
   },
   "panels": [
     {
+      "id": 13,
+      "type": "table",
+      "title": "Instances: version and model served",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "similaripy_server_info",
+          "format": "table",
+          "instant": true,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "job": true
+            },
+            "renameByName": {}
+          }
+        }
+      ],
+      "description": "similaripy_server_info{version, model}: during a rolling update, which pod serves which model.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
       "type": "stat",
       "title": "Threads",
       "datasource": {
@@ -22,7 +64,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 0,
+        "y": 4,
         "w": 6,
         "h": 3
       },
@@ -57,7 +99,7 @@
       },
       "gridPos": {
         "x": 6,
-        "y": 0,
+        "y": 4,
         "w": 6,
         "h": 3
       },
@@ -92,7 +134,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 0,
+        "y": 4,
         "w": 6,
         "h": 3
       },
@@ -127,7 +169,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 0,
+        "y": 4,
         "w": 6,
         "h": 3
       },
@@ -163,7 +205,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 3,
+        "y": 7,
         "w": 12,
         "h": 8
       },
@@ -212,7 +254,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 3,
+        "y": 7,
         "w": 12,
         "h": 8
       },
@@ -261,7 +303,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 11,
+        "y": 15,
         "w": 12,
         "h": 8
       },
@@ -344,7 +386,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 11,
+        "y": 15,
         "w": 12,
         "h": 8
       },
@@ -427,7 +469,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 19,
+        "y": 23,
         "w": 8,
         "h": 8
       },
@@ -494,7 +536,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 19,
+        "y": 23,
         "w": 8,
         "h": 8
       },
@@ -543,7 +585,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 19,
+        "y": 23,
         "w": 8,
         "h": 8
       },
@@ -601,7 +643,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 27,
+        "y": 31,
         "w": 24,
         "h": 8
       },

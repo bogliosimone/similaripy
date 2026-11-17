@@ -61,6 +61,7 @@ Knobs (env vars or an env file): `MODEL_DIR`, `REQUESTS`, `SERVER_CONFIG`,
 
 | Panel | Query (simplified) |
 |---|---|
+| Instances | `similaripy_server_info`: version and model per instance (a rolling update shows both models) |
 | Requests/s per proto | `rate(request_seconds_count)` by proto |
 | CPU per request | `rate(process_cpu_seconds_total) / rate(request_seconds_count)` |
 | Request / compute latency | `histogram_quantile(0.5/0.95/0.99, ...)` by proto; red line = 10 ms budget |

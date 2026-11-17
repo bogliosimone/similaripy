@@ -21,11 +21,20 @@ First release, beside similaripy 1.0.0. Reads models saved by similaripy 1.x
   `--section.key` flags; `--print-config`, `GET /config`; an unknown key is a
   start-up error.
 - Limits: `k_max`, `max_history` with `history_policy` truncate or reject,
-  1 MiB request bodies.
-- `defaults.sorted` (`false` for candidate generation) and `defaults.view`.
+  `max_body_bytes` (default 1 MiB, JSON and gRPC).
+- `defaults.k`, `defaults.sorted` (`false` for candidate generation) and
+  `defaults.view`.
+- Errors as JSON `{"error": {"code", "message", "request_id"}}` (413 and 408
+  included), `code` a fixed string (`bad_json`, `k_over_max`,
+  `history_over_max`, `unknown_view`, `bad_weights`, `bad_body`,
+  `body_timeout`, `body_too_large`, `internal`); gRPC status codes with the
+  same `code` in the `x-error-code` metadata. One stderr line per server
+  error.
 - Named views from id files (`[views.NAME]` include / exclude files), picked
   per request, ANDed with the request's include / exclude; `GET /v1/views`.
-- `GET /metrics` (Prometheus), `GET /health` (liveness), `GET /ready`
+- `GET /metrics` (Prometheus: `similaripy_server_info{version, model}`,
+  request / compute histograms, counters, `process_start_time_seconds`,
+  `process_resident_memory_bytes`), `GET /health` (liveness), `GET /ready`
   (readiness: 503 while draining).
 - Graceful shutdown on SIGTERM / SIGINT: `timeouts.drain_delay`, then
   `timeouts.shutdown_grace`; `timeouts.header_read` against slow clients.

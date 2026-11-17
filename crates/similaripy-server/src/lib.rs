@@ -40,6 +40,7 @@ use similaripy_core::serve::{Model, Request, Stats, Worker};
 
 pub use config::Config;
 use config::{HistoryPolicy, secs};
+pub use metrics::mark_start;
 
 use metrics::{Counter, Proto};
 use views::{View, ViewInfo};
@@ -54,20 +55,101 @@ pub mod pb {
     tonic::include_proto!("similaripy.v1");
 }
 
-/// Request bodies over this are rejected (JSON 413, gRPC OUT_OF_RANGE).
+/// `limits.max_body_bytes`' default: request bodies over it are rejected
+/// (JSON 413, gRPC OUT_OF_RANGE).
 pub const BODY_LIMIT: usize = 1 << 20;
-
-/// Python's `SparseKNN.recommend` defaults, for both formats (exclude_seen
-/// defaults to true; sorted to `defaults.sorted`).
-const DEFAULT_K: usize = 10;
 
 /// The request id's header (HTTP) and metadata key (gRPC).
 const X_REQUEST_ID: &str = "x-request-id";
 
-/// A request with no answer: 400 / INVALID_ARGUMENT or 500 / INTERNAL.
-enum Fail {
-    Invalid(String),
-    Internal(String),
+/// gRPC's metadata key for an error's `Code` (JSON: `error.code`).
+const X_ERROR_CODE: &str = "x-error-code";
+
+/// Why a request has no answer: JSON `error.code`, gRPC `x-error-code`
+/// (V21). The strings are a contract: new ones may come, none change.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Code {
+    /// Not valid JSON, an unknown or missing field, a wrong type.
+    BadJson,
+    /// The body couldn't be read (not its size, not its time).
+    BadBody,
+    KOverMax,
+    /// Over `max_history` under `history_policy = reject`.
+    HistoryOverMax,
+    UnknownView,
+    /// Rejected by the worker: its only request checks are the weights'
+    /// (length, finite; test `edge_rejections`).
+    BadWeights,
+    BodyTimeout,
+    BodyTooLarge,
+    Internal,
+}
+
+impl Code {
+    fn as_str(self) -> &'static str {
+        match self {
+            Code::BadJson => "bad_json",
+            Code::BadBody => "bad_body",
+            Code::KOverMax => "k_over_max",
+            Code::HistoryOverMax => "history_over_max",
+            Code::UnknownView => "unknown_view",
+            Code::BadWeights => "bad_weights",
+            Code::BodyTimeout => "body_timeout",
+            Code::BodyTooLarge => "body_too_large",
+            Code::Internal => "internal",
+        }
+    }
+
+    fn http(self) -> StatusCode {
+        match self {
+            Code::BodyTimeout => StatusCode::REQUEST_TIMEOUT,
+            Code::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Code::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::BAD_REQUEST,
+        }
+    }
+
+    fn grpc(self) -> tonic::Code {
+        match self {
+            Code::BodyTooLarge => tonic::Code::OutOfRange,
+            Code::Internal => tonic::Code::Internal,
+            _ => tonic::Code::InvalidArgument,
+        }
+    }
+}
+
+/// A request with no answer: its `Code` and a message for people.
+struct Fail(Code, String);
+
+impl Fail {
+    /// `{"error": {"code", "message", "request_id"}}` with the code's status.
+    fn json(self, request_id: &str) -> Response {
+        self.log(request_id);
+        let Fail(code, message) = self;
+        let body = serde_json::json!({
+            "error": {"code": code.as_str(), "message": message, "request_id": request_id}
+        });
+        json(code.http(), &body)
+    }
+
+    /// The code's status, the message, `x-error-code` in the metadata.
+    fn grpc(self, request_id: &str) -> tonic::Status {
+        self.log(request_id);
+        let Fail(code, message) = self;
+        let mut s = tonic::Status::new(code.grpc(), message);
+        s.metadata_mut().insert(
+            X_ERROR_CODE,
+            tonic::metadata::AsciiMetadataValue::from_static(code.as_str()),
+        );
+        s
+    }
+
+    /// One stderr line per server error (F13); client errors only count.
+    fn log(&self, request_id: &str) {
+        if self.0 == Code::Internal {
+            eprintln!("similaripy-server: error: request {request_id}: {}", self.1);
+        }
+    }
 }
 
 /// What is served: the model and its named views (each a `Model::view` of
@@ -105,6 +187,7 @@ impl App {
     pub fn new(model: Model, mut cfg: Config) -> Result<Self, String> {
         cfg.model.fill_name();
         cfg.check_timeouts()?;
+        cfg.check_limits()?;
         let block = cfg
             .server
             .block_size
@@ -198,10 +281,10 @@ impl App {
         let limits = &self.cfg.limits;
         if q.k > limits.k_max {
             m.bad_request();
-            return Err(Fail::Invalid(format!(
-                "k = {} > k_max = {}",
-                q.k, limits.k_max
-            )));
+            return Err(Fail(
+                Code::KOverMax,
+                format!("k = {} > k_max = {}", q.k, limits.k_max),
+            ));
         }
         LOCAL.with_borrow_mut(|l| {
             let l = l.as_mut().expect("a request on a server thread");
@@ -227,9 +310,10 @@ impl App {
                     Some((name, v)) => (&v.model, Some(name.as_str()), Some(&v.served)),
                     None => {
                         m.bad_request();
-                        return Err(Fail::Invalid(format!(
-                            "unknown view {name:?} (GET /v1/views lists them)"
-                        )));
+                        return Err(Fail(
+                            Code::UnknownView,
+                            format!("unknown view {name:?} (GET /v1/views lists them)"),
+                        ));
                     }
                 }
             };
@@ -238,10 +322,10 @@ impl App {
             if cut > 0 {
                 if limits.history_policy == HistoryPolicy::Reject {
                     m.bad_request();
-                    return Err(Fail::Invalid(format!(
-                        "{n} history ids > max_history = {}",
-                        limits.max_history
-                    )));
+                    return Err(Fail(
+                        Code::HistoryOverMax,
+                        format!("{n} history ids > max_history = {}", limits.max_history),
+                    ));
                 }
                 m.truncated();
             }
@@ -288,17 +372,22 @@ impl App {
                         compute,
                     }))
                 }
-                Err(e @ Error::InvalidInput(_)) => Err(Fail::Invalid(e.to_string())),
-                Err(e) => Err(Fail::Internal(e.to_string())),
+                Err(e @ Error::InvalidInput(_)) => Err(Fail(Code::BadWeights, e.to_string())),
+                Err(e) => Err(Fail(Code::Internal, e.to_string())),
             }
         })
     }
 
-    fn recommend_json(&self, m: &metrics::Thread, body: &[u8], request_id: &str) -> Response {
-        let q: Query = match serde_json::from_slice(body) {
-            Ok(q) => q,
-            Err(e) => return bad_request(m, e),
-        };
+    fn recommend_json(
+        &self,
+        m: &metrics::Thread,
+        body: &[u8],
+        request_id: &str,
+    ) -> Result<Response, Fail> {
+        let q: Query = serde_json::from_slice(body).map_err(|e| {
+            m.bad_request();
+            Fail(Code::BadJson, e.to_string())
+        })?;
         // Python's rounding: numpy.float32(a Python float), not serde's
         // direct f32 parse (it rounds a decimal just above an f32 halfway
         // point up, numpy's f64 → f32 to even; test json_f32_parsed_as_python).
@@ -306,13 +395,13 @@ impl App {
         let req = Request {
             ids: &q.history,
             weights: weights.as_deref(),
-            k: q.k,
+            k: q.k.unwrap_or(self.cfg.defaults.k),
             exclude_seen: q.exclude_seen,
             include: q.include.as_deref(),
             exclude: q.exclude.as_deref(),
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
         };
-        let r = self.run(m, Proto::Json, &req, q.view.as_deref(), |a| {
+        self.run(m, Proto::Json, &req, q.view.as_deref(), |a| {
             let reply = Reply {
                 items: Items(a.ids, a.scores),
                 model: ModelInfo {
@@ -331,12 +420,7 @@ impl App {
                 HeaderValue::try_from(timing).expect("ASCII"),
             );
             r
-        });
-        match r {
-            Ok(r) => r,
-            Err(Fail::Invalid(e)) => error(StatusCode::BAD_REQUEST, e),
-            Err(Fail::Internal(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
-        }
+        })
     }
 
     fn recommend_grpc(
@@ -344,12 +428,12 @@ impl App {
         m: &metrics::Thread,
         q: &pb::RecommendRequest,
         request_id: &str,
-    ) -> Result<pb::RecommendResponse, tonic::Status> {
+    ) -> Result<pb::RecommendResponse, Fail> {
         let req = Request {
             ids: &q.history,
             // proto3: an empty list is not sent; unweighted (T17)
             weights: (!q.weights.is_empty()).then_some(&q.weights[..]),
-            k: q.k.map_or(DEFAULT_K, |k| k as usize),
+            k: q.k.map_or(self.cfg.defaults.k, |k| k as usize),
             exclude_seen: q.exclude_seen.unwrap_or(true),
             include: q.include.as_ref().map(|l| &l.ids[..]),
             exclude: (!q.exclude.is_empty()).then_some(&q.exclude[..]),
@@ -357,7 +441,7 @@ impl App {
         };
         // T18: one copy of the answer, prost's default codec encodes it
         let view = q.view.as_deref();
-        let r = self.run(m, Proto::Grpc, &req, view, |a| pb::RecommendResponse {
+        self.run(m, Proto::Grpc, &req, view, |a| pb::RecommendResponse {
             ids: a.ids.to_vec(),
             scores: a.scores.to_vec(),
             model: Some(pb::ModelInfo {
@@ -372,10 +456,6 @@ impl App {
                 truncated: a.history.truncated,
                 unknown: a.history.unknown,
             }),
-        });
-        r.map_err(|e| match e {
-            Fail::Invalid(e) => tonic::Status::invalid_argument(e),
-            Fail::Internal(e) => tonic::Status::internal(e),
         })
     }
 
@@ -406,7 +486,7 @@ impl App {
 }
 
 /// `POST /v1/recommend`'s body; defaults = Python's `SparseKNN.recommend`, but
-/// `sorted` absent = `defaults.sorted`.
+/// `k` and `sorted` absent = `defaults.k` and `defaults.sorted`.
 /// Unknown fields are an error (a typo like "weight" would otherwise serve
 /// unweighted).
 #[derive(Deserialize)]
@@ -417,8 +497,8 @@ struct Query {
     #[serde(default)]
     /// f64 as sent, rounded to f32 after (numpy's two steps).
     weights: Option<Vec<f64>>,
-    #[serde(default = "ten")]
-    k: usize,
+    #[serde(default)]
+    k: Option<usize>,
     #[serde(default = "yes")]
     exclude_seen: bool,
     #[serde(default)]
@@ -445,7 +525,7 @@ pub fn proto_from_json(body: &[u8]) -> Result<pb::RecommendRequest, serde_json::
             .iter()
             .map(|&x| x as f32)
             .collect(),
-        k: Some(q.k.try_into().unwrap_or(u32::MAX)),
+        k: q.k.map(|k| k.try_into().unwrap_or(u32::MAX)),
         exclude_seen: Some(q.exclude_seen),
         include: q.include.map(|ids| pb::IdList { ids }),
         exclude: q.exclude.unwrap_or_default(),
@@ -453,10 +533,6 @@ pub fn proto_from_json(body: &[u8]) -> Result<pb::RecommendRequest, serde_json::
         view: q.view,
         history: q.history,
     })
-}
-
-fn ten() -> usize {
-    DEFAULT_K
 }
 
 fn yes() -> bool {
@@ -550,20 +626,6 @@ fn json(status: StatusCode, body: &impl Serialize) -> Response {
     (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
 }
 
-fn error(status: StatusCode, e: impl std::fmt::Display) -> Response {
-    json(status, &serde_json::json!({ "error": e.to_string() }))
-}
-
-fn bad_request(m: &metrics::Thread, e: impl std::fmt::Display) -> Response {
-    bad_request_as(m, StatusCode::BAD_REQUEST, e)
-}
-
-/// A client error counted in bad_requests.
-fn bad_request_as(m: &metrics::Thread, status: StatusCode, e: impl std::fmt::Display) -> Response {
-    m.bad_request();
-    error(status, e)
-}
-
 fn since(s: Stats, base: Stats) -> Stats {
     Stats {
         requests: s.requests - base.requests,
@@ -596,8 +658,9 @@ thread_local! {
 /// The routes, over `app`: JSON and gRPC (tonic's decode limit is its own:
 /// `DefaultBodyLimit` doesn't reach it).
 pub fn router(app: Arc<App>) -> Router {
+    let limit = app.cfg.limits.max_body_bytes;
     let grpc = pb::recommender_server::RecommenderServer::new(Grpc(app.clone()))
-        .max_decoding_message_size(BODY_LIMIT);
+        .max_decoding_message_size(limit);
     Router::new()
         .route("/v1/recommend", post(recommend))
         .route("/metrics", get(metrics))
@@ -605,7 +668,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/ready", get(ready))
         .route("/config", get(config))
         .route("/v1/views", get(views))
-        .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(DefaultBodyLimit::max(limit))
         .with_state(app)
         .merge(tonic::service::Routes::new(grpc).into_axum_router())
 }
@@ -614,22 +677,50 @@ async fn recommend(State(app): State<Arc<App>>, req: axum::extract::Request) -> 
     let t = Instant::now();
     let m = &app.metrics[THREAD.get()];
     let id = request_id(req.headers().get(X_REQUEST_ID).map(|v| v.as_bytes()));
-    // Bytes' extractor: the body limit as before (413), here without our
-    // id. The body within header_read of its headers, else 408 (a dribbled
-    // body would hold the connection; hyper's timer covers headers only).
-    // ponytail: JSON only; a gRPC body is read inside tonic (no timeout).
-    let read = Bytes::from_request(req, &());
-    let body = match tokio::time::timeout(secs(app.cfg.timeouts.header_read), read).await {
-        Ok(Ok(b)) => b,
-        Ok(Err(e)) => return e.into_response(),
-        Err(_) => {
-            let e = "request body not received within timeouts.header_read";
-            return with_request_id(bad_request_as(m, StatusCode::REQUEST_TIMEOUT, e), &id);
+    let r = match read_body(&app, req).await {
+        Ok(body) => {
+            let r = app.recommend_json(m, &body, &id);
+            m.total[Proto::Json as usize].record(t.elapsed());
+            r
+        }
+        Err(f) => {
+            m.bad_request();
+            Err(f)
         }
     };
-    let r = with_request_id(app.recommend_json(m, &body, &id), &id);
-    m.total[Proto::Json as usize].record(t.elapsed());
-    r
+    with_request_id(r.unwrap_or_else(|f| f.json(&id)), &id)
+}
+
+/// A JSON endpoint's body: over `limits.max_body_bytes` 413 (a declared
+/// Content-Length at once, else axum's limit as it streams), not within
+/// header_read of its headers 408 (a dribbled body would hold the
+/// connection; hyper's timer covers headers only), unreadable 400.
+// ponytail: JSON only; a gRPC body is read inside tonic (no timeout).
+async fn read_body(app: &App, req: axum::extract::Request) -> Result<Bytes, Fail> {
+    let limit = app.cfg.limits.max_body_bytes;
+    let declared = req
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok()?.parse::<u64>().ok());
+    if let Some(n) = declared.filter(|&n| n > limit as u64) {
+        let e = format!("body of {n} bytes > limits.max_body_bytes = {limit}");
+        return Err(Fail(Code::BodyTooLarge, e));
+    }
+    let read = Bytes::from_request(req, &());
+    match tokio::time::timeout(secs(app.cfg.timeouts.header_read), read).await {
+        Ok(Ok(body)) => Ok(body),
+        Ok(Err(e)) => {
+            let code = match e.status() {
+                StatusCode::PAYLOAD_TOO_LARGE => Code::BodyTooLarge,
+                _ => Code::BadBody,
+            };
+            Err(Fail(code, e.body_text()))
+        }
+        Err(_) => {
+            let e = "request body not received within timeouts.header_read";
+            Err(Fail(Code::BodyTimeout, e.into()))
+        }
+    }
 }
 
 struct Grpc(Arc<App>);
@@ -655,7 +746,8 @@ impl pb::recommender_server::Recommender for Grpc {
                 r.metadata_mut().insert(X_REQUEST_ID, v);
                 Ok(r)
             }
-            Err(mut e) => {
+            Err(f) => {
+                let mut e = f.grpc(&id);
                 e.metadata_mut().insert(X_REQUEST_ID, v);
                 Err(e)
             }
@@ -698,6 +790,8 @@ async fn views(State(app): State<Arc<App>>) -> Response {
 async fn metrics(State(app): State<Arc<App>>) -> String {
     let s = app.state();
     let info = metrics::Info {
+        version: env!("CARGO_PKG_VERSION"),
+        model: &app.cfg.model.name,
         threads: app.cfg.server.threads,
         block: app.block,
         items: s.model.n_items(),

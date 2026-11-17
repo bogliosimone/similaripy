@@ -143,6 +143,8 @@ similaripy-server --config server.toml --server.threads 4
 | `limits.k_max` | `2000` | A larger `k` is rejected. |
 | `limits.max_history` | `1000` | History ids a request uses (Python has no cap). |
 | `limits.history_policy` | `truncate` | A longer history: `truncate` (keep the last `max_history` ids) or `reject` ([History](#history)). |
+| `limits.max_body_bytes` | `1048576` (1 MiB) | A larger request body is rejected (JSON 413, gRPC `OUT_OF_RANGE`). Raise it for a large `include` (about 100k ids per MiB in JSON). |
+| `defaults.k` | `10` | `k` of a request that doesn't send it (at most `limits.k_max`): e.g. `500` for candidate generation. |
 | `defaults.sorted` | `true` | `sorted` of a request that doesn't send it ([Sorted or not](#sorted-or-not)). |
 | `defaults.view` | `""` (the whole model) | `view` of a request that doesn't send it ([Views](#views)). |
 | `timeouts.header_read` | `30` | Seconds a connection has to send a request's headers (and a JSON body: else 408). Also the idle time after which an HTTP/1.1 keep-alive connection is closed. |
@@ -151,8 +153,7 @@ similaripy-server --config server.toml --server.threads 4
 | `views.NAME.include_file` | | View `NAME` allows only the ids in this file. |
 | `views.NAME.exclude_file` | | View `NAME` never returns the ids in this file (either file or both). |
 
-Relative file paths are relative to the server's working directory. Fixed
-limits (not keys): request bodies up to 1 MiB.
+Relative file paths are relative to the server's working directory.
 
 Short flags kept for scripts: `--model DIR` (= `--model.path`), `--addr`,
 `--threads`, `--block-size`, `--max-history`, `--k-max`, `--no-mmap`.
@@ -162,13 +163,14 @@ Short flags kept for scripts: `--model DIR` (= `--model.path`), `--addr`,
 ### `POST /v1/recommend` (JSON)
 
 Fields and defaults as Python's
-[`recommend`](api/serving.md), except `sorted` and `view`:
+[`recommend`](api/serving.md), except `k`, `sorted` and `view` (the
+server's defaults):
 
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `history` | (required) | The user's history, oldest first; ids the model doesn't have are ignored. |
 | `weights` | all 1.0 | One per id. |
-| `k` | `10` | Items to return (at most `limits.k_max`). |
+| `k` | `defaults.k` (`10`) | Items to return (at most `limits.k_max`); `null` = the default. |
 | `exclude_seen` | `true` | Never return the history's items. |
 | `include` | every item | Only these items can be returned. |
 | `exclude` | none | Never these items. |
@@ -186,14 +188,27 @@ Headers:
   the key to join a client's log with the server's.
 - `Server-Timing: compute;dur=0.031`: the model's compute time in ms.
 
-Errors are JSON `{"error": "…"}` (except 413, plain text):
+Errors of `POST /v1/recommend` are JSON, with the request id in the body and
+the header:
 
-| Status | When |
-|--------|------|
-| 400 | Invalid JSON, an unknown field, `k` > `k_max`, a history over `max_history` with `reject`, an unknown view, weights of the wrong length |
-| 408 | The body didn't arrive within `timeouts.header_read` |
-| 413 | Body over 1 MiB (no `x-request-id` on this one) |
-| 500 | A server error |
+```json
+{"error": {"code": "k_over_max", "message": "k = 5000 > k_max = 2000", "request_id": "abc-1"}}
+```
+
+Branch on `code` (fixed strings: new ones may be added, none change), show
+`message` to people (its wording may change).
+
+| Status | `code` | When |
+|--------|--------|------|
+| 400 | `bad_json` | Not valid JSON, an unknown or missing field, a wrong type |
+| 400 | `k_over_max` | `k` > `limits.k_max` |
+| 400 | `history_over_max` | A history over `max_history` with `history_policy = reject` |
+| 400 | `unknown_view` | A `view` not in the config |
+| 400 | `bad_weights` | Weights of the wrong length, or not finite |
+| 400 | `bad_body` | The body couldn't be read (e.g. malformed chunked encoding) |
+| 408 | `body_timeout` | The body didn't arrive within `timeouts.header_read` |
+| 413 | `body_too_large` | Body over `limits.max_body_bytes` (a declared `Content-Length` over it: at once) |
+| 500 | `internal` | A server error (also logged to stderr with the request id) |
 
 ### gRPC
 
@@ -217,8 +232,12 @@ Differences from JSON (protobuf's rules):
   every item, an empty list = no item (as JSON's absent vs `[]`).
 - Unknown fields are ignored, not rejected.
 - Errors are status codes: `INVALID_ARGUMENT` (JSON's 400), `OUT_OF_RANGE`
-  (a message over 1 MiB), `INTERNAL` (a server error or a malformed
-  message). `x-request-id` comes back in the metadata.
+  (a message over `limits.max_body_bytes`), `INTERNAL` (a server error or a
+  malformed message). The metadata carries `x-request-id` and, for the
+  server's own errors, `x-error-code` with JSON's `code` (e.g.
+  `k_over_max`). An oversized or malformed message is rejected by the gRPC
+  library before the server sees it: no `x-error-code`, no
+  `x-request-id`.
 
 ### Other endpoints
 
@@ -258,6 +277,9 @@ The history is used oldest → newest, at most `limits.max_history` ids:
 - `truncate` (default): the oldest ids are cut, the last `max_history` kept;
   cut ids are still excluded from the answer when `exclude_seen` is on.
 - `reject`: a longer history is a 400 / `INVALID_ARGUMENT`.
+
+An empty history (a new user) is not an error: the answer has no items
+(`"items": []`). Fall back to something else, e.g. popular items.
 
 Each answer counts its history: `sent` (ids sent), `truncated` (cut) and
 `unknown` (ids the model doesn't have, among the rest: ignored). A high
@@ -306,9 +328,10 @@ against it.
 
 | Metric | Meaning |
 |--------|---------|
+| `info{version, model}` | Always 1: the server's version and the model it serves (which pod serves which model during a rolling update) |
 | `threads`, `block_size`, `items`, `active_items` | Gauges: the setup |
 | `requests_total{thread}` | Requests computed, per thread |
-| `bad_requests_total` | Requests rejected before compute (JSON, `k`, history, view, 408) |
+| `bad_requests_total` | Requests rejected before compute (JSON body: parse, unreadable, 408, 413; `k`, history, view) |
 | `errors_total` | Requests the model rejected (weights) |
 | `truncated_total` | Histories cut to `max_history` |
 | `history_ids_total`, `known_ids_total` | History ids used, and those the model has |
@@ -316,7 +339,9 @@ against it.
 | `compute_seconds{proto}` | Histogram: the model's compute, per format (`json`, `grpc`) |
 | `request_seconds{proto}` | Histogram: the handler (JSON: parse + compute + serialize) |
 
-Plus `process_cpu_seconds_total`.
+Plus the standard `process_cpu_seconds_total`, `process_start_time_seconds`
+and `process_resident_memory_bytes` (Linux and macOS; it includes the pages
+of a mapped model read so far).
 
 To see them on a dashboard, the repository has a local stack (server,
 Prometheus, Grafana with a ready dashboard, a load generator) that starts
@@ -335,6 +360,30 @@ with one command:
 - **gRPC clients:** a gRPC channel is one HTTP/2 connection, so one channel
   = one server thread. Open several channels, or put an L7 (HTTP/2-aware)
   load balancer in front, which spreads requests, not connections.
+- **Proxies too.** A sidecar or ingress in front keeps a pool of upstream
+  connections (e.g. nginx `keepalive 8`): at most that many threads get
+  work. Keep the pool at least `server.threads`;
+  `requests_total{thread}` shows the balance.
+- **Logs.** Start-up, shutdown and one stderr line per server error (500 /
+  `INTERNAL`, with the request id); client errors (4xx) are only counted.
+
+### Sizing
+
+- **Memory.** With `mmap` (the default) the model's files are read through
+  the page cache, which counts in a container's memory: set the memory
+  limit to at least the model directory's size plus a little per thread.
+  A lower limit isn't an out-of-memory kill but pages dropped and re-read
+  from disk (latency spikes). With `model.mmap = false` the model is
+  ordinary memory: a limit under the model's size kills the process.
+- **Per thread:** at most 4 bytes x active items (the score accumulator;
+  less with column blocks). **Per view:** items / 8 bytes (one bit per
+  item).
+- **Network volumes.** With `mmap`, a page not in memory is a network read
+  inside a request. Copy the model to local disk (bake it into the image,
+  or an `emptyDir` filled at start), or set `model.mmap = false`.
+- **Threads without a CPU limit.** `server.threads` defaults to the CPU
+  *limit*. With only a CPU request (no limit) it sees the whole node (e.g.
+  64 threads for a 4-CPU request): set `server.threads` to the request.
 
 ### Shutdown
 
@@ -348,6 +397,21 @@ On SIGTERM (or Ctrl-C), in order:
 4. the process exits 0. A second signal exits at once with 1.
 
 ### Kubernetes
+
+**Getting the model into the pod.** The simplest way: bake it into an
+image on top of the server's, one image tag per model version (a rollout or
+a rollback is an image change):
+
+```dockerfile
+FROM ghcr.io/bogliosimone/similaripy-server:1.0.0
+COPY --chown=65532 models/itemknn-2026-11-16 /model
+ENV SIMILARIPY_MODEL__PATH=/model SIMILARIPY_MODEL__NAME=itemknn-2026-11-16
+```
+
+The example below mounts a shared volume instead (a
+`PersistentVolumeClaim`). Another common way: an init container copies the
+model from object storage (S3, GCS) into an `emptyDir` before the server
+starts.
 
 A pod is stopped with SIGTERM, then killed after
 `terminationGracePeriodSeconds` (default 30). The load balancer takes a few
@@ -378,6 +442,10 @@ spec:
             - {name: SIMILARIPY_TIMEOUTS__SHUTDOWN_GRACE, value: "10"}
           ports:
             - containerPort: 8080
+          startupProbe:          # the model loads before the port opens
+            httpGet: {path: /health, port: 8080}
+            periodSeconds: 2
+            failureThreshold: 60   # up to 2 minutes
           livenessProbe:
             httpGet: {path: /health, port: 8080}
           readinessProbe:
@@ -392,12 +460,16 @@ spec:
           persistentVolumeClaim: {claimName: models}   # where your saved models live
 ```
 
+- **Startup** probe: the server loads the model before it opens the port
+  (seconds for a multi-GB model on a slow volume). Without it the liveness
+  probe can kill the pod before it listens, in a loop.
 - **Liveness** `/health` stays ok while draining, so the pod isn't killed
   mid-drain; **readiness** `/ready` turns 503 at SIGTERM, so it stops
   getting traffic.
 - `drain_delay` (5 s) + `shutdown_grace` (10 s) must stay under
   `terminationGracePeriodSeconds` (30 s).
-- `server.threads` defaults to the CPU limit (here 4).
+- `server.threads` defaults to the CPU limit (here 4). No CPU limit? Set
+  `SIMILARIPY_SERVER__THREADS` to the CPU request ([Sizing](#sizing)).
 - HTTP/1.1 clients that keep connections open longer than
   `timeouts.header_read` (30 s) without a request see them closed. A pooled
   client usually reconnects, but a POST sent just as the server closes can

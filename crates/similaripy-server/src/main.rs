@@ -24,6 +24,8 @@ Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flag
   --limits.k_max N            reject a larger k; default 2000
   --limits.max_history N      default 1000
   --limits.history_policy P   truncate (keep the last max_history ids) | reject; default truncate
+  --limits.max_body_bytes N   reject a larger request body (JSON 413, gRPC OUT_OF_RANGE); default 1048576
+  --defaults.k N              a request's k when it doesn't send one (<= k_max); default 10
   --defaults.sorted BOOL      a request's sorted when it doesn't send one; default true
   --defaults.view NAME        a request's view when it doesn't send one; default empty (the whole model)
   --views.NAME.include_file F  view NAME allows only the ids in F (one per line)
@@ -41,6 +43,7 @@ Short forms: --model, --addr, --threads, --block-size, --max-history, --k-max, -
   --version, --help";
 
 fn main() {
+    similaripy_server::mark_start();
     if let Err(e) = run() {
         eprintln!("similaripy-server: {e}");
         std::process::exit(1);
