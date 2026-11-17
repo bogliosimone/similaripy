@@ -161,8 +161,10 @@ Short flags kept for scripts: `--model DIR` (= `--model.path`), `--addr`,
 
 ## API
 
-The JSON endpoints are also an OpenAPI 3.1 spec: [Server API](server-api.md)
-(`openapi.json`, in the release archive).
+The JSON endpoints are also an OpenAPI 3.1 spec,
+[`openapi.json`](https://github.com/bogliosimone/similaripy/blob/master/crates/similaripy-server/openapi.json)
+(also in the release archive): import it into a client generator or Postman,
+or open it in [Swagger Editor](https://editor.swagger.io) to browse it.
 
 ### `POST /v1/recommend` (JSON)
 
