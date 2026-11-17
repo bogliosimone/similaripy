@@ -60,6 +60,8 @@ pub struct Limits {
     /// agree on all but the longest histories.
     pub max_history: usize,
     pub history_policy: HistoryPolicy,
+    /// A larger request body is rejected (JSON 413, gRPC OUT_OF_RANGE).
+    pub max_body_bytes: usize,
 }
 
 /// A history longer than `limits.max_history` (V7).
@@ -77,6 +79,8 @@ pub enum HistoryPolicy {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct Defaults {
+    /// Python's `recommend` default; at most `limits.k_max`.
+    pub k: usize,
     /// Python's `recommend` sorts; candidate generation re-scored by a ranker
     /// can set false (U1).
     pub sorted: bool,
@@ -139,6 +143,7 @@ impl Default for Limits {
             k_max: 2000,
             max_history: 1000,
             history_policy: HistoryPolicy::Truncate,
+            max_body_bytes: crate::BODY_LIMIT,
         }
     }
 }
@@ -146,6 +151,7 @@ impl Default for Limits {
 impl Default for Defaults {
     fn default() -> Self {
         Self {
+            k: 10,
             sorted: true,
             view: String::new(),
         }
@@ -208,6 +214,19 @@ impl Config {
                     "timeouts.{key} = {v}: seconds, 0 to a year (header_read > 0)"
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// `defaults.k` <= `limits.k_max`, `max_body_bytes` > 0; `parse` and
+    /// `App::new` both call it.
+    pub fn check_limits(&self) -> Result<(), String> {
+        let (k, k_max) = (self.defaults.k, self.limits.k_max);
+        if k > k_max {
+            return Err(format!("defaults.k = {k} > limits.k_max = {k_max}"));
+        }
+        if self.limits.max_body_bytes == 0 {
+            return Err("limits.max_body_bytes must be >= 1".into());
         }
         Ok(())
     }
@@ -338,6 +357,7 @@ pub fn parse(
         return Err("server.threads must be >= 1".into());
     }
     cfg.check_timeouts()?;
+    cfg.check_limits()?;
     cfg.check_views()?;
     Ok(if print {
         Cli::PrintConfig(cfg)
@@ -469,7 +489,7 @@ mod tests {
     #[test]
     fn defaults_then_file_then_env_then_flags() {
         let f = file(
-            "[model]\npath = \"/m\"\n[limits]\nk_max = 1\nmax_history = 1\n[defaults]\nsorted = false\n",
+            "[model]\npath = \"/m\"\n[limits]\nk_max = 1\nmax_history = 1\n[defaults]\nk = 1\nsorted = false\n",
         );
         let env = [
             ("SIMILARIPY_LIMITS__MAX_HISTORY", "2"),
@@ -507,8 +527,10 @@ mod tests {
                 k_max: 7,
                 max_history: 8,
                 history_policy: HistoryPolicy::Reject,
+                max_body_bytes: 4096,
             },
             defaults: Defaults {
+                k: 5,
                 sorted: false,
                 view: "instock".into(),
             },
@@ -536,6 +558,8 @@ mod tests {
             ("limits.k_max", "7"),
             ("limits.max_history", "8"),
             ("limits.history_policy", "reject"),
+            ("limits.max_body_bytes", "4096"),
+            ("defaults.k", "5"),
             ("defaults.sorted", "false"),
             ("defaults.view", "instock"),
             ("timeouts.header_read", "2.5"),
@@ -609,6 +633,11 @@ mod tests {
         }
         let e = cfg(&["--model", "/m", "--limits.history_policy", "drop"], &[]).unwrap_err();
         assert!(e.contains("drop"), "{e}");
+        // defaults.k within k_max (whichever source set them); a body > 0
+        let e = cfg(&["--model", "/m", "--k-max", "5", "--defaults.k", "6"], &[]).unwrap_err();
+        assert!(e.contains("defaults.k = 6 > limits.k_max = 5"), "{e}");
+        let e = cfg(&["--model", "/m", "--limits.max_body_bytes", "0"], &[]).unwrap_err();
+        assert!(e.contains("max_body_bytes"), "{e}");
         // Timeouts: an integer in the file is seconds too; out of range = error
         let f = file("[model]\npath = \"/m\"\n[timeouts]\nheader_read = 3\n");
         let c = cfg(&["--config", &f.0], &[]).unwrap();
@@ -657,7 +686,16 @@ mod tests {
 
     #[test]
     fn flags_take_key_equals_value() {
-        let c = cfg(&["--model=/m", "--limits.k_max=5", "--addr=h:1"], &[]).unwrap();
+        let c = cfg(
+            &[
+                "--model=/m",
+                "--limits.k_max=5",
+                "--defaults.k=5",
+                "--addr=h:1",
+            ],
+            &[],
+        )
+        .unwrap();
         assert_eq!((c.limits.k_max, &c.server.addr[..]), (5, "h:1"));
     }
 
@@ -709,6 +747,8 @@ mod tests {
                 "--max-history",
                 "5",
                 "--k-max",
+                "6",
+                "--defaults.k",
                 "6",
                 "--no-mmap",
             ],

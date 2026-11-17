@@ -136,6 +136,37 @@ struct History {
     unknown: u64,
 }
 
+/// An error's body, every field (V21: the shape is the contract).
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+struct ErrorBody {
+    error: ErrorInfo,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+struct ErrorInfo {
+    code: String,
+    message: String,
+    request_id: String,
+}
+
+/// `text`'s error, its request id the header's.
+fn error_of(h: &axum::http::HeaderMap, text: &str) -> ErrorInfo {
+    let e = serde_json::from_str::<ErrorBody>(text)
+        .unwrap_or_else(|e| panic!("{e}: {text}"))
+        .error;
+    assert_eq!(h["x-request-id"], e.request_id.as_str(), "{text}");
+    e
+}
+
+/// A gRPC error's `x-error-code`.
+fn grpc_code(e: &tonic::Status) -> &str {
+    e.metadata()
+        .get("x-error-code")
+        .map_or("", |v| v.to_str().unwrap())
+}
+
 impl Reply {
     /// (ids, score bits)
     fn answer(&self) -> (Vec<i64>, Vec<u32>) {
@@ -293,37 +324,57 @@ fn json_f32_parsed_as_python() {
 fn edge_rejections() {
     let addr = start(config(1), false);
     block_on(async {
-        for (body, status, msg) in [
+        let big = format!(r#"{{"history": [{}1]}}"#, "1,".repeat(BODY_LIMIT / 2));
+        for (body, status, code, msg) in [
             (
                 r#"{"history": [1000], "weight": [2.0]}"#,
                 400,
+                "bad_json",
                 "unknown field",
             ),
-            (r#"{"history": [1000], "k": 51}"#, 400, "k_max"),
+            (
+                r#"{"history": [1000], "k": 51}"#,
+                400,
+                "k_over_max",
+                "k_max",
+            ),
             // The pre-1.0 name: a clear error, never an empty history.
-            (r#"{"ids": [1000]}"#, 400, "unknown field `ids`"),
+            (r#"{"ids": [1000]}"#, 400, "bad_json", "unknown field `ids`"),
+            // The worker's two checks, one code (Code::BadWeights).
             (
                 r#"{"history": [1000, 1007], "weights": [1.0]}"#,
                 400,
+                "bad_weights",
                 "len(weights)",
             ),
-            (r#"{"history": "x"}"#, 400, "invalid type"),
-            (r#"{"k": 3}"#, 400, "missing field"),
+            (r#"{"history": "x"}"#, 400, "bad_json", "invalid type"),
+            (r#"{"k": 3}"#, 400, "bad_json", "missing field"),
+            (r#"{"history": [1"#, 400, "bad_json", "EOF"),
+            // 413 as JSON with the id too (its Content-Length, before the body).
+            (&big, 413, "body_too_large", "max_body_bytes"),
         ] {
-            let (got, text) = post(addr, body).await;
-            assert_eq!(got.as_u16(), status, "{body}: {text}");
-            assert!(text.contains(msg), "{body}: {text}");
+            let (got, h, text) = post_with(addr, body, &[]).await;
+            assert_eq!(got.as_u16(), status, "{body:.80}: {text}");
+            let e = error_of(&h, &text);
+            assert_eq!(e.code, code, "{body:.80}: {text}");
+            assert!(e.message.contains(msg), "{body:.80}: {text}");
         }
-        let big = format!(r#"{{"history": [{}1]}}"#, "1,".repeat(BODY_LIMIT / 2));
-        let (got, _) = post(addr, &big).await;
-        assert_eq!(got, StatusCode::PAYLOAD_TOO_LARGE);
+        // The worker's other weights check: the same code.
+        let body = r#"{"history": [1000], "weights": [1e39]}"#;
+        let (_, h, text) = post_with(addr, body, &[]).await;
+        let e = error_of(&h, &text);
+        assert_eq!(
+            (&e.code[..], e.message.contains("finite")),
+            ("bad_weights", true),
+            "{text}"
+        );
         let m = get_text(addr, "/metrics").await;
-        // JSON x 4 + k: the edge; weights: the worker.
+        // JSON x 5 + k + 413: the edge; weights x 2: the worker.
         assert!(
-            m.contains("similaripy_server_bad_requests_total 5\n"),
+            m.contains("similaripy_server_bad_requests_total 7\n"),
             "{m}"
         );
-        assert!(m.contains("similaripy_server_errors_total 1\n"), "{m}");
+        assert!(m.contains("similaripy_server_errors_total 2\n"), "{m}");
     });
 }
 
@@ -364,9 +415,28 @@ fn metrics_count_served_requests_per_thread() {
         ] {
             assert!(m.contains(line), "{line:?} not in\n{m}");
         }
+        let info = format!(
+            "similaripy_server_info{{version=\"{}\",model=\"knn-test\"}} 1\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(m.contains(&info), "{info:?} not in\n{m}");
         #[cfg(unix)]
         assert!(
             metric(&m, "process_cpu_seconds_total").is_some_and(|s| s > 0.0),
+            "{m}"
+        );
+        // After 2026-01-01, not in the future
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        assert!(
+            metric(&m, "process_start_time_seconds").is_some_and(|s| (1.767e9..=now).contains(&s)),
+            "{m}"
+        );
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(
+            metric(&m, "process_resident_memory_bytes").is_some_and(|b| b > 1e6),
             "{m}"
         );
         assert_eq!(
@@ -484,13 +554,14 @@ fn grpc_errors_are_status_codes() {
     let addr = start(config(1), false);
     block_on(async {
         let mut c = grpc(addr).await;
-        for (q, msg) in [
+        for (q, code, msg) in [
             (
                 RecommendRequest {
                     history: vec![1000],
                     k: Some(51),
                     ..Default::default()
                 },
+                "k_over_max",
                 "k_max",
             ),
             (
@@ -499,11 +570,13 @@ fn grpc_errors_are_status_codes() {
                     weights: vec![1.0],
                     ..Default::default()
                 },
+                "bad_weights",
                 "len(weights)",
             ),
         ] {
             let e = c.recommend(q).await.unwrap_err();
             assert_eq!(e.code(), Code::InvalidArgument, "{e:?}");
+            assert_eq!(grpc_code(&e), code, "{e:?}");
             assert!(e.message().contains(msg), "{e:?}");
         }
         // Over the 1 MB limit (tonic's own, not DefaultBodyLimit's).
@@ -513,6 +586,8 @@ fn grpc_errors_are_status_codes() {
         };
         let e = c.recommend(big).await.unwrap_err();
         assert_eq!(e.code(), Code::OutOfRange, "{e:?}");
+        // tonic's, before our handler: no code (documented)
+        assert_eq!(grpc_code(&e), "", "{e:?}");
         // The connection still serves; JSON on the same port too.
         let q = RecommendRequest {
             history: vec![1000, 1007],
@@ -571,14 +646,21 @@ fn config_sets_sorted_default_and_history_policy() {
         assert_eq!(ask(&mut c, q_sorted).await, sorted);
         // reject: one id past max_history is a 400 / INVALID_ARGUMENT.
         let long = [&ids[..], &[1140]].concat();
-        let (status, text) = post(addr, &serde_json::json!({ "history": long }).to_string()).await;
+        let body = serde_json::json!({ "history": long }).to_string();
+        let (status, h, text) = post_with(addr, &body, &[]).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
-        assert!(text.contains("21 history ids > max_history = 20"), "{text}");
+        let e = error_of(&h, &text);
+        assert_eq!(e.code, "history_over_max", "{text}");
+        assert!(
+            e.message.contains("21 history ids > max_history = 20"),
+            "{text}"
+        );
         let e = c
             .recommend(RecommendRequest { history: long, ..q })
             .await
             .unwrap_err();
         assert_eq!(e.code(), Code::InvalidArgument, "{e:?}");
+        assert_eq!(grpc_code(&e), "history_over_max", "{e:?}");
         let m = get_text(addr, "/metrics").await;
         assert!(
             m.contains("similaripy_server_bad_requests_total 2\n"),
@@ -588,6 +670,43 @@ fn config_sets_sorted_default_and_history_policy() {
         // GET /config: the resolved config.
         let got: Config = serde_json::from_str(&get_text(addr, "/config").await).unwrap();
         assert_eq!(got, cfg);
+    });
+}
+
+#[test]
+fn defaults_k_and_max_body_bytes() {
+    let mut cfg = config(1);
+    cfg.defaults.k = 3;
+    cfg.limits.max_body_bytes = 200;
+    let addr = start(cfg, false);
+    let history = r#""history": [1000, 1007, 1014, 1070]"#;
+    block_on(async {
+        // k absent or null = defaults.k, both formats; sent = as sent.
+        for body in [
+            format!("{{{history}}}"),
+            format!(r#"{{{history}, "k": null}}"#),
+        ] {
+            assert_eq!(ask_json(addr, &body).await.0.len(), 3, "{body}");
+        }
+        let five = format!(r#"{{{history}, "k": 5}}"#);
+        assert_eq!(ask_json(addr, &five).await.0.len(), 5);
+        let mut c = grpc(addr).await;
+        let q = RecommendRequest {
+            history: vec![1000, 1007, 1014, 1070],
+            ..Default::default()
+        };
+        assert_eq!(ask(&mut c, q).await.0.len(), 3);
+        // A body over max_body_bytes: 413 / OUT_OF_RANGE.
+        let big = format!(r#"{{"history": [{}1]}}"#, "1,".repeat(100));
+        let (status, h, text) = post_with(addr, &big, &[]).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{text}");
+        assert_eq!(error_of(&h, &text).code, "body_too_large");
+        let big = RecommendRequest {
+            history: vec![i64::MAX; 30], // 270 bytes
+            ..Default::default()
+        };
+        let e = c.recommend(big).await.unwrap_err();
+        assert_eq!(e.code(), Code::OutOfRange, "{e:?}");
     });
 }
 
@@ -709,14 +828,14 @@ fn request_id_kept_if_printable_else_generated() {
         distinct.dedup();
         assert_eq!(distinct.len(), seen.len(), "{seen:?}");
         // Errors carry it too: JSON header, gRPC status metadata.
-        let (status, h, _) = post_with(
+        let (status, h, text) = post_with(
             addr,
             r#"{"history": [], "k": 51}"#,
             &[("x-request-id", "e1")],
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(h["x-request-id"], "e1");
+        assert_eq!(error_of(&h, &text).request_id, "e1");
         let mut c = grpc(addr).await;
         let mut q = tonic::Request::new(RecommendRequest {
             k: Some(51),
@@ -959,9 +1078,11 @@ fn default_view_empty_name_unknown_name_and_views_listing() {
         // as truncated).
         let long: Vec<i64> = (0..30).map(|i| 1000 + 7 * i).collect();
         let body = serde_json::json!({"history": long, "view": "nope"}).to_string();
-        let (status, text) = post(addr, &body).await;
+        let (status, h, text) = post_with(addr, &body, &[]).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(text.contains("unknown view \\\"nope\\\""), "{text}");
+        let e = error_of(&h, &text);
+        assert_eq!(e.code, "unknown_view", "{text}");
+        assert!(e.message.contains("unknown view \"nope\""), "{text}");
         let e = c
             .recommend(RecommendRequest {
                 view: Some("nope".into()),
@@ -970,6 +1091,7 @@ fn default_view_empty_name_unknown_name_and_views_listing() {
             .await
             .unwrap_err();
         assert_eq!(e.code(), Code::InvalidArgument);
+        assert_eq!(grpc_code(&e), "unknown_view", "{e:?}");
         let m = get_text(addr, "/metrics").await;
         assert_eq!(
             metric(&m, "similaripy_server_bad_requests_total"),
@@ -1326,6 +1448,7 @@ fn json_body_not_sent_in_time_is_408() {
     let took = t.elapsed().as_secs_f64();
     assert!(text.starts_with("HTTP/1.1 408"), "{text}");
     assert!(text.to_lowercase().contains("x-request-id: "), "{text}");
+    assert!(text.contains(r#""code":"body_timeout""#), "{text}");
     assert!((0.25..2.5).contains(&took), "{took}");
     let m = read_head(&mut get_raw(addr, "/metrics"));
     assert_eq!(
@@ -1333,6 +1456,33 @@ fn json_body_not_sent_in_time_is_408() {
         Some(1.0),
         "{m}"
     );
+}
+
+#[test]
+fn declared_body_over_the_limit_is_413_at_once() {
+    use std::io::Write;
+    // A 408 would take header_read (5 s): a 413 comes before the body.
+    let mut cfg = timeouts(1, 5.0, 0.0, 5.0);
+    cfg.limits.max_body_bytes = 100;
+    let (addr, _stop, _h) = start_stoppable(cfg);
+    let mut s = raw(addr);
+    let n = 101;
+    let head = format!("POST /v1/recommend HTTP/1.1\r\nHost: t\r\nContent-Length: {n}\r\n\r\n");
+    write!(s, "{head}{{\"history\": [").unwrap();
+    let t = std::time::Instant::now();
+    let text = read_head(&mut s);
+    assert!(text.starts_with("HTTP/1.1 413"), "{text}");
+    assert!(text.contains(r#""code":"body_too_large""#), "{text}");
+    assert!(text.to_lowercase().contains("x-request-id: "), "{text}");
+    assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
+    // No Content-Length (chunked): axum's limit as it streams, same answer.
+    let mut s = raw(addr);
+    let chunk = "1".repeat(200);
+    let head = "POST /v1/recommend HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\n\r\n";
+    write!(s, "{head}c8\r\n{chunk}\r\n").unwrap();
+    let text = read_head(&mut s);
+    assert!(text.starts_with("HTTP/1.1 413"), "{text}");
+    assert!(text.contains(r#""code":"body_too_large""#), "{text}");
 }
 
 /// The binary on a saved model: SIGTERM → logs, exit 0 within the grace.

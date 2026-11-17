@@ -3,8 +3,9 @@
 //! summed at scrape (Prometheus text).
 
 use std::fmt::Write;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use similaripy_core::serve::Stats;
 
@@ -104,8 +105,21 @@ impl Thread {
     }
 }
 
+/// `process_start_time_seconds`: set by `mark_start` (main's first line),
+/// else at the first scrape.
+// ponytail: main's clock, not the OS's process start (the same to ms).
+static START: LazyLock<SystemTime> = LazyLock::new(SystemTime::now);
+
+/// Records the process's start for `/metrics` (call it first in `main`).
+pub fn mark_start() {
+    LazyLock::force(&START);
+}
+
 /// Fixed facts about the server, as gauges, and the requests per view.
 pub struct Info<'a> {
+    pub version: &'a str,
+    /// `model.name`: any string (escaped in the label).
+    pub model: &'a str,
     pub threads: usize,
     pub block: usize,
     pub items: usize,
@@ -119,6 +133,17 @@ pub struct Info<'a> {
 /// also per thread: the round-robin's balance).
 pub fn render(threads: &[Thread], info: &Info) -> String {
     let mut o = String::new();
+    head(
+        &mut o,
+        "info",
+        "gauge",
+        "The server's version and the served model's name (always 1).",
+    );
+    let (version, model) = (escape(info.version), escape(info.model));
+    let _ = writeln!(
+        o,
+        "similaripy_server_info{{version=\"{version}\",model=\"{model}\"}} 1"
+    );
     let gauges = [
         ("threads", "Server threads, one Worker each.", info.threads),
         (
@@ -137,10 +162,37 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
         head(&mut o, name, "gauge", help);
         let _ = writeln!(o, "similaripy_server_{name} {v}");
     }
-    if let Some(cpu) = process_cpu_seconds() {
-        let help = "# HELP process_cpu_seconds_total User and system CPU time of the process.";
-        let _ = writeln!(o, "{help}\n# TYPE process_cpu_seconds_total counter");
-        let _ = writeln!(o, "process_cpu_seconds_total {cpu}");
+    let start = START
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    let process = [
+        (
+            "cpu_seconds_total",
+            "counter",
+            "User and system CPU time of the process.",
+            process_cpu_seconds(),
+        ),
+        (
+            "start_time_seconds",
+            "gauge",
+            "Start time of the process since the Unix epoch, in seconds.",
+            Some(start),
+        ),
+        (
+            "resident_memory_bytes",
+            "gauge",
+            "Resident memory of the process (mapped model pages read so far included).",
+            resident_bytes().map(|b| b as f64),
+        ),
+    ];
+    for (name, kind, help, v) in process {
+        if let Some(v) = v {
+            let _ = writeln!(
+                o,
+                "# HELP process_{name} {help}\n# TYPE process_{name} {kind}\nprocess_{name} {v}"
+            );
+        }
     }
     head(
         &mut o,
@@ -161,7 +213,7 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
         ),
         (
             "bad_requests_total",
-            "Requests rejected at the edge (JSON, k, history, view, JSON body timeout 408; not gRPC decode errors).",
+            "Requests rejected at the edge (JSON body: parse, read, 408, 413; k, history, view; not gRPC decode errors).",
             |t| &t.bad_requests,
         ),
         (
@@ -226,6 +278,47 @@ fn process_cpu_seconds() -> Option<f64> {
     None
 }
 
+/// The process's resident set size: Linux /proc, macOS proc_pidinfo.
+#[cfg(target_os = "linux")]
+fn resident_bytes() -> Option<u64> {
+    // statm: size resident shared ... (in pages)
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    // SAFETY: sysconf reads a constant; no pointers.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    Some(pages * u64::try_from(page).ok()?)
+}
+
+#[cfg(target_os = "macos")]
+fn resident_bytes() -> Option<u64> {
+    // SAFETY: proc_taskinfo is plain integers: all-zero is a valid value.
+    let mut t: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+    // SAFETY: writes at most `size` bytes into `t`, about this process.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            libc::getpid(),
+            libc::PROC_PIDTASKINFO,
+            0,
+            (&raw mut t).cast(),
+            size,
+        )
+    };
+    (n == size).then_some(t.pti_resident_size)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn resident_bytes() -> Option<u64> {
+    None
+}
+
+/// A Prometheus label value: backslash, quote and newline escaped.
+fn escape(v: &str) -> String {
+    v.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
 fn head(o: &mut String, name: &str, kind: &str, help: &str) {
     let _ = writeln!(o, "# HELP similaripy_server_{name} {help}");
     let _ = writeln!(o, "# TYPE similaripy_server_{name} {kind}");
@@ -255,5 +348,13 @@ fn histogram(
         let ns: u64 = threads.iter().map(|t| h(t, p).sum_ns.load(Relaxed)).sum();
         let _ = writeln!(o, "{name}_sum{{proto=\"{proto}\"}} {}", ns as f64 / 1e9);
         let _ = writeln!(o, "{name}_count{{proto=\"{proto}\"}} {cum}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn label_values_escaped() {
+        assert_eq!(super::escape("a\\b\"c\nd"), "a\\\\b\\\"c\\nd");
     }
 }
