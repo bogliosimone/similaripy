@@ -1,4 +1,6 @@
 //! `similaripy-server --model DIR`: serves an `ItemKNN.save` directory.
+//! Logs go to stderr. Exit 0 after a SIGTERM / SIGINT shutdown, 1 on any
+//! error (config, model, bind, a second signal).
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -9,7 +11,8 @@ use similaripy_server::{App, router, serve};
 
 const USAGE: &str = "\
 similaripy-server [--config FILE] [--section.key VALUE ...]
-  (experimental: no auth, no TLS; private networks only)
+  Experimental. No auth, no TLS: run it on a private network only (it binds
+  127.0.0.1 by default; put an ingress / mesh with TLS and auth in front).
 
 Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flags.
   --model.path DIR            an ItemKNN.save directory (required)
@@ -26,6 +29,12 @@ Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flag
   --views.NAME.include_file F  view NAME allows only the ids in F (one per line)
   --views.NAME.exclude_file F  view NAME never returns the ids in F; either or both
                                (NAME: 1-64 of a-z 0-9 _ -; F relative to the working directory)
+  --timeouts.header_read S    seconds to send a request's headers (and a JSON body: else 408),
+                              the first bytes after connecting, HTTP/1.1 keep-alive idle; default 30
+  --timeouts.drain_delay S    after SIGTERM / SIGINT: seconds still accepting with /ready 503
+                              (Kubernetes: e.g. 5); default 0
+  --timeouts.shutdown_grace S then seconds for open requests to finish; default 10
+                              (a second signal exits at once, code 1)
   e.g. SIMILARIPY_LIMITS__K_MAX=500 = --limits.k_max 500 = [limits] k_max = 500
 Short forms: --model, --addr, --threads, --block-size, --max-history, --k-max, --no-mmap.
   --print-config   print the resolved config (TOML) and exit
@@ -81,6 +90,8 @@ fn run() -> Result<(), String> {
     let threads = cfg.server.threads;
     let app = Arc::new(App::new(model, cfg).map_err(|e| e.to_string())?);
     let listener = TcpListener::bind(&addr).map_err(|e| format!("{addr}: {e}"))?;
+    // The bound address (port 0 = a free one)
+    let addr = listener.local_addr().map_or(addr, |a| a.to_string());
     eprintln!(
         "similaripy-server: model {name:?} = {} ({items} items, {active} active, written by \
          {written_by}, loaded in {loaded:.1?}), {threads} threads, block {}, listening on {addr}",
@@ -90,5 +101,57 @@ fn run() -> Result<(), String> {
     for line in app.describe_views() {
         eprintln!("similaripy-server: {line}");
     }
-    serve(listener, app.clone(), router(app)).map_err(|e| e.to_string())
+    serve(listener, app.clone(), router(app), shutdown()).map_err(|e| e.to_string())
+}
+
+/// The first SIGTERM / SIGINT (Ctrl-C) starts the graceful shutdown; a
+/// second one exits at once with 1. The handlers are installed when `serve`
+/// starts accepting: a signal before that (model load, warm-up) has the
+/// default action (the process ends, nothing to drain).
+async fn shutdown() {
+    // One pair of handlers for both signals: none lost in between.
+    let mut signals = Signals::new();
+    let first = signals.next().await;
+    eprintln!("similaripy-server: {first}: shutting down (again to exit now)");
+    tokio::spawn(async move {
+        let second = signals.next().await;
+        eprintln!("similaripy-server: {second} again: exiting now");
+        std::process::exit(1);
+    });
+}
+
+#[cfg(unix)]
+struct Signals(tokio::signal::unix::Signal, tokio::signal::unix::Signal);
+
+#[cfg(unix)]
+impl Signals {
+    fn new() -> Self {
+        use tokio::signal::unix::{SignalKind, signal};
+        Self(
+            signal(SignalKind::terminate()).expect("a SIGTERM handler"),
+            signal(SignalKind::interrupt()).expect("a SIGINT handler"),
+        )
+    }
+
+    async fn next(&mut self) -> &'static str {
+        tokio::select! {
+            _ = self.0.recv() => "SIGTERM",
+            _ = self.1.recv() => "SIGINT",
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct Signals;
+
+#[cfg(not(unix))]
+impl Signals {
+    fn new() -> Self {
+        Self
+    }
+
+    async fn next(&mut self) -> &'static str {
+        let _ = tokio::signal::ctrl_c().await;
+        "Ctrl-C"
+    }
 }

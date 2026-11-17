@@ -5,7 +5,9 @@
 //! metrics; gRPC on the same port: the same answers (ids and f32 bits) as
 //! JSON, proto3 presence rules, errors as status codes; the answer's context
 //! (model, request id, k, sorted, history counts) and same request -> same
-//! bytes (U5).
+//! bytes (U5); hardening (S5d): graceful shutdown (in-flight requests
+//! finish, new connections refused, grace), header-read / first-request /
+//! keep-alive timeouts, and the binary's exit 0 on SIGTERM.
 
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
@@ -87,7 +89,7 @@ fn start(cfg: Config, with_panic: bool) -> SocketAddr {
     if with_panic {
         r = r.route("/panic", get(panics));
     }
-    std::thread::spawn(move || serve(listener, app, r));
+    std::thread::spawn(move || serve(listener, app, r, std::future::pending()));
     addr
 }
 
@@ -992,7 +994,7 @@ fn swap_serves_new_views_from_the_next_request() {
     let app = Arc::new(App::new(model(), cfg).unwrap());
     let r = router(app.clone());
     let served = app.clone();
-    std::thread::spawn(move || serve(listener, served, r));
+    std::thread::spawn(move || serve(listener, served, r, std::future::pending()));
     let body = r#"{"ids": [1000, 1014, 1021], "k": 50, "view": "even"}"#;
     block_on(async {
         let before = ask_json(addr, body).await;
@@ -1069,4 +1071,304 @@ fn view_errors_at_start_name_view_file_and_line() {
             .unwrap()
             .contains("needs include_file")
     );
+}
+
+// ---- S5d hardening ----
+
+/// A server with test routes `/slow` (400 ms) and `/hang` (30 s), stopped
+/// by sending on the returned channel; the handle gives `serve`'s result.
+fn start_stoppable(
+    cfg: Config,
+) -> (
+    SocketAddr,
+    tokio::sync::oneshot::Sender<()>,
+    std::thread::JoinHandle<std::io::Result<()>>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Arc::new(App::new(model(), cfg).unwrap());
+    let sleep = |ms| {
+        move || async move {
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            "slept"
+        }
+    };
+    let r = router(app.clone())
+        .route("/slow", get(sleep(400)))
+        .route("/hang", get(sleep(30_000)));
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let h = std::thread::spawn(move || {
+        serve(listener, app, r, async {
+            let _ = stopped.await;
+        })
+    });
+    (addr, stop, h)
+}
+
+fn timeouts(threads: usize, header_read: f64, drain: f64, grace: f64) -> Config {
+    let mut c = config(threads);
+    c.timeouts.header_read = header_read;
+    c.timeouts.drain_delay = drain;
+    c.timeouts.shutdown_grace = grace;
+    c
+}
+
+/// A raw connection (HTTP/1.1 by hand: the closing is what's tested).
+fn raw(addr: SocketAddr) -> std::net::TcpStream {
+    let s = std::net::TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    s
+}
+
+/// Everything until the server closes (a reset counts as closed; a read
+/// timeout fails the test).
+fn read_to_close(s: &mut std::net::TcpStream) -> String {
+    use std::io::{ErrorKind, Read};
+    let mut buf = vec![];
+    match s.read_to_end(&mut buf) {
+        Ok(_) => {}
+        Err(e) if e.kind() == ErrorKind::ConnectionReset => {}
+        Err(e) => panic!("not closed: {e} after {:?}", String::from_utf8_lossy(&buf)),
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+fn get_raw(addr: SocketAddr, path: &str) -> std::net::TcpStream {
+    use std::io::Write;
+    let mut s = raw(addr);
+    write!(s, "GET {path} HTTP/1.1\r\nHost: t\r\n\r\n").unwrap();
+    s
+}
+
+/// Waits (up to 3 s) until a connect is refused: the listener is closed.
+fn wait_refused(addr: SocketAddr) {
+    let t = std::time::Instant::now();
+    while std::net::TcpStream::connect(addr).is_ok() {
+        assert!(t.elapsed().as_secs() < 3, "still accepting");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn shutdown_finishes_in_flight_requests_and_refuses_new_connections() {
+    let (addr, stop, h) = start_stoppable(timeouts(2, 30.0, 0.0, 5.0));
+    let mut slow = get_raw(addr, "/slow");
+    // An idle keep-alive connection: closed at once by the shutdown
+    let mut idle = get_raw(addr, "/health");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let t = std::time::Instant::now();
+    stop.send(()).unwrap();
+    wait_refused(addr);
+    // The response in flight completes, then the connection closes.
+    let text = read_to_close(&mut slow);
+    assert!(
+        text.starts_with("HTTP/1.1 200") && text.ends_with("slept"),
+        "{text}"
+    );
+    assert!(read_to_close(&mut idle).ends_with("ok"));
+    h.join().unwrap().unwrap();
+    // Within the grace: done when the slow request was (~0.3 s left)
+    assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
+}
+
+#[test]
+fn drain_delay_keeps_accepting_with_ready_503() {
+    let (addr, stop, h) = start_stoppable(timeouts(1, 30.0, 1.5, 5.0));
+    assert!(read_head(&mut get_raw(addr, "/ready")).ends_with("ok"));
+    let t = std::time::Instant::now();
+    stop.send(()).unwrap();
+    // Draining: new connections still served; /ready 503, /health ok
+    let ready = loop {
+        let text = read_head(&mut get_raw(addr, "/ready"));
+        if text.starts_with("HTTP/1.1 503") {
+            break text;
+        }
+        assert!(t.elapsed().as_secs_f64() < 1.0, "{text}");
+    };
+    assert!(ready.ends_with("draining"), "{ready}");
+    assert!(read_head(&mut get_raw(addr, "/health")).ends_with("ok"));
+    wait_refused(addr);
+    assert!(t.elapsed().as_secs_f64() >= 1.4, "{:?}", t.elapsed());
+    h.join().unwrap().unwrap();
+}
+
+/// The response's head and body as far as `Content-Length` says (the
+/// connection stays open).
+fn read_head(s: &mut std::net::TcpStream) -> String {
+    use std::io::Read;
+    let mut buf = vec![];
+    let mut b = [0u8; 1024];
+    loop {
+        let n = s.read(&mut b).unwrap();
+        assert!(n > 0, "closed: {:?}", String::from_utf8_lossy(&buf));
+        buf.extend_from_slice(&b[..n]);
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        if let Some((head, body)) = text.split_once("\r\n\r\n") {
+            let len: usize = head
+                .lines()
+                .find_map(|l| {
+                    l.to_lowercase()
+                        .strip_prefix("content-length: ")
+                        .map(|v| v.parse().unwrap())
+                })
+                .unwrap();
+            if body.len() >= len {
+                return text;
+            }
+        }
+    }
+}
+
+#[test]
+fn shutdown_grace_closes_what_is_left() {
+    let (addr, stop, h) = start_stoppable(timeouts(1, 30.0, 0.0, 0.3));
+    let mut hang = get_raw(addr, "/hang");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let t = std::time::Instant::now();
+    stop.send(()).unwrap();
+    h.join().unwrap().unwrap();
+    let took = t.elapsed().as_secs_f64();
+    assert!((0.25..2.0).contains(&took), "{took}");
+    // Closed with no response
+    assert_eq!(read_to_close(&mut hang), "");
+}
+
+#[test]
+fn slow_silent_and_idle_connections_closed_after_header_read() {
+    use std::io::Write;
+    let (addr, _stop, _h) = start_stoppable(timeouts(2, 0.3, 0.0, 5.0));
+    let cases: [(&str, &[u8]); 4] = [
+        ("silent", b""),
+        ("one preface byte", b"P"),
+        ("most of h2's preface", b"PRI * HTTP/2.0\r\n"),
+        (
+            "half the headers",
+            b"POST /v1/recommend HTTP/1.1\r\nHost: t\r\n",
+        ),
+    ];
+    for (name, sent) in cases {
+        let mut s = raw(addr);
+        s.write_all(sent).unwrap();
+        let t = std::time::Instant::now();
+        read_to_close(&mut s);
+        let took = t.elapsed().as_secs_f64();
+        assert!((0.25..2.5).contains(&took), "{name}: closed after {took}");
+    }
+    // A keep-alive connection: served, then closed when idle past header_read
+    let mut s = get_raw(addr, "/health");
+    assert!(read_head(&mut s).ends_with("ok"));
+    let t = std::time::Instant::now();
+    assert_eq!(read_to_close(&mut s), "");
+    let took = t.elapsed().as_secs_f64();
+    assert!((0.25..2.5).contains(&took), "idle: closed after {took}");
+    // Requests in time keep a connection open past header_read
+    let mut s = get_raw(addr, "/health");
+    for _ in 0..3 {
+        assert!(read_head(&mut s).ends_with("ok"));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        write!(s, "GET /health HTTP/1.1\r\nHost: t\r\n\r\n").unwrap();
+    }
+    assert!(read_head(&mut s).ends_with("ok"));
+    // h2 (preface + an empty SETTINGS frame) without a request yet: stays
+    // open like an idle gRPC channel
+    let mut h2 = raw(addr);
+    h2.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n").unwrap();
+    h2.write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).unwrap();
+    assert!(open_for(&mut h2, std::time::Duration::from_millis(900)));
+}
+
+/// True if `s` is still open after `d` (bytes the server sends are read).
+fn open_for(s: &mut std::net::TcpStream, d: std::time::Duration) -> bool {
+    use std::io::{ErrorKind, Read};
+    let end = std::time::Instant::now() + d;
+    let mut b = [0u8; 1024];
+    loop {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        s.set_read_timeout(Some(left)).unwrap();
+        match s.read(&mut b) {
+            Ok(0) => return false,
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return true;
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
+#[test]
+fn json_body_not_sent_in_time_is_408() {
+    use std::io::Write;
+    let (addr, _stop, _h) = start_stoppable(timeouts(1, 0.3, 0.0, 5.0));
+    let mut s = raw(addr);
+    let head = "POST /v1/recommend HTTP/1.1\r\nHost: t\r\nContent-Length: 100\r\n\r\n";
+    write!(s, "{head}{{\"ids\": [").unwrap();
+    let t = std::time::Instant::now();
+    let text = read_head(&mut s);
+    let took = t.elapsed().as_secs_f64();
+    assert!(text.starts_with("HTTP/1.1 408"), "{text}");
+    assert!(text.to_lowercase().contains("x-request-id: "), "{text}");
+    assert!((0.25..2.5).contains(&took), "{took}");
+    let m = read_head(&mut get_raw(addr, "/metrics"));
+    assert_eq!(
+        metric(&m, "similaripy_server_bad_requests_total"),
+        Some(1.0),
+        "{m}"
+    );
+}
+
+/// The binary on a saved model: SIGTERM → logs, exit 0 within the grace.
+#[cfg(unix)]
+#[test]
+fn binary_exits_0_on_sigterm() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    let dir = std::env::temp_dir().join(format!("similaripy-server-bin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    model().save(&dir, "test").unwrap();
+    /// Killed and its model removed however the test ends.
+    struct Child(std::process::Child, std::path::PathBuf);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+            let _ = std::fs::remove_dir_all(&self.1);
+        }
+    }
+    let child = Command::new(env!("CARGO_BIN_EXE_similaripy-server"))
+        .args(["--model", dir.to_str().unwrap(), "--addr", "127.0.0.1:0"])
+        .args(["--threads", "1", "--timeouts.shutdown_grace", "3"])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = Child(child, dir);
+    let child = &mut child.0;
+    let mut log = BufReader::new(child.stderr.take().unwrap()).lines();
+    let addr: SocketAddr = loop {
+        let line = log.next().expect("a listening line").unwrap();
+        if let Some((_, a)) = line.split_once("listening on ") {
+            break a.trim().parse().unwrap();
+        }
+    };
+    assert!(read_head(&mut get_raw(addr, "/ready")).ends_with("ok"));
+    let mut idle = get_raw(addr, "/health");
+    assert!(read_head(&mut idle).ends_with("ok"));
+    let t = std::time::Instant::now();
+    // SAFETY: a signal to our own child
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        assert!(t.elapsed().as_secs() < 3, "no exit within the grace");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let rest: Vec<String> = log.map_while(Result::ok).collect();
+    assert_eq!(status.code(), Some(0), "{rest:?}");
+    assert!(rest.iter().any(|l| l.contains("SIGTERM")), "{rest:?}");
+    assert!(rest.iter().any(|l| l.contains("stopped")), "{rest:?}");
 }

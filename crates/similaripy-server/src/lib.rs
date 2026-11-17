@@ -1,6 +1,7 @@
 //! The internal server (server plan S2; a design validator, not released):
 //! `POST /v1/recommend` (JSON), gRPC `similaripy.v1.Recommender/Recommend`
-//! (proto/, S4 P1), `GET /metrics`, `GET /health`, `GET /config` (the
+//! (proto/, S4 P1), `GET /metrics`, `GET /health` (liveness: always ok),
+//! `GET /ready` (readiness: 503 once draining), `GET /config` (the
 //! resolved [`Config`]), all on one port and N
 //! threads, each a single-threaded tokio runtime with its own `Worker`. An
 //! acceptor hands connections round-robin to the threads (with keep-alive a
@@ -9,14 +10,17 @@
 //! its `Worker` used synchronously from a `thread_local`. JSON and gRPC run
 //! the same `App::run`: same limits, cut and answers. Named views (S5c):
 //! `GET /v1/views`, a request's `view`; the model and its views are one
-//! serving state behind one swappable pointer (V15).
+//! serving state behind one swappable pointer (V15). Hardening (S5d):
+//! header-read timeouts, graceful shutdown (`serve`'s `shutdown`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::hash::{BuildHasher, RandomState};
 use std::io;
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicU64, Ordering::Acquire, Ordering::Release};
+use std::sync::atomic::{
+    AtomicBool, AtomicU64, Ordering::Acquire, Ordering::Relaxed, Ordering::Release,
+};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -26,15 +30,16 @@ use axum::extract::{DefaultBodyLimit, FromRequest, State};
 use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
+use hyper_util::server::graceful::GracefulShutdown;
 use hyper_util::service::TowerToHyperService;
 use serde::{Deserialize, Serialize};
 use similaripy_core::Error;
 use similaripy_core::serve::{Model, Request, Stats, Worker};
 
 pub use config::Config;
-use config::HistoryPolicy;
+use config::{HistoryPolicy, secs};
 
 use metrics::{Counter, Proto};
 use views::{View, ViewInfo};
@@ -90,6 +95,8 @@ pub struct App {
     /// Requests per view and thread: kept across swaps (the views' names
     /// come from the config, which a swap doesn't change).
     served: BTreeMap<String, Arc<[Counter]>>,
+    /// Set by `serve` on shutdown: `/ready` answers 503.
+    draining: AtomicBool,
 }
 
 impl App {
@@ -97,6 +104,7 @@ impl App {
     /// name the view, file and line).
     pub fn new(model: Model, mut cfg: Config) -> Result<Self, String> {
         cfg.model.fill_name();
+        cfg.check_timeouts()?;
         let block = cfg
             .server
             .block_size
@@ -126,6 +134,7 @@ impl App {
             metrics,
             state: Mutex::new(Arc::new(Served { model, views })),
             version: AtomicU64::new(0),
+            draining: AtomicBool::new(false),
         })
     }
 
@@ -545,8 +554,13 @@ fn error(status: StatusCode, e: impl std::fmt::Display) -> Response {
 }
 
 fn bad_request(m: &metrics::Thread, e: impl std::fmt::Display) -> Response {
+    bad_request_as(m, StatusCode::BAD_REQUEST, e)
+}
+
+/// A client error counted in bad_requests.
+fn bad_request_as(m: &metrics::Thread, status: StatusCode, e: impl std::fmt::Display) -> Response {
     m.bad_request();
-    error(StatusCode::BAD_REQUEST, e)
+    error(status, e)
 }
 
 fn since(s: Stats, base: Stats) -> Stats {
@@ -587,6 +601,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/recommend", post(recommend))
         .route("/metrics", get(metrics))
         .route("/health", get(|| async { "ok" }))
+        .route("/ready", get(ready))
         .route("/config", get(config))
         .route("/v1/views", get(views))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
@@ -598,10 +613,18 @@ async fn recommend(State(app): State<Arc<App>>, req: axum::extract::Request) -> 
     let t = Instant::now();
     let m = &app.metrics[THREAD.get()];
     let id = request_id(req.headers().get(X_REQUEST_ID).map(|v| v.as_bytes()));
-    // Bytes' extractor: the body limit as before (413), here without our id
-    let body = match Bytes::from_request(req, &()).await {
-        Ok(b) => b,
-        Err(e) => return e.into_response(),
+    // Bytes' extractor: the body limit as before (413), here without our
+    // id. The body within header_read of its headers, else 408 (a dribbled
+    // body would hold the connection; hyper's timer covers headers only).
+    // ponytail: JSON only; a gRPC body is read inside tonic (no timeout).
+    let read = Bytes::from_request(req, &());
+    let body = match tokio::time::timeout(secs(app.cfg.timeouts.header_read), read).await {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => return e.into_response(),
+        Err(_) => {
+            let e = "request body not received within timeouts.header_read";
+            return with_request_id(bad_request_as(m, StatusCode::REQUEST_TIMEOUT, e), &id);
+        }
     };
     let r = with_request_id(app.recommend_json(m, &body, &id), &id);
     m.total[Proto::Json as usize].record(t.elapsed());
@@ -636,6 +659,15 @@ impl pb::recommender_server::Recommender for Grpc {
                 Err(e)
             }
         }
+    }
+}
+
+/// Readiness: 503 once `serve` is shutting down (the load balancer stops
+/// sending; liveness, `/health`, stays ok so the pod isn't killed mid-drain).
+async fn ready(State(app): State<Arc<App>>) -> (StatusCode, &'static str) {
+    match app.draining.load(Relaxed) {
+        false => (StatusCode::OK, "ok"),
+        true => (StatusCode::SERVICE_UNAVAILABLE, "draining"),
     }
 }
 
@@ -679,16 +711,29 @@ async fn metrics(State(app): State<Arc<App>>) -> String {
 }
 
 /// Serves `router` (`router(app)`, tests add routes) on `listener` with
-/// `app`'s threads, each warmed before the first accept. Returns only on a
-/// thread's start-up error.
-pub fn serve(listener: TcpListener, app: Arc<App>, router: Router) -> io::Result<()> {
+/// `app`'s threads, each warmed before the first accept, until `shutdown`
+/// completes (main: SIGTERM / SIGINT). Then: `/ready` answers 503 and
+/// connections are still accepted for `timeouts.drain_delay`; the listener
+/// closes (new connections are refused); each thread lets its connections
+/// finish (HTTP/1.1: after the response in flight, idle ones at once; h2:
+/// GOAWAY, open streams finish) for up to `timeouts.shutdown_grace`, then
+/// closes what is left. Returns Ok then, an error only if a thread fails.
+pub fn serve(
+    listener: TcpListener,
+    app: Arc<App>,
+    router: Router,
+    shutdown: impl Future<Output = ()>,
+) -> io::Result<()> {
     let n = app.cfg.server.threads;
+    let t = &app.cfg.timeouts;
+    let (header_read, grace) = (secs(t.header_read), secs(t.shutdown_grace));
     let (ready_tx, ready) = mpsc::channel();
     let mut threads = Vec::with_capacity(n);
+    let mut handles = Vec::with_capacity(n);
     for i in 0..n {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<std::net::TcpStream>();
         let (app, router, ready_tx) = (app.clone(), router.clone(), ready_tx.clone());
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name(format!("server-{i}"))
             .spawn(move || {
                 set_qos(true);
@@ -720,7 +765,23 @@ pub fn serve(listener: TcpListener, app: Arc<App>, router: Router) -> io::Result
                     Err(e) => return ready_tx.send(Err(e)).unwrap_or(()),
                 };
                 let _ = ready_tx.send(Ok(()));
-                rt.block_on(async move {
+                // HTTP/1.1 or h2c by the preface; h2 spawns its streams on
+                // this thread's runtime (current-thread)
+                let mut http = auto::Builder::new(TokioExecutor::new());
+                // The timer also restarts while an HTTP/1.1 connection waits
+                // for its next request: idle keep-alive closes after it.
+                http.http1()
+                    .timer(TokioTimer::new())
+                    .header_read_timeout(header_read);
+                // Pings: a dead peer's h2 connection (no ack) is closed.
+                // ponytail: fixed, a key if a network needs other values
+                http.http2()
+                    .timer(TokioTimer::new())
+                    .keep_alive_interval(Duration::from_secs(60))
+                    .keep_alive_timeout(Duration::from_secs(20));
+                let graceful = GracefulShutdown::new();
+                rt.block_on(async {
+                    // Until the acceptor closes the channel (shutdown)
                     while let Some(s) = rx.recv().await {
                         let Ok(s) = s
                             .set_nonblocking(true)
@@ -729,17 +790,45 @@ pub fn serve(listener: TcpListener, app: Arc<App>, router: Router) -> io::Result
                             continue;
                         };
                         let svc = TowerToHyperService::new(router.clone());
-                        // HTTP/1.1 or h2c by the preface; h2 spawns its
-                        // streams on this thread's runtime (current-thread)
+                        let decided = Arc::new(AtomicBool::new(false));
+                        let io = Preface {
+                            s,
+                            seen: 0,
+                            decided: decided.clone(),
+                        };
+                        let conn = http.serve_connection(TokioIo::new(io), svc).into_owned();
+                        let conn = graceful.watch(conn);
                         tokio::spawn(async move {
-                            let _ = auto::Builder::new(TokioExecutor::new())
-                                .serve_connection(TokioIo::new(s), svc)
-                                .await;
+                            let mut conn = std::pin::pin!(conn);
+                            // The protocol not decided within header_read of
+                            // the accept (silent, a dribbled preface): closed.
+                            // After it, HTTP/1.1 has hyper's header timer; an
+                            // h2 connection may idle like any gRPC channel
+                            // (pings find dead peers; shutdown sends GOAWAY).
+                            // ponytail: so h2 headers dribbled after the
+                            // preface have no deadline (private network,
+                            // R-S3); a per-stream header timer if exposed.
+                            let first = tokio::time::timeout(header_read, conn.as_mut()).await;
+                            if first.is_err() && decided.load(Relaxed) {
+                                let _ = conn.await;
+                            }
                         });
                     }
+                    let open = graceful.count();
+                    if tokio::time::timeout(grace, graceful.shutdown())
+                        .await
+                        .is_err()
+                    {
+                        eprintln!(
+                            "similaripy-server: thread {i}: shutdown_grace over, closing the \
+                             connections still open (of {open})"
+                        );
+                    }
                 });
+                // The runtime's drop closes what is left.
             })?;
         threads.push(tx);
+        handles.push(handle);
     }
     drop(ready_tx);
     for _ in 0..n {
@@ -748,23 +837,144 @@ pub fn serve(listener: TcpListener, app: Arc<App>, router: Router) -> io::Result
             .map_err(|_| io::Error::other("a server thread died at start"))?
             .map_err(io::Error::other)?;
     }
-    // ponytail: round-robin per connection; SO_REUSEPORT per thread (Linux)
-    // is the S4 probe.
-    let mut i = 0;
-    for s in listener.incoming() {
-        let Ok(s) = s else {
-            // E.g. out of file descriptors: fails at once until one closes;
-            // retrying at once would spin a core.
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            continue;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        listener.set_nonblocking(true)?;
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        let mut next = 0;
+        accept(&listener, &threads, &mut next, shutdown).await?;
+        app.draining.store(true, Relaxed);
+        let drain = secs(app.cfg.timeouts.drain_delay);
+        eprintln!(
+            "similaripy-server: draining: /ready 503, accepting for {drain:?} more, then \
+             up to {grace:?} for open connections"
+        );
+        accept(&listener, &threads, &mut next, tokio::time::sleep(drain)).await?;
+        drop(listener);
+        // Each thread sees its channel closed: graceful shutdown
+        drop(threads);
+        // Joined off this runtime: its other tasks (main's second-signal
+        // watch) keep running meanwhile.
+        let joined =
+            tokio::task::spawn_blocking(move || handles.into_iter().all(|h| h.join().is_ok()));
+        match joined.await {
+            Ok(true) => {
+                eprintln!("similaripy-server: stopped");
+                Ok(())
+            }
+            _ => Err(io::Error::other("a server thread panicked at shutdown")),
+        }
+    })
+}
+
+/// Hands `listener`'s connections round-robin to `threads` until `until`
+/// completes.
+// ponytail: round-robin per connection; SO_REUSEPORT per thread (Linux)
+// is the S4 probe.
+async fn accept(
+    listener: &tokio::net::TcpListener,
+    threads: &[tokio::sync::mpsc::UnboundedSender<std::net::TcpStream>],
+    next: &mut usize,
+    until: impl Future<Output = ()>,
+) -> io::Result<()> {
+    let mut until = std::pin::pin!(until);
+    loop {
+        let s = tokio::select! {
+            s = listener.accept() => s,
+            () = &mut until => return Ok(()),
+        };
+        let s = match s.and_then(|(s, _)| s.into_std()) {
+            Ok(s) => s,
+            Err(_) => {
+                // E.g. out of file descriptors: fails at once until one
+                // closes; retrying at once would spin a core.
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            }
         };
         let _ = s.set_nodelay(true);
-        if threads[i % n].send(s).is_err() {
-            return Err(io::Error::other(format!("server thread {} died", i % n)));
+        let i = *next % threads.len();
+        if threads[i].send(s).is_err() {
+            return Err(io::Error::other(format!("server thread {i} died")));
         }
-        i += 1;
+        *next += 1;
     }
-    Ok(())
+}
+
+/// h2c's connection preface: the auto builder picks h2 when a connection
+/// starts with all of it, HTTP/1.1 at the first byte that differs.
+const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// A connection's socket that sets `decided` once its bytes so far settle
+/// the protocol as the auto builder does (`serve`'s first deadline). After
+/// that, a read costs one compare.
+struct Preface {
+    s: tokio::net::TcpStream,
+    /// Leading bytes equal to `H2_PREFACE`; its length once decided.
+    seen: usize,
+    decided: Arc<AtomicBool>,
+}
+
+impl tokio::io::AsyncRead for Preface {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let r = std::pin::Pin::new(&mut self.s).poll_read(cx, buf);
+        let seen = self.seen;
+        if seen < H2_PREFACE.len() {
+            let new = &buf.filled()[before..];
+            let n = new.len().min(H2_PREFACE.len() - seen);
+            self.seen = match new[..n] == H2_PREFACE[seen..seen + n] {
+                true => seen + n,
+                false => H2_PREFACE.len(),
+            };
+            if self.seen == H2_PREFACE.len() {
+                self.decided.store(true, Relaxed);
+            }
+        }
+        r
+    }
+}
+
+impl tokio::io::AsyncWrite for Preface {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::pin::Pin::new(&mut self.s).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::pin::Pin::new(&mut self.s).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.s.is_write_vectored()
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.s).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.s).poll_shutdown(cx)
+    }
 }
 
 /// macOS: the calling thread's QoS class, a scheduling hint (not pinning):

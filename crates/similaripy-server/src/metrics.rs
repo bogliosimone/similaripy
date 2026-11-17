@@ -161,7 +161,7 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
         ),
         (
             "bad_requests_total",
-            "Requests rejected at the edge (JSON, k, history; not gRPC decode errors).",
+            "Requests rejected at the edge (JSON, k, history, view, JSON body timeout 408; not gRPC decode errors).",
             |t| &t.bad_requests,
         ),
         (

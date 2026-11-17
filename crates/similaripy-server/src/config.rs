@@ -21,6 +21,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub limits: Limits,
     pub defaults: Defaults,
+    pub timeouts: Timeouts,
     /// Named views (V2): `[views.<name>]` with an include and / or exclude
     /// id file.
     pub views: BTreeMap<String, ViewConfig>,
@@ -81,6 +82,24 @@ pub struct Defaults {
     pub view: String,
 }
 
+/// Seconds (a TOML integer or float).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct Timeouts {
+    /// A connection must send a request's headers within this (slow-loris):
+    /// its first bytes after the accept (until the protocol is decided),
+    /// each HTTP/1.1 request head (so also idle HTTP/1.1 keep-alive) and a
+    /// JSON request's body after its headers (408).
+    pub header_read: f64,
+    /// After SIGTERM / SIGINT: `/ready` answers 503 and new connections are
+    /// still accepted for this long (Kubernetes: time to drop the pod from
+    /// its endpoints; e.g. 5), then the listener closes.
+    pub drain_delay: f64,
+    /// Then open connections get this long to finish their requests;
+    /// what is left is closed. The process exits 0 either way.
+    pub shutdown_grace: f64,
+}
+
 /// A named view: the items in `include_file` (absent: all) minus those in
 /// `exclude_file` (absent: none); files hold one id per line.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -131,6 +150,21 @@ impl Default for Defaults {
     }
 }
 
+impl Default for Timeouts {
+    fn default() -> Self {
+        Self {
+            header_read: 30.0,
+            drain_delay: 0.0,
+            shutdown_grace: 10.0,
+        }
+    }
+}
+
+/// `secs` as a Duration (checked by `Config::check_timeouts`).
+pub fn secs(secs: f64) -> std::time::Duration {
+    std::time::Duration::try_from_secs_f64(secs).expect("checked by Config::check_timeouts")
+}
+
 impl ModelConfig {
     /// An empty `name` = the directory's basename (`/models/x/` and `x` too;
     /// `.` / `..` by the directory they name; no last part at all (`/`, or
@@ -158,6 +192,24 @@ impl Config {
     /// `a-z 0-9 _ -` (settable as a flag or env var: no `.`, lowercase;
     /// Prometheus labels and URLs without escaping), at least one file each,
     /// `defaults.view` "" or a view.
+    /// Seconds from 0 to a year (more is a typo in ms), header_read > 0;
+    /// `parse` and `App::new` both call it (`secs` relies on it).
+    pub fn check_timeouts(&self) -> Result<(), String> {
+        let t = &self.timeouts;
+        for (key, v) in [
+            ("header_read", t.header_read),
+            ("drain_delay", t.drain_delay),
+            ("shutdown_grace", t.shutdown_grace),
+        ] {
+            if !(0.0..=31_536_000.0).contains(&v) || (key == "header_read" && v == 0.0) {
+                return Err(format!(
+                    "timeouts.{key} = {v}: seconds, 0 to a year (header_read > 0)"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn check_views(&self) -> Result<(), String> {
         for (name, v) in &self.views {
             let ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b);
@@ -283,6 +335,7 @@ pub fn parse(
     if cfg.server.threads == 0 {
         return Err("server.threads must be >= 1".into());
     }
+    cfg.check_timeouts()?;
     cfg.check_views()?;
     Ok(if print {
         Cli::PrintConfig(cfg)
@@ -453,6 +506,11 @@ mod tests {
                 sorted: false,
                 view: "instock".into(),
             },
+            timeouts: Timeouts {
+                header_read: 2.5,
+                drain_delay: 5.0,
+                shutdown_grace: 0.25,
+            },
             views: [(
                 "instock".to_string(),
                 ViewConfig {
@@ -474,6 +532,10 @@ mod tests {
             ("limits.history_policy", "reject"),
             ("defaults.sorted", "false"),
             ("defaults.view", "instock"),
+            ("timeouts.header_read", "2.5"),
+            // an integer for a float key
+            ("timeouts.drain_delay", "5"),
+            ("timeouts.shutdown_grace", "0.25"),
             // a number-like path stays a string (`*_file`)
             ("views.instock.include_file", "2026.txt"),
             ("views.instock.exclude_file", "/ids/adult.txt"),
@@ -541,6 +603,22 @@ mod tests {
         }
         let e = cfg(&["--model", "/m", "--limits.history_policy", "drop"], &[]).unwrap_err();
         assert!(e.contains("drop"), "{e}");
+        // Timeouts: an integer in the file is seconds too; out of range = error
+        let f = file("[model]\npath = \"/m\"\n[timeouts]\nheader_read = 3\n");
+        let c = cfg(&["--config", &f.0], &[]).unwrap();
+        assert_eq!(
+            secs(c.timeouts.header_read),
+            std::time::Duration::from_secs(3)
+        );
+        for (key, v) in [
+            ("header_read", "0"),
+            ("drain_delay", "-1"),
+            ("shutdown_grace", "nan"),
+            ("shutdown_grace", "1e300"),
+        ] {
+            let e = cfg(&["--model", "/m", &format!("--timeouts.{key}"), v], &[]).unwrap_err();
+            assert!(e.contains(key), "{e}");
+        }
     }
 
     #[test]
