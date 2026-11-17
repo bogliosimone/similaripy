@@ -1483,6 +1483,16 @@ fn declared_body_over_the_limit_is_413_at_once() {
     let text = read_head(&mut s);
     assert!(text.starts_with("HTTP/1.1 413"), "{text}");
     assert!(text.contains(r#""code":"body_too_large""#), "{text}");
+    // Expect: 100-continue (curl, bodies over 1 MiB): the 413, and the
+    // connection closed at once (no drain waiting for a body never sent).
+    let mut s = raw(addr);
+    let head = "POST /v1/recommend HTTP/1.1\r\nHost: t\r\nContent-Length: 5000\r\n\
+        Expect: 100-continue\r\n\r\n";
+    write!(s, "{head}").unwrap();
+    let t = std::time::Instant::now();
+    let text = read_to_close(&mut s);
+    assert!(text.starts_with("HTTP/1.1 413"), "{text}");
+    assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
 }
 
 /// The binary on a saved model: SIGTERM → logs, exit 0 within the grace.
@@ -1535,4 +1545,34 @@ fn binary_exits_0_on_sigterm() {
     assert_eq!(status.code(), Some(0), "{rest:?}");
     assert!(rest.iter().any(|l| l.contains("SIGTERM")), "{rest:?}");
     assert!(rest.iter().any(|l| l.contains("stopped")), "{rest:?}");
+}
+
+#[test]
+fn oversized_bodies_get_their_413_and_the_connection_keeps_serving() {
+    // The server answers 413 at once and reads the rest of the body after
+    // it: a client still sending gets the 413, not a reset (before: about
+    // 1 run in 5 of edge_rejections), and the connection serves on.
+    let mut cfg = config(1);
+    cfg.limits.max_body_bytes = 4096;
+    let addr = start(cfg, false);
+    block_on(async {
+        let mut c = connect(addr).await.unwrap();
+        // About 4x the limit: well within the drain's cap (8x).
+        let big = Bytes::from(format!(r#"{{"history": [{}1]}}"#, "1,".repeat(2 * 4096)));
+        for i in 0..50 {
+            let (status, h, b) = send_with(&mut c, "/v1/recommend", Some(big.clone()), &[])
+                .await
+                .unwrap_or_else(|e| panic!("round {i}: {e}"));
+            assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "round {i}");
+            let e = error_of(&h, std::str::from_utf8(&b).unwrap());
+            assert_eq!(e.code, "body_too_large");
+            let ok = Some(Bytes::from_static(br#"{"history": [1000]}"#));
+            let (status, _, _) = send_with(&mut c, "/v1/recommend", ok, &[]).await.unwrap();
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "round {i}: same connection after a 413"
+            );
+        }
+    });
 }
