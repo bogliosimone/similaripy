@@ -56,7 +56,7 @@ The serving engine (`SparseKNN`) runs item-based KNN models online, in your own 
 - **Multi-process**: save once, load memory-mapped in every worker: one copy of the model for all of them.
 - **Availability rules**: include or exclude items for all requests, per group (e.g. a country, then a package) or per request.
 
-For more details, check the **[📘 Serving](https://bogliosimone.github.io/similaripy/serving/)** guide.
+For more details, check the **[📘 Serving](https://bogliosimone.github.io/similaripy/serving/)** guide. To serve a saved model without writing a service, see **[🖥️ Running the server](https://bogliosimone.github.io/similaripy/server/)** (`similaripy-server`, experimental: HTTP/JSON and gRPC, a binary or a Docker image).
 
 ## 🧮 Normalization and Weighting
 

@@ -258,6 +258,8 @@ A server that answers many users, one `recommend` per request:
   millisecond or two): the per-call work is paid once.
 - **Deploy a new model version** by saving it to a new directory and switching
   what the workers load ([Saving and loading](#saving-and-loading)).
+- **No Python service to write?** [`similaripy-server`](server.md) serves a
+  saved model over HTTP/JSON and gRPC (experimental).
 
 A minimal FastAPI service (`fetch_history` is your store):
 
