@@ -2,7 +2,7 @@
   "block_size": null,
   "format": 1,
   "item_ids": true,
-  "kind": "ItemKNN",
+  "kind": "SparseKNN",
   "n_cols": 7,
   "n_items": 6,
   "nnz": 12,

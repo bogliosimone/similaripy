@@ -1,6 +1,6 @@
 #!/bin/sh
 # Release smoke test (server-release.yml): a server started on the committed
-# format-1 model (tests/data/itemknn-format1) answers one request as
+# format-1 model (tests/data/sparseknn-format1) answers one request as
 # tests/test_serve.py says. Usage: smoke.sh [BASE_URL]
 set -eu
 url=${1:-http://127.0.0.1:8080}

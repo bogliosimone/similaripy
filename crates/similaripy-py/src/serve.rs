@@ -3,7 +3,7 @@
 //! (never saved, W1): resolved once for single calls, once per batch call. The build reads the caller's S
 //! arrays in place (the core makes them canonical during its one copy). Each
 //! call copies the ids in, runs pure Rust without the GIL and moves the
-//! results out. `similaripy/serving.py` wraps it as `ItemKNN`.
+//! results out. `similaripy/serving.py` wraps it as `SparseKNN`.
 
 use std::path::PathBuf;
 

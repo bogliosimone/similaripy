@@ -117,7 +117,7 @@ def test_event_level_offline_equals_online():
     rng = np.random.default_rng(0)
     users, items, ts = rng.integers(0, 20, 600), rng.integers(0, 40, 600), rng.integers(0, 100, 600)
     URM, user_ids, item_ids = interactions_to_urm(users, items, time_decay(ts, reference=100, scale=25))
-    model = sim.serving.ItemKNN(sim.cosine(URM.T, k=10), item_ids=item_ids)
+    model = sim.serving.SparseKNN(sim.cosine(URM.T, k=10), item_ids=item_ids)
     for u in user_ids[:5]:
         mine = users == u
         live = model.recommend(items[mine], weights=time_decay(ts[mine], reference=100, scale=25), k=5)

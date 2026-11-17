@@ -57,7 +57,7 @@ pub mod pb {
 /// Request bodies over this are rejected (JSON 413, gRPC OUT_OF_RANGE).
 pub const BODY_LIMIT: usize = 1 << 20;
 
-/// Python's `ItemKNN.recommend` defaults, for both formats (exclude_seen
+/// Python's `SparseKNN.recommend` defaults, for both formats (exclude_seen
 /// defaults to true; sorted to `defaults.sorted`).
 const DEFAULT_K: usize = 10;
 
@@ -405,7 +405,7 @@ impl App {
     }
 }
 
-/// `POST /v1/recommend`'s body; defaults = Python's `ItemKNN.recommend`, but
+/// `POST /v1/recommend`'s body; defaults = Python's `SparseKNN.recommend`, but
 /// `sorted` absent = `defaults.sorted`.
 /// Unknown fields are an error (a typo like "weight" would otherwise serve
 /// unweighted).

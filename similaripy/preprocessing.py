@@ -109,7 +109,7 @@ def interactions_to_urm(
             whose value is 0 in float32 not stored.
         user_ids: int64, sorted: `user_ids[u]` is your id of row `u`.
         item_ids: int64, sorted: `item_ids[j]` is your id of column `j`;
-            pass it to `ItemKNN(S, item_ids=item_ids)`.
+            pass it to `SparseKNN(S, item_ids=item_ids)`.
 
     Raises:
         TypeError: on non-integer ids, non-numeric values or timestamps
@@ -159,7 +159,7 @@ def interactions_to_histories(
     weights: ArrayLike | None = None,
 ) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
     """
-    Each user's events as a history for `ItemKNN.recommend_batch`, straight
+    Each user's events as a history for `SparseKNN.recommend_batch`, straight
     from the log, e.g. a holdout set: no matrix and no id mapping (ids the
     model doesn't have are ignored by `recommend`).
 
@@ -212,7 +212,7 @@ def interactions_to_histories(
 
 def urm_to_histories(URM, *, item_ids: ArrayLike | None = None) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """
-    Each row of a URM as a history for `ItemKNN.recommend_batch`, e.g. every
+    Each row of a URM as a history for `SparseKNN.recommend_batch`, e.g. every
     training user, or a benchmark dataset given as a matrix.
 
     Examples:
@@ -225,7 +225,7 @@ def urm_to_histories(URM, *, item_ids: ArrayLike | None = None) -> tuple[list[np
         URM: user-item sparse matrix; its values become the weights
             (explicit zeros and values that are 0 in float32 dropped).
         item_ids: your id of each column (the `item_ids` of
-            `interactions_to_urm`); None = column indices (for `ItemKNN(S)`
+            `interactions_to_urm`); None = column indices (for `SparseKNN(S)`
             without `item_ids`).
 
     Returns:

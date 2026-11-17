@@ -29,9 +29,9 @@ def test_normalization_has_one_path():
 
 
 def test_serving_has_one_path():
-    assert serving.__all__ == ["ItemKNN"]
-    assert not hasattr(sim, "ItemKNN")
-    assert sim.serving.ItemKNN is serving.ItemKNN
+    assert serving.__all__ == ["SparseKNN"]
+    assert not hasattr(sim, "SparseKNN")
+    assert sim.serving.SparseKNN is serving.SparseKNN
 
 
 def test_preprocessing_has_one_path():
@@ -71,16 +71,16 @@ SIGNATURES = {
     "preprocessing.rank_decay": "(users=None, *, scale, timestamps=None, shape='exponential', exponent=None)",
     "preprocessing.time_decay": "(timestamps, *, reference, scale, shape='exponential', exponent=None, users=None)",
     "preprocessing.urm_to_histories": "(URM, *, item_ids=None)",
-    "ItemKNN.__init__": "(self, S, *, item_ids=None, candidate_items=None, item_order='auto', block_size='auto', "
+    "SparseKNN.__init__": "(self, S, *, item_ids=None, candidate_items=None, item_order='auto', block_size='auto', "
     "num_threads=0)",
-    "ItemKNN.load": "(path, *, mmap=True, block_size='auto')",
-    "ItemKNN.recommend": "(self, history, *, weights=None, k=10, exclude_seen=True, include=None, exclude=None, sorted=True)",
-    "ItemKNN.recommend_batch": "(self, histories, *, weights=None, k=10, exclude_seen=True, include=None, exclude=None, "
+    "SparseKNN.load": "(path, *, mmap=True, block_size='auto')",
+    "SparseKNN.recommend": "(self, history, *, weights=None, k=10, exclude_seen=True, include=None, exclude=None, sorted=True)",
+    "SparseKNN.recommend_batch": "(self, histories, *, weights=None, k=10, exclude_seen=True, include=None, exclude=None, "
     "sorted=True, num_threads=0)",
-    "ItemKNN.save": "(self, path)",
-    "ItemKNN.score": "(self, history, items, *, weights=None)",
-    "ItemKNN.score_batch": "(self, histories, items, *, weights=None, num_threads=0)",
-    "ItemKNN.view": "(self, *, include=None, exclude=None)",
+    "SparseKNN.save": "(self, path)",
+    "SparseKNN.score": "(self, history, items, *, weights=None)",
+    "SparseKNN.score_batch": "(self, histories, items, *, weights=None, num_threads=0)",
+    "SparseKNN.view": "(self, *, include=None, exclude=None)",
 }
 
 
@@ -96,9 +96,9 @@ def test_public_signatures():
         for m in (similarity, normalization, preprocessing)
         for n in m.__all__
     }
-    K = serving.ItemKNN
+    K = serving.SparseKNN
     found |= {
-        f"ItemKNN.{n}": getattr(K, n)
+        f"SparseKNN.{n}": getattr(K, n)
         for n in vars(K)
         if (n == "__init__" or not n.startswith("_")) and callable(getattr(K, n))
     }

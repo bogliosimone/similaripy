@@ -4,7 +4,7 @@
 //! Steps the rate up 1.5x until p99 > budget, errors, or the achieved rate
 //! falls under 95% of the target; prints the best rate that met the budget.
 //! `--check FILE`: the first requests' ids and score bits vs the expected
-//! ones (`benchmarks/server_prep.py`: Python `ItemKNN.recommend`).
+//! ones (`benchmarks/server_prep.py`: Python `SparseKNN.recommend`).
 //! `--grpc`: the same requests as gRPC calls (`proto_from_json`), one
 //! HTTP/2 connection per caller unless `--channels` says fewer (then the
 //! callers' streams share them: the multiplexed case).

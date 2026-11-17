@@ -7,7 +7,7 @@ import pytest
 import scipy.sparse as sp
 
 import similaripy as sim
-from similaripy.serving import ItemKNN
+from similaripy.serving import SparseKNN
 
 N_THREADS = 8
 ROUNDS = 4
@@ -34,7 +34,7 @@ def _calls(m):
     }
 
 
-_REC = ItemKNN(sim.cosine(_matrix().T, k=50, verbose=False))
+_REC = SparseKNN(sim.cosine(_matrix().T, k=50, verbose=False))
 
 
 def _histories(m):

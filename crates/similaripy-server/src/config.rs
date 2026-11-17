@@ -30,7 +30,7 @@ pub struct Config {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct ModelConfig {
-    /// An `ItemKNN.save` directory (required; "" = not set).
+    /// A `SparseKNN.save` directory (required; "" = not set).
     pub path: PathBuf,
     /// Map the model's files instead of reading them into memory.
     pub mmap: bool,

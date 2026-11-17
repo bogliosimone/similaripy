@@ -59,7 +59,7 @@ From an interaction log to recommendations:
 ```python
 import similaripy as sim
 from similaripy.preprocessing import interactions_to_urm
-from similaripy.serving import ItemKNN
+from similaripy.serving import SparseKNN
 
 # An interaction log: one (user, item) pair per event, in your own ids
 users = [10, 10, 20, 20, 30, 30, 40, 40, 40, 50, 50, 60, 60, 70, 70]
@@ -75,7 +75,7 @@ urm = sim.normalization.bm25(urm)
 similarity_matrix = sim.cosine(urm.T, k=50)
 
 # Build the serving model, in your item ids
-model = ItemKNN(similarity_matrix.T, item_ids=item_ids)
+model = SparseKNN(similarity_matrix.T, item_ids=item_ids)
 
 # Online: one user, from the items in their history
 ids, scores = model.recommend([101, 104], k=3, exclude_seen=True)
@@ -89,7 +89,7 @@ print(ids_per_user)  # [array([102, 103, 105]), array([101, 105, 104])]: user 0,
 Tips:
 
 - `urm.T` is used to switch from user-item to item-user to train an item-item similarity model.
-- `ItemKNN` is the serving engine: save it once, load it in every worker.
+- `SparseKNN` is the serving engine: save it once, load it in every worker.
 - All operations are multithreaded and scale with available CPU cores.
 
 ## In-depth Introduction

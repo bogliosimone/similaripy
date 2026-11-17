@@ -264,12 +264,12 @@ def _concurrency_run(X, kwargs, reps, concurrent):
 
 
 def serve_cases(URM, opts):
-    """`similaripy.serving.ItemKNN` on S = cosine or rp3beta(URM.T, k=model_k) (or S.T: --transpose), built once, untimed.
+    """`similaripy.serving.SparseKNN` on S = cosine or rp3beta(URM.T, k=model_k) (or S.T: --transpose), built once, untimed.
     Requests = URM rows (user histories), resampled with replacement in random order; a history cap N
     keeps N random items of the row. Every request excludes the history's own items."""
     if not compat.HAS_SERVING:
         raise ValueError("serve: this build has no similaripy.serving")
-    from similaripy.serving import ItemKNN
+    SparseKNN = compat.SparseKNN
 
     S, cached = _serve_model(URM, opts)
     if opts["transpose"]:
@@ -280,7 +280,7 @@ def serve_cases(URM, opts):
         counts = np.bincount(S.indices, minlength=S.shape[0])
         trim["candidate_items"] = np.argsort(-counts, kind="stable")[: opts["candidates"]]
     rec = _loaded(
-        ItemKNN(S, **io, **trim, **compat.block_size_kwargs(opts["block_size"])), opts["load"], opts["block_size"]
+        SparseKNN(S, **io, **trim, **compat.block_size_kwargs(opts["block_size"])), opts["load"], opts["block_size"]
     )
     n_active = compat.serving_n_active(rec)
     info = {"model": opts["model"], "model_k": opts["model_k"], "s_nnz": int(S.nnz), "n_active": n_active}
@@ -306,7 +306,7 @@ def serve_cases(URM, opts):
         batch_in = compat.serving_batch_inputs(URM)
         threads = list(dict.fromkeys(opts["block_threads"] or [1, os.cpu_count()]))  # no duplicate case names
         info["block_threads"] = threads
-        one = _loaded(ItemKNN(S, **io, **trim, block_size=None), opts["load"], None)
+        one = _loaded(SparseKNN(S, **io, **trim, block_size=None), opts["load"], None)
         size = {"auto": compat.DEFAULT_BLOCK_SIZE, None: n_active}.get(opts["block_size"], opts["block_size"])
         info["block_control"] = n_active <= size  # both models run one block
         for t in threads:
@@ -319,7 +319,7 @@ def serve_cases(URM, opts):
         # block wins alone, loses under load). Full histories keep the case names of older runs.
         callers = list(dict.fromkeys(opts["callers"]))
         info["callers"] = callers
-        one = _loaded(ItemKNN(S, **io, **trim, block_size=None), opts["load"], None)
+        one = _loaded(SparseKNN(S, **io, **trim, block_size=None), opts["load"], None)
         kwargs = {"k": k, "exclude_seen": True}
         for cap in dict.fromkeys(opts["concurrent_caps"]):
             hists = _histories(URM, users, None if cap == "none" else int(cap), rng)
@@ -344,7 +344,7 @@ def serve_cases(URM, opts):
 
 
 def _loaded(model, how, block_size):
-    """`model` as timed: as built, or saved to a temp dir removed at exit and loaded back with `ItemKNN.load`
+    """`model` as timed: as built, or saved to a temp dir removed at exit and loaded back with `SparseKNN.load`
     (mapped or read: the production path, whose arrays are `Buf::Mapped` / owned), with the build's `block_size`
     (a runtime setting, not saved: W1)."""
     if how == "build":
@@ -472,13 +472,13 @@ def _batch_run(rec, batch_in, k, threads):
 
 
 def build_child(path, kwargs):
-    """In a fresh process: (seconds, MB before, MB peak above it) of ItemKNN(S, **kwargs) with S loaded from path.
+    """In a fresh process: (seconds, MB before, MB peak above it) of SparseKNN(S, **kwargs) with S loaded from path.
     The seconds include the 1 ms memory sampler running alongside (one syscall per ms; the build releases the GIL)."""
-    from similaripy.serving import ItemKNN
+    SparseKNN = compat.SparseKNN
 
     S = sp.csr_array(sp.load_npz(path))
     start = time.perf_counter()
-    _, base_mb, peak_mb = report.peak_memory(lambda: ItemKNN(S, **kwargs))
+    _, base_mb, peak_mb = report.peak_memory(lambda: SparseKNN(S, **kwargs))
     return time.perf_counter() - start, base_mb, peak_mb
 
 

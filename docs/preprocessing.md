@@ -106,13 +106,13 @@ history, w = history[keep], w[keep]
 ```python
 import similaripy as sim
 from similaripy.preprocessing import interactions_to_histories, interactions_to_urm, time_decay
-from similaripy.serving import ItemKNN
+from similaripy.serving import SparseKNN
 
 # train: each event weighted by its age from the same time for every user (half-life 30 days)
 cutoff = train.ts.max()                     # the end of the training data
 w = time_decay(train.ts, reference=cutoff, scale=30 * 86400)
 URM, user_ids, item_ids = interactions_to_urm(train.user, train.item, w)
-model = ItemKNN(sim.cosine(sim.normalization.bm25(URM).T, k=100).T, item_ids=item_ids)
+model = SparseKNN(sim.cosine(sim.normalization.bm25(URM).T, k=100).T, item_ids=item_ids)
 
 # evaluate: the holdout users' histories, straight from the log
 test_users, histories, weights = interactions_to_histories(test.user, test.item)
@@ -125,7 +125,7 @@ ids, scores = model.recommend(history, weights=w)
 
 ## Ids
 
-SimilariPy takes **integer ids** (any integer dtype, gaps fine): the URM numbers its rows and columns for you, and `ItemKNN(S, item_ids=item_ids)` takes and returns your ids. So `pd.factorize` is needed only for ids that aren't integers.
+SimilariPy takes **integer ids** (any integer dtype, gaps fine): the URM numbers its rows and columns for you, and `SparseKNN(S, item_ids=item_ids)` takes and returns your ids. So `pd.factorize` is needed only for ids that aren't integers.
 
 | Your ids | What to do |
 |----------|------------|
@@ -139,7 +139,7 @@ With strings, the codes are your ids from then on: build, serve and evaluate in 
 item_codes, item_names = pd.factorize(log.item)   # once, on the whole log
 user_codes, user_names = pd.factorize(log.user)
 URM, user_ids, item_ids = interactions_to_urm(user_codes, item_codes)   # row u: user_names[user_ids[u]]
-model = ItemKNN(sim.cosine(URM.T, k=100).T, item_ids=item_ids)
+model = SparseKNN(sim.cosine(URM.T, k=100).T, item_ids=item_ids)
 # the model knows only codes: keep item_names with it (e.g. save both side by side)
 
 # serving: names -> codes -> names

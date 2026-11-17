@@ -50,7 +50,7 @@ For more details, check the **[📘 Similarities](https://bogliosimone.github.io
 
 ## 🛎️ Serving
 
-The serving engine runs item-based KNN models online, in your own item ids:
+The serving engine (`SparseKNN`) runs item-based KNN models online, in your own item ids (or any square sparse KNN graph: lookalike users, more-like-this documents):
 
 - **Fast**: recommendations in tens to hundreds of microseconds, GIL-free; many users in parallel.
 - **Multi-process**: save once, load memory-mapped in every worker: one copy of the model for all of them.
@@ -83,7 +83,7 @@ From an interaction log to recommendations:
 ```python
 import similaripy as sim
 from similaripy.preprocessing import interactions_to_urm
-from similaripy.serving import ItemKNN
+from similaripy.serving import SparseKNN
 
 # An interaction log: one (user, item) pair per event, in your own ids
 users = [10, 10, 20, 20, 30, 30, 40, 40, 40, 50, 50, 60, 60, 70, 70]
@@ -99,7 +99,7 @@ urm = sim.normalization.bm25(urm)
 similarity_matrix = sim.cosine(urm.T, k=50)
 
 # Build the serving model, in your item ids
-model = ItemKNN(similarity_matrix.T, item_ids=item_ids)
+model = SparseKNN(similarity_matrix.T, item_ids=item_ids)
 
 # Online: one user, from the items in their history
 ids, scores = model.recommend([101, 104], k=3, exclude_seen=True)

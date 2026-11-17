@@ -143,7 +143,7 @@ impl Reply {
     }
 }
 
-/// Python's call: `ItemKNN.recommend` → `serve::recommend` with the block
+/// Python's call: `SparseKNN.recommend` → `serve::recommend` with the block
 /// resolved for every core busy (`ServeModel`).
 fn python(m: &Model, req: &Request) -> (Vec<i64>, Vec<u32>) {
     let block = BlockSize::Auto.resolve(m.n_active(), usize::MAX).unwrap();

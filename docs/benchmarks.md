@@ -26,7 +26,7 @@ code or documentation (see [Sources](#sources)).
 | Threads, macOS arm64 wheel | yes (default: all cores) | yes, `n_threads` (default 1) ✓ | no Python 3.14 wheel; built from source: yes, `n_threads` (default 1) ✓ | no (wheel built without OpenMP) ✓ | `n_jobs` over row chunks (sparse cosine skips the multi-threaded kernel) ✓ | yes |
 | Threads, Linux x86_64 wheel | yes (default: all cores) | yes, `n_threads` (default 1) | yes, `n_threads` (default 1) | yes, needs the system's OpenMP runtime | as macOS | yes |
 | Free-threaded wheels | yes | no | no | no | yes | yes |
-| Recommend API | `serving.ItemKNN` | no | no | `recommend`, `similar_items` | no | scoring pipelines |
+| Recommend API | `serving.SparseKNN` | no | no | `recommend`, `similar_items` | no | scoring pipelines |
 | Saved model | `save` / `load` (memory-mapped), pickle | no | no | `save` / `load`, pickle | pickle | pickle |
 | License | MIT | Apache-2.0 | Apache-2.0 | MIT | BSD-3-Clause | MIT |
 
