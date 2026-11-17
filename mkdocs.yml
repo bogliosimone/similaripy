@@ -64,6 +64,7 @@ nav:
       - Preprocessing: preprocessing.md
       - Similarities: similarity.md
       - Serving: serving.md
+      - Running the server: server.md
       - Normalizations: normalization.md
       - Signed Input: signed-input.md
   - API reference:

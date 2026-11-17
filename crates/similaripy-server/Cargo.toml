@@ -4,8 +4,8 @@ version = "1.0.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-# Internal design validator for the serving core (server plan S2): not in the
-# wheel, not released
+# Experimental, released as its own artifact (`server-v*` tags: binaries + a
+# Docker image, server-release.yml); not in the wheel, not on crates.io
 publish = false
 
 [lints]

@@ -1,0 +1,402 @@
+# 🖥️ Running the server
+
+`similaripy-server` serves a model saved with
+[`SparseKNN.save`](serving.md#saving-and-loading) over HTTP/JSON and gRPC, on
+one port. It is a single binary (or a Docker image): no Python at serving
+time.
+
+!!! warning "Experimental"
+    - **What is promised:** server 1.x reads models saved by similaripy 1.x.
+      The `/v1` contract (JSON fields, the gRPC proto, config keys) only grows
+      within 1.x: new optional request fields, new answer fields, new keys.
+    - **While the label is on**, a change that is not additive can still
+      come in a minor version (1.y), always with a migration note in the
+      [changelog](https://github.com/bogliosimone/similaripy/blob/master/crates/similaripy-server/CHANGELOG.md).
+    - **Upgrade servers before clients:** the JSON endpoint rejects unknown
+      fields, so a request with a field from a newer version gets a 400 from
+      an older server.
+    - **No auth, no TLS:** run it on a private network only
+      ([In production](#in-production)).
+
+## Quick start
+
+Save a model in Python:
+
+```python
+from similaripy.serving import SparseKNN
+
+SparseKNN(S.T, item_ids=item_ids).save("models/v3")
+```
+
+Run the server on it (it listens on `127.0.0.1:8080` by default):
+
+```bash
+similaripy-server --model models/v3
+```
+
+Ask for recommendations:
+
+```bash
+curl -s 127.0.0.1:8080/v1/recommend -d '{"history": [10, 20], "k": 3}'
+```
+
+```json
+{"items":[{"id":30,"score":1.0},{"id":40,"score":0.25}],"model":{"name":"v3"},
+ "request_id":"8480bc835112df61-0-0","k":3,"sorted":true,"view":null,
+ "history":{"sent":2,"truncated":0,"unknown":0}}
+```
+
+Same answer as `SparseKNN.load("models/v3").recommend([10, 20], k=3)`: same
+ids, same `float32` scores, at most `k` items (only those with a positive
+score: here 2).
+
+## Install
+
+**Release archive.** Linux x86_64 and arm64 (glibc ≥ 2.28: Debian 10+,
+Ubuntu 18.10+, RHEL 8+) and macOS arm64. Each archive holds the binary, the
+license and `recommender.proto`.
+
+```bash
+V=1.0.0
+T=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu, aarch64-apple-darwin
+URL=https://github.com/bogliosimone/similaripy/releases/download/server-v$V
+curl -LO "$URL/similaripy-server-$V-$T.tar.gz" -LO "$URL/SHA256SUMS"
+shasum -a 256 --check --ignore-missing SHA256SUMS   # or: sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf "similaripy-server-$V-$T.tar.gz"
+"./similaripy-server-$V-$T/similaripy-server" --version
+```
+
+On macOS the binary is not signed: after downloading it with a browser, run
+`xattr -d com.apple.quarantine similaripy-server` once.
+
+**Docker image** (linux/amd64 and linux/arm64), tags `:1.0.0` and `:1.0`
+(no `latest`):
+
+```bash
+docker run --rm -p 8080:8080 -v "$PWD/models/v3:/model:ro" \
+  -e SIMILARIPY_MODEL__NAME=v3 \
+  ghcr.io/bogliosimone/similaripy-server:1.0.0 --model /model
+```
+
+- The image listens on `0.0.0.0:8080` (outside a container the default is
+  `127.0.0.1`), set by the env var `SIMILARIPY_SERVER__ADDR`. An env var
+  beats a config file ([Configuration](#configuration)), so change the
+  address with `-e SIMILARIPY_SERVER__ADDR=…` or `--server.addr`, not with
+  `[server] addr` in a mounted file.
+- It runs as a non-root user (uid 65532): the model's files must be readable
+  by it.
+- Set `model.name`: the default is the directory's name, here `model`.
+
+**From source** (a clone of the repository, Rust from
+[rustup](https://rustup.rs)):
+
+```bash
+cargo build --release -p similaripy-server
+target/release/similaripy-server --version
+```
+
+## Configuration
+
+Every setting is a key, `section.key`, settable in three ways. From weakest
+to strongest: built-in default < config file < env var < command-line flag.
+
+| Where | Form | Example |
+|-------|------|---------|
+| File (TOML, `--config FILE`) | `[section]` then `key = value` | `[limits]` then `k_max = 500` |
+| Env var | `SIMILARIPY_<SECTION>__<KEY>` (two underscores) | `SIMILARIPY_LIMITS__K_MAX=500` |
+| Flag | `--section.key value` (or `--section.key=value`) | `--limits.k_max 500` |
+
+A config file:
+
+```toml
+# server.toml
+[model]
+path = "models/v3"
+name = "itemknn-v3"
+
+[limits]
+max_history = 500
+
+[views.in_stock]
+include_file = "views/in_stock.txt"
+```
+
+```bash
+similaripy-server --config server.toml --server.threads 4
+```
+
+- An unknown key (a typo) stops the server at start, naming the key.
+- `--print-config` prints the resolved config (TOML) and exits: a dry run
+  for CI or a new deployment.
+- The server logs the resolved config at start and serves it at
+  `GET /config` (so no key ever holds a secret).
+- Only env vars starting with `SIMILARIPY_` and containing `__` are config.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `model.path` | (required) | A `SparseKNN.save` directory. |
+| `model.mmap` | `true` | Map the model's files instead of reading them into memory (one copy shared by every process on the machine). |
+| `model.name` | the directory's name | Returned in every answer: tells model versions apart (e.g. `itemknn-2026-11-16`). |
+| `server.addr` | `127.0.0.1:8080` | `host:port` to listen on. |
+| `server.threads` | P-cores (macOS), available CPUs (Linux, container CPU limit included) | Server threads, one request at a time each. |
+| `server.block_size` | `auto` | `auto`, `off` or entries per block, as in [Serving](serving.md#parameters). |
+| `limits.k_max` | `2000` | A larger `k` is rejected. |
+| `limits.max_history` | `1000` | History ids a request uses (Python has no cap). |
+| `limits.history_policy` | `truncate` | A longer history: `truncate` (keep the last `max_history` ids) or `reject` ([History](#history)). |
+| `defaults.sorted` | `true` | `sorted` of a request that doesn't send it ([Sorted or not](#sorted-or-not)). |
+| `defaults.view` | `""` (the whole model) | `view` of a request that doesn't send it ([Views](#views)). |
+| `timeouts.header_read` | `30` | Seconds a connection has to send a request's headers (and a JSON body: else 408). Also the idle time after which an HTTP/1.1 keep-alive connection is closed. |
+| `timeouts.drain_delay` | `0` | After SIGTERM: seconds still accepting connections with `/ready` answering 503 ([Shutdown](#shutdown)). |
+| `timeouts.shutdown_grace` | `10` | Then seconds for open requests to finish. |
+| `views.NAME.include_file` | | View `NAME` allows only the ids in this file. |
+| `views.NAME.exclude_file` | | View `NAME` never returns the ids in this file (either file or both). |
+
+Relative file paths are relative to the server's working directory. Fixed
+limits (not keys): request bodies up to 1 MiB.
+
+Short flags kept for scripts: `--model DIR` (= `--model.path`), `--addr`,
+`--threads`, `--block-size`, `--max-history`, `--k-max`, `--no-mmap`.
+
+## API
+
+### `POST /v1/recommend` (JSON)
+
+Fields and defaults as Python's
+[`recommend`](api/serving.md), except `sorted` and `view`:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `history` | (required) | The user's history, oldest first; ids the model doesn't have are ignored. |
+| `weights` | all 1.0 | One per id. |
+| `k` | `10` | Items to return (at most `limits.k_max`). |
+| `exclude_seen` | `true` | Never return the history's items. |
+| `include` | every item | Only these items can be returned. |
+| `exclude` | none | Never these items. |
+| `sorted` | `defaults.sorted` | Best first (`true`) or in no particular order. |
+| `view` | `defaults.view` | A named view; `""` = the whole model. |
+
+The answer: `items` (best first when sorted), then the request's context:
+which `model` answered, the `request_id`, the `k`, `sorted` and `view` used
+(defaults applied), and `history` counts ([History](#history)).
+
+Headers:
+
+- `x-request-id`: sent by the client (kept if 1-128 printable ASCII characters without
+  spaces, e.g. set by an ingress; else replaced) or generated, echoed in the header and the body:
+  the key to join a client's log with the server's.
+- `Server-Timing: compute;dur=0.031`: the model's compute time in ms.
+
+Errors are JSON `{"error": "…"}` (except 413, plain text):
+
+| Status | When |
+|--------|------|
+| 400 | Invalid JSON, an unknown field, `k` > `k_max`, a history over `max_history` with `reject`, an unknown view, weights of the wrong length |
+| 408 | The body didn't arrive within `timeouts.header_read` |
+| 413 | Body over 1 MiB (no `x-request-id` on this one) |
+| 500 | A server error |
+
+### gRPC
+
+`similaripy.v1.Recommender/Recommend` on the same port (HTTP/2 without
+TLS), defined in
+[`recommender.proto`](https://github.com/bogliosimone/similaripy/blob/master/crates/similaripy-server/proto/similaripy/v1/recommender.proto)
+(also in the release archive). Same fields, defaults, limits and answers as
+JSON; ids and scores come back as two packed arrays, the fast path for large
+`k`. With [grpcurl](https://github.com/fullstorydev/grpcurl) (the server has
+no reflection: pass the proto):
+
+```bash
+grpcurl -plaintext -proto recommender.proto -H 'x-request-id: abc-1' \
+  -d '{"history": [10, 20], "k": 3}' 127.0.0.1:8080 similaripy.v1.Recommender/Recommend
+```
+
+Differences from JSON (protobuf's rules):
+
+- Empty `weights` = unweighted (proto3 can't tell an empty list from none).
+- `include` is a message (`IdList`), so an empty list can be sent: absent =
+  every item, an empty list = no item (as JSON's absent vs `[]`).
+- Unknown fields are ignored, not rejected.
+- Errors are status codes: `INVALID_ARGUMENT` (JSON's 400), `OUT_OF_RANGE`
+  (a message over 1 MiB), `INTERNAL` (a server error or a malformed
+  message). `x-request-id` comes back in the metadata.
+
+### Other endpoints
+
+| Path | Answer |
+|------|--------|
+| `GET /health` | `ok` while the process runs (liveness) |
+| `GET /ready` | `ok`, or 503 `draining` after SIGTERM (readiness) |
+| `GET /metrics` | Prometheus text ([Metrics](#metrics)) |
+| `GET /config` | The resolved config (JSON) |
+| `GET /v1/views` | The views, their sizes and their files' known ids ([Views](#views)) |
+
+## Answers
+
+**Ids are JSON numbers** (64-bit integers). JavaScript reads numbers as
+doubles: ids above 2^53 (9 007 199 254 740 992) lose precision there; use a
+parser with big-integer support, or gRPC.
+
+**Ties are fixed for a given model.** Items with exactly the same score are
+ordered by the model's internal order, not by id: the same request to the
+same saved model always gets the same items and scores in the same order
+(and the same bytes with the same `x-request-id`: cache keys, A/B debugging
+and tests rely on it), but two models with the same scores may order their ties
+differently.
+
+### Sorted or not
+
+`sorted: false` returns the same items and scores in no particular order.
+For candidate generation, where a ranker re-scores the candidates anyway,
+it saves the final sort: 19-50% of the compute at `k` ≥ 1000. A retrieval
+deployment sets `defaults.sorted = false` once; a request can still ask for
+either.
+
+### History
+
+The history is used oldest → newest, at most `limits.max_history` ids:
+
+- `truncate` (default): the oldest ids are cut, the last `max_history` kept;
+  cut ids are still excluded from the answer when `exclude_seen` is on.
+- `reject`: a longer history is a 400 / `INVALID_ARGUMENT`.
+
+Each answer counts its history: `sent` (ids sent), `truncated` (cut) and
+`unknown` (ids the model doesn't have, among the rest: ignored). A high
+`unknown` rate usually means a client sends ids from another catalogue or
+model version.
+
+## Views
+
+A view is a named set of items that can be recommended (e.g. "in stock in
+Italy"), built at start from id files: the server-side form of
+[`model.view`](serving.md#availability), one bit per item, S shared.
+
+```toml
+[views.in_stock]
+include_file = "views/in_stock.txt"     # only these items
+
+[views.in_stock_no_adult]
+include_file = "views/in_stock.txt"
+exclude_file = "views/adult.txt"        # minus these
+```
+
+An id file has one integer id per line (`np.savetxt(path, ids, fmt="%d")`).
+Ids the model doesn't have are ignored: the start-up log and `GET /v1/views`
+show how many ids of each file the model knows (a file in the wrong id
+space reads "0 known").
+
+A request picks one view with `"view": "in_stock"`. Without one it gets
+`defaults.view`; `"view": ""` is the whole model. An unknown name is a 400.
+The request's own `include` / `exclude` apply on top (AND): a request can
+narrow a view, never widen it. Example: view `in_stock` = items 1-1000,
+request `"include": [5, 7, 2000]` → candidates 5 and 7 (2000 is not in
+stock).
+
+To change a view, edit its file and restart the server (in Kubernetes: a
+rolling restart).
+
+Cost (Yambda 500M, one thread): a request without a view pays nothing; a
+broad view (90% of the items) about +3% CPU per request; a narrow one (10%)
++10-14% at `k` 100 and +3% at `k` 2000, as more candidates are checked
+against it.
+
+## Metrics
+
+`GET /metrics`, Prometheus text format, names prefixed with
+`similaripy_server_`:
+
+| Metric | Meaning |
+|--------|---------|
+| `threads`, `block_size`, `items`, `active_items` | Gauges: the setup |
+| `requests_total{thread}` | Requests computed, per thread |
+| `bad_requests_total` | Requests rejected before compute (JSON, `k`, history, view, 408) |
+| `errors_total` | Requests the model rejected (weights) |
+| `truncated_total` | Histories cut to `max_history` |
+| `history_ids_total`, `known_ids_total` | History ids used, and those the model has |
+| `view_requests_total{view}` | Requests per named view (only with views configured) |
+| `compute_seconds{proto}` | Histogram: the model's compute, per format (`json`, `grpc`) |
+| `request_seconds{proto}` | Histogram: the handler (JSON: parse + compute + serialize) |
+
+Plus `process_cpu_seconds_total`.
+
+## In production
+
+- **Private network only.** No auth, no TLS: anyone who reaches the port can
+  query it, and `Server-Timing` tells them the compute time. Put an ingress
+  or a service mesh with TLS and auth in front of it if it must be reached
+  from outside.
+- **Threads.** Each thread answers one request at a time, start to finish
+  (a request takes tens of µs to about a ms). A connection stays on one
+  thread: send concurrent requests over several connections.
+- **gRPC clients:** a gRPC channel is one HTTP/2 connection, so one channel
+  = one server thread. Open several channels, or put an L7 (HTTP/2-aware)
+  load balancer in front, which spreads requests, not connections.
+
+### Shutdown
+
+On SIGTERM (or Ctrl-C), in order:
+
+1. `/ready` answers 503, connections are still accepted for
+   `timeouts.drain_delay` seconds;
+2. the listener closes: new connections are refused;
+3. open requests get `timeouts.shutdown_grace` seconds to finish (HTTP/1.1
+   connections close after their response, HTTP/2 ones get a GOAWAY);
+4. the process exits 0. A second signal exits at once with 1.
+
+### Kubernetes
+
+A pod is stopped with SIGTERM, then killed after
+`terminationGracePeriodSeconds` (default 30). The load balancer takes a few
+seconds to notice the pod is going: `drain_delay` keeps it answering until
+then.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommender
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: recommender}
+  template:
+    metadata:
+      labels: {app: recommender}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: server
+          image: ghcr.io/bogliosimone/similaripy-server:1.0.0
+          args: ["--model", "/models/itemknn-2026-11-16"]
+          env:
+            - {name: SIMILARIPY_MODEL__NAME, value: itemknn-2026-11-16}
+            - {name: SIMILARIPY_TIMEOUTS__DRAIN_DELAY, value: "5"}
+            - {name: SIMILARIPY_TIMEOUTS__SHUTDOWN_GRACE, value: "10"}
+          ports:
+            - containerPort: 8080
+          livenessProbe:
+            httpGet: {path: /health, port: 8080}
+          readinessProbe:
+            httpGet: {path: /ready, port: 8080}
+            periodSeconds: 2
+          resources:
+            limits: {cpu: "4"}
+          volumeMounts:
+            - {name: models, mountPath: /models, readOnly: true}
+      volumes:
+        - name: models
+          persistentVolumeClaim: {claimName: models}   # where your saved models live
+```
+
+- **Liveness** `/health` stays ok while draining, so the pod isn't killed
+  mid-drain; **readiness** `/ready` turns 503 at SIGTERM, so it stops
+  getting traffic.
+- `drain_delay` (5 s) + `shutdown_grace` (10 s) must stay under
+  `terminationGracePeriodSeconds` (30 s).
+- `server.threads` defaults to the CPU limit (here 4).
+- HTTP/1.1 clients that keep connections open longer than
+  `timeouts.header_read` (30 s) without a request see them closed. A pooled
+  client usually reconnects, but a POST sent just as the server closes can
+  fail (Python `requests` doesn't retry POST): set the client's idle timeout
+  under 30 s, or retry.
+- A new model = a new directory and a new `--model` path: a rolling update
+  replaces the pods one by one.
