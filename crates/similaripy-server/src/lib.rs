@@ -27,10 +27,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, FromRequest, State};
+use axum::extract::State;
 use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use http_body_util::BodyExt;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
@@ -846,8 +847,8 @@ thread_local! {
     static LOCAL: RefCell<Option<Local>> = const { RefCell::new(None) };
 }
 
-/// The routes, over `app`: JSON and gRPC (tonic's decode limit is its own:
-/// `DefaultBodyLimit` doesn't reach it).
+/// The routes, over `app`: JSON (bodies limited by `read_body`) and gRPC
+/// (tonic's decode limit).
 pub fn router(app: Arc<App>) -> Router {
     let limit = app.cfg.limits.max_body_bytes;
     let grpc = pb::recommender_server::RecommenderServer::new(Grpc(app.clone()))
@@ -860,7 +861,6 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/ready", get(ready))
         .route("/config", get(config))
         .route("/v1/views", get(views))
-        .layer(DefaultBodyLimit::max(limit))
         .with_state(app)
         .merge(tonic::service::Routes::new(grpc).into_axum_router())
 }
@@ -896,36 +896,83 @@ async fn post_json(app: &App, req: axum::extract::Request, e: Endpoint) -> Respo
     with_request_id(r.unwrap_or_else(|f| f.json(&id)), &id)
 }
 
-/// A JSON endpoint's body: over `limits.max_body_bytes` 413 (a declared
-/// Content-Length at once, else axum's limit as it streams), not within
+/// A JSON endpoint's body: over `limits.max_body_bytes` 413 at once (a
+/// declared Content-Length before reading, else as it streams), not within
 /// header_read of its headers 408 (a dribbled body would hold the
-/// connection; hyper's timer covers headers only), unreadable 400.
+/// connection; hyper's timer covers headers only), unreadable 400. The rest
+/// of an oversized body is read and dropped after the 413 (`drain`).
 // ponytail: JSON only; a gRPC body is read inside tonic (no timeout).
 async fn read_body(app: &App, req: axum::extract::Request) -> Result<Bytes, Fail> {
     let limit = app.cfg.limits.max_body_bytes;
+    let deadline = secs(app.cfg.timeouts.header_read);
     let declared = req
         .headers()
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok()?.parse::<u64>().ok());
+    // A client waiting for `100 Continue` never sends the body after a 413:
+    // no drain (it would hold the connection until header_read).
+    let expects = req.headers().contains_key(header::EXPECT);
+    let mut body = req.into_body();
     if let Some(n) = declared.filter(|&n| n > limit as u64) {
+        if !expects {
+            drain(body, limit, deadline);
+        }
         let e = format!("body of {n} bytes > limits.max_body_bytes = {limit}");
         return Err(Fail(Code::BodyTooLarge, e));
     }
-    let read = Bytes::from_request(req, &());
-    match tokio::time::timeout(secs(app.cfg.timeouts.header_read), read).await {
-        Ok(Ok(body)) => Ok(body),
-        Ok(Err(e)) => {
-            let code = match e.status() {
-                StatusCode::PAYLOAD_TOO_LARGE => Code::BodyTooLarge,
-                _ => Code::BadBody,
+    // One chunk (the usual small JSON body) is kept as is (no copy, no
+    // allocation), more are joined.
+    let (mut first, mut joined) = (None::<Bytes>, Vec::new());
+    let mut size = 0;
+    let read = async {
+        while let Some(frame) = body.frame().await {
+            let Ok(data) = frame.map_err(|e| e.to_string())?.into_data() else {
+                continue; // trailers
             };
-            Err(Fail(code, e.body_text()))
+            size += data.len();
+            if size > limit {
+                return Ok(false);
+            }
+            match first.take() {
+                None if joined.is_empty() => first = Some(data),
+                f => {
+                    joined.extend_from_slice(&f.unwrap_or_default());
+                    joined.extend_from_slice(&data);
+                }
+            }
         }
+        Ok(true)
+    };
+    match tokio::time::timeout(deadline, read).await {
+        Ok(Ok(true)) => Ok(first.unwrap_or_else(|| Bytes::from(joined))),
+        Ok(Ok(false)) => {
+            drain(body, limit, deadline);
+            let e = format!("body over limits.max_body_bytes = {limit}");
+            Err(Fail(Code::BodyTooLarge, e))
+        }
+        Ok(Err(e)) => Err(Fail(Code::BadBody, e)),
         Err(_) => {
             let e = "request body not received within timeouts.header_read";
             Err(Fail(Code::BodyTimeout, e.into()))
         }
     }
+}
+
+/// Reads and drops the rest of a rejected body in the background (up to
+/// 8 x `limit` bytes, within `deadline`): closing a connection with unread
+/// bytes makes the OS reset it, and a client still sending would lose the
+/// 413 (nginx's lingering close). Past either bound the connection closes.
+fn drain(mut body: axum::body::Body, limit: usize, deadline: Duration) {
+    let cap = limit.saturating_mul(8);
+    tokio::spawn(tokio::time::timeout(deadline, async move {
+        let mut n = 0;
+        while let Some(Ok(frame)) = body.frame().await {
+            n += frame.data_ref().map_or(0, |d| d.len());
+            if n > cap {
+                break;
+            }
+        }
+    }));
 }
 
 struct Grpc(Arc<App>);

@@ -73,7 +73,13 @@ fn run() -> Result<(), String> {
         Cli::Run(cfg) => cfg,
     };
     eprint!("{}\nconfig:\n{}", version(), cfg.to_toml());
-    let (dir, addr) = (cfg.model.path.clone(), cfg.server.addr.clone());
+    let addr = cfg.server.addr.clone();
+    // Resolved once: each file is opened through `dir`, so a symlink flipped
+    // to another version mid-load would mix two models' files (V22).
+    let path = &cfg.model.path;
+    let dir = path
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let t = std::time::Instant::now();
     let model = Model::load(&dir, cfg.model.mmap).map_err(|e| e.to_string())?;
     let loaded = t.elapsed();
