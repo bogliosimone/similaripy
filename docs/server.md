@@ -318,6 +318,11 @@ against it.
 
 Plus `process_cpu_seconds_total`.
 
+To see them on a dashboard, the repository has a local stack (server,
+Prometheus, Grafana with a ready dashboard, a load generator) that starts
+with one command:
+[`crates/similaripy-server/observability`](https://github.com/bogliosimone/similaripy/tree/master/crates/similaripy-server/observability).
+
 ## In production
 
 - **Private network only.** No auth, no TLS: anyone who reaches the port can
