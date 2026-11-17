@@ -637,7 +637,7 @@ fn worker_block_and_stats() {
     let mut sc = vec![];
     w.score(&m, &[0, 9], None, &[1, 2, 3], &mut sc).unwrap();
     assert_eq!(sc, vec![1.0, 0.0, 0.0]);
-    w.score(&m, &[0], None, &[2], &mut sc).unwrap(); // no candidate column: no lookup
+    w.score(&m, &[0], None, &[2], &mut sc).unwrap(); // no candidate column: still looked up
     assert_eq!(sc, vec![0.0]);
     assert_eq!(
         w.stats(),
@@ -645,7 +645,7 @@ fn worker_block_and_stats() {
             requests: 5,
             errors: 1,
             ids: 5 + 1 + 1 + 2 + 1,
-            known_ids: 3 + 1 + 1,
+            known_ids: 3 + 1 + 1 + 1,
         }
     );
 }

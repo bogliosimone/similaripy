@@ -62,6 +62,9 @@ pub struct Limits {
     pub history_policy: HistoryPolicy,
     /// A larger request body is rejected (JSON 413, gRPC OUT_OF_RANGE).
     pub max_body_bytes: usize,
+    /// A score request with more items is rejected (400 / INVALID_ARGUMENT),
+    /// never cut: a ranker would get features for some candidates only.
+    pub max_items: usize,
 }
 
 /// A history longer than `limits.max_history` (V7).
@@ -144,6 +147,7 @@ impl Default for Limits {
             max_history: 1000,
             history_policy: HistoryPolicy::Truncate,
             max_body_bytes: crate::BODY_LIMIT,
+            max_items: 10_000,
         }
     }
 }
@@ -218,7 +222,7 @@ impl Config {
         Ok(())
     }
 
-    /// `defaults.k` <= `limits.k_max`, `max_body_bytes` > 0; `parse` and
+    /// `defaults.k` <= `limits.k_max`, `max_body_bytes` and `max_items` > 0; `parse` and
     /// `App::new` both call it.
     pub fn check_limits(&self) -> Result<(), String> {
         let (k, k_max) = (self.defaults.k, self.limits.k_max);
@@ -227,6 +231,9 @@ impl Config {
         }
         if self.limits.max_body_bytes == 0 {
             return Err("limits.max_body_bytes must be >= 1".into());
+        }
+        if self.limits.max_items == 0 {
+            return Err("limits.max_items must be >= 1".into());
         }
         Ok(())
     }
@@ -528,6 +535,7 @@ mod tests {
                 max_history: 8,
                 history_policy: HistoryPolicy::Reject,
                 max_body_bytes: 4096,
+                max_items: 9,
             },
             defaults: Defaults {
                 k: 5,
@@ -559,6 +567,7 @@ mod tests {
             ("limits.max_history", "8"),
             ("limits.history_policy", "reject"),
             ("limits.max_body_bytes", "4096"),
+            ("limits.max_items", "9"),
             ("defaults.k", "5"),
             ("defaults.sorted", "false"),
             ("defaults.view", "instock"),
@@ -638,6 +647,8 @@ mod tests {
         assert!(e.contains("defaults.k = 6 > limits.k_max = 5"), "{e}");
         let e = cfg(&["--model", "/m", "--limits.max_body_bytes", "0"], &[]).unwrap_err();
         assert!(e.contains("max_body_bytes"), "{e}");
+        let e = cfg(&["--model", "/m", "--limits.max_items", "0"], &[]).unwrap_err();
+        assert!(e.contains("max_items"), "{e}");
         // Timeouts: an integer in the file is seconds too; out of range = error
         let f = file("[model]\npath = \"/m\"\n[timeouts]\nheader_read = 3\n");
         let c = cfg(&["--config", &f.0], &[]).unwrap();

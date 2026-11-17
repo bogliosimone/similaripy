@@ -54,7 +54,7 @@ score: here 2).
 
 **Release archive.** Linux x86_64 and arm64 (glibc ≥ 2.28: Debian 10+,
 Ubuntu 18.10+, RHEL 8+) and macOS arm64. Each archive holds the binary, the
-license and `recommender.proto`.
+license, `recommender.proto` (gRPC) and `openapi.json` (JSON).
 
 ```bash
 V=1.0.0
@@ -144,6 +144,7 @@ similaripy-server --config server.toml --server.threads 4
 | `limits.max_history` | `1000` | History ids a request uses (Python has no cap). |
 | `limits.history_policy` | `truncate` | A longer history: `truncate` (keep the last `max_history` ids) or `reject` ([History](#history)). |
 | `limits.max_body_bytes` | `1048576` (1 MiB) | A larger request body is rejected (JSON 413, gRPC `OUT_OF_RANGE`). Raise it for a large `include` (about 100k ids per MiB in JSON). |
+| `limits.max_items` | `10000` | A score request with more items is rejected, never cut ([`POST /v1/score`](#post-v1score-json)). |
 | `defaults.k` | `10` | `k` of a request that doesn't send it (at most `limits.k_max`): e.g. `500` for candidate generation. |
 | `defaults.sorted` | `true` | `sorted` of a request that doesn't send it ([Sorted or not](#sorted-or-not)). |
 | `defaults.view` | `""` (the whole model) | `view` of a request that doesn't send it ([Views](#views)). |
@@ -159,6 +160,9 @@ Short flags kept for scripts: `--model DIR` (= `--model.path`), `--addr`,
 `--threads`, `--block-size`, `--max-history`, `--k-max`, `--no-mmap`.
 
 ## API
+
+The JSON endpoints are also an OpenAPI 3.1 spec: [Server API](server-api.md)
+(`openapi.json`, in the release archive).
 
 ### `POST /v1/recommend` (JSON)
 
@@ -188,7 +192,34 @@ Headers:
   the key to join a client's log with the server's.
 - `Server-Timing: compute;dur=0.031`: the model's compute time in ms.
 
-Errors of `POST /v1/recommend` are JSON, with the request id in the body and
+### `POST /v1/score` (JSON)
+
+The scores of given items for one history, as Python's
+[`score`](api/serving.md): the item-KNN score of each candidate other
+retrievers found, as a feature for a ranker. The same bits as
+`/v1/recommend`'s score of that item; no top-k, no threshold, history items
+included.
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `history` | (required) | As `/v1/recommend`'s (cut past `limits.max_history` the same way). |
+| `weights` | all 1.0 | One per id. |
+| `items` | (required) | The items to score, at most `limits.max_items`; duplicates are scored again. |
+| `view` | `defaults.view` | A named view: its excluded items score 0. |
+
+```bash
+curl -s 127.0.0.1:8080/v1/score -d '{"history": [10, 20], "items": [30, 40, 99]}'
+```
+
+The answer: `scores`, one per item in the request's order (0 for an item the
+model doesn't have, has no column for, e.g. outside a trimmed build's
+candidates, or the view excludes), then the request's context:
+`model`, `request_id`, `view` and `history` counts, as `/v1/recommend`'s. The
+same headers and errors as `/v1/recommend`, plus `items_over_max`.
+
+### Errors
+
+Errors of the JSON endpoints are JSON, with the request id in the body and
 the header:
 
 ```json
@@ -202,6 +233,7 @@ Branch on `code` (fixed strings: new ones may be added, none change), show
 |--------|--------|------|
 | 400 | `bad_json` | Not valid JSON, an unknown or missing field, a wrong type |
 | 400 | `k_over_max` | `k` > `limits.k_max` |
+| 400 | `items_over_max` | More score `items` than `limits.max_items` |
 | 400 | `history_over_max` | A history over `max_history` with `history_policy = reject` |
 | 400 | `unknown_view` | A `view` not in the config |
 | 400 | `bad_weights` | Weights of the wrong length, or not finite |
@@ -212,8 +244,8 @@ Branch on `code` (fixed strings: new ones may be added, none change), show
 
 ### gRPC
 
-`similaripy.v1.Recommender/Recommend` on the same port (HTTP/2 without
-TLS), defined in
+`similaripy.v1.Recommender/Recommend` and `/Score` on the same port (HTTP/2
+without TLS), defined in
 [`recommender.proto`](https://github.com/bogliosimone/similaripy/blob/master/crates/similaripy-server/proto/similaripy/v1/recommender.proto)
 (also in the release archive). Same fields, defaults, limits and answers as
 JSON; ids and scores come back as two packed arrays, the fast path for large
@@ -279,7 +311,7 @@ The history is used oldest → newest, at most `limits.max_history` ids:
 - `reject`: a longer history is a 400 / `INVALID_ARGUMENT`.
 
 An empty history (a new user) is not an error: the answer has no items
-(`"items": []`). Fall back to something else, e.g. popular items.
+(`"items": []`; `/v1/score`: all scores 0). Fall back to something else, e.g. popular items.
 
 Each answer counts its history: `sent` (ids sent), `truncated` (cut) and
 `unknown` (ids the model doesn't have, among the rest: ignored). A high
@@ -331,13 +363,13 @@ against it.
 | `info{version, model}` | Always 1: the server's version and the model it serves (which pod serves which model during a rolling update) |
 | `threads`, `block_size`, `items`, `active_items` | Gauges: the setup |
 | `requests_total{thread}` | Requests computed, per thread |
-| `bad_requests_total` | Requests rejected before compute (JSON body: parse, unreadable, 408, 413; `k`, history, view) |
+| `bad_requests_total` | Requests rejected before compute (JSON body: parse, unreadable, 408, 413; `k`, score `items`, history, view, weights of a cut history) |
 | `errors_total` | Requests the model rejected (weights) |
 | `truncated_total` | Histories cut to `max_history` |
 | `history_ids_total`, `known_ids_total` | History ids used, and those the model has |
 | `view_requests_total{view}` | Requests per named view (only with views configured) |
-| `compute_seconds{proto}` | Histogram: the model's compute, per format (`json`, `grpc`) |
-| `request_seconds{proto}` | Histogram: the handler (JSON: parse + compute + serialize) |
+| `compute_seconds{endpoint, proto}` | Histogram: the model's compute, per endpoint (`recommend`, `score`) and format (`json`, `grpc`) |
+| `request_seconds{endpoint, proto}` | Histogram: the handler (JSON: parse + compute + serialize) |
 
 Plus the standard `process_cpu_seconds_total`, `process_start_time_seconds`
 and `process_resident_memory_bytes` (Linux and macOS; it includes the pages

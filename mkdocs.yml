@@ -65,6 +65,7 @@ nav:
       - Similarities: similarity.md
       - Serving: serving.md
       - Running the server: server.md
+      - Server API (OpenAPI): server-api.md
       - Normalizations: normalization.md
       - Signed Input: signed-input.md
   - API reference:

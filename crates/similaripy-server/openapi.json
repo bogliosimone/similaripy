@@ -1,0 +1,894 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "similaripy-server",
+    "version": "1.0.0",
+    "summary": "Item-KNN recommendations and scores from a SparseKNN model (experimental).",
+    "description": "The JSON endpoints of similaripy-server. gRPC (same requests, defaults, limits and answers) is defined in `recommender.proto`, shipped beside this file. The `/v1` contract only grows within 1.x: new fields and endpoints may come, none change or go. Requests reject unknown fields (a typo is a `bad_json` error).",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8080",
+      "description": "The default `server.addr`."
+    }
+  ],
+  "paths": {
+    "/v1/recommend": {
+      "post": {
+        "operationId": "recommend",
+        "summary": "Top-k items for one history",
+        "description": "Fields and defaults as Python's `SparseKNN.recommend`, except `k`, `sorted` and `view` (the server's `defaults.*` keys). A history over `limits.max_history` follows `limits.history_policy`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecommendRequest"
+              },
+              "example": {
+                "history": [
+                  10,
+                  20,
+                  30
+                ],
+                "k": 3
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The items, then the request's context.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecommendResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A client error: `error.code` says which (`bad_json`, `history_over_max`, `unknown_view`, `bad_weights`, `bad_body`, `k_over_max`).",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "`body_timeout`: the body didn't arrive within `timeouts.header_read`.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`body_too_large`: the body is over `limits.max_body_bytes`.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`internal`: a server error (also logged to stderr with the request id).",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/score": {
+      "post": {
+        "operationId": "score",
+        "summary": "Scores of given items for one history",
+        "description": "The item-KNN score of each item for the history (e.g. a ranker's feature for other retrievers' candidates): the same bits as `/v1/recommend`'s score of that item and as Python's `SparseKNN.score`. No top-k, no threshold, history items included. 0 for an item the model doesn't have (or has no column for, e.g. outside a trimmed build's candidates) or the view excludes. The history is cut as `/v1/recommend`'s; over `limits.max_items` items is an error (`items_over_max`), never cut.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScoreRequest"
+              },
+              "example": {
+                "history": [
+                  10,
+                  20,
+                  30
+                ],
+                "items": [
+                  40,
+                  50,
+                  60
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One score per item, in the request's order, then the request's context.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoreResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A client error: `error.code` says which (`bad_json`, `history_over_max`, `unknown_view`, `bad_weights`, `bad_body`, `items_over_max`).",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "`body_timeout`: the body didn't arrive within `timeouts.header_read`.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`body_too_large`: the body is over `limits.max_body_bytes`.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`internal`: a server error (also logged to stderr with the request id).",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/views": {
+      "get": {
+        "operationId": "views",
+        "summary": "The named views",
+        "responses": {
+          "200": {
+            "description": "The default view, the model's items, and per view what it allows and its files' known ids.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Views"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "summary": "Liveness",
+        "responses": {
+          "200": {
+            "description": "`ok` while the process runs.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ok"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "ready",
+        "summary": "Readiness",
+        "responses": {
+          "200": {
+            "description": "Serving.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "ok"
+              }
+            }
+          },
+          "503": {
+            "description": "Shutting down (after SIGTERM).",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "draining"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config": {
+      "get": {
+        "operationId": "config",
+        "summary": "The resolved config",
+        "responses": {
+          "200": {
+            "description": "Every config key after defaults, file, env and flags.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Config"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "metrics",
+        "summary": "Prometheus metrics",
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition (names `similaripy_server_*` and `process_*`).",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "RequestId": {
+        "name": "x-request-id",
+        "in": "header",
+        "required": false,
+        "description": "Kept if 1-128 printable ASCII characters without spaces, else replaced by a generated one.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "headers": {
+      "RequestId": {
+        "description": "The request id: the client's (if valid) or generated; also in the body.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ServerTiming": {
+        "description": "The model's compute time in ms, e.g. `compute;dur=0.031`.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "RecommendRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "history"
+        ],
+        "properties": {
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The user's history, oldest first; ids the model doesn't have are ignored."
+          },
+          "weights": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number"
+            },
+            "description": "One finite weight per history id; absent or null = all 1.0."
+          },
+          "k": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Items to return, at most `limits.k_max`; absent or null = `defaults.k`."
+          },
+          "exclude_seen": {
+            "type": "boolean",
+            "default": true,
+            "description": "Never return the history's items."
+          },
+          "include": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Only these items can be returned; absent or null = every item, `[]` = none."
+          },
+          "exclude": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Never these items."
+          },
+          "sorted": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Best first (true) or in no order; absent or null = `defaults.sorted`."
+          },
+          "view": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A named view (`GET /v1/views`); absent or null = `defaults.view`, `\"\"` = the whole model."
+          }
+        }
+      },
+      "ScoreRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "history",
+          "items"
+        ],
+        "properties": {
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "As `/v1/recommend`'s."
+          },
+          "weights": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number"
+            },
+            "description": "As `/v1/recommend`'s."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The items to score, at most `limits.max_items`; duplicates are scored again."
+          },
+          "view": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "As `/v1/recommend`'s: the view's excluded items score 0."
+          }
+        }
+      },
+      "RecommendResponse": {
+        "type": "object",
+        "required": [
+          "items",
+          "model",
+          "request_id",
+          "k",
+          "sorted",
+          "view",
+          "history"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "description": "Best first when sorted."
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelInfo"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "k": {
+            "type": "integer",
+            "description": "The k used (default applied)."
+          },
+          "sorted": {
+            "type": "boolean",
+            "description": "The sorted used (default applied)."
+          },
+          "view": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The view used; null = the whole model."
+          },
+          "history": {
+            "$ref": "#/components/schemas/History"
+          }
+        }
+      },
+      "ScoreResponse": {
+        "type": "object",
+        "required": [
+          "scores",
+          "model",
+          "request_id",
+          "view",
+          "history"
+        ],
+        "properties": {
+          "scores": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "One per requested item, in its order (float32 values); 0 for an item the model doesn't have (or has no column for) or the view excludes."
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelInfo"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "view": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The view used; null = the whole model."
+          },
+          "history": {
+            "$ref": "#/components/schemas/History"
+          }
+        }
+      },
+      "Item": {
+        "type": "object",
+        "required": [
+          "id",
+          "score"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "score": {
+            "type": "number",
+            "format": "float"
+          }
+        }
+      },
+      "ModelInfo": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The `model.name` config key (default: the model directory's name)."
+          }
+        }
+      },
+      "History": {
+        "type": "object",
+        "required": [
+          "sent",
+          "truncated",
+          "unknown"
+        ],
+        "description": "The request's history ids.",
+        "properties": {
+          "sent": {
+            "type": "integer",
+            "description": "As sent."
+          },
+          "truncated": {
+            "type": "integer",
+            "description": "The oldest, cut past `limits.max_history`."
+          },
+          "unknown": {
+            "type": "integer",
+            "description": "Ids the model doesn't have among the rest (per occurrence; ignored)."
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message",
+              "request_id"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "A fixed string to branch on: new ones may be added, none change."
+              },
+              "message": {
+                "type": "string",
+                "description": "For people; its wording may change."
+              },
+              "request_id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "example": {
+          "error": {
+            "code": "k_over_max",
+            "message": "k = 5000 > k_max = 2000",
+            "request_id": "abc-1"
+          }
+        }
+      },
+      "Views": {
+        "type": "object",
+        "required": [
+          "default",
+          "items",
+          "views"
+        ],
+        "properties": {
+          "default": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`defaults.view`; null = the whole model."
+          },
+          "items": {
+            "type": "integer",
+            "description": "The model's items."
+          },
+          "views": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ViewInfo"
+            }
+          }
+        }
+      },
+      "ViewInfo": {
+        "type": "object",
+        "required": [
+          "allowed",
+          "include",
+          "exclude"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "integer",
+            "description": "Items the view allows (of the model's `items`)."
+          },
+          "include": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FileInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "exclude": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FileInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "FileInfo": {
+        "type": "object",
+        "required": [
+          "file",
+          "ids",
+          "known"
+        ],
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "ids": {
+            "type": "integer",
+            "description": "Distinct ids in the file."
+          },
+          "known": {
+            "type": "integer",
+            "description": "Of which the model has."
+          }
+        }
+      },
+      "Config": {
+        "type": "object",
+        "description": "The config keys (docs: Running the server, Configuration).",
+        "required": [
+          "model",
+          "server",
+          "limits",
+          "defaults",
+          "timeouts",
+          "views"
+        ],
+        "properties": {
+          "model": {
+            "type": "object",
+            "required": [
+              "path",
+              "mmap",
+              "name"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "mmap": {
+                "type": "boolean"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          "server": {
+            "type": "object",
+            "required": [
+              "addr",
+              "threads",
+              "block_size"
+            ],
+            "properties": {
+              "addr": {
+                "type": "string"
+              },
+              "threads": {
+                "type": "integer"
+              },
+              "block_size": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "off"
+                    ]
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                ]
+              }
+            }
+          },
+          "limits": {
+            "type": "object",
+            "required": [
+              "k_max",
+              "max_history",
+              "history_policy",
+              "max_body_bytes",
+              "max_items"
+            ],
+            "properties": {
+              "k_max": {
+                "type": "integer"
+              },
+              "max_history": {
+                "type": "integer"
+              },
+              "history_policy": {
+                "type": "string",
+                "enum": [
+                  "truncate",
+                  "reject"
+                ]
+              },
+              "max_body_bytes": {
+                "type": "integer"
+              },
+              "max_items": {
+                "type": "integer"
+              }
+            }
+          },
+          "defaults": {
+            "type": "object",
+            "required": [
+              "k",
+              "sorted",
+              "view"
+            ],
+            "properties": {
+              "k": {
+                "type": "integer"
+              },
+              "sorted": {
+                "type": "boolean"
+              },
+              "view": {
+                "type": "string"
+              }
+            }
+          },
+          "timeouts": {
+            "type": "object",
+            "required": [
+              "header_read",
+              "drain_delay",
+              "shutdown_grace"
+            ],
+            "properties": {
+              "header_read": {
+                "type": "number"
+              },
+              "drain_delay": {
+                "type": "number"
+              },
+              "shutdown_grace": {
+                "type": "number"
+              }
+            }
+          },
+          "views": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "include_file": {
+                  "type": "string"
+                },
+                "exclude_file": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

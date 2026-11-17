@@ -1,6 +1,7 @@
 //! The server (experimental; released as its own artifact, `server-v*` tags):
-//! `POST /v1/recommend` (JSON), gRPC `similaripy.v1.Recommender/Recommend`
-//! (proto/, S4 P1), `GET /metrics`, `GET /health` (liveness: always ok),
+//! `POST /v1/recommend` and `POST /v1/score` (JSON), gRPC
+//! `similaripy.v1.Recommender/Recommend` and `/Score` (proto/, S4 P1; the
+//! JSON endpoints' OpenAPI spec: openapi.json), `GET /metrics`, `GET /health` (liveness: always ok),
 //! `GET /ready` (readiness: 503 once draining), `GET /config` (the
 //! resolved [`Config`]), all on one port and N
 //! threads, each a single-threaded tokio runtime with its own `Worker`. An
@@ -8,7 +9,7 @@
 //! connection stays on its thread for life; HTTP/1.1 or h2c by the client's
 //! preface); a request runs to completion on the thread that read it (E3),
 //! its `Worker` used synchronously from a `thread_local`. JSON and gRPC run
-//! the same `App::run`: same limits, cut and answers. Named views (S5c):
+//! the same `App::run`: same limits, cut and answers (score: V21 B). Named views (S5c):
 //! `GET /v1/views`, a request's `view`; the model and its views are one
 //! serving state behind one swappable pointer (V15). Hardening (S5d):
 //! header-read timeouts, graceful shutdown (`serve`'s `shutdown`).
@@ -43,7 +44,7 @@ pub use config::Config;
 use config::{HistoryPolicy, secs};
 pub use metrics::mark_start;
 
-use metrics::{Counter, Proto};
+use metrics::{Counter, Endpoint, Proto};
 use views::{View, ViewInfo};
 
 pub mod client;
@@ -75,11 +76,14 @@ enum Code {
     /// The body couldn't be read (not its size, not its time).
     BadBody,
     KOverMax,
+    /// A score request over `limits.max_items`.
+    ItemsOverMax,
     /// Over `max_history` under `history_policy = reject`.
     HistoryOverMax,
     UnknownView,
     /// Rejected by the worker: its only request checks are the weights'
-    /// (length, finite; test `edge_rejections`).
+    /// (length, finite; test `edge_rejections`; recommend and score); a cut
+    /// history's weights of the wrong length are rejected at the edge.
     BadWeights,
     BodyTimeout,
     BodyTooLarge,
@@ -92,6 +96,7 @@ impl Code {
             Code::BadJson => "bad_json",
             Code::BadBody => "bad_body",
             Code::KOverMax => "k_over_max",
+            Code::ItemsOverMax => "items_over_max",
             Code::HistoryOverMax => "history_over_max",
             Code::UnknownView => "unknown_view",
             Code::BadWeights => "bad_weights",
@@ -267,26 +272,23 @@ impl App {
         self.block
     }
 
-    /// `q` (the whole history) through the edge checks, the history cap and
-    /// this thread's worker, over the model of `view` (None: `defaults.view`;
-    /// "": the whole model); `encode` turns the answer into the response
-    /// while the worker's buffers are borrowed.
+    /// A history (whole, with its weights) through the edge checks, the
+    /// history cap and this thread's worker (`call`, given the kept ids and
+    /// weights and the reused outputs), over the model of `view`
+    /// (None: `defaults.view`; "": the whole model); `encode` turns the
+    /// answer into the response while the worker's buffers are borrowed.
+    #[allow(clippy::too_many_arguments)]
     fn run<T>(
         &self,
         m: &metrics::Thread,
-        p: Proto,
-        q: &Request,
+        (e, p): (Endpoint, Proto),
+        history: &[i64],
+        weights: Option<&[f32]>,
         view: Option<&str>,
+        call: impl FnOnce(&mut Worker, &Model, Cut, &mut Vec<i64>, &mut Vec<f32>) -> Result<(), Error>,
         encode: impl FnOnce(&Answer) -> T,
     ) -> Result<T, Fail> {
         let limits = &self.cfg.limits;
-        if q.k > limits.k_max {
-            m.bad_request();
-            return Err(Fail(
-                Code::KOverMax,
-                format!("k = {} > k_max = {}", q.k, limits.k_max),
-            ));
-        }
         LOCAL.with_borrow_mut(|l| {
             let l = l.as_mut().expect("a request on a server thread");
             // V15: the version first, then the state (as new or newer)
@@ -318,7 +320,7 @@ impl App {
                     }
                 }
             };
-            let n = q.ids.len();
+            let n = history.len();
             let cut = n.saturating_sub(limits.max_history);
             if cut > 0 {
                 if limits.history_policy == HistoryPolicy::Reject {
@@ -330,27 +332,28 @@ impl App {
                 }
                 m.truncated();
             }
-            // Weights of another length aren't cut: the worker rejects them.
-            let weights = q.weights.map(|w| if w.len() == n { &w[cut..] } else { w });
-            // Cut ids are still seen: excluded with the request's own (an
-            // allocation only for a cut history).
-            let exclude = match (cut, q.exclude_seen) {
-                (0, _) | (_, false) => None,
-                (_, true) => Some([&q.ids[..cut], q.exclude.unwrap_or_default()].concat()),
-            };
-            let req = Request {
-                ids: &q.ids[cut..],
+            // Weights of another length aren't cut: the worker rejects them,
+            // unless they match the kept ids (it can't see the cut): here.
+            if let Some(w) = weights
+                && cut > 0
+                && w.len() != n
+            {
+                m.bad_request();
+                let e = format!("len(weights) = {} != len(history) = {n}", w.len());
+                return Err(Fail(Code::BadWeights, e));
+            }
+            let weights = weights.map(|w| &w[cut..]);
+            let kept = Cut {
+                ids: &history[cut..],
                 weights,
-                exclude: exclude.as_deref().or(q.exclude),
-                ..*q
             };
             ids.clear();
             scores.clear();
             let before = worker.stats();
             let t = Instant::now();
-            let r = worker.recommend(model, &req, ids, scores);
+            let r = call(worker, model, kept, ids, scores);
             let compute = t.elapsed();
-            m.compute[p as usize].record(compute);
+            m.compute[e as usize][p as usize].record(compute);
             let stats = worker.stats();
             m.set_stats(since(stats, *base));
             // This request's counts: the worker's counters, before vs after.
@@ -379,20 +382,83 @@ impl App {
         })
     }
 
+    /// `q` (the whole history): `k` checked, then `run` with
+    /// `Worker::recommend`; cut ids are still seen (excluded with the
+    /// request's own: an allocation only for a cut history).
+    fn recommend<T>(
+        &self,
+        m: &metrics::Thread,
+        p: Proto,
+        q: &Request,
+        view: Option<&str>,
+        encode: impl FnOnce(&Answer) -> T,
+    ) -> Result<T, Fail> {
+        let k_max = self.cfg.limits.k_max;
+        if q.k > k_max {
+            m.bad_request();
+            return Err(Fail(
+                Code::KOverMax,
+                format!("k = {} > k_max = {k_max}", q.k),
+            ));
+        }
+        // Built before `run` (outside the compute timer, as before score):
+        // `run` cuts the same `cut` oldest ids.
+        let limits = &self.cfg.limits;
+        let cut = q.ids.len().saturating_sub(limits.max_history);
+        let truncate = limits.history_policy == HistoryPolicy::Truncate;
+        let exclude = match (cut, q.exclude_seen && truncate) {
+            (0, _) | (_, false) => None,
+            (_, true) => Some([&q.ids[..cut], q.exclude.unwrap_or_default()].concat()),
+        };
+        let call = |w: &mut Worker, model: &Model, c: Cut, ids: &mut _, scores: &mut _| {
+            let req = Request {
+                ids: c.ids,
+                weights: c.weights,
+                exclude: exclude.as_deref().or(q.exclude),
+                ..*q
+            };
+            w.recommend(model, &req, ids, scores)
+        };
+        let at = (Endpoint::Recommend, p);
+        self.run(m, at, q.ids, q.weights, view, call, encode)
+    }
+
+    /// The scores of `items` (at most `limits.max_items`) for a history:
+    /// `run` with `Worker::score`.
+    #[allow(clippy::too_many_arguments)]
+    fn score<T>(
+        &self,
+        m: &metrics::Thread,
+        p: Proto,
+        history: &[i64],
+        weights: Option<&[f32]>,
+        items: &[i64],
+        view: Option<&str>,
+        encode: impl FnOnce(&Answer) -> T,
+    ) -> Result<T, Fail> {
+        let max = self.cfg.limits.max_items;
+        if items.len() > max {
+            m.bad_request();
+            return Err(Fail(
+                Code::ItemsOverMax,
+                format!("{} items > max_items = {max}", items.len()),
+            ));
+        }
+        let call = |w: &mut Worker, model: &Model, c: Cut, _: &mut _, scores: &mut _| {
+            w.score(model, c.ids, c.weights, items, scores)
+        };
+        let at = (Endpoint::Score, p);
+        self.run(m, at, history, weights, view, call, encode)
+    }
+
     fn recommend_json(
         &self,
         m: &metrics::Thread,
         body: &[u8],
         request_id: &str,
     ) -> Result<Response, Fail> {
-        let q: Query = serde_json::from_slice(body).map_err(|e| {
-            m.bad_request();
-            Fail(Code::BadJson, e.to_string())
-        })?;
-        // Python's rounding: numpy.float32(a Python float), not serde's
-        // direct f32 parse (it rounds a decimal just above an f32 halfway
-        // point up, numpy's f64 → f32 to even; test json_f32_parsed_as_python).
-        let weights: Option<Vec<f32>> = q.weights.map(|w| w.iter().map(|&x| x as f32).collect());
+        let q: Query = parse(m, body)?;
+        let weights = f32s(q.weights);
         let req = Request {
             ids: &q.history,
             weights: weights.as_deref(),
@@ -402,7 +468,7 @@ impl App {
             exclude: q.exclude.as_deref(),
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
         };
-        self.run(m, Proto::Json, &req, q.view.as_deref(), |a| {
+        self.recommend(m, Proto::Json, &req, q.view.as_deref(), |a| {
             let reply = Reply {
                 items: Items(a.ids, a.scores),
                 model: ModelInfo {
@@ -414,14 +480,39 @@ impl App {
                 view: a.view,
                 history: a.history,
             };
-            let mut r = json(StatusCode::OK, &reply);
-            let timing = format!("compute;dur={:.3}", a.compute.as_secs_f64() * 1e3);
-            r.headers_mut().insert(
-                HeaderName::from_static("server-timing"),
-                HeaderValue::try_from(timing).expect("ASCII"),
-            );
-            r
+            timed(json(StatusCode::OK, &reply), a.compute)
         })
+    }
+
+    fn score_json(
+        &self,
+        m: &metrics::Thread,
+        body: &[u8],
+        request_id: &str,
+    ) -> Result<Response, Fail> {
+        let q: ScoreQuery = parse(m, body)?;
+        let weights = f32s(q.weights);
+        let w = weights.as_deref();
+        self.score(
+            m,
+            Proto::Json,
+            &q.history,
+            w,
+            &q.items,
+            q.view.as_deref(),
+            |a| {
+                let reply = ScoreReply {
+                    scores: a.scores,
+                    model: ModelInfo {
+                        name: &self.cfg.model.name,
+                    },
+                    request_id,
+                    view: a.view,
+                    history: a.history,
+                };
+                timed(json(StatusCode::OK, &reply), a.compute)
+            },
+        )
     }
 
     fn recommend_grpc(
@@ -442,26 +533,45 @@ impl App {
         };
         // T18: one copy of the answer, prost's default codec encodes it
         let view = q.view.as_deref();
-        self.run(m, Proto::Grpc, &req, view, |a| pb::RecommendResponse {
+        self.recommend(m, Proto::Grpc, &req, view, |a| pb::RecommendResponse {
             ids: a.ids.to_vec(),
             scores: a.scores.to_vec(),
-            model: Some(pb::ModelInfo {
-                name: self.cfg.model.name.clone(),
-            }),
+            model: Some(self.model_info()),
             request_id: request_id.to_string(),
-            k: req.k as u32, // <= k_max: checked in run
+            k: req.k as u32, // <= k_max: checked in recommend
             sorted: req.sorted,
             view: a.view.map(String::from),
-            history: Some(pb::History {
-                sent: a.history.sent,
-                truncated: a.history.truncated,
-                unknown: a.history.unknown,
-            }),
+            history: Some(a.history.into()),
         })
     }
 
+    fn score_grpc(
+        &self,
+        m: &metrics::Thread,
+        q: &pb::ScoreRequest,
+        request_id: &str,
+    ) -> Result<pb::ScoreResponse, Fail> {
+        let weights = (!q.weights.is_empty()).then_some(&q.weights[..]);
+        let view = q.view.as_deref();
+        self.score(m, Proto::Grpc, &q.history, weights, &q.items, view, |a| {
+            pb::ScoreResponse {
+                scores: a.scores.to_vec(),
+                model: Some(self.model_info()),
+                request_id: request_id.to_string(),
+                view: a.view.map(String::from),
+                history: Some(a.history.into()),
+            }
+        })
+    }
+
+    fn model_info(&self) -> pb::ModelInfo {
+        pb::ModelInfo {
+            name: self.cfg.model.name.clone(),
+        }
+    }
+
     /// One request per path a worker takes, sized to the limits (k_max,
-    /// max_history ids, include bits): buffers made before the first accept,
+    /// max_history ids, include bits, max_items): buffers made before the first accept,
     /// no first-request spike (W2).
     fn warm(&self, model: &Model, w: &mut Worker) -> Result<(), Error> {
         let n = self.cfg.limits.max_history.min(model.n_items());
@@ -482,6 +592,20 @@ impl App {
             };
             w.recommend(model, &req, &mut out_ids, &mut out_scores)?;
         }
+        let items: Vec<i64> = match model.item_ids() {
+            // Repeated up to max_items: the candidate buffer at full size.
+            Some(e) => e
+                .iter()
+                .cycle()
+                .take(self.cfg.limits.max_items)
+                .copied()
+                .collect(),
+            None => (0..model.n_items() as i64)
+                .cycle()
+                .take(self.cfg.limits.max_items)
+                .collect(),
+        };
+        w.score(model, &ids, None, &items, &mut out_scores)?;
         Ok(())
     }
 }
@@ -536,6 +660,52 @@ pub fn proto_from_json(body: &[u8]) -> Result<pb::RecommendRequest, serde_json::
     })
 }
 
+/// `POST /v1/score`'s body (unknown fields are an error, as `Query`'s).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScoreQuery {
+    /// As `Query`'s.
+    history: Vec<i64>,
+    #[serde(default)]
+    weights: Option<Vec<f64>>,
+    /// The items to score, in the answer's order.
+    items: Vec<i64>,
+    /// As `Query`'s.
+    #[serde(default)]
+    view: Option<String>,
+}
+
+/// A JSON body as `T`, else a counted `bad_json`.
+fn parse<'a, T: Deserialize<'a>>(m: &metrics::Thread, body: &'a [u8]) -> Result<T, Fail> {
+    serde_json::from_slice(body).map_err(|e| {
+        m.bad_request();
+        Fail(Code::BadJson, e.to_string())
+    })
+}
+
+/// Python's rounding: numpy.float32(a Python float), not serde's direct f32
+/// parse (it rounds a decimal just above an f32 halfway point up, numpy's
+/// f64 → f32 to even; test json_f32_parsed_as_python).
+fn f32s(w: Option<Vec<f64>>) -> Option<Vec<f32>> {
+    w.map(|w| w.iter().map(|&x| x as f32).collect())
+}
+
+/// `r` with the worker's time as `Server-Timing`.
+fn timed(mut r: Response, compute: Duration) -> Response {
+    let timing = format!("compute;dur={:.3}", compute.as_secs_f64() * 1e3);
+    r.headers_mut().insert(
+        HeaderName::from_static("server-timing"),
+        HeaderValue::try_from(timing).expect("ASCII"),
+    );
+    r
+}
+
+/// The history a worker call gets: its oldest ids past `max_history` cut.
+struct Cut<'a> {
+    ids: &'a [i64],
+    weights: Option<&'a [f32]>,
+}
+
 fn yes() -> bool {
     true
 }
@@ -559,6 +729,16 @@ struct History {
     unknown: u64,
 }
 
+impl From<History> for pb::History {
+    fn from(h: History) -> Self {
+        pb::History {
+            sent: h.sent,
+            truncated: h.truncated,
+            unknown: h.unknown,
+        }
+    }
+}
+
 /// `POST /v1/recommend`'s answer (U4): the items, then the request's context.
 #[derive(Serialize)]
 struct Reply<'a> {
@@ -567,6 +747,17 @@ struct Reply<'a> {
     request_id: &'a str,
     k: usize,
     sorted: bool,
+    view: Option<&'a str>,
+    history: History,
+}
+
+/// `POST /v1/score`'s answer: the scores in the items' order, then the
+/// request's context (as `Reply`'s).
+#[derive(Serialize)]
+struct ScoreReply<'a> {
+    scores: &'a [f32],
+    model: ModelInfo<'a>,
+    request_id: &'a str,
     view: Option<&'a str>,
     history: History,
 }
@@ -664,6 +855,7 @@ pub fn router(app: Arc<App>) -> Router {
         .max_decoding_message_size(limit);
     Router::new()
         .route("/v1/recommend", post(recommend))
+        .route("/v1/score", post(score))
         .route("/metrics", get(metrics))
         .route("/health", get(|| async { "ok" }))
         .route("/ready", get(ready))
@@ -674,13 +866,26 @@ pub fn router(app: Arc<App>) -> Router {
 }
 
 async fn recommend(State(app): State<Arc<App>>, req: axum::extract::Request) -> Response {
+    post_json(&app, req, Endpoint::Recommend).await
+}
+
+async fn score(State(app): State<Arc<App>>, req: axum::extract::Request) -> Response {
+    post_json(&app, req, Endpoint::Score).await
+}
+
+/// A JSON endpoint: the body read, answered (or the error), the request id
+/// on both.
+async fn post_json(app: &App, req: axum::extract::Request, e: Endpoint) -> Response {
     let t = Instant::now();
     let m = &app.metrics[THREAD.get()];
     let id = request_id(req.headers().get(X_REQUEST_ID).map(|v| v.as_bytes()));
-    let r = match read_body(&app, req).await {
+    let r = match read_body(app, req).await {
         Ok(body) => {
-            let r = app.recommend_json(m, &body, &id);
-            m.total[Proto::Json as usize].record(t.elapsed());
+            let r = match e {
+                Endpoint::Recommend => app.recommend_json(m, &body, &id),
+                Endpoint::Score => app.score_json(m, &body, &id),
+            };
+            m.total[e as usize][Proto::Json as usize].record(t.elapsed());
             r
         }
         Err(f) => {
@@ -774,17 +979,36 @@ struct Grpc(Arc<App>);
 
 #[tonic::async_trait]
 impl pb::recommender_server::Recommender for Grpc {
-    /// Handler time excludes the request's decode and the response's encode
-    /// (tonic's, around this): compare formats on CPU per request.
     async fn recommend(
         &self,
         r: tonic::Request<pb::RecommendRequest>,
     ) -> Result<tonic::Response<pb::RecommendResponse>, tonic::Status> {
+        self.call(r, Endpoint::Recommend, App::recommend_grpc)
+    }
+
+    async fn score(
+        &self,
+        r: tonic::Request<pb::ScoreRequest>,
+    ) -> Result<tonic::Response<pb::ScoreResponse>, tonic::Status> {
+        self.call(r, Endpoint::Score, App::score_grpc)
+    }
+}
+
+impl Grpc {
+    /// `f` timed, the request id in its answer's or error's metadata. Handler
+    /// time excludes the request's decode and the response's encode (tonic's,
+    /// around this): compare formats on CPU per request.
+    fn call<Q, R>(
+        &self,
+        r: tonic::Request<Q>,
+        e: Endpoint,
+        f: fn(&App, &metrics::Thread, &Q, &str) -> Result<R, Fail>,
+    ) -> Result<tonic::Response<R>, tonic::Status> {
         let t = Instant::now();
         let m = &self.0.metrics[THREAD.get()];
         let id = request_id(r.metadata().get(X_REQUEST_ID).map(|v| v.as_bytes()));
-        let r = self.0.recommend_grpc(m, r.get_ref(), &id);
-        m.total[Proto::Grpc as usize].record(t.elapsed());
+        let r = f(&self.0, m, r.get_ref(), &id);
+        m.total[e as usize][Proto::Grpc as usize].record(t.elapsed());
         let v: tonic::metadata::AsciiMetadataValue =
             id.parse().expect("checked or generated: printable ASCII");
         match r {
@@ -898,7 +1122,9 @@ pub fn serve(
                         state,
                         version,
                         ids: Vec::with_capacity(app.cfg.limits.k_max),
-                        scores: Vec::with_capacity(app.cfg.limits.k_max),
+                        scores: Vec::with_capacity(
+                            app.cfg.limits.k_max.max(app.cfg.limits.max_items),
+                        ),
                     }));
                     Ok(rt)
                 };

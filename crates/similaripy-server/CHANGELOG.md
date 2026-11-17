@@ -15,6 +15,11 @@ First release, beside similaripy 1.0.0. Reads models saved by similaripy 1.x
   on one port: same answers as Python's `SparseKNN.recommend` (ids and
   `float32` scores), plus the request's context (model name, request id, k,
   sorted, view, history counts).
+- `POST /v1/score` (JSON) and gRPC `Score`: the scores of given items for
+  one history (a ranker's feature), the same bits as Python's
+  `SparseKNN.score`; at most `limits.max_items` items (default 10000).
+- An OpenAPI 3.1 spec of the JSON endpoints (`openapi.json`, in the release
+  archive beside `recommender.proto`).
 - `x-request-id` in and out (generated if not sent); `Server-Timing` with the
   compute time (JSON).
 - Config: a TOML file, `SIMILARIPY_<SECTION>__<KEY>` env vars and
@@ -26,14 +31,15 @@ First release, beside similaripy 1.0.0. Reads models saved by similaripy 1.x
   `defaults.view`.
 - Errors as JSON `{"error": {"code", "message", "request_id"}}` (413 and 408
   included), `code` a fixed string (`bad_json`, `k_over_max`,
-  `history_over_max`, `unknown_view`, `bad_weights`, `bad_body`,
-  `body_timeout`, `body_too_large`, `internal`); gRPC status codes with the
+  `items_over_max`, `history_over_max`, `unknown_view`, `bad_weights`,
+  `bad_body`, `body_timeout`, `body_too_large`, `internal`); gRPC status codes with the
   same `code` in the `x-error-code` metadata. One stderr line per server
   error.
 - Named views from id files (`[views.NAME]` include / exclude files), picked
   per request, ANDed with the request's include / exclude; `GET /v1/views`.
 - `GET /metrics` (Prometheus: `similaripy_server_info{version, model}`,
-  request / compute histograms, counters, `process_start_time_seconds`,
+  request / compute histograms per endpoint and format, counters,
+  `process_start_time_seconds`,
   `process_resident_memory_bytes`), `GET /health` (liveness), `GET /ready`
   (readiness: 503 while draining).
 - Graceful shutdown on SIGTERM / SIGINT: `timeouts.drain_delay`, then

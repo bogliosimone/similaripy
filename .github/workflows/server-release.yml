@@ -104,7 +104,7 @@ jobs:
         # An artifact loses the executable bit: the archive keeps it
         run: |
           mkdir -p "dist/$NAME"
-          cp target/release/similaripy-server LICENSE crates/similaripy-server/proto/similaripy/v1/recommender.proto "dist/$NAME/"
+          cp target/release/similaripy-server LICENSE crates/similaripy-server/proto/similaripy/v1/recommender.proto crates/similaripy-server/openapi.json "dist/$NAME/"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
 
       - uses: actions/upload-artifact@v7
@@ -144,7 +144,7 @@ jobs:
       - name: Archive
         run: |
           mkdir -p "dist/$NAME"
-          cp target/release/similaripy-server LICENSE crates/similaripy-server/proto/similaripy/v1/recommender.proto "dist/$NAME/"
+          cp target/release/similaripy-server LICENSE crates/similaripy-server/proto/similaripy/v1/recommender.proto crates/similaripy-server/openapi.json "dist/$NAME/"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
 
       - uses: actions/upload-artifact@v7

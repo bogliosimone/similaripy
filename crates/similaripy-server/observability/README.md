@@ -62,9 +62,9 @@ Knobs (env vars or an env file): `MODEL_DIR`, `REQUESTS`, `SERVER_CONFIG`,
 | Panel | Query (simplified) |
 |---|---|
 | Instances | `similaripy_server_info`: version and model per instance (a rolling update shows both models) |
-| Requests/s per proto | `rate(request_seconds_count)` by proto |
+| Requests/s per endpoint and proto | `rate(request_seconds_count)` by endpoint, proto |
 | CPU per request | `rate(process_cpu_seconds_total) / rate(request_seconds_count)` |
-| Request / compute latency | `histogram_quantile(0.5/0.95/0.99, ...)` by proto; red line = 10 ms budget |
+| Request / compute latency | `histogram_quantile(0.5/0.95/0.99, ...)` by endpoint, proto; red line = 10 ms budget |
 | Rejected and truncated | `bad_requests_total`, `errors_total`, `truncated_total` over requests |
 | Unknown history ids | `1 - rate(known_ids_total) / rate(history_ids_total)` |
 | Requests/s per view | `view_requests_total` by view, the rest = whole model |
