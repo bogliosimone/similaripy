@@ -10,7 +10,7 @@ Usage (from the repo root):
 
 Writes, in OUT:
   model/          ItemKNN(S).save: S = the serve workload's model (cosine, k=100), from the bench cache (--model-cache)
-  requests-c{CAP}-k{K}.jsonl  per --caps x --ks: one /recommend body per line: a random user's URM row, capped like
+  requests-c{CAP}-k{K}.jsonl  per --caps x --ks: one /v1/recommend body per line: a random user's URM row, capped like
                   the serve workload (CAP random items; keep it <= the server's --max-history, or the server cuts it),
                   k, exclude_seen; every other request with float64 weights (the same users and weights for every k)
   expected-c{CAP}-k{K}.jsonl  ItemKNN.load(OUT/model).recommend of the first --check requests: ids + score bits

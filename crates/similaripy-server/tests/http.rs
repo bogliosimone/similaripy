@@ -3,7 +3,9 @@
 //! every core busy; the server's block differs on purpose: same bits), JSON
 //! f32 parsed as Python + numpy do, edge rejections, a panicking connection,
 //! metrics; gRPC on the same port: the same answers (ids and f32 bits) as
-//! JSON, proto3 presence rules, errors as status codes.
+//! JSON, proto3 presence rules, errors as status codes; the answer's context
+//! (model, request id, k, sorted, history counts) and same request -> same
+//! bytes (U5).
 
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
@@ -14,7 +16,7 @@ use bytes::Bytes;
 use serde::Deserialize;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{BlockSize, ItemOrder, Model, Request, recommend};
-use similaripy_server::client::{connect, metric, send};
+use similaripy_server::client::{connect, metric, send, send_with};
 use similaripy_server::config::HistoryPolicy;
 use similaripy_server::pb::recommender_client::RecommenderClient;
 use similaripy_server::pb::{IdList, RecommendRequest};
@@ -71,6 +73,7 @@ fn config(threads: usize) -> Config {
     c.server.block_size = BlockSize::Size(16);
     c.limits.max_history = 20;
     c.limits.k_max = 50;
+    c.model.name = "knn-test".into();
     c
 }
 
@@ -96,10 +99,46 @@ fn block_on<F: Future>(f: F) -> F::Output {
         .block_on(f)
 }
 
-#[derive(Deserialize, Debug)]
+/// `POST /v1/recommend`'s answer, every field (unknown ones are an error:
+/// the shape is the contract).
+#[derive(Deserialize, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
 struct Reply {
-    ids: Vec<i64>,
-    scores: Vec<f32>,
+    items: Vec<Item>,
+    model: ModelInfo,
+    request_id: String,
+    k: usize,
+    sorted: bool,
+    view: Option<String>,
+    history: History,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Item {
+    id: i64,
+    score: f32,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ModelInfo {
+    name: String,
+}
+
+#[derive(Deserialize, Debug, PartialEq, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+struct History {
+    sent: u64,
+    truncated: u64,
+    unknown: u64,
+}
+
+impl Reply {
+    /// (ids, score bits)
+    fn answer(&self) -> (Vec<i64>, Vec<u32>) {
+        self.items.iter().map(|x| (x.id, x.score.to_bits())).unzip()
+    }
 }
 
 /// Python's call: `ItemKNN.recommend` → `serve::recommend` with the block
@@ -113,7 +152,7 @@ fn python(m: &Model, req: &Request) -> (Vec<i64>, Vec<u32>) {
 
 async fn post(addr: SocketAddr, body: &str) -> (StatusCode, String) {
     let mut c = connect(addr).await.unwrap();
-    let (status, b) = send(&mut c, "/recommend", Some(Bytes::from(body.to_string())))
+    let (status, b) = send(&mut c, "/v1/recommend", Some(Bytes::from(body.to_string())))
         .await
         .unwrap();
     (status, String::from_utf8(b.to_vec()).unwrap())
@@ -171,8 +210,7 @@ fn same_ids_and_bits_as_python_recommend() {
                     sorted: true,
                 },
             );
-            let bits: Vec<u32> = got.scores.iter().map(|s| s.to_bits()).collect();
-            assert_eq!((got.ids, bits), want, "case {case}: {body}");
+            assert_eq!(got.answer(), want, "case {case}: {body}");
         }
     });
 }
@@ -187,7 +225,6 @@ fn defaults_are_pythons() {
         let (status, text) = post(addr, r#"{"ids": [1000, 1007, 1014, 1070]}"#).await;
         assert_eq!(status, StatusCode::OK, "{text}");
         let got: Reply = serde_json::from_str(&text).unwrap();
-        let bits: Vec<u32> = got.scores.iter().map(|s| s.to_bits()).collect();
         let req = Request {
             ids: &ids,
             weights: None,
@@ -197,7 +234,7 @@ fn defaults_are_pythons() {
             exclude: None,
             sorted: true,
         };
-        assert_eq!((got.ids, bits), python(&reference, &req));
+        assert_eq!(got.answer(), python(&reference, &req));
     });
 }
 
@@ -238,8 +275,7 @@ fn json_f32_parsed_as_python() {
                     exclude: None,
                     sorted: true,
                 };
-                let bits: Vec<u32> = got.scores.iter().map(|s| s.to_bits()).collect();
-                assert_eq!((got.ids, bits), python(&reference, &req), "{s}");
+                assert_eq!(got.answer(), python(&reference, &req), "{s}");
             }
         }
     });
@@ -352,8 +388,7 @@ async fn ask(c: &mut RecommenderClient<Channel>, q: RecommendRequest) -> (Vec<i6
 async fn ask_json(addr: SocketAddr, body: &str) -> (Vec<i64>, Vec<u32>) {
     let (status, text) = post(addr, body).await;
     assert_eq!(status, StatusCode::OK, "{body}: {text}");
-    let r: Reply = serde_json::from_str(&text).unwrap();
-    (r.ids, r.scores.iter().map(|s| s.to_bits()).collect())
+    serde_json::from_str::<Reply>(&text).unwrap().answer()
 }
 
 #[test]
@@ -541,5 +576,173 @@ fn config_sets_sorted_default_and_history_policy() {
         // GET /config: the resolved config.
         let got: Config = serde_json::from_str(&get_text(addr, "/config").await).unwrap();
         assert_eq!(got, cfg);
+    });
+}
+
+/// A JSON answer with the response headers.
+async fn post_with(
+    addr: SocketAddr,
+    body: &str,
+    headers: &[(&str, &str)],
+) -> (StatusCode, axum::http::HeaderMap, String) {
+    let mut c = connect(addr).await.unwrap();
+    let body = Some(Bytes::from(body.to_string()));
+    let (status, h, b) = send_with(&mut c, "/v1/recommend", body, headers)
+        .await
+        .unwrap();
+    (status, h, String::from_utf8(b.to_vec()).unwrap())
+}
+
+#[test]
+fn context_and_history_counts() {
+    // max_history 20: 25 ids sent, the oldest 5 cut (an unknown id among
+    // them not counted); among the 20 used, 1420 (twice) and 5 are unknown.
+    let addr = start(config(1), false);
+    let mut ids: Vec<i64> = (0..17).map(|i| 1000 + 7 * i).collect();
+    ids.splice(0..0, [1427, 1000, 1007, 1014, 1021]);
+    ids.extend([1420, 5, 1420]);
+    assert_eq!(ids.len(), 25);
+    let body = serde_json::json!({ "ids": ids, "k": 7, "sorted": false }).to_string();
+    block_on(async {
+        let (status, h, text) = post_with(addr, &body, &[("x-request-id", "abc-1")]).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let got: Reply = serde_json::from_str(&text).unwrap();
+        let history = History {
+            sent: 25,
+            truncated: 5,
+            unknown: 3,
+        };
+        assert_eq!(got.model.name, "knn-test");
+        assert_eq!(got.request_id, "abc-1");
+        assert_eq!((got.k, got.sorted, &got.view), (7, false, &None));
+        assert_eq!(got.history, history);
+        let timing = h["server-timing"].to_str().unwrap();
+        assert!(timing.starts_with("compute;dur="), "{timing}");
+        timing["compute;dur=".len()..].parse::<f64>().unwrap();
+        // gRPC: the same context, the id from the metadata.
+        let mut c = grpc(addr).await;
+        let mut q = tonic::Request::new(proto_from_json(body.as_bytes()).unwrap());
+        q.metadata_mut()
+            .insert("x-request-id", "abc-2".parse().unwrap());
+        let r = c.recommend(q).await.unwrap();
+        assert_eq!(r.metadata().get("x-request-id").unwrap(), "abc-2");
+        let r = r.into_inner();
+        assert_eq!(r.model.unwrap().name, "knn-test");
+        assert_eq!(
+            (r.request_id.as_str(), r.k, r.sorted, r.view),
+            ("abc-2", 7, false, None)
+        );
+        let h = r.history.unwrap();
+        assert_eq!((h.sent, h.truncated, h.unknown), (25, 5, 3));
+        // Exactly max_history ids: nothing cut.
+        let at_max = serde_json::json!({ "ids": &ids[5..] }).to_string();
+        let (_, _, text) = post_with(addr, &at_max, &[]).await;
+        let got: Reply = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            (got.history.sent, got.history.truncated, got.history.unknown),
+            (20, 0, 3)
+        );
+        // Defaults applied: k 10, sorted true; nothing cut, nothing unknown.
+        let (_, _, text) = post_with(addr, r#"{"ids": [1000, 1007]}"#, &[]).await;
+        let got: Reply = serde_json::from_str(&text).unwrap();
+        assert_eq!((got.k, got.sorted), (10, true));
+        assert_eq!(
+            (got.history.sent, got.history.truncated, got.history.unknown),
+            (2, 0, 0)
+        );
+    });
+}
+
+#[test]
+fn request_id_kept_if_printable_else_generated() {
+    let addr = start(config(2), false);
+    let body = r#"{"ids": [1000, 1007]}"#;
+    let long = "a".repeat(129);
+    block_on(async {
+        let ask = |id: Option<&'static str>| async move {
+            let h: Vec<(&str, &str)> = id.map(|v| ("x-request-id", v)).into_iter().collect();
+            let (status, h, text) = post_with(addr, body, &h).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            let got: Reply = serde_json::from_str(&text).unwrap();
+            assert_eq!(h["x-request-id"], got.request_id[..]);
+            got.request_id
+        };
+        let max = "b".repeat(128).leak();
+        assert_eq!(ask(Some("req-42/x")).await, "req-42/x");
+        assert_eq!(ask(Some(max)).await, *max);
+        // Generated: <16 hex>-<thread>-<counter>, one process part, all distinct.
+        let mut seen = vec![];
+        for id in [
+            None,
+            Some("has space"),
+            Some(long.clone().leak()),
+            Some(""),
+            Some("tab\tx"),
+        ] {
+            seen.push(ask(id).await);
+        }
+        for id in &seen {
+            let p: Vec<&str> = id.split('-').collect();
+            assert_eq!(p.len(), 3, "{id}");
+            assert!(
+                p[0].len() == 16 && p[0].bytes().all(|b| b.is_ascii_hexdigit()),
+                "{id}"
+            );
+            assert!(p[0] == seen[0].split('-').next().unwrap(), "{id}");
+            p[1].parse::<usize>().unwrap();
+            p[2].parse::<u64>().unwrap();
+        }
+        let mut distinct = seen.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), seen.len(), "{seen:?}");
+        // Errors carry it too: JSON header, gRPC status metadata.
+        let (status, h, _) =
+            post_with(addr, r#"{"ids": [], "k": 51}"#, &[("x-request-id", "e1")]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(h["x-request-id"], "e1");
+        let mut c = grpc(addr).await;
+        let mut q = tonic::Request::new(RecommendRequest {
+            k: Some(51),
+            ..Default::default()
+        });
+        q.metadata_mut()
+            .insert("x-request-id", "e2".parse().unwrap());
+        let e = c.recommend(q).await.unwrap_err();
+        assert_eq!(e.metadata().get("x-request-id").unwrap(), "e2");
+    });
+}
+
+#[test]
+fn same_request_same_bytes() {
+    // U5: ties go to the lower internal id, fixed per model: the same request
+    // (and request id) gets the same bytes, on either thread, sorted or not.
+    let addr = start(config(2), false);
+    block_on(async {
+        for sorted in [true, false] {
+            let body = serde_json::json!({
+                "ids": [1000, 1007, 1014, 1070, 1077, 1300], "k": 40, "sorted": sorted,
+            })
+            .to_string();
+            let h = [("x-request-id", "same")];
+            let mut answers = vec![];
+            for _ in 0..6 {
+                // a new connection each: the acceptor deals them round-robin
+                let (status, _, text) = post_with(addr, &body, &h).await;
+                assert_eq!(status, StatusCode::OK, "{text}");
+                answers.push(text);
+            }
+            assert!(answers.iter().all(|a| *a == answers[0]), "{answers:?}");
+            let mut grpc_answers = vec![];
+            for _ in 0..4 {
+                // a channel (connection) each: both threads
+                let mut c = grpc(addr).await;
+                let mut q = tonic::Request::new(proto_from_json(body.as_bytes()).unwrap());
+                q.metadata_mut()
+                    .insert("x-request-id", "same".parse().unwrap());
+                grpc_answers.push(c.recommend(q).await.unwrap().into_inner());
+            }
+            assert!(grpc_answers.iter().all(|a| *a == grpc_answers[0]));
+        }
     });
 }

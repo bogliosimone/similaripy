@@ -1,5 +1,5 @@
 //! The internal server (server plan S2; a design validator, not released):
-//! `POST /recommend` (JSON), gRPC `similaripy.v1.Recommender/Recommend`
+//! `POST /v1/recommend` (JSON), gRPC `similaripy.v1.Recommender/Recommend`
 //! (proto/, S4 P1), `GET /metrics`, `GET /health`, `GET /config` (the
 //! resolved [`Config`]), all on one port and N
 //! threads, each a single-threaded tokio runtime with its own `Worker`. An
@@ -10,15 +10,16 @@
 //! the same `App::run`: same limits, cut and answers.
 
 use std::cell::{Cell, RefCell};
+use std::hash::{BuildHasher, RandomState};
 use std::io;
 use std::net::TcpListener;
-use std::sync::{Arc, mpsc};
-use std::time::Instant;
+use std::sync::{Arc, OnceLock, mpsc};
+use std::time::{Duration, Instant, SystemTime};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{StatusCode, header};
+use axum::extract::{DefaultBodyLimit, FromRequest, State};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -49,6 +50,9 @@ pub const BODY_LIMIT: usize = 1 << 20;
 /// defaults to true; sorted to `defaults.sorted`).
 const DEFAULT_K: usize = 10;
 
+/// The request id's header (HTTP) and metadata key (gRPC).
+const X_REQUEST_ID: &str = "x-request-id";
+
 /// A request with no answer: 400 / INVALID_ARGUMENT or 500 / INTERNAL.
 enum Fail {
     Invalid(String),
@@ -64,7 +68,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(model: Model, cfg: Config) -> Result<Self, Error> {
+    pub fn new(model: Model, mut cfg: Config) -> Result<Self, Error> {
+        cfg.model.fill_name();
         let block = cfg
             .server
             .block_size
@@ -94,7 +99,7 @@ impl App {
         m: &metrics::Thread,
         p: Proto,
         q: &Request,
-        encode: impl FnOnce(&[i64], &[f32]) -> T,
+        encode: impl FnOnce(&Answer) -> T,
     ) -> Result<T, Fail> {
         let limits = &self.cfg.limits;
         if q.k > limits.k_max {
@@ -134,21 +139,36 @@ impl App {
             let l = l.as_mut().expect("a request on a server thread");
             l.ids.clear();
             l.scores.clear();
+            let before = l.worker.stats();
             let t = Instant::now();
             let r = l
                 .worker
                 .recommend(&self.model, &req, &mut l.ids, &mut l.scores);
-            m.compute[p as usize].record(t.elapsed());
-            m.set_stats(since(l.worker.stats(), l.base));
+            let compute = t.elapsed();
+            m.compute[p as usize].record(compute);
+            let stats = l.worker.stats();
+            m.set_stats(since(stats, l.base));
+            // This request's counts: the worker's counters, before vs after.
+            let d = since(stats, before);
+            let history = History {
+                sent: n as u64,
+                truncated: cut as u64,
+                unknown: d.ids - d.known_ids,
+            };
             match r {
-                Ok(()) => Ok(encode(&l.ids, &l.scores)),
+                Ok(()) => Ok(encode(&Answer {
+                    ids: &l.ids,
+                    scores: &l.scores,
+                    history,
+                    compute,
+                })),
                 Err(e @ Error::InvalidInput(_)) => Err(Fail::Invalid(e.to_string())),
                 Err(e) => Err(Fail::Internal(e.to_string())),
             }
         })
     }
 
-    fn recommend_json(&self, m: &metrics::Thread, body: &[u8]) -> Response {
+    fn recommend_json(&self, m: &metrics::Thread, body: &[u8], request_id: &str) -> Response {
         let q: Query = match serde_json::from_slice(body) {
             Ok(q) => q,
             Err(e) => return bad_request(m, e),
@@ -166,8 +186,25 @@ impl App {
             exclude: q.exclude.as_deref(),
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
         };
-        let r = self.run(m, Proto::Json, &req, |ids, scores| {
-            json(StatusCode::OK, &Reply { ids, scores })
+        let r = self.run(m, Proto::Json, &req, |a| {
+            let reply = Reply {
+                items: Items(a.ids, a.scores),
+                model: ModelInfo {
+                    name: &self.cfg.model.name,
+                },
+                request_id,
+                k: req.k,
+                sorted: req.sorted,
+                view: None,
+                history: a.history,
+            };
+            let mut r = json(StatusCode::OK, &reply);
+            let timing = format!("compute;dur={:.3}", a.compute.as_secs_f64() * 1e3);
+            r.headers_mut().insert(
+                HeaderName::from_static("server-timing"),
+                HeaderValue::try_from(timing).expect("ASCII"),
+            );
+            r
         });
         match r {
             Ok(r) => r,
@@ -180,6 +217,7 @@ impl App {
         &self,
         m: &metrics::Thread,
         q: &pb::RecommendRequest,
+        request_id: &str,
     ) -> Result<pb::RecommendResponse, tonic::Status> {
         let req = Request {
             ids: &q.ids,
@@ -192,9 +230,21 @@ impl App {
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
         };
         // T18: one copy of the answer, prost's default codec encodes it
-        let r = self.run(m, Proto::Grpc, &req, |ids, scores| pb::RecommendResponse {
-            ids: ids.to_vec(),
-            scores: scores.to_vec(),
+        let r = self.run(m, Proto::Grpc, &req, |a| pb::RecommendResponse {
+            ids: a.ids.to_vec(),
+            scores: a.scores.to_vec(),
+            model: Some(pb::ModelInfo {
+                name: self.cfg.model.name.clone(),
+            }),
+            request_id: request_id.to_string(),
+            k: req.k as u32, // <= k_max: checked in run
+            sorted: req.sorted,
+            view: None,
+            history: Some(pb::History {
+                sent: a.history.sent,
+                truncated: a.history.truncated,
+                unknown: a.history.unknown,
+            }),
         });
         r.map_err(|e| match e {
             Fail::Invalid(e) => tonic::Status::invalid_argument(e),
@@ -228,7 +278,7 @@ impl App {
     }
 }
 
-/// `POST /recommend`'s body; defaults = Python's `ItemKNN.recommend`, but
+/// `POST /v1/recommend`'s body; defaults = Python's `ItemKNN.recommend`, but
 /// `sorted` absent = `defaults.sorted`.
 /// Unknown fields are an error (a typo like "weight" would otherwise serve
 /// unweighted).
@@ -251,7 +301,7 @@ struct Query {
     sorted: Option<bool>,
 }
 
-/// A `POST /recommend` body as the gRPC request with the same answer
+/// A `POST /v1/recommend` body as the gRPC request with the same answer
 /// (loadgen, tests): weights rounded to f32 as the server does, `include`
 /// kept apart from an empty list. A JSON `"weights": []` (a 400 in JSON for
 /// a non-empty history) becomes unweighted.
@@ -281,10 +331,84 @@ fn yes() -> bool {
     true
 }
 
-#[derive(Serialize)]
-struct Reply<'a> {
+/// A served answer, borrowed from the worker's buffers.
+struct Answer<'a> {
     ids: &'a [i64],
     scores: &'a [f32],
+    history: History,
+    compute: Duration,
+}
+
+/// The request's history ids (proto `History`): as sent, cut past
+/// `max_history`, not in the model among the rest (per occurrence).
+#[derive(Serialize, Clone, Copy)]
+struct History {
+    sent: u64,
+    truncated: u64,
+    unknown: u64,
+}
+
+/// `POST /v1/recommend`'s answer (U4): the items, then the request's context.
+#[derive(Serialize)]
+struct Reply<'a> {
+    items: Items<'a>,
+    model: ModelInfo<'a>,
+    request_id: &'a str,
+    k: usize,
+    sorted: bool,
+    view: Option<&'a str>,
+    history: History,
+}
+
+#[derive(Serialize)]
+struct ModelInfo<'a> {
+    name: &'a str,
+}
+
+/// `[{"id": .., "score": ..}, ..]` straight from the two arrays.
+struct Items<'a>(&'a [i64], &'a [f32]);
+
+impl Serialize for Items<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Item {
+            id: i64,
+            score: f32,
+        }
+        let items = self.0.iter().zip(self.1);
+        s.collect_seq(items.map(|(&id, &score)| Item { id, score }))
+    }
+}
+
+/// The client's id if it is 1-128 printable ASCII bytes (no spaces), else a
+/// new one: `<process>-<thread>-<counter>`, the process part a random 64-bit
+/// value drawn at the first request (replicas started in the same second
+/// differ: the served log joins on it).
+fn request_id(sent: Option<&[u8]>) -> String {
+    if let Some(v) = sent
+        && (1..=128).contains(&v.len())
+        && v.iter().all(|b| (0x21..=0x7e).contains(b))
+    {
+        return String::from_utf8(v.to_vec()).expect("ASCII");
+    }
+    static PROCESS: OnceLock<u64> = OnceLock::new();
+    let process = *PROCESS.get_or_init(|| {
+        // std's RandomState keys come from the OS's randomness
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        RandomState::new().hash_one((std::process::id(), nanos))
+    });
+    let n = COUNTER.get();
+    COUNTER.set(n + 1);
+    format!("{process:016x}-{}-{n}", THREAD.get())
+}
+
+fn with_request_id(mut r: Response, id: &str) -> Response {
+    let v = HeaderValue::from_str(id).expect("checked or generated: printable ASCII");
+    r.headers_mut().insert(X_REQUEST_ID, v);
+    r
 }
 
 fn json(status: StatusCode, body: &impl Serialize) -> Response {
@@ -322,6 +446,8 @@ struct Local {
 
 thread_local! {
     static THREAD: Cell<usize> = const { Cell::new(0) };
+    /// Request ids this thread generated.
+    static COUNTER: Cell<u64> = const { Cell::new(0) };
     static LOCAL: RefCell<Option<Local>> = const { RefCell::new(None) };
 }
 
@@ -331,7 +457,7 @@ pub fn router(app: Arc<App>) -> Router {
     let grpc = pb::recommender_server::RecommenderServer::new(Grpc(app.clone()))
         .max_decoding_message_size(BODY_LIMIT);
     Router::new()
-        .route("/recommend", post(recommend))
+        .route("/v1/recommend", post(recommend))
         .route("/metrics", get(metrics))
         .route("/health", get(|| async { "ok" }))
         .route("/config", get(config))
@@ -340,10 +466,16 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(tonic::service::Routes::new(grpc).into_axum_router())
 }
 
-async fn recommend(State(app): State<Arc<App>>, body: Bytes) -> Response {
+async fn recommend(State(app): State<Arc<App>>, req: axum::extract::Request) -> Response {
     let t = Instant::now();
     let m = &app.metrics[THREAD.get()];
-    let r = app.recommend_json(m, &body);
+    let id = request_id(req.headers().get(X_REQUEST_ID).map(|v| v.as_bytes()));
+    // Bytes' extractor: the body limit as before (413), here without our id
+    let body = match Bytes::from_request(req, &()).await {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+    let r = with_request_id(app.recommend_json(m, &body, &id), &id);
     m.total[Proto::Json as usize].record(t.elapsed());
     r
 }
@@ -360,9 +492,22 @@ impl pb::recommender_server::Recommender for Grpc {
     ) -> Result<tonic::Response<pb::RecommendResponse>, tonic::Status> {
         let t = Instant::now();
         let m = &self.0.metrics[THREAD.get()];
-        let r = self.0.recommend_grpc(m, r.get_ref());
+        let id = request_id(r.metadata().get(X_REQUEST_ID).map(|v| v.as_bytes()));
+        let r = self.0.recommend_grpc(m, r.get_ref(), &id);
         m.total[Proto::Grpc as usize].record(t.elapsed());
-        r.map(tonic::Response::new)
+        let v: tonic::metadata::AsciiMetadataValue =
+            id.parse().expect("checked or generated: printable ASCII");
+        match r {
+            Ok(r) => {
+                let mut r = tonic::Response::new(r);
+                r.metadata_mut().insert(X_REQUEST_ID, v);
+                Ok(r)
+            }
+            Err(mut e) => {
+                e.metadata_mut().insert(X_REQUEST_ID, v);
+                Err(e)
+            }
+        }
     }
 }
 

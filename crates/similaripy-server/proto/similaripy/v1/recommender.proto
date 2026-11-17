@@ -1,5 +1,8 @@
-// The internal server's gRPC contract (server plan S4 P1). The same request
-// and answer as `POST /recommend` (JSON), with the same defaults and limits.
+// The server's gRPC contract (server plan S4 P1, S5b). The same request and
+// answer as `POST /v1/recommend` (JSON), with the same defaults and limits.
+// The request id: `x-request-id` metadata in (kept if 1-128 printable ASCII
+// bytes, else generated) and out, and in the answer. Field numbers are never
+// reused.
 syntax = "proto3";
 
 package similaripy.v1;
@@ -31,8 +34,31 @@ message RecommendRequest {
 }
 
 // Fixed-width ids: encoding them is a copy (varint int64 cost 7 us more at
-// k 2000).
+// k 2000). The rest is the request's context, as in the JSON answer.
 message RecommendResponse {
   repeated sfixed64 ids = 1;
   repeated float scores = 2;
+  ModelInfo model = 3;
+  string request_id = 4;
+  // The k and sorted used (defaults applied).
+  uint32 k = 5;
+  bool sorted = 6;
+  // The view used; absent = the whole model.
+  optional string view = 7;
+  History history = 8;
+}
+
+// Which model answered.
+message ModelInfo {
+  // The `model.name` config key (default: the model directory's name).
+  string name = 1;
+}
+
+// The request's history ids: `sent` = as sent; `truncated` = the oldest cut
+// past `limits.max_history`; `unknown` = ids the model doesn't have among
+// the rest (per occurrence; ignored).
+message History {
+  uint64 sent = 1;
+  uint64 truncated = 2;
+  uint64 unknown = 3;
 }
