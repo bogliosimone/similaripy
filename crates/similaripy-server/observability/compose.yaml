@@ -1,0 +1,71 @@
+# Server + Prometheus + Grafana + steady loadgen traffic (JSON and gRPC).
+# Up: podman compose up -d --build   (or docker compose)
+# Grafana: http://localhost:3000 (no login)  Prometheus: http://localhost:9090
+# Server: http://localhost:18080   Down: podman compose down
+# Bigger model: podman compose --env-file ml-32m.env up -d   (README.md)
+name: similaripy-observability
+
+services:
+  server:
+    build:
+      context: ../../..
+      dockerfile: crates/similaripy-server/observability/Dockerfile
+    image: localhost/similaripy-server:observability
+    command: ["--config", "/config/server.toml"]
+    environment:
+      SIMILARIPY_MODEL__PATH: /model
+      SIMILARIPY_MODEL__NAME: ${MODEL_NAME:-demo}
+      SIMILARIPY_SERVER__THREADS: ${THREADS:-4}
+    volumes:
+      - ${MODEL_DIR:-../../../tests/data/sparseknn-format1}:/model:ro
+      - ${SERVER_CONFIG:-./demo/server.toml}:/config/server.toml:ro
+      - ./demo/in_stock.txt:/config/in_stock.txt:ro
+    ports:
+      # 18080: something on macOS intercepts 8080 for h2c (S5g notes)
+      - 127.0.0.1:18080:8080
+
+  # loadgen takes an IP, not a host name: it shares the server's network
+  # (127.0.0.1 = the server). One --duration step, restarted at the end, so
+  # traffic never stops; its p99 table is in `podman compose logs loadgen-json`.
+  loadgen-json:
+    image: localhost/similaripy-server:observability
+    depends_on: [server]
+    network_mode: service:server
+    entrypoint: ["loadgen"]
+    volumes:
+      - ${REQUESTS:-./demo/requests.jsonl}:/requests.jsonl:ro
+    command: ["--requests", "/requests.jsonl", "--rate", "${RATE:-200}", "--duration", "300",
+              "--conns", "8", "--threads", "1"]
+    restart: unless-stopped
+
+  loadgen-grpc:
+    image: localhost/similaripy-server:observability
+    depends_on: [server]
+    network_mode: service:server
+    entrypoint: ["loadgen"]
+    volumes:
+      - ${REQUESTS:-./demo/requests.jsonl}:/requests.jsonl:ro
+    command: ["--requests", "/requests.jsonl", "--grpc", "--rate", "${RATE:-200}", "--duration", "300",
+              "--conns", "8", "--threads", "1"]
+    restart: unless-stopped
+
+  prometheus:
+    image: docker.io/prom/prometheus:v3.5.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - 127.0.0.1:9090:9090
+
+  grafana:
+    image: docker.io/grafana/grafana:12.1.0
+    environment:
+      # Local only (ports bound to 127.0.0.1): no login
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/similaripy-server.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - 127.0.0.1:3000:3000

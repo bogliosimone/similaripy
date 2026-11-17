@@ -1,0 +1,20 @@
+{"history": [20, 40], "k": 3}
+{"history": [10], "k": 5}
+{"history": [30, 50, 70], "k": 4}
+{"history": [20, 40], "k": 3, "view": "in_stock"}
+{"history": [60, 10], "k": 5, "exclude_seen": false}
+{"history": [40, 99], "k": 3}
+{"history": [10, 20], "k": 2, "view": "in_stock"}
+{"history": [50], "k": 6}
+{"history": [10, 20, 30, 40, 50, 60, 70, 10, 20, 30], "k": 5}
+{"history": [70, 30], "k": 3}
+{"history": [20, 1000, 99], "k": 3}
+{"history": [40, 60], "k": 4, "view": "in_stock"}
+{"history": [30], "k": 3}
+{"history": [10, 50], "k": 5}
+{"history": [20], "k": 100}
+{"history": [60, 70], "k": 3}
+{"history": [40, 20, 10], "k": 6}
+{"history": [50, 30], "k": 4, "view": "in_stock"}
+{"history": [70], "k": 3}
+{"history": [30, 40], "k": 2}
