@@ -197,7 +197,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Requests/s per proto",
+      "title": "Requests/s per endpoint and proto",
       "description": "Handled requests (edge 400s included), from the request_seconds histogram count.",
       "datasource": {
         "type": "prometheus",
@@ -237,8 +237,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (proto) (rate(similaripy_server_request_seconds_count[$__rate_interval]))",
-          "legendFormat": "{{proto}}",
+          "expr": "sum by (endpoint, proto) (rate(similaripy_server_request_seconds_count[$__rate_interval]))",
+          "legendFormat": "{{endpoint}} {{proto}}",
           "refId": "A"
         }
       ],
@@ -351,8 +351,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum by (le, proto) (rate(similaripy_server_request_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p50 {{proto}}",
+          "expr": "histogram_quantile(0.5, sum by (le, endpoint, proto) (rate(similaripy_server_request_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{endpoint}} {{proto}}",
           "refId": "A"
         },
         {
@@ -360,8 +360,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, proto) (rate(similaripy_server_request_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p95 {{proto}}",
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint, proto) (rate(similaripy_server_request_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{endpoint}} {{proto}}",
           "refId": "B"
         },
         {
@@ -369,8 +369,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le, proto) (rate(similaripy_server_request_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p99 {{proto}}",
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint, proto) (rate(similaripy_server_request_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{endpoint}} {{proto}}",
           "refId": "C"
         }
       ],
@@ -378,7 +378,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Compute latency (Worker::recommend)",
+      "title": "Compute latency (worker: recommend or score)",
       "description": "Worker::recommend alone. Red line: the 10 ms budget. Quantiles interpolate inside the buckets: all under 10 us reads as p50 5 us, p95 9.5 us.",
       "datasource": {
         "type": "prometheus",
@@ -434,8 +434,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.5, sum by (le, proto) (rate(similaripy_server_compute_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p50 {{proto}}",
+          "expr": "histogram_quantile(0.5, sum by (le, endpoint, proto) (rate(similaripy_server_compute_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{endpoint}} {{proto}}",
           "refId": "A"
         },
         {
@@ -443,8 +443,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, proto) (rate(similaripy_server_compute_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p95 {{proto}}",
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint, proto) (rate(similaripy_server_compute_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{endpoint}} {{proto}}",
           "refId": "B"
         },
         {
@@ -452,8 +452,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le, proto) (rate(similaripy_server_compute_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p99 {{proto}}",
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint, proto) (rate(similaripy_server_compute_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{endpoint}} {{proto}}",
           "refId": "C"
         }
       ],

@@ -64,7 +64,7 @@ pub async fn send_with(
 }
 
 /// The sum of `name`'s samples in Prometheus text (`/metrics`): unlabelled,
-/// or over every label set (`{proto="json"}` + `{proto="grpc"}`). None if
+/// or over every label set (e.g. every `{endpoint, proto}` pair). None if
 /// there is none.
 pub fn metric(text: &str, name: &str) -> Option<f64> {
     text.lines()

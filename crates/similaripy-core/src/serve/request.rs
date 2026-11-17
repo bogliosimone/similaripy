@@ -63,8 +63,7 @@ pub struct Stats {
     /// History ids as sent.
     pub ids: u64,
     /// History ids the model has, among those looked up (`ids - known_ids`
-    /// = unknown, ignored; except a `score` whose items have no column: no
-    /// lookup, none counted).
+    /// = unknown, ignored).
     pub known_ids: u64,
     // ponytail: no count of S entries (the work's size): summing the history
     // rows' lengths after the request re-read indptr, cold by then on Y500M
@@ -495,8 +494,7 @@ impl Scratch {
     }
 
     /// Scores of `items` into `out` (zeros, one per item): see
-    /// `Worker::score`. Returns how many history ids the model has (0 when
-    /// no item has a column: no lookup).
+    /// `Worker::score`. Returns how many history ids the model has.
     #[allow(clippy::too_many_arguments)]
     fn score(
         &mut self,
@@ -524,11 +522,13 @@ impl Scratch {
         }));
         cand.sort_unstable();
         self.hist.clear();
-        let Some(&(last, _)) = cand.last() else {
-            return 0;
-        };
+        // Looked up even with no candidate: `known` stays exact (the
+        // server's `history.unknown`).
         m.lookup_into::<true>(ids, weights, &mut self.hist);
         let known = self.hist.len();
+        let Some(&(last, _)) = cand.last() else {
+            return known;
+        };
         canonicalize::<true>(&mut self.hist);
         let block = self.block(m, block);
         let pairs: &[Entry] = &m.pairs;

@@ -30,6 +30,15 @@ pub enum Proto {
 
 const PROTOS: [&str; 2] = ["json", "grpc"];
 
+/// The request's endpoint: the `endpoint` label of the request histograms.
+#[derive(Clone, Copy)]
+pub enum Endpoint {
+    Recommend,
+    Score,
+}
+
+const ENDPOINTS: [&str; 2] = ["recommend", "score"];
+
 #[derive(Default)]
 pub struct Histogram {
     /// Per bucket (not cumulative), the last one = over the largest bound.
@@ -80,12 +89,12 @@ pub struct Thread {
     pub bad_requests: AtomicU64,
     /// Histories cut to their last `max_history` ids.
     pub truncated: AtomicU64,
-    /// `Worker::recommend` alone, per `Proto`.
-    pub compute: [Histogram; 2],
-    /// The handler, per `Proto`: JSON body parsed → response serialized;
+    /// The worker's call alone, per `Endpoint` and `Proto`.
+    pub compute: [[Histogram; 2]; 2],
+    /// The handler, per `Endpoint` and `Proto`: JSON body parsed → response serialized;
     /// gRPC message decoded → answer copied (tonic's decode and encode are
     /// outside). Queue wait and HTTP reads are not in it.
-    pub total: [Histogram; 2],
+    pub total: [[Histogram; 2]; 2],
 }
 
 impl Thread {
@@ -249,13 +258,11 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
             "similaripy_server_view_requests_total{{view=\"{name}\"}} {v}"
         );
     }
-    let help = "Worker::recommend time, per request format.";
-    histogram(&mut o, "compute_seconds", help, threads, |t, p| {
-        &t.compute[p]
-    });
-    let help = "Handler time, per request format: JSON parsed, computed, serialized; \
-        gRPC computed, answer copied (decode and encode outside).";
-    histogram(&mut o, "request_seconds", help, threads, |t, p| &t.total[p]);
+    let help = "Worker time (recommend or score), per endpoint and request format.";
+    histogram(&mut o, "compute_seconds", help, threads, |t| &t.compute);
+    let help = "Handler time, per endpoint and request format: JSON parsed, computed, \
+        serialized; gRPC computed, answer copied (decode and encode outside).";
+    histogram(&mut o, "request_seconds", help, threads, |t| &t.total);
     o
 }
 
@@ -329,25 +336,31 @@ fn histogram(
     name: &str,
     help: &str,
     threads: &[Thread],
-    h: fn(&Thread, usize) -> &Histogram,
+    h: fn(&Thread) -> &[[Histogram; 2]; 2],
 ) {
     head(o, name, "histogram", help);
     let name = format!("similaripy_server_{name}");
-    for (p, proto) in PROTOS.iter().enumerate() {
-        let mut cum = 0;
-        for b in 0..=BUCKETS_US.len() {
-            cum += threads
+    for (e, endpoint) in ENDPOINTS.iter().enumerate() {
+        for (p, proto) in PROTOS.iter().enumerate() {
+            let labels = format!("endpoint=\"{endpoint}\",proto=\"{proto}\"");
+            let mut cum = 0;
+            for b in 0..=BUCKETS_US.len() {
+                cum += threads
+                    .iter()
+                    .map(|t| h(t)[e][p].counts[b].load(Relaxed))
+                    .sum::<u64>();
+                let le = BUCKETS_US
+                    .get(b)
+                    .map_or("+Inf".to_string(), |&us| (us as f64 / 1e6).to_string());
+                let _ = writeln!(o, "{name}_bucket{{{labels},le=\"{le}\"}} {cum}");
+            }
+            let ns: u64 = threads
                 .iter()
-                .map(|t| h(t, p).counts[b].load(Relaxed))
-                .sum::<u64>();
-            let le = BUCKETS_US
-                .get(b)
-                .map_or("+Inf".to_string(), |&us| (us as f64 / 1e6).to_string());
-            let _ = writeln!(o, "{name}_bucket{{proto=\"{proto}\",le=\"{le}\"}} {cum}");
+                .map(|t| h(t)[e][p].sum_ns.load(Relaxed))
+                .sum();
+            let _ = writeln!(o, "{name}_sum{{{labels}}} {}", ns as f64 / 1e9);
+            let _ = writeln!(o, "{name}_count{{{labels}}} {cum}");
         }
-        let ns: u64 = threads.iter().map(|t| h(t, p).sum_ns.load(Relaxed)).sum();
-        let _ = writeln!(o, "{name}_sum{{proto=\"{proto}\"}} {}", ns as f64 / 1e9);
-        let _ = writeln!(o, "{name}_count{{proto=\"{proto}\"}} {cum}");
     }
 }
 

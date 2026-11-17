@@ -1,5 +1,6 @@
-// The server's gRPC contract (server plan S4 P1, S5b). The same request and
-// answer as `POST /v1/recommend` (JSON), with the same defaults and limits.
+// The server's gRPC contract (server plan S4 P1, S5b). The same requests and
+// answers as `POST /v1/recommend` and `POST /v1/score` (JSON), with the same
+// defaults and limits.
 // The request id: `x-request-id` metadata in (kept if 1-128 printable ASCII
 // bytes, else generated) and out, and in the answer. Field numbers are never
 // reused.
@@ -9,6 +10,9 @@ package similaripy.v1;
 
 service Recommender {
   rpc Recommend(RecommendRequest) returns (RecommendResponse);
+  // The scores of given items for one history (e.g. a ranker's feature for
+  // other retrievers' candidates): the same bits as Recommend's score.
+  rpc Score(ScoreRequest) returns (ScoreResponse);
 }
 
 // A list whose presence matters: absent = no filter, empty = nothing.
@@ -65,4 +69,29 @@ message History {
   uint64 sent = 1;
   uint64 truncated = 2;
   uint64 unknown = 3;
+}
+
+// Unknown fields are ignored (protobuf's rule; JSON rejects them).
+message ScoreRequest {
+  // As RecommendRequest's (cut past `limits.max_history` the same way).
+  repeated int64 history = 1;
+  // One per history id; empty = unweighted.
+  repeated float weights = 2;
+  // The items to score, at most `limits.max_items` (more = INVALID_ARGUMENT,
+  // never cut); duplicates are scored again.
+  repeated int64 items = 3;
+  // As RecommendRequest's: the view's excluded items score 0.
+  optional string view = 4;
+}
+
+message ScoreResponse {
+  // One per requested item, in its order: 0 for an item the model doesn't
+  // have (or has no column for) or the view excludes; zero and negative
+  // scores as they are.
+  repeated float scores = 1;
+  ModelInfo model = 2;
+  string request_id = 3;
+  // The view used; absent = the whole model.
+  optional string view = 4;
+  History history = 5;
 }

@@ -7,7 +7,10 @@
 //! (model, request id, k, sorted, history counts) and same request -> same
 //! bytes (U5); hardening (S5d): graceful shutdown (in-flight requests
 //! finish, new connections refused, grace), header-read / first-request /
-//! keep-alive timeouts, and the binary's exit 0 on SIGTERM.
+//! keep-alive timeouts, and the binary's exit 0 on SIGTERM. `/v1/score`
+//! (JSON and gRPC): the same bits as core `serve::score` (Python's
+//! `SparseKNN.score`) and as recommend's scores, views, the history cap,
+//! presence rules, errors and metrics.
 
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
@@ -17,11 +20,11 @@ use axum::routing::get;
 use bytes::Bytes;
 use serde::Deserialize;
 use similaripy_core::CsrView;
-use similaripy_core::serve::{BlockSize, ItemOrder, Model, Request, recommend};
+use similaripy_core::serve::{BlockSize, ItemOrder, Model, Request, recommend, score};
 use similaripy_server::client::{connect, metric, send, send_with};
 use similaripy_server::config::{self, HistoryPolicy};
 use similaripy_server::pb::recommender_client::RecommenderClient;
-use similaripy_server::pb::{IdList, RecommendRequest};
+use similaripy_server::pb::{IdList, RecommendRequest, ScoreRequest};
 use similaripy_server::{App, BODY_LIMIT, Config, proto_from_json, router, serve};
 use tonic::Code;
 use tonic::transport::Channel;
@@ -409,9 +412,9 @@ fn metrics_count_served_requests_per_thread() {
             "similaripy_server_truncated_total 1\n",
             "similaripy_server_history_ids_total 23\n", // 3 + the last 20
             "similaripy_server_known_ids_total 22\n",   // 99 is unknown
-            "similaripy_server_compute_seconds_count{proto=\"json\"} 2\n",
-            "similaripy_server_compute_seconds_count{proto=\"grpc\"} 0\n",
-            "similaripy_server_request_seconds_bucket{proto=\"json\",le=\"+Inf\"} 2\n",
+            "similaripy_server_compute_seconds_count{endpoint=\"recommend\",proto=\"json\"} 2\n",
+            "similaripy_server_compute_seconds_count{endpoint=\"recommend\",proto=\"grpc\"} 0\n",
+            "similaripy_server_request_seconds_bucket{endpoint=\"recommend\",proto=\"json\",le=\"+Inf\"} 2\n",
         ] {
             assert!(m.contains(line), "{line:?} not in\n{m}");
         }
@@ -604,9 +607,9 @@ fn grpc_errors_are_status_codes() {
         for line in [
             "similaripy_server_bad_requests_total 1\n", // k
             "similaripy_server_errors_total 1\n",       // weights
-            "similaripy_server_compute_seconds_count{proto=\"grpc\"} 2\n",
-            "similaripy_server_compute_seconds_count{proto=\"json\"} 1\n",
-            "similaripy_server_request_seconds_count{proto=\"grpc\"} 3\n",
+            "similaripy_server_compute_seconds_count{endpoint=\"recommend\",proto=\"grpc\"} 2\n",
+            "similaripy_server_compute_seconds_count{endpoint=\"recommend\",proto=\"json\"} 1\n",
+            "similaripy_server_request_seconds_count{endpoint=\"recommend\",proto=\"grpc\"} 3\n",
         ] {
             assert!(m.contains(line), "{line:?} not in\n{m}");
         }
@@ -710,17 +713,25 @@ fn defaults_k_and_max_body_bytes() {
     });
 }
 
-/// A JSON answer with the response headers.
+/// A `POST /v1/recommend` answer with the response headers.
 async fn post_with(
     addr: SocketAddr,
     body: &str,
     headers: &[(&str, &str)],
 ) -> (StatusCode, axum::http::HeaderMap, String) {
+    post_to_with(addr, "/v1/recommend", body, headers).await
+}
+
+/// A JSON answer from `path`, with the response headers.
+async fn post_to_with(
+    addr: SocketAddr,
+    path: &str,
+    body: &str,
+    headers: &[(&str, &str)],
+) -> (StatusCode, axum::http::HeaderMap, String) {
     let mut c = connect(addr).await.unwrap();
     let body = Some(Bytes::from(body.to_string()));
-    let (status, h, b) = send_with(&mut c, "/v1/recommend", body, headers)
-        .await
-        .unwrap();
+    let (status, h, b) = send_with(&mut c, path, body, headers).await.unwrap();
     (status, h, String::from_utf8(b.to_vec()).unwrap())
 }
 
@@ -1535,4 +1546,414 @@ fn binary_exits_0_on_sigterm() {
     assert_eq!(status.code(), Some(0), "{rest:?}");
     assert!(rest.iter().any(|l| l.contains("SIGTERM")), "{rest:?}");
     assert!(rest.iter().any(|l| l.contains("stopped")), "{rest:?}");
+}
+
+/// `POST /v1/score`'s answer, every field.
+#[derive(Deserialize, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ScoreReply {
+    scores: Vec<f32>,
+    model: ModelInfo,
+    request_id: String,
+    view: Option<String>,
+    history: History,
+}
+
+/// A `POST /v1/score` answer with the response headers.
+async fn post_score(addr: SocketAddr, body: &str) -> (StatusCode, axum::http::HeaderMap, String) {
+    post_to_with(addr, "/v1/score", body, &[]).await
+}
+
+/// Python's `SparseKNN.score` (on the view's model): score bits.
+fn python_score(m: &Model, ids: &[i64], weights: Option<&[f32]>, items: &[i64]) -> Vec<u32> {
+    let block = BlockSize::Auto.resolve(m.n_active(), usize::MAX).unwrap();
+    let s = score(m, block, ids, weights, items).unwrap();
+    s.iter().map(|x| x.to_bits()).collect()
+}
+
+fn bits(s: &[f32]) -> Vec<u32> {
+    s.iter().map(|x| x.to_bits()).collect()
+}
+
+#[test]
+fn score_same_bits_as_python_on_views_json_and_grpc() {
+    let (cfg, files) = views_config(2);
+    let addr = start(cfg, false);
+    let reference = model();
+    let mut rng = Rng(11);
+    block_on(async {
+        let mut c = grpc(addr).await;
+        for case in 0..300 {
+            let len = 1 + rng.below(30); // past max_history = 20 sometimes
+            // Unknown ids (history and items), duplicates.
+            let ids: Vec<i64> = (0..len)
+                .map(|_| 1000 + rng.below(N + 5) as i64 * 7)
+                .collect();
+            let weights: Option<Vec<f32>> =
+                (case % 2 == 0).then(|| (0..len).map(|_| rng.unit() * 3.0).collect());
+            let items: Vec<i64> = (0..rng.below(40))
+                .map(|_| 1000 + rng.below(N + 5) as i64 * 7)
+                .collect();
+            let name = ["", "even", "head", "both"][case % 4];
+            let cut = len.saturating_sub(20);
+            let used = &ids[cut..];
+            let m = core_view(&reference, name, &files);
+            let want = python_score(&m, used, weights.as_deref().map(|w| &w[cut..]), &items);
+            let known = reference.item_ids().unwrap();
+            let unknown = used.iter().filter(|i| !known.contains(i)).count() as u64;
+            let history = History {
+                sent: len as u64,
+                truncated: cut as u64,
+                unknown,
+            };
+            let view = (!name.is_empty()).then(|| name.to_string());
+            let body = serde_json::json!({
+                "history": ids, "weights": weights, "items": items, "view": name,
+            })
+            .to_string();
+            let (status, h, text) = post_score(addr, &body).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            assert!(h.contains_key("server-timing"));
+            let got: ScoreReply = serde_json::from_str(&text).unwrap();
+            assert_eq!(bits(&got.scores), want, "JSON case {case}: {body}");
+            assert_eq!((got.view, got.history), (view.clone(), history), "{body}");
+            assert_eq!(got.request_id, h["x-request-id"].to_str().unwrap());
+            assert_eq!(got.model.name, "knn-test");
+            let q = ScoreRequest {
+                history: ids.clone(),
+                weights: weights.clone().unwrap_or_default(),
+                items: items.clone(),
+                view: Some(name.into()),
+            };
+            let r = c.score(q).await.unwrap().into_inner();
+            assert_eq!(bits(&r.scores), want, "gRPC case {case}: {body}");
+            assert_eq!(r.view, view);
+            let rh = r.history.unwrap();
+            assert_eq!(
+                (rh.sent, rh.truncated, rh.unknown),
+                (len as u64, cut as u64, unknown)
+            );
+        }
+    });
+}
+
+#[test]
+fn score_equals_recommend_scores() {
+    // Every item recommend returns (k = all, history kept) scores the same bits.
+    let addr = start(config(1), false);
+    block_on(async {
+        let body = r#"{"history": [1000, 1007, 1014, 1070], "weights": [1, 0.5, 2, 0.25],
+            "k": 50, "exclude_seen": false}"#;
+        let (ids, want) = ask_json(addr, body).await;
+        assert!(ids.len() > 10);
+        let body = serde_json::json!({
+            "history": [1000, 1007, 1014, 1070], "weights": [1, 0.5, 2, 0.25], "items": ids,
+        });
+        let (status, _, text) = post_score(addr, &body.to_string()).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let got: ScoreReply = serde_json::from_str(&text).unwrap();
+        assert_eq!(bits(&got.scores), want);
+    });
+}
+
+#[test]
+fn score_presence_rules_errors_and_metrics() {
+    let mut cfg = config(1);
+    cfg.limits.max_items = 3;
+    let addr = start(cfg, false);
+    block_on(async {
+        let ok = |text: &str| serde_json::from_str::<ScoreReply>(text).unwrap();
+        // view absent / null = defaults.view (none); weights null = unweighted;
+        // no item = no score; unknown items 0; history.unknown exact with no
+        // scorable item (core D6).
+        let (s, _, t) = post_score(addr, r#"{"history": [1000, 5], "items": []}"#).await;
+        assert_eq!(s, StatusCode::OK, "{t}");
+        let r = ok(&t);
+        assert!(r.scores.is_empty());
+        assert_eq!((r.view, r.history.unknown), (None, 1));
+        let (s, _, t) = post_score(
+            addr,
+            r#"{"history": [1000], "weights": null, "items": [4, 1007, 4], "view": null}"#,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{t}");
+        assert_eq!(ok(&t).scores[0], 0.0);
+        assert_eq!(ok(&t).scores[2], 0.0);
+        // Empty history: all zeros.
+        let (s, _, t) = post_score(addr, r#"{"history": [], "items": [1000]}"#).await;
+        assert_eq!((s, ok(&t).scores), (StatusCode::OK, vec![0.0]));
+        // 25 ids (cut to the last 20) with 20 weights: the wrong length,
+        // though it matches the kept ids (both endpoints).
+        let cut_w = serde_json::json!({
+            "history": (0..25).map(|i| 1000 + 7 * i).collect::<Vec<i64>>(),
+            "weights": vec![1.0; 20], "items": [1000],
+        })
+        .to_string();
+        let (s, h, t) = post_with(addr, &cut_w.replace(r#""items":[1000]"#, r#""k":3"#), &[]).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{t}");
+        assert_eq!(error_of(&h, &t).code, "bad_weights", "{t}");
+        for (body, code, msg) in [
+            (cut_w.as_str(), "bad_weights", "len(history) = 25"),
+            (r#"{"history": [1000]}"#, "bad_json", "items"),
+            (
+                r#"{"history": [1000], "items": [], "k": 3}"#,
+                "bad_json",
+                "unknown field",
+            ),
+            (
+                r#"{"history": [1000], "items": [1, 2, 3, 4]}"#,
+                "items_over_max",
+                "max_items = 3",
+            ),
+            (
+                r#"{"history": [1000, 1007], "weights": [1], "items": [1]}"#,
+                "bad_weights",
+                "len(weights)",
+            ),
+            (
+                r#"{"history": [1000], "items": [1], "view": "nope"}"#,
+                "unknown_view",
+                "nope",
+            ),
+        ] {
+            let (s, h, t) = post_score(addr, body).await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{body}: {t}");
+            let e = error_of(&h, &t);
+            assert_eq!(e.code, code, "{body}: {t}");
+            assert!(e.message.contains(msg), "{body}: {t}");
+        }
+        let mut c = grpc(addr).await;
+        // gRPC: an empty weights list = unweighted; view absent = default.
+        let q = ScoreRequest {
+            history: vec![1000, 1007],
+            items: vec![1014],
+            ..Default::default()
+        };
+        let r = c.score(q).await.unwrap().into_inner();
+        assert_eq!(r.scores.len(), 1);
+        assert_eq!(r.view, None);
+        for (q, code) in [
+            (
+                ScoreRequest {
+                    items: vec![1; 4],
+                    ..Default::default()
+                },
+                "items_over_max",
+            ),
+            (
+                ScoreRequest {
+                    history: vec![1000, 1007],
+                    weights: vec![f32::NAN, 1.0],
+                    ..Default::default()
+                },
+                "bad_weights",
+            ),
+        ] {
+            let e = c.score(q).await.unwrap_err();
+            assert_eq!(e.code(), Code::InvalidArgument, "{e:?}");
+            assert_eq!(grpc_code(&e), code, "{e:?}");
+            assert!(e.metadata().contains_key("x-request-id"));
+        }
+        let m = get_text(addr, "/metrics").await;
+        for line in [
+            // JSON: 3 served + bad_weights (computed) + unknown_view (not);
+            // gRPC: 1 served + bad_weights.
+            "similaripy_server_compute_seconds_count{endpoint=\"score\",proto=\"json\"} 4\n",
+            "similaripy_server_compute_seconds_count{endpoint=\"score\",proto=\"grpc\"} 2\n",
+            "similaripy_server_request_seconds_count{endpoint=\"score\",proto=\"json\"} 9\n",
+            "similaripy_server_request_seconds_count{endpoint=\"score\",proto=\"grpc\"} 3\n",
+            "similaripy_server_compute_seconds_count{endpoint=\"recommend\",proto=\"json\"} 0\n",
+            "similaripy_server_bad_requests_total 7\n",
+            "similaripy_server_errors_total 2\n",
+        ] {
+            assert!(m.contains(line), "{line:?} not in\n{m}");
+        }
+    });
+}
+
+/// The OpenAPI spec (openapi.json), its `$ref`s resolved.
+struct Spec(serde_json::Value);
+
+impl Spec {
+    fn load() -> Self {
+        Spec(serde_json::from_str(include_str!("../openapi.json")).unwrap())
+    }
+
+    fn resolve<'a>(&'a self, s: &'a serde_json::Value) -> &'a serde_json::Value {
+        match s["$ref"].as_str() {
+            Some(r) => self.0.pointer(r.trim_start_matches('#')).unwrap(),
+            None => s,
+        }
+    }
+
+    /// `path`'s `method` schema: its request body (`status` None) or its
+    /// JSON answer with `status`.
+    fn schema(&self, path: &str, method: &str, status: Option<&str>) -> &serde_json::Value {
+        let op = &self.0["paths"][path][method];
+        let s = match status {
+            None => &op["requestBody"]["content"]["application/json"]["schema"],
+            Some(c) => &op["responses"][c]["content"]["application/json"]["schema"],
+        };
+        assert!(!s.is_null(), "{method} {path} {status:?} not in the spec");
+        self.resolve(s)
+    }
+
+    /// `v`'s keys at every level are the schema's properties: every
+    /// `required` one present, none outside `properties` (maps:
+    /// `additionalProperties`' schema per value; nullable / oneOf: the
+    /// object branch).
+    fn check(&self, s: &serde_json::Value, v: &serde_json::Value, at: &str) {
+        let s = self.resolve(s);
+        if let Some(alts) = s["oneOf"].as_array() {
+            if !v.is_null() {
+                let obj = alts
+                    .iter()
+                    .map(|a| self.resolve(a))
+                    .find(|a| a["type"] == "object");
+                if let Some(o) = obj {
+                    self.check(o, v, at);
+                }
+            }
+            return;
+        }
+        match v {
+            serde_json::Value::Object(o) => {
+                if let Some(props) = s["properties"].as_object() {
+                    for k in o.keys() {
+                        assert!(
+                            props.contains_key(k),
+                            "{at}.{k}: in the answer, not the spec"
+                        );
+                    }
+                    for r in s["required"].as_array().into_iter().flatten() {
+                        let r = r.as_str().unwrap();
+                        assert!(
+                            o.contains_key(r),
+                            "{at}.{r}: required in the spec, not answered"
+                        );
+                    }
+                    for (k, x) in o {
+                        self.check(&props[k], x, &format!("{at}.{k}"));
+                    }
+                } else if s["additionalProperties"].is_object() {
+                    for (k, x) in o {
+                        self.check(&s["additionalProperties"], x, &format!("{at}.{k}"));
+                    }
+                }
+            }
+            serde_json::Value::Array(a) if s["items"].is_object() => {
+                for x in a {
+                    self.check(&s["items"], x, &format!("{at}[]"));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The fields a JSON endpoint accepts, from serde's unknown-field error
+/// ("unknown field `x`, expected one of `a`, `b`").
+async fn accepted_fields(addr: SocketAddr, path: &str) -> std::collections::BTreeSet<String> {
+    let mut c = connect(addr).await.unwrap();
+    let body = Some(Bytes::from_static(br#"{"zz_not_a_field": 1}"#));
+    let (_, _, b) = send_with(&mut c, path, body, &[]).await.unwrap();
+    let text = String::from_utf8(b.to_vec()).unwrap();
+    let msg = serde_json::from_str::<ErrorBody>(&text)
+        .unwrap()
+        .error
+        .message;
+    let list = msg
+        .split_once("expected one of ")
+        .unwrap_or_else(|| panic!("{msg}"))
+        .1;
+    list.split('`')
+        .skip(1)
+        .step_by(2)
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn openapi_spec_matches_the_server() {
+    let spec = Spec::load();
+    assert_eq!(spec.0["openapi"], "3.1.0");
+    let (cfg, _files) = views_config(1);
+    let addr = start(cfg, false);
+    block_on(async {
+        // Requests: the spec's properties = the fields the server accepts;
+        // each required one is required.
+        for (path, minimal) in [
+            ("/v1/recommend", r#"{"history": [1000]}"#),
+            ("/v1/score", r#"{"history": [1000], "items": [1007]}"#),
+        ] {
+            let s = spec.schema(path, "post", None);
+            let props: std::collections::BTreeSet<String> = s["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            assert_eq!(props, accepted_fields(addr, path).await, "{path}");
+            assert_eq!(s["additionalProperties"], false, "{path}");
+            let mut c = connect(addr).await.unwrap();
+            let body = Some(Bytes::from(minimal));
+            let (st, _, _) = send_with(&mut c, path, body, &[]).await.unwrap();
+            assert_eq!(
+                st,
+                StatusCode::OK,
+                "{path}: the spec's required fields alone"
+            );
+            for r in s["required"].as_array().unwrap() {
+                let mut v: serde_json::Value = serde_json::from_str(minimal).unwrap();
+                v.as_object_mut().unwrap().remove(r.as_str().unwrap());
+                let (st, h, t) = post_to_with(addr, path, &v.to_string(), &[]).await;
+                assert_eq!(st, StatusCode::BAD_REQUEST, "{path} without {r}");
+                assert!(error_of(&h, &t).message.contains("missing field"), "{t}");
+            }
+        }
+        // Answers: every key in the spec and every required one answered.
+        let full = r#"{"history": [1000, 1007, 5], "weights": [1, 2, 3], "k": 3,
+            "exclude_seen": true, "include": null, "exclude": [1014], "sorted": true,
+            "view": "both"}"#;
+        let answers = [
+            (
+                "/v1/recommend",
+                "200",
+                post_to_with(addr, "/v1/recommend", full, &[]).await,
+            ),
+            (
+                "/v1/score",
+                "200",
+                post_score(
+                    addr,
+                    r#"{"history": [1000], "items": [1007], "view": "even"}"#,
+                )
+                .await,
+            ),
+            (
+                "/v1/recommend",
+                "400",
+                post_to_with(addr, "/v1/recommend", "{", &[]).await,
+            ),
+            (
+                "/v1/score",
+                "400",
+                post_to_with(addr, "/v1/score", r#"{"history": []}"#, &[]).await,
+            ),
+        ];
+        for (path, status, (st, _, text)) in answers {
+            assert_eq!(st.as_str(), status, "{path}: {text}");
+            let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+            spec.check(spec.schema(path, "post", Some(status)), &v, path);
+        }
+        for path in ["/config", "/v1/views"] {
+            let v: serde_json::Value = serde_json::from_str(&get_text(addr, path).await).unwrap();
+            spec.check(spec.schema(path, "get", Some("200")), &v, path);
+        }
+        // Every route in the spec answers (text ones: 200).
+        for path in ["/health", "/ready", "/metrics"] {
+            assert!(spec.0["paths"][path]["get"]["responses"]["200"].is_object());
+            get_text(addr, path).await;
+        }
+    });
 }
