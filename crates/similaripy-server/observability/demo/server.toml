@@ -1,0 +1,9 @@
+# The demo model (tests/data/sparseknn-format1: ids 10..70) with small limits,
+# so demo/requests.jsonl moves every panel: k 100 > k_max (bad request),
+# 10 ids > max_history (truncated), ids 99 / 1000 (unknown), a view.
+[limits]
+k_max = 50
+max_history = 8
+
+[views.in_stock]
+include_file = "/config/in_stock.txt"
