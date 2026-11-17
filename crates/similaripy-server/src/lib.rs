@@ -1,4 +1,4 @@
-//! The internal server (server plan S2; a design validator, not released):
+//! The server (experimental; released as its own artifact, `server-v*` tags):
 //! `POST /v1/recommend` (JSON), gRPC `similaripy.v1.Recommender/Recommend`
 //! (proto/, S4 P1), `GET /metrics`, `GET /health` (liveness: always ok),
 //! `GET /ready` (readiness: 503 once draining), `GET /config` (the

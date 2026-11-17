@@ -32,7 +32,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
   - [store.rs](crates/similaripy-core/src/store.rs) - Saved models: `.npy` reader/writer, mapped (`memmap2`) or owned arrays, saves into a new or empty directory only
 - **Bindings** ([crates/similaripy-py](crates/similaripy-py)): PyO3 module `similaripy._core`
   - [lib.rs](crates/similaripy-py/src/lib.rs) - kernel + prep bindings, thread pools; [normalize.rs](crates/similaripy-py/src/normalize.rs) - dtype dispatch; [progress.rs](crates/similaripy-py/src/progress.rs) - progress bar; [serve.rs](crates/similaripy-py/src/serve.rs) - `ServeModel` (model + its block size: resolved once for single calls, per call for batches)
-- **Internal server** ([crates/similaripy-server](crates/similaripy-server), `publish = false`, not in the wheel; server plan S2): a design validator for the serving core, not released
+- **Server** ([crates/similaripy-server](crates/similaripy-server), `publish = false`, not in the wheel): experimental, released as its own artifact (`server-v*` tags: binaries + GHCR image, [server-release.yml](.github/workflows/server-release.yml)); user docs [docs/server.md](docs/server.md), [CHANGELOG](crates/similaripy-server/CHANGELOG.md)
   - [lib.rs](crates/similaripy-server/src/lib.rs) - axum router (`POST /v1/recommend`: items + context (model name, request id from `x-request-id`, k, sorted, view, history counts), `Server-Timing`; `GET /metrics`, `GET /health`, `GET /config`), N threads (current-thread tokio runtime + its own warmed `Worker` each), round-robin acceptor; JSON weights parsed as f64 then f32 (numpy's rounding); [metrics.rs](crates/similaripy-server/src/metrics.rs) - per-thread single-writer atomics, Prometheus text; [config.rs](crates/similaripy-server/src/config.rs) - `Config` (defaults < TOML file < `SIMILARIPY_<SECTION>__<KEY>` env < `--section.key` flags, one deserialize with `deny_unknown_fields`; V1), old flags as aliases; [main.rs](crates/similaripy-server/src/main.rs) - CLI; [bin/loadgen.rs](crates/similaripy-server/src/bin/loadgen.rs) - open-loop load generator (rps at p99 <= budget, `--check` vs Python's answers)
 
 **Config:**
@@ -91,7 +91,7 @@ make check
 # Small dataset for quick regression test (Movielens 32M)
 make benchmark-similarity-small
 ```
-Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend, small, serve; `--rss`), `abba.py` (two builds, alternating processes), `compare.py`, parity scripts, `server_prep.py` (the internal server's loadgen inputs); datasets cached in `~/.cache/similaripy-bench`. Its README has the protocol (which runs for which change).
+Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend, small, serve; `--rss`), `abba.py` (two builds, alternating processes), `compare.py`, parity scripts, `server_prep.py` (the server's loadgen inputs); datasets cached in `~/.cache/similaripy-bench`. Its README has the protocol (which runs for which change).
 
 **Test files:**
 - [tests/test_similarity.py](tests/test_similarity.py) - every similarity × shrink type against one dense float64 reference (`_dense_scores`), selectors, signed input
