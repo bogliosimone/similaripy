@@ -7,13 +7,17 @@
 //! connection stays on its thread for life; HTTP/1.1 or h2c by the client's
 //! preface); a request runs to completion on the thread that read it (E3),
 //! its `Worker` used synchronously from a `thread_local`. JSON and gRPC run
-//! the same `App::run`: same limits, cut and answers.
+//! the same `App::run`: same limits, cut and answers. Named views (S5c):
+//! `GET /v1/views`, a request's `view`; the model and its views are one
+//! serving state behind one swappable pointer (V15).
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::hash::{BuildHasher, RandomState};
 use std::io;
 use std::net::TcpListener;
-use std::sync::{Arc, OnceLock, mpsc};
+use std::sync::atomic::{AtomicU64, Ordering::Acquire, Ordering::Release};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 use axum::Router;
@@ -32,11 +36,13 @@ use similaripy_core::serve::{Model, Request, Stats, Worker};
 pub use config::Config;
 use config::HistoryPolicy;
 
-use metrics::Proto;
+use metrics::{Counter, Proto};
+use views::{View, ViewInfo};
 
 pub mod client;
 pub mod config;
 mod metrics;
+mod views;
 
 /// The gRPC messages, client and server (build.rs, from proto/).
 pub mod pb {
@@ -59,30 +65,107 @@ enum Fail {
     Internal(String),
 }
 
-/// What every thread shares: the model, the config, the metrics.
-pub struct App {
+/// What is served: the model and its named views (each a `Model::view` of
+/// it). Never changed: replaced whole by `App::swap`.
+struct Served {
     model: Model,
+    views: BTreeMap<String, View>,
+}
+
+/// What every thread shares: the config, the metrics, the serving state.
+pub struct App {
     cfg: Config,
     block: usize,
+    /// The model's `n_active` at start: `block` was resolved from it.
+    n_active: usize,
     metrics: Box<[metrics::Thread]>,
+    /// The serving state (V15). Each thread keeps an `Arc` of it and loads
+    /// `version` once per request (one atomic load, no lock); after a
+    /// `swap` its next request takes the new one, in-flight requests keep
+    /// theirs.
+    // ponytail: an idle thread holds the old state until its next request;
+    // 0.2's hot swap nudges idle threads if an old model must be freed.
+    state: Mutex<Arc<Served>>,
+    version: AtomicU64,
+    /// Requests per view and thread: kept across swaps (the views' names
+    /// come from the config, which a swap doesn't change).
+    served: BTreeMap<String, Arc<[Counter]>>,
 }
 
 impl App {
-    pub fn new(model: Model, mut cfg: Config) -> Result<Self, Error> {
+    /// The app serving `model` with `cfg`'s views (id files read here: errors
+    /// name the view, file and line).
+    pub fn new(model: Model, mut cfg: Config) -> Result<Self, String> {
         cfg.model.fill_name();
         let block = cfg
             .server
             .block_size
-            .resolve(model.n_active(), cfg.server.threads)?;
+            .resolve(model.n_active(), cfg.server.threads)
+            .map_err(|e| e.to_string())?;
         let metrics = (0..cfg.server.threads)
             .map(|_| Default::default())
             .collect();
+        let served: BTreeMap<_, Arc<[Counter]>> = cfg
+            .views
+            .keys()
+            .map(|k| {
+                (
+                    k.clone(),
+                    (0..cfg.server.threads)
+                        .map(|_| Counter::default())
+                        .collect(),
+                )
+            })
+            .collect();
+        let views = views::build(&model, &cfg, &served)?;
         Ok(Self {
-            model,
+            served,
+            n_active: model.n_active(),
             cfg,
             block,
             metrics,
+            state: Mutex::new(Arc::new(Served { model, views })),
+            version: AtomicU64::new(0),
         })
+    }
+
+    /// Serves `model` with the config's views, rebuilt from their files, from
+    /// each thread's next request on (0.2's view reload and model hot swap
+    /// call this). An error leaves the served state as it was.
+    // ponytail: the workers' block size was resolved from the first model's
+    // n_active: another n_active is refused, not re-resolved (0.2's hot swap
+    // re-resolves it per worker if models of other sizes must swap).
+    pub fn swap(&self, model: Model) -> Result<(), String> {
+        if model.n_active() != self.n_active {
+            return Err(format!(
+                "n_active {} != {} at start: restart to serve it",
+                model.n_active(),
+                self.n_active
+            ));
+        }
+        // The lock across the build: swaps install in the order they read
+        // the files (a slower, older read never lands last).
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let views = views::build(&model, &self.cfg, &self.served)?;
+        *s = Arc::new(Served { model, views });
+        // Under the lock: a thread that sees this version gets this state
+        // (or a newer one).
+        self.version.fetch_add(1, Release);
+        Ok(())
+    }
+
+    /// The current state (a lock: start-up, scrapes, a thread after a swap).
+    fn state(&self) -> Arc<Served> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The start-up log's view lines (none without views).
+    pub fn describe_views(&self) -> Vec<String> {
+        let s = self.state();
+        views::describe(&s.views, s.model.n_items())
     }
 
     /// The column block size every worker resolved (`Worker::new` with the
@@ -92,13 +175,15 @@ impl App {
     }
 
     /// `q` (the whole history) through the edge checks, the history cap and
-    /// this thread's worker; `encode` turns the answer into the response
+    /// this thread's worker, over the model of `view` (None: `defaults.view`;
+    /// "": the whole model); `encode` turns the answer into the response
     /// while the worker's buffers are borrowed.
     fn run<T>(
         &self,
         m: &metrics::Thread,
         p: Proto,
         q: &Request,
+        view: Option<&str>,
         encode: impl FnOnce(&Answer) -> T,
     ) -> Result<T, Fail> {
         let limits = &self.cfg.limits;
@@ -109,45 +194,71 @@ impl App {
                 q.k, limits.k_max
             )));
         }
-        let n = q.ids.len();
-        let cut = n.saturating_sub(limits.max_history);
-        if cut > 0 {
-            if limits.history_policy == HistoryPolicy::Reject {
-                m.bad_request();
-                return Err(Fail::Invalid(format!(
-                    "{n} history ids > max_history = {}",
-                    limits.max_history
-                )));
-            }
-            m.truncated();
-        }
-        // Weights of another length aren't cut: the worker rejects them.
-        let weights = q.weights.map(|w| if w.len() == n { &w[cut..] } else { w });
-        // Cut ids are still seen: excluded with the request's own (an
-        // allocation only for a cut history).
-        let exclude = match (cut, q.exclude_seen) {
-            (0, _) | (_, false) => None,
-            (_, true) => Some([&q.ids[..cut], q.exclude.unwrap_or_default()].concat()),
-        };
-        let req = Request {
-            ids: &q.ids[cut..],
-            weights,
-            exclude: exclude.as_deref().or(q.exclude),
-            ..*q
-        };
         LOCAL.with_borrow_mut(|l| {
             let l = l.as_mut().expect("a request on a server thread");
-            l.ids.clear();
-            l.scores.clear();
-            let before = l.worker.stats();
+            // V15: the version first, then the state (as new or newer)
+            let v = self.version.load(Acquire);
+            if v != l.version {
+                l.state = self.state();
+                l.version = v;
+            }
+            let Local {
+                worker,
+                base,
+                ids,
+                scores,
+                state,
+                ..
+            } = l;
+            let name = view.unwrap_or(&self.cfg.defaults.view);
+            let (model, view, served) = if name.is_empty() {
+                (&state.model, None, None)
+            } else {
+                match state.views.get_key_value(name) {
+                    Some((name, v)) => (&v.model, Some(name.as_str()), Some(&v.served)),
+                    None => {
+                        m.bad_request();
+                        return Err(Fail::Invalid(format!(
+                            "unknown view {name:?} (GET /v1/views lists them)"
+                        )));
+                    }
+                }
+            };
+            let n = q.ids.len();
+            let cut = n.saturating_sub(limits.max_history);
+            if cut > 0 {
+                if limits.history_policy == HistoryPolicy::Reject {
+                    m.bad_request();
+                    return Err(Fail::Invalid(format!(
+                        "{n} history ids > max_history = {}",
+                        limits.max_history
+                    )));
+                }
+                m.truncated();
+            }
+            // Weights of another length aren't cut: the worker rejects them.
+            let weights = q.weights.map(|w| if w.len() == n { &w[cut..] } else { w });
+            // Cut ids are still seen: excluded with the request's own (an
+            // allocation only for a cut history).
+            let exclude = match (cut, q.exclude_seen) {
+                (0, _) | (_, false) => None,
+                (_, true) => Some([&q.ids[..cut], q.exclude.unwrap_or_default()].concat()),
+            };
+            let req = Request {
+                ids: &q.ids[cut..],
+                weights,
+                exclude: exclude.as_deref().or(q.exclude),
+                ..*q
+            };
+            ids.clear();
+            scores.clear();
+            let before = worker.stats();
             let t = Instant::now();
-            let r = l
-                .worker
-                .recommend(&self.model, &req, &mut l.ids, &mut l.scores);
+            let r = worker.recommend(model, &req, ids, scores);
             let compute = t.elapsed();
             m.compute[p as usize].record(compute);
-            let stats = l.worker.stats();
-            m.set_stats(since(stats, l.base));
+            let stats = worker.stats();
+            m.set_stats(since(stats, *base));
             // This request's counts: the worker's counters, before vs after.
             let d = since(stats, before);
             let history = History {
@@ -156,12 +267,18 @@ impl App {
                 unknown: d.ids - d.known_ids,
             };
             match r {
-                Ok(()) => Ok(encode(&Answer {
-                    ids: &l.ids,
-                    scores: &l.scores,
-                    history,
-                    compute,
-                })),
+                Ok(()) => {
+                    if let Some(c) = served {
+                        c[THREAD.get()].add();
+                    }
+                    Ok(encode(&Answer {
+                        ids,
+                        scores,
+                        view,
+                        history,
+                        compute,
+                    }))
+                }
                 Err(e @ Error::InvalidInput(_)) => Err(Fail::Invalid(e.to_string())),
                 Err(e) => Err(Fail::Internal(e.to_string())),
             }
@@ -186,7 +303,7 @@ impl App {
             exclude: q.exclude.as_deref(),
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
         };
-        let r = self.run(m, Proto::Json, &req, |a| {
+        let r = self.run(m, Proto::Json, &req, q.view.as_deref(), |a| {
             let reply = Reply {
                 items: Items(a.ids, a.scores),
                 model: ModelInfo {
@@ -195,7 +312,7 @@ impl App {
                 request_id,
                 k: req.k,
                 sorted: req.sorted,
-                view: None,
+                view: a.view,
                 history: a.history,
             };
             let mut r = json(StatusCode::OK, &reply);
@@ -230,7 +347,8 @@ impl App {
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
         };
         // T18: one copy of the answer, prost's default codec encodes it
-        let r = self.run(m, Proto::Grpc, &req, |a| pb::RecommendResponse {
+        let view = q.view.as_deref();
+        let r = self.run(m, Proto::Grpc, &req, view, |a| pb::RecommendResponse {
             ids: a.ids.to_vec(),
             scores: a.scores.to_vec(),
             model: Some(pb::ModelInfo {
@@ -239,7 +357,7 @@ impl App {
             request_id: request_id.to_string(),
             k: req.k as u32, // <= k_max: checked in run
             sorted: req.sorted,
-            view: None,
+            view: a.view.map(String::from),
             history: Some(pb::History {
                 sent: a.history.sent,
                 truncated: a.history.truncated,
@@ -255,9 +373,9 @@ impl App {
     /// One request per path a worker takes, sized to the limits (k_max,
     /// max_history ids, include bits): buffers made before the first accept,
     /// no first-request spike (W2).
-    fn warm(&self, w: &mut Worker) -> Result<(), Error> {
-        let n = self.cfg.limits.max_history.min(self.model.n_items());
-        let ids: Vec<i64> = match self.model.item_ids() {
+    fn warm(&self, model: &Model, w: &mut Worker) -> Result<(), Error> {
+        let n = self.cfg.limits.max_history.min(model.n_items());
+        let ids: Vec<i64> = match model.item_ids() {
             Some(e) => e.iter().take(n).copied().collect(),
             None => (0..n as i64).collect(),
         };
@@ -272,7 +390,7 @@ impl App {
                 exclude: None,
                 sorted: true,
             };
-            w.recommend(&self.model, &req, &mut out_ids, &mut out_scores)?;
+            w.recommend(model, &req, &mut out_ids, &mut out_scores)?;
         }
         Ok(())
     }
@@ -299,6 +417,9 @@ struct Query {
     exclude: Option<Vec<i64>>,
     #[serde(default)]
     sorted: Option<bool>,
+    /// Absent or null = `defaults.view`; "" = the whole model.
+    #[serde(default)]
+    view: Option<String>,
 }
 
 /// A `POST /v1/recommend` body as the gRPC request with the same answer
@@ -319,6 +440,7 @@ pub fn proto_from_json(body: &[u8]) -> Result<pb::RecommendRequest, serde_json::
         include: q.include.map(|ids| pb::IdList { ids }),
         exclude: q.exclude.unwrap_or_default(),
         sorted: q.sorted,
+        view: q.view,
         ids: q.ids,
     })
 }
@@ -335,6 +457,8 @@ fn yes() -> bool {
 struct Answer<'a> {
     ids: &'a [i64],
     scores: &'a [f32],
+    /// The view's name; None = the whole model.
+    view: Option<&'a str>,
     history: History,
     compute: Duration,
 }
@@ -437,6 +561,9 @@ fn since(s: Stats, base: Stats) -> Stats {
 /// A server thread's own state.
 struct Local {
     worker: Worker,
+    /// The serving state as of `version` (`App::state`).
+    state: Arc<Served>,
+    version: u64,
     /// The worker's stats after warm-up (not served requests).
     base: Stats,
     /// Reused outputs (the worker appends).
@@ -461,6 +588,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/metrics", get(metrics))
         .route("/health", get(|| async { "ok" }))
         .route("/config", get(config))
+        .route("/v1/views", get(views))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .with_state(app)
         .merge(tonic::service::Routes::new(grpc).into_axum_router())
@@ -515,12 +643,37 @@ async fn config(State(app): State<Arc<App>>) -> Response {
     json(StatusCode::OK, &app.cfg)
 }
 
+/// `GET /v1/views`: the default view (null = the whole model), the model's
+/// items, and per view what it allows and its files' known ids.
+async fn views(State(app): State<Arc<App>>) -> Response {
+    #[derive(Serialize)]
+    struct Views<'a> {
+        default: Option<&'a str>,
+        items: usize,
+        views: BTreeMap<&'a str, &'a ViewInfo>,
+    }
+    let s = app.state();
+    let d = &app.cfg.defaults.view;
+    let body = Views {
+        default: (!d.is_empty()).then_some(d.as_str()),
+        items: s.model.n_items(),
+        views: s.views.iter().map(|(k, v)| (k.as_str(), &v.info)).collect(),
+    };
+    json(StatusCode::OK, &body)
+}
+
 async fn metrics(State(app): State<Arc<App>>) -> String {
+    let s = app.state();
     let info = metrics::Info {
         threads: app.cfg.server.threads,
         block: app.block,
-        items: app.model.n_items(),
-        active_items: app.model.n_active(),
+        items: s.model.n_items(),
+        active_items: s.model.n_active(),
+        views: app
+            .served
+            .iter()
+            .map(|(k, c)| (k.as_str(), c.iter().map(Counter::get).sum()))
+            .collect(),
     };
     metrics::render(&app.metrics, &info)
 }
@@ -544,13 +697,19 @@ pub fn serve(listener: TcpListener, app: Arc<App>, router: Router) -> io::Result
                     .build();
                 let start = || -> Result<_, String> {
                     let rt = rt.map_err(|e| e.to_string())?;
-                    let mut worker = Worker::new(&app.model, app.cfg.server.block_size, n)
+                    // The version first, then the state (as `run`)
+                    let version = app.version.load(Acquire);
+                    let state = app.state();
+                    let mut worker = Worker::new(&state.model, app.cfg.server.block_size, n)
                         .map_err(|e| e.to_string())?;
-                    app.warm(&mut worker).map_err(|e| format!("warm-up: {e}"))?;
+                    app.warm(&state.model, &mut worker)
+                        .map_err(|e| format!("warm-up: {e}"))?;
                     THREAD.set(i);
                     LOCAL.set(Some(Local {
                         base: worker.stats(),
                         worker,
+                        state,
+                        version,
                         ids: Vec::with_capacity(app.cfg.limits.k_max),
                         scores: Vec::with_capacity(app.cfg.limits.k_max),
                     }));

@@ -17,7 +17,7 @@ use serde::Deserialize;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{BlockSize, ItemOrder, Model, Request, recommend};
 use similaripy_server::client::{connect, metric, send, send_with};
-use similaripy_server::config::HistoryPolicy;
+use similaripy_server::config::{self, HistoryPolicy};
 use similaripy_server::pb::recommender_client::RecommenderClient;
 use similaripy_server::pb::{IdList, RecommendRequest};
 use similaripy_server::{App, BODY_LIMIT, Config, proto_from_json, router, serve};
@@ -745,4 +745,328 @@ fn same_request_same_bytes() {
             assert!(grpc_answers.iter().all(|a| *a == grpc_answers[0]));
         }
     });
+}
+
+/// An id file in the temp dir (one id per line), removed on drop.
+struct IdFile(std::path::PathBuf);
+
+impl Drop for IdFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn id_file(name: &str, text: &str) -> IdFile {
+    // Tests run in parallel: a name per call.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let p = std::env::temp_dir().join(format!("similaripy-http-{pid}-{n}-{name}.txt"));
+    std::fs::write(&p, text).unwrap();
+    IdFile(p)
+}
+
+fn lines(ids: impl IntoIterator<Item = i64>) -> String {
+    ids.into_iter().map(|i| format!("{i}\n")).collect()
+}
+
+/// Views over `model()`: `even` = even items (+ two ids it doesn't have),
+/// `head` = all but the first 10, `both` = even minus the first 10.
+fn views_config(threads: usize) -> (Config, [IdFile; 2]) {
+    let even = id_file(
+        "even",
+        &format!(
+            "{}5\n\n 6 \n",
+            lines((0..N as i64).step_by(2).map(|i| 1000 + 7 * i))
+        ),
+    );
+    let head = id_file("head", &lines((0..10).map(|i| 1000 + 7 * i)));
+    let mut c = config(threads);
+    let view = |inc: Option<&IdFile>, exc: Option<&IdFile>| config::ViewConfig {
+        include_file: inc.map(|f| f.0.clone()),
+        exclude_file: exc.map(|f| f.0.clone()),
+    };
+    c.views = [
+        ("even".to_string(), view(Some(&even), None)),
+        ("head".to_string(), view(None, Some(&head))),
+        ("both".to_string(), view(Some(&even), Some(&head))),
+    ]
+    .into();
+    (c, [even, head])
+}
+
+/// The core view each name stands for.
+fn core_view(m: &Model, name: &str, files: &[IdFile; 2]) -> Model {
+    let ids = |f: &IdFile| read_ids(&f.0);
+    match name {
+        "" => m.view(None, None),
+        "even" => m.view(Some(&ids(&files[0])), None),
+        "head" => m.view(None, Some(&ids(&files[1]))),
+        "both" => m.view(Some(&ids(&files[0])), Some(&ids(&files[1]))),
+        _ => unreachable!(),
+    }
+}
+
+fn read_ids(p: &std::path::Path) -> Vec<i64> {
+    std::fs::read_to_string(p)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim().parse().unwrap())
+        .collect()
+}
+
+#[test]
+fn view_answers_equal_core_view_and_and_with_include_exclude() {
+    let (cfg, files) = views_config(2);
+    let addr = start(cfg, false);
+    let reference = model();
+    let mut rng = Rng(7);
+    block_on(async {
+        let mut c = grpc(addr).await;
+        for case in 0..300 {
+            let len = 1 + rng.below(20);
+            let ids: Vec<i64> = (0..len).map(|_| 1000 + rng.below(N) as i64 * 7).collect();
+            let include: Option<Vec<i64>> =
+                (case % 3 == 1).then(|| (0..30).map(|_| 1000 + rng.below(N) as i64 * 7).collect());
+            let exclude: Option<Vec<i64>> =
+                (case % 4 == 2).then(|| (0..8).map(|_| 1000 + rng.below(N) as i64 * 7).collect());
+            let name = ["", "even", "head", "both"][case % 4];
+            let k = 1 + rng.below(50);
+            let body = serde_json::json!({
+                "ids": ids, "k": k, "include": include, "exclude": exclude, "view": name,
+            })
+            .to_string();
+            let want = python(
+                &core_view(&reference, name, &files),
+                &Request {
+                    ids: &ids,
+                    weights: None,
+                    k,
+                    exclude_seen: true,
+                    include: include.as_deref(),
+                    exclude: exclude.as_deref(),
+                    sorted: true,
+                },
+            );
+            let (status, text) = post(addr, &body).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            let got: Reply = serde_json::from_str(&text).unwrap();
+            assert_eq!(got.answer(), want, "JSON case {case}: {body}");
+            let used = (!name.is_empty()).then(|| name.to_string());
+            assert_eq!(got.view, used, "{body}");
+            let q = proto_from_json(body.as_bytes()).unwrap();
+            let r = c.recommend(q).await.unwrap().into_inner();
+            let bits = r.scores.iter().map(|s| s.to_bits()).collect();
+            assert_eq!((r.ids, bits), want, "gRPC case {case}: {body}");
+            assert_eq!(r.view, used);
+        }
+    });
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+struct Views {
+    default: Option<String>,
+    items: usize,
+    views: std::collections::BTreeMap<String, ViewInfo>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+struct ViewInfo {
+    allowed: usize,
+    include: Option<FileInfo>,
+    exclude: Option<FileInfo>,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct FileInfo {
+    file: String,
+    ids: usize,
+    known: usize,
+}
+
+#[test]
+fn default_view_empty_name_unknown_name_and_views_listing() {
+    let (mut cfg, files) = views_config(1);
+    cfg.defaults.view = "even".into();
+    let addr = start(cfg, false);
+    let reference = model();
+    let ids = [1000i64, 1014, 1021];
+    let req = |m: &Model| {
+        python(
+            m,
+            &Request {
+                ids: &ids,
+                weights: None,
+                k: 10,
+                exclude_seen: true,
+                include: None,
+                exclude: None,
+                sorted: true,
+            },
+        )
+    };
+    block_on(async {
+        // Absent and null = defaults.view; "" = the whole model.
+        for body in [
+            r#"{"ids": [1000, 1014, 1021]}"#,
+            r#"{"ids": [1000, 1014, 1021], "view": null}"#,
+        ] {
+            let (_, text) = post(addr, body).await;
+            let got: Reply = serde_json::from_str(&text).unwrap();
+            assert_eq!(got.view.as_deref(), Some("even"));
+            assert_eq!(got.answer(), req(&core_view(&reference, "even", &files)));
+        }
+        let (_, text) = post(addr, r#"{"ids": [1000, 1014, 1021], "view": ""}"#).await;
+        let got: Reply = serde_json::from_str(&text).unwrap();
+        assert_eq!((got.answer(), got.view), (req(&reference), None));
+        let mut c = grpc(addr).await;
+        let q = RecommendRequest {
+            ids: ids.to_vec(),
+            ..Default::default()
+        };
+        let r = c.recommend(q.clone()).await.unwrap().into_inner();
+        assert_eq!(r.view.as_deref(), Some("even"));
+        let whole = RecommendRequest {
+            view: Some(String::new()),
+            ..q.clone()
+        };
+        let r = c.recommend(whole).await.unwrap().into_inner();
+        let bits = r.scores.iter().map(|s| s.to_bits()).collect();
+        assert_eq!((r.view, (r.ids, bits)), (None, req(&reference)));
+        // Unknown: 400 / INVALID_ARGUMENT, counted as a bad request; a
+        // history past max_history is rejected before the cut (not counted
+        // as truncated).
+        let long: Vec<i64> = (0..30).map(|i| 1000 + 7 * i).collect();
+        let body = serde_json::json!({"ids": long, "view": "nope"}).to_string();
+        let (status, text) = post(addr, &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(text.contains("unknown view \\\"nope\\\""), "{text}");
+        let e = c
+            .recommend(RecommendRequest {
+                view: Some("nope".into()),
+                ..q
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument);
+        let m = get_text(addr, "/metrics").await;
+        assert_eq!(
+            metric(&m, "similaripy_server_bad_requests_total"),
+            Some(2.0)
+        );
+        assert_eq!(metric(&m, "similaripy_server_truncated_total"), Some(0.0));
+        // even: 2 JSON + 1 gRPC; "" and unknown names aren't counted.
+        let even = "similaripy_server_view_requests_total{view=\"even\"}";
+        assert_eq!(metric(&m, even), Some(3.0), "{m}");
+        let head = "similaripy_server_view_requests_total{view=\"head\"}";
+        assert_eq!(metric(&m, head), Some(0.0));
+        // The listing.
+        let v: Views = serde_json::from_str(&get_text(addr, "/v1/views").await).unwrap();
+        assert_eq!((v.default.as_deref(), v.items), (Some("even"), N));
+        assert_eq!(v.views.keys().collect::<Vec<_>>(), ["both", "even", "head"]);
+        let file = |f: &IdFile, ids, known| FileInfo {
+            file: f.0.display().to_string(),
+            ids,
+            known,
+        };
+        let even = &v.views["even"];
+        assert_eq!(even.allowed, N / 2);
+        assert_eq!(even.include, Some(file(&files[0], N / 2 + 2, N / 2)));
+        assert_eq!(even.exclude, None);
+        assert_eq!(v.views["head"].allowed, N - 10);
+        assert_eq!(v.views["head"].exclude, Some(file(&files[1], 10, 10)));
+        assert_eq!(v.views["both"].allowed, N / 2 - 5);
+    });
+}
+
+#[test]
+fn swap_serves_new_views_from_the_next_request() {
+    let (cfg, files) = views_config(2);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Arc::new(App::new(model(), cfg).unwrap());
+    let r = router(app.clone());
+    let served = app.clone();
+    std::thread::spawn(move || serve(listener, served, r));
+    let body = r#"{"ids": [1000, 1014, 1021], "k": 50, "view": "even"}"#;
+    block_on(async {
+        let before = ask_json(addr, body).await;
+        assert!(before.0.iter().all(|id| (id - 1000) / 7 % 2 == 0));
+        // The file now holds the odd items: served only after the swap.
+        std::fs::write(
+            &files[0].0,
+            lines((1..N as i64).step_by(2).map(|i| 1000 + 7 * i)),
+        )
+        .unwrap();
+        assert_eq!(ask_json(addr, body).await, before);
+        let even = "similaripy_server_view_requests_total{view=\"even\"}";
+        assert_eq!(metric(&get_text(addr, "/metrics").await, even), Some(2.0));
+        app.swap(model()).unwrap();
+        // Counters survive the swap.
+        assert_eq!(metric(&get_text(addr, "/metrics").await, even), Some(2.0));
+        // Both threads (round-robin per connection) take the new state.
+        for _ in 0..4 {
+            let after = ask_json(addr, body).await;
+            assert!(!after.0.is_empty());
+            assert!(
+                after.0.iter().all(|id| (id - 1000) / 7 % 2 == 1),
+                "{after:?}"
+            );
+        }
+        // A broken file: the swap fails, the served state stays.
+        std::fs::write(&files[0].0, "1007\nx\n").unwrap();
+        let e = app.swap(model()).unwrap_err();
+        assert!(e.contains(":2:") && e.contains("\"x\""), "{e}");
+        assert!(
+            ask_json(addr, body)
+                .await
+                .0
+                .iter()
+                .all(|id| (id - 1000) / 7 % 2 == 1)
+        );
+    });
+}
+
+#[test]
+fn view_errors_at_start_name_view_file_and_line() {
+    let (mut cfg, files) = views_config(1);
+    std::fs::write(&files[1].0, "1000\n1007\n\nten\n").unwrap();
+    let e = App::new(model(), cfg.clone()).err().unwrap();
+    let at = format!("{}:4:", files[1].0.display());
+    assert!(
+        e.contains("\"both\"") && e.contains(&at) && e.contains("ten"),
+        "{e}"
+    );
+    cfg.views.get_mut("head").unwrap().exclude_file = Some("/nonexistent/ids.txt".into());
+    cfg.views.remove("both");
+    let e = App::new(model(), cfg.clone()).err().unwrap();
+    assert!(
+        e.contains("\"head\"") && e.contains("/nonexistent/ids.txt"),
+        "{e}"
+    );
+    cfg.views.remove("head");
+    cfg.defaults.view = "head".into();
+    let e = App::new(model(), cfg.clone()).err().unwrap();
+    assert!(e.contains("defaults.view"), "{e}");
+    cfg.defaults.view = String::new();
+    // Not settable as a flag / env var (a dot splits the key, env is
+    // lowercase), or not a plain label.
+    for bad in ["bad name", "in.stock", "InStock", ""] {
+        let mut c = cfg.clone();
+        c.views.insert(bad.into(), cfg.views["even"].clone());
+        let e = App::new(model(), c).err().unwrap();
+        assert!(e.contains(&format!("{bad:?}")), "{e}");
+    }
+    cfg.views.insert("none".into(), Default::default());
+    assert!(
+        App::new(model(), cfg)
+            .err()
+            .unwrap()
+            .contains("needs include_file")
+    );
 }

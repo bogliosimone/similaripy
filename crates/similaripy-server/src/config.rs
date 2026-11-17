@@ -6,6 +6,7 @@
 //! the key). Keys are a contract (R-S2: additive within 1.x); `GET /config`
 //! serves the resolved config, so no key may hold a secret.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -20,6 +21,9 @@ pub struct Config {
     pub server: ServerConfig,
     pub limits: Limits,
     pub defaults: Defaults,
+    /// Named views (V2): `[views.<name>]` with an include and / or exclude
+    /// id file.
+    pub views: BTreeMap<String, ViewConfig>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -73,6 +77,19 @@ pub struct Defaults {
     /// Python's `recommend` sorts; candidate generation re-scored by a ranker
     /// can set false (U1).
     pub sorted: bool,
+    /// The view of a request that doesn't name one; "" = the whole model.
+    pub view: String,
+}
+
+/// A named view: the items in `include_file` (absent: all) minus those in
+/// `exclude_file` (absent: none); files hold one id per line.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ViewConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude_file: Option<PathBuf>,
 }
 
 impl Default for ModelConfig {
@@ -107,7 +124,10 @@ impl Default for Limits {
 
 impl Default for Defaults {
     fn default() -> Self {
-        Self { sorted: true }
+        Self {
+            sorted: true,
+            view: String::new(),
+        }
     }
 }
 
@@ -132,6 +152,29 @@ impl ModelConfig {
 impl Config {
     pub fn to_toml(&self) -> String {
         toml::to_string(self).expect("plain keys and values")
+    }
+
+    /// The view rules a config alone can break: names of 1-64 of
+    /// `a-z 0-9 _ -` (settable as a flag or env var: no `.`, lowercase;
+    /// Prometheus labels and URLs without escaping), at least one file each,
+    /// `defaults.view` "" or a view.
+    pub fn check_views(&self) -> Result<(), String> {
+        for (name, v) in &self.views {
+            let ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b);
+            if !(1..=64).contains(&name.len()) || !name.bytes().all(ok) {
+                return Err(format!("view {name:?}: a name is 1-64 of a-z 0-9 _ -"));
+            }
+            if v.include_file.is_none() && v.exclude_file.is_none() {
+                return Err(format!(
+                    "view {name:?}: needs include_file and / or exclude_file"
+                ));
+            }
+        }
+        let d = &self.defaults.view;
+        if !d.is_empty() && !self.views.contains_key(d) {
+            return Err(format!("defaults.view = {d:?}: no such view"));
+        }
+        Ok(())
     }
 }
 
@@ -240,6 +283,7 @@ pub fn parse(
     if cfg.server.threads == 0 {
         return Err("server.threads must be >= 1".into());
     }
+    cfg.check_views()?;
     Ok(if print {
         Cli::PrintConfig(cfg)
     } else {
@@ -261,9 +305,9 @@ fn merge(dst: &mut Table, src: Table) {
 
 /// `key` (dotted) = `raw`, typed as the key's default (so "2026" stays a
 /// string for a string key, and `block_size`, default "auto", takes "off" or
-/// "64" whatever an earlier source set); a key without a default takes `raw`
-/// as a TOML literal, else a string. An unknown key is set too: the
-/// deserialize names it.
+/// "64" whatever an earlier source set); a `*_file` key (views: no default)
+/// is a string; another key without a default takes `raw` as a TOML literal,
+/// else a string. An unknown key is set too: the deserialize names it.
 // ponytail: no list keys yet; S5e's `compression.algorithms` adds "a,b".
 fn set(table: &mut Table, defaults: &Table, key: &str, raw: String) -> Result<(), String> {
     if key.split('.').any(str::is_empty) {
@@ -289,6 +333,7 @@ fn set(table: &mut Table, defaults: &Table, key: &str, raw: String) -> Result<()
         Some(Value::Boolean(_)) => Value::Boolean(raw.parse().map_err(|e| bad(&e))?),
         Some(Value::Float(_)) => Value::Float(raw.parse().map_err(|e| bad(&e))?),
         Some(_) => return Err(bad(&"not settable from a flag or env var")),
+        None if last.ends_with("_file") => Value::String(raw),
         None => toml::from_str::<Table>(&format!("v = {raw}"))
             .ok()
             .and_then(|mut t| t.remove("v"))
@@ -404,7 +449,18 @@ mod tests {
                 max_history: 8,
                 history_policy: HistoryPolicy::Reject,
             },
-            defaults: Defaults { sorted: false },
+            defaults: Defaults {
+                sorted: false,
+                view: "instock".into(),
+            },
+            views: [(
+                "instock".to_string(),
+                ViewConfig {
+                    include_file: Some("2026.txt".into()),
+                    exclude_file: Some("/ids/adult.txt".into()),
+                },
+            )]
+            .into(),
         };
         let keys = [
             ("model.path", "/models/x"),
@@ -417,6 +473,10 @@ mod tests {
             ("limits.max_history", "8"),
             ("limits.history_policy", "reject"),
             ("defaults.sorted", "false"),
+            ("defaults.view", "instock"),
+            // a number-like path stays a string (`*_file`)
+            ("views.instock.include_file", "2026.txt"),
+            ("views.instock.exclude_file", "/ids/adult.txt"),
         ];
         // Every field of Config is in `keys`: the TOML of `want` has as many.
         assert_eq!(want.to_toml().matches(" = ").count(), keys.len());
