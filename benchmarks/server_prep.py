@@ -58,7 +58,7 @@ def main():
         for k in args.ks:
             with open(args.out / f"requests-c{cap}-k{k}.jsonl", "w") as f:
                 for h, w in zip(hists, weights, strict=True):
-                    body = {"ids": h.tolist(), "k": k, "exclude_seen": True}
+                    body = {"history": h.tolist(), "k": k, "exclude_seen": True}
                     if w is not None:
                         body["weights"] = w.tolist()
                     f.write(json.dumps(body) + "\n")

@@ -22,7 +22,7 @@ Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flag
   --server.threads N          one Worker each; default: P-cores (macOS), available CPUs (Linux)
   --server.block_size B       auto | off | N entries; default auto (from threads)
   --limits.k_max N            reject a larger k; default 2000
-  --limits.max_history N      default 200
+  --limits.max_history N      default 1000
   --limits.history_policy P   truncate (keep the last max_history ids) | reject; default truncate
   --defaults.sorted BOOL      a request's sorted when it doesn't send one; default true
   --defaults.view NAME        a request's view when it doesn't send one; default empty (the whole model)

@@ -304,7 +304,7 @@ impl App {
         // point up, numpy's f64 → f32 to even; test json_f32_parsed_as_python).
         let weights: Option<Vec<f32>> = q.weights.map(|w| w.iter().map(|&x| x as f32).collect());
         let req = Request {
-            ids: &q.ids,
+            ids: &q.history,
             weights: weights.as_deref(),
             k: q.k,
             exclude_seen: q.exclude_seen,
@@ -346,7 +346,7 @@ impl App {
         request_id: &str,
     ) -> Result<pb::RecommendResponse, tonic::Status> {
         let req = Request {
-            ids: &q.ids,
+            ids: &q.history,
             // proto3: an empty list is not sent; unweighted (T17)
             weights: (!q.weights.is_empty()).then_some(&q.weights[..]),
             k: q.k.map_or(DEFAULT_K, |k| k as usize),
@@ -412,7 +412,8 @@ impl App {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Query {
-    ids: Vec<i64>,
+    /// The history ids, oldest → newest (Python's `history`).
+    history: Vec<i64>,
     #[serde(default)]
     /// f64 as sent, rounded to f32 after (numpy's two steps).
     weights: Option<Vec<f64>>,
@@ -450,7 +451,7 @@ pub fn proto_from_json(body: &[u8]) -> Result<pb::RecommendRequest, serde_json::
         exclude: q.exclude.unwrap_or_default(),
         sorted: q.sorted,
         view: q.view,
-        ids: q.ids,
+        history: q.history,
     })
 }
 

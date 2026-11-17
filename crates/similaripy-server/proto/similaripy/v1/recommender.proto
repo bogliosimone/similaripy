@@ -19,8 +19,8 @@ message IdList {
 // Unknown fields are ignored (protobuf's rule; JSON rejects them).
 message RecommendRequest {
   // The user's history, oldest -> newest; unknown ids are ignored.
-  repeated int64 ids = 1;
-  // One per id; empty = unweighted (proto3 can't tell empty from absent).
+  repeated int64 history = 1;
+  // One per history id; empty = unweighted (proto3 can't tell empty from absent).
   repeated float weights = 2;
   // Default 10.
   optional uint32 k = 3;
