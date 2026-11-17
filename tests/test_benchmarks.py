@@ -202,10 +202,10 @@ def test_serve_concurrent_caps(run):
 
 def test_serve_block_size(run, monkeypatch):
     # --block-size reaches the timed model (the one-block control stays None); 'auto' passes nothing
-    from similaripy import serving
+    import compat
 
-    seen, real = [], serving.ItemKNN
-    monkeypatch.setattr(serving, "ItemKNN", lambda S, **kw: seen.append(kw) or real(S, **kw))
+    seen, real = [], compat.SparseKNN
+    monkeypatch.setattr(compat, "SparseKNN", lambda S, **kw: seen.append(kw) or real(S, **kw))
     args = ("serve", "--mode", "block", "--block-threads", "1", "--model-k", "20", "--k", "10", "--rounds", "1")
     rep = run(*args, "--block-size", "16")
     assert seen == [{"block_size": 16}, {"block_size": None}]
@@ -238,10 +238,10 @@ def test_serve_model_cache(run, monkeypatch, tmp_path):
 
 def test_serve_item_order(run, monkeypatch):
     # --item-order reaches every model (the one-block control too); unset passes nothing
-    from similaripy import serving
+    import compat
 
-    seen, real = [], serving.ItemKNN
-    monkeypatch.setattr(serving, "ItemKNN", lambda S, **kw: seen.append(kw) or real(S, **kw))
+    seen, real = [], compat.SparseKNN
+    monkeypatch.setattr(compat, "SparseKNN", lambda S, **kw: seen.append(kw) or real(S, **kw))
     args = ("serve", "--mode", "block", "--block-threads", "1", "--model-k", "20", "--k", "10", "--rounds", "1")
     assert run(*args, "--item-order", "original")["info"]["item_order"] == "original"
     assert seen == [{"item_order": "original"}, {"item_order": "original", "block_size": None}]
@@ -262,10 +262,10 @@ def test_serve_item_order(run, monkeypatch):
 
 def test_serve_transpose(run, monkeypatch):
     # --transpose serves S.T, recorded; the cached S stays S
-    from similaripy import serving
+    import compat
 
-    seen, real = [], serving.ItemKNN
-    monkeypatch.setattr(serving, "ItemKNN", lambda S, **kw: seen.append(S.copy()) or real(S, **kw))
+    seen, real = [], compat.SparseKNN
+    monkeypatch.setattr(compat, "SparseKNN", lambda S, **kw: seen.append(S.copy()) or real(S, **kw))
     args = ("serve", "--mode", "latency", "--caps", "10", "--requests", "20", "--model-k", "20", "--rounds", "1")
     plain, flipped = run(*args), run(*args, "--transpose")
     assert (plain["info"]["transpose"], flipped["info"]["transpose"]) == (False, True)
@@ -275,11 +275,11 @@ def test_serve_transpose(run, monkeypatch):
 def test_serve_load(run, monkeypatch):
     # --load mmap / read: every model saved and loaded back with that mmap flag and its own block size (not
     # saved: W1; 'auto' passes nothing), recorded
-    from similaripy import serving
+    import compat
 
-    seen, real = [], serving.ItemKNN.load.__func__
+    seen, real = [], compat.SparseKNN.load.__func__
     monkeypatch.setattr(
-        serving.ItemKNN,
+        compat.SparseKNN,
         "load",
         classmethod(lambda cls, p, mmap, **kw: seen.append((mmap, kw)) or real(cls, p, mmap=mmap, **kw)),
     )

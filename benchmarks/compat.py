@@ -5,8 +5,8 @@ Checked by feature, never by version string: v1 builds report
 `__version__` 0.7.0 until the 1.0 release. What 0.7.0 (the last Cython
 release, PyPI wheel) lacks: `similaripy._s_plus` (phase timer, column order
 switch), `similaripy.serving`, `similaripy.preprocessing`; v1 builds before D115
-lack `ItemKNN(item_order=)`, builds before W1 `ItemKNN.load(block_size=)`
-(they saved it with the model). Its similarity
+lack `SparseKNN(item_order=)`, builds before W1 `SparseKNN.load(block_size=)`
+(they saved it with the model), builds before the rename call it `ItemKNN`. Its similarity
 signatures match v1 by name; it defaults to verbose=True and
 format_output='coo' (the harness always passes both) and spells the library's
 block size 0 (v1: 'auto'), so 'auto' is left out of the call.
@@ -31,12 +31,15 @@ HAS_PHASES = hasattr(_s_plus, "_last_timings")
 HAS_SERVING = importlib.util.find_spec("similaripy.serving") is not None
 DEFAULT_BLOCK_SIZE = getattr(_s_plus, "DEFAULT_BLOCK_SIZE", None)
 if HAS_SERVING:
-    from similaripy.serving import ItemKNN as _ItemKNN
+    from similaripy import serving as _serving
 
-    HAS_ITEM_ORDER = "item_order" in inspect.signature(_ItemKNN).parameters
+    # The serving class: `SparseKNN`, `ItemKNN` before the rename (pre-1.0 bases).
+    SparseKNN = getattr(_serving, "SparseKNN", None) or _serving.ItemKNN
+    HAS_ITEM_ORDER = "item_order" in inspect.signature(SparseKNN).parameters
     # W1: the block size is a runtime setting that `load` takes; older builds saved it with the model.
-    HAS_LOAD_BLOCK_SIZE = "block_size" in inspect.signature(_ItemKNN.load).parameters
+    HAS_LOAD_BLOCK_SIZE = "block_size" in inspect.signature(SparseKNN.load).parameters
 else:
+    SparseKNN = None
     HAS_ITEM_ORDER = HAS_LOAD_BLOCK_SIZE = False
 
 
@@ -55,18 +58,18 @@ def set_column_order(order):
 
 
 def load_block_size_kwargs(block_size):
-    """`ItemKNN.load`'s block_size (W1) as `block_size_kwargs`; {} for a build that saved it with the model."""
+    """`SparseKNN.load`'s block_size (W1) as `block_size_kwargs`; {} for a build that saved it with the model."""
     return block_size_kwargs(block_size) if HAS_LOAD_BLOCK_SIZE else {}
 
 
 def item_order_kwargs(order):
-    """ItemKNN's item_order (D115) when set, else SIMILARIPY_BENCH_ITEM_ORDER (one wheel as two A/B sides: the x86
+    """SparseKNN's item_order (D115) when set, else SIMILARIPY_BENCH_ITEM_ORDER (one wheel as two A/B sides: the x86
     kit sets it per side); None = the library default, left out of the call (a base without it)."""
     order = order or os.environ.get("SIMILARIPY_BENCH_ITEM_ORDER") or None
     if order is None:
         return {}
     if not HAS_ITEM_ORDER:
-        raise ValueError("--item-order: this build's ItemKNN has no item_order")
+        raise ValueError("--item-order: this build's SparseKNN has no item_order")
     return {"item_order": order}
 
 
@@ -108,7 +111,7 @@ def git_describe(path):
 
 
 def serving_n_active(rec):
-    """Items with similarities in an ItemKNN model."""
+    """Items with similarities in a SparseKNN model."""
     return rec._model.n_active
 
 

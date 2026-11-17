@@ -1,7 +1,7 @@
 `similaripy.serving`
 
-??? info "ItemKNN"
-    ::: similaripy.serving.ItemKNN
+??? info "SparseKNN"
+    ::: similaripy.serving.SparseKNN
         options:
           group_by_category: false
           members:

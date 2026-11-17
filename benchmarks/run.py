@@ -5,7 +5,7 @@ Workloads:
   similarity  item-item similarity on URM.T (every similarity + fixed-parameter variants)
   recommend   dot_product(URM, S) with and without filter_cols=URM, S a cosine model
   small       millisecond calls on the synthetic matrix (smoke set, or --cases all)
-  serve       similaripy.serving.ItemKNN: request latency, batch block size, model build
+  serve       similaripy.serving.SparseKNN: request latency, batch block size, model build
   crosslib    another library's item-item similarity (libraries.py), one library per process
 
 Usage (from the repo root; any similaripy install, 0.7.0 included):
@@ -111,7 +111,7 @@ def parser():
     m.add_argument("--cases", nargs="+", default=workloads.SMOKE_CASES, help='case names, or "all" (default: smoke)')
     m.add_argument("--reps", type=positive, default=21, help="calls per measurement, median taken (default: 21)")
 
-    v = sub.add_parser("serve", parents=[common], help="similaripy.serving.ItemKNN")
+    v = sub.add_parser("serve", parents=[common], help="similaripy.serving.SparseKNN")
     v.add_argument("--mode", nargs="+", default=["latency"], choices=workloads.SERVE_MODES)
     v.add_argument("--model", default="cosine", choices=["cosine", "rp3beta"])
     v.add_argument("--model-k", type=int, default=100)
@@ -129,7 +129,7 @@ def parser():
         choices=["auto", "clustered", "popularity", "original"],
         help="every model's item_order (default: the library's, not passed)",
     )
-    v.add_argument("--transpose", action="store_true", help="serve ItemKNN(S.T) (docs/serving.md 'Orientation of S')")
+    v.add_argument("--transpose", action="store_true", help="serve SparseKNN(S.T) (docs/serving.md 'Orientation of S')")
     v.add_argument(
         "--candidates",
         type=positive,
@@ -140,7 +140,7 @@ def parser():
         "--load",
         default="build",
         choices=["build", "mmap", "read"],
-        help="time every model as built (default), or saved and loaded back: ItemKNN.load(mmap=True / False)",
+        help="time every model as built (default), or saved and loaded back: SparseKNN.load(mmap=True / False)",
     )
     v.add_argument(
         "--callers", type=positive, nargs="+", default=[6], help="concurrent mode: Python threads (default: 6)"

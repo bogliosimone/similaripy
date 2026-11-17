@@ -9,17 +9,18 @@ Usage (from the repo root):
     cargo run --release -p similaripy-server --bin loadgen -- --requests OUT/requests-c200-k100.jsonl
 
 Writes, in OUT:
-  model/          ItemKNN(S).save: S = the serve workload's model (cosine, k=100), from the bench cache (--model-cache)
+  model/          SparseKNN(S).save: S = the serve workload's model (cosine, k=100), from the bench cache (--model-cache)
   requests-c{CAP}-k{K}.jsonl  per --caps x --ks: one /v1/recommend body per line: a random user's URM row, capped like
                   the serve workload (CAP random items; keep it <= the server's --max-history, or the server cuts it),
                   k, exclude_seen; every other request with float64 weights (the same users and weights for every k)
-  expected-c{CAP}-k{K}.jsonl  ItemKNN.load(OUT/model).recommend of the first --check requests: ids + score bits
+  expected-c{CAP}-k{K}.jsonl  SparseKNN.load(OUT/model).recommend of the first --check requests: ids + score bits
 """
 
 import argparse
 import json
 from pathlib import Path
 
+import compat
 import loaders
 import numpy as np
 import workloads
@@ -38,16 +39,16 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
-    from similaripy.serving import ItemKNN
+    SparseKNN = compat.SparseKNN
 
     URM, dataset = loaders.load(args.dataset, args.version, args.event_type)
     opts = {"model": "cosine", "model_k": 100, "model_cache": True, "dataset_key": dataset["key"]}
     S, _ = workloads._serve_model(URM, opts)
     args.out.mkdir(parents=True, exist_ok=True)
     if not (args.out / "model").exists():  # a rerun keeps it: expected-*.jsonl are computed from what is there
-        ItemKNN(S).save(args.out / "model")
+        SparseKNN(S).save(args.out / "model")
 
-    rec = ItemKNN.load(args.out / "model")  # what the server loads
+    rec = SparseKNN.load(args.out / "model")  # what the server loads
     for cap in args.caps:
         rng = np.random.default_rng(args.seed)
         users = rng.choice(URM.shape[0], size=args.requests)
@@ -57,7 +58,7 @@ def main():
         for k in args.ks:
             with open(args.out / f"requests-c{cap}-k{k}.jsonl", "w") as f:
                 for h, w in zip(hists, weights, strict=True):
-                    body = {"ids": h.tolist(), "k": k, "exclude_seen": True}
+                    body = {"history": h.tolist(), "k": k, "exclude_seen": True}
                     if w is not None:
                         body["weights"] = w.tolist()
                     f.write(json.dumps(body) + "\n")

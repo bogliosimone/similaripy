@@ -1,4 +1,4 @@
-//! `similaripy-server --model DIR`: serves an `ItemKNN.save` directory.
+//! `similaripy-server --model DIR`: serves a `SparseKNN.save` directory.
 //! Logs go to stderr. Exit 0 after a SIGTERM / SIGINT shutdown, 1 on any
 //! error (config, model, bind, a second signal).
 
@@ -15,14 +15,14 @@ similaripy-server [--config FILE] [--section.key VALUE ...]
   127.0.0.1 by default; put an ingress / mesh with TLS and auth in front).
 
 Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flags.
-  --model.path DIR            an ItemKNN.save directory (required)
+  --model.path DIR            a SparseKNN.save directory (required)
   --model.mmap BOOL           map the model's files; default true
   --model.name NAME           the model name in every answer; default the directory's name
   --server.addr HOST:PORT     default 127.0.0.1:8080
   --server.threads N          one Worker each; default: P-cores (macOS), available CPUs (Linux)
   --server.block_size B       auto | off | N entries; default auto (from threads)
   --limits.k_max N            reject a larger k; default 2000
-  --limits.max_history N      default 200
+  --limits.max_history N      default 1000
   --limits.history_policy P   truncate (keep the last max_history ids) | reject; default truncate
   --defaults.sorted BOOL      a request's sorted when it doesn't send one; default true
   --defaults.view NAME        a request's view when it doesn't send one; default empty (the whole model)

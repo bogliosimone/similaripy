@@ -60,8 +60,8 @@ def test_small_example():
     URM, user_ids, item_ids = interactions_to_urm(users, items)
     assert user_ids.tolist() == [3, 7, 9] and item_ids.tolist() == [5, 42, 100]
     assert URM.toarray().tolist() == [[1, 0, 1], [0, 1, 2], [1, 0, 0]]
-    # feeds ItemKNN in the original item ids
-    rec = sim.serving.ItemKNN(sim.cosine(URM.T, k=5), item_ids=item_ids)
+    # feeds SparseKNN in the original item ids
+    rec = sim.serving.SparseKNN(sim.cosine(URM.T, k=5), item_ids=item_ids)
     assert rec.recommend([100], k=3)[0].tolist() == [42, 5]  # cosine 2/sqrt(5) > 1/sqrt(10)
 
 
@@ -140,7 +140,7 @@ def test_to_histories_feeds_recommend_batch():
     t = rng.integers(0, 99, 800)
     URM, _, item_ids = interactions_to_urm(users, items, rng.random(800) * time_decay(t, reference=99, scale=20))
     H = URM
-    model = sim.serving.ItemKNN(sim.cosine(URM.T, k=20), item_ids=item_ids)
+    model = sim.serving.SparseKNN(sim.cosine(URM.T, k=20), item_ids=item_ids)
     histories, weights = urm_to_histories(H, item_ids=item_ids)
     assert len(histories) == URM.shape[0]
     ids, scores = model.recommend_batch(histories, weights=weights, k=10)
@@ -148,7 +148,7 @@ def test_to_histories_feeds_recommend_batch():
         row = H[[u]]
         one = model.recommend(item_ids[row.indices], weights=row.data, k=10)
         assert np.array_equal(ids[u], one[0]) and np.array_equal(scores[u], one[1])  # bit for bit
-    # without item_ids: column indices, for ItemKNN(S) without ids
+    # without item_ids: column indices, for SparseKNN(S) without ids
     histories, _ = urm_to_histories(URM)
     assert histories[0].tolist() == URM[[0]].indices.tolist() and histories[0].dtype == np.int64
 
@@ -200,7 +200,7 @@ def test_interactions_to_histories():
     rng = np.random.default_rng(2)
     users, items, w = rng.integers(0, 30, 900), rng.integers(0, 50, 900), rng.random(900).astype(np.float32)
     URM, _, item_ids = interactions_to_urm(users, items, w)
-    model = sim.serving.ItemKNN(sim.cosine(URM.T, k=10).T, item_ids=item_ids)
+    model = sim.serving.SparseKNN(sim.cosine(URM.T, k=10).T, item_ids=item_ids)
     _, histories, weights = interactions_to_histories(users, items, w)
     a = model.recommend_batch(histories, weights=weights, k=5)
     hb, wb = urm_to_histories(URM, item_ids=item_ids)

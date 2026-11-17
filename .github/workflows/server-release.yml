@@ -18,7 +18,7 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - ".cargo/config.toml"
-      - "tests/data/itemknn-format1/**"
+      - "tests/data/sparseknn-format1/**"
       - ".github/workflows/server-release.yml"
 
 # A new push cancels the outdated run of the same PR; tag runs are never cancelled
@@ -94,7 +94,7 @@ jobs:
           for distro in almalinux:8 ubuntu:22.04; do
             docker run -d --name smoke -p 8080:8080 \
               -v "$PWD/target/release/similaripy-server:/usr/local/bin/similaripy-server:ro" \
-              -v "$PWD/tests/data/itemknn-format1:/model:ro" \
+              -v "$PWD/tests/data/sparseknn-format1:/model:ro" \
               "$distro" similaripy-server --model /model --addr 0.0.0.0:8080
             crates/similaripy-server/smoke.sh || { docker logs smoke; exit 1; }
             docker rm -f smoke
@@ -137,7 +137,7 @@ jobs:
 
       - name: Smoke test
         run: |
-          target/release/similaripy-server --model tests/data/itemknn-format1 &
+          target/release/similaripy-server --model tests/data/sparseknn-format1 &
           crates/similaripy-server/smoke.sh
           kill $!
 
@@ -183,7 +183,7 @@ jobs:
       - name: Smoke test the amd64 image
         run: |
           docker build -t similaripy-server:smoke -f crates/similaripy-server/Dockerfile ctx
-          docker run -d --name smoke -p 8080:8080 -v "$PWD/tests/data/itemknn-format1:/model:ro" similaripy-server:smoke --model /model
+          docker run -d --name smoke -p 8080:8080 -v "$PWD/tests/data/sparseknn-format1:/model:ro" similaripy-server:smoke --model /model
           crates/similaripy-server/smoke.sh || { docker logs smoke; exit 1; }
           docker rm -f smoke
 

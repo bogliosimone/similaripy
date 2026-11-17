@@ -30,7 +30,7 @@ pub struct Config {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct ModelConfig {
-    /// An `ItemKNN.save` directory (required; "" = not set).
+    /// A `SparseKNN.save` directory (required; "" = not set).
     pub path: PathBuf,
     /// Map the model's files instead of reading them into memory.
     pub mmap: bool,
@@ -56,6 +56,8 @@ pub struct Limits {
     /// A larger k is rejected (400 / INVALID_ARGUMENT).
     pub k_max: usize,
     /// History ids a request uses; a longer history follows `history_policy`.
+    /// Default 1000: Python has no cap, so offline evaluation and the server
+    /// agree on all but the longest histories.
     pub max_history: usize,
     pub history_policy: HistoryPolicy,
 }
@@ -135,7 +137,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             k_max: 2000,
-            max_history: 200,
+            max_history: 1000,
             history_policy: HistoryPolicy::Truncate,
         }
     }
@@ -482,6 +484,10 @@ mod tests {
         assert_eq!(c.server, ServerConfig::default());
         // Without the file: the default under env.
         assert_eq!(cfg(&["--model", "/m"], &env).unwrap().limits.k_max, 2000);
+        assert_eq!(
+            cfg(&["--model", "/m"], &[]).unwrap().limits.max_history,
+            1000
+        );
     }
 
     #[test]

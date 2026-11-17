@@ -1,23 +1,24 @@
 # 🛎️ Serving
 
-`ItemKNN` serves a similarity matrix S computed by any similarity function.
+`SparseKNN` is the item-KNN serving engine: it serves a similarity matrix S
+computed by any similarity function.
 
 ```python
-from similaripy.serving import ItemKNN
+from similaripy.serving import SparseKNN
 ```
 
 ## Offline → Save → Online
 
 ```python
 import similaripy as sim
-from similaripy.serving import ItemKNN
+from similaripy.serving import SparseKNN
 
 # offline: compute S, build the model, save it
 S = sim.cosine(URM.T, k=100)
-ItemKNN(S.T, item_ids=item_ids).save("models/v3")
+SparseKNN(S.T, item_ids=item_ids).save("models/v3")
 
 # online, in each worker: load (mmap: one copy of S shared by every process)
-model = ItemKNN.load("models/v3")
+model = SparseKNN.load("models/v3")
 ids, scores = model.recommend(history, k=20)       # history: your item ids
 ```
 
@@ -27,23 +28,23 @@ immutable: one instance can be shared by any number of threads.
 
 ## Methods
 
-Everything is on the `ItemKNN` class: build a `model`, then call its methods.
+Everything is on the `SparseKNN` class: build a `model`, then call its methods.
 
 | Method | Description |
 |--------|-------------|
-| `model = ItemKNN(S)` | Constructor: builds the model from a square item-item matrix S. |
+| `model = SparseKNN(S)` | Constructor: builds the model from a square item-item matrix S. |
 | `model.recommend(history)` | The top-k items for one history: `(ids, scores)`. |
 | `model.recommend_batch(histories)` | `recommend` for a list of histories, in parallel: two lists, one array per user. |
 | `model.score(history, items)` | The scores of the given items for one history, in your order: e.g. ranking features. |
 | `model.score_batch(histories, items)` | `score` for a list of histories, in parallel: one array per user. |
 | `model.view(include=, exclude=)` | The same model (S shared, no copy) with availability rules for every request. |
 | `model.save(path)` | Writes the model to a directory. |
-| `model = ItemKNN.load(path)` | Class method: a saved model, memory-mapped by default. |
+| `model = SparseKNN.load(path)` | Class method: a saved model, memory-mapped by default. |
 | `model.item_ids` | Property: the id of each item (column of S). |
 
 ## Parameters
 
-**`ItemKNN(S, ...)`**
+**`SparseKNN(S, ...)`**
 
 | Parameter | Description |
 |-----------|-------------|
@@ -89,7 +90,7 @@ Example: batch recommendations from an interaction log, in chunks for millions o
 from similaripy.preprocessing import interactions_to_urm, urm_to_histories
 
 URM, user_ids, item_ids = interactions_to_urm(log.user, log.item)   # repeats summed
-model = ItemKNN(sim.cosine(URM.T, k=100).T, item_ids=item_ids)
+model = SparseKNN(sim.cosine(URM.T, k=100).T, item_ids=item_ids)
 
 histories, weights = urm_to_histories(URM, item_ids=item_ids)   # your ids per user
 chunk = 100_000
@@ -131,7 +132,7 @@ Three levels, from permanent to per request, combined with **AND**:
 
 | Level | How | Cost | Use for |
 |-------|-----|------|---------|
-| Build | `ItemKNN(S, candidate_items=ids)` | rebuild to change | items that are never recommended in this model version (e.g. inactive items in a huge catalogue) |
+| Build | `SparseKNN(S, candidate_items=ids)` | rebuild to change | items that are never recommended in this model version (e.g. inactive items in a huge catalogue) |
 | View | `model.view(include=ids, exclude=ids)` | one bit per item, S shared | rules shared by many requests that change during the day (region, stock, package) |
 | Call | `model.recommend(h, include=ids, exclude=ids)` | proportional to the ids | per user or per request rules (e.g. items shown to the user many times) |
 
@@ -141,7 +142,7 @@ Example:
 
 ```python
 # Build, per model version: only the active items can be recommended
-model = ItemKNN(S.T, item_ids=item_ids, candidate_items=active_items)
+model = SparseKNN(S.T, item_ids=item_ids, candidate_items=active_items)
 
 # View, per country: the items available in the region, minus those out of stock
 by_country = {c: model.view(include=catalogue[c], exclude=out_of_stock) for c in countries}
@@ -171,7 +172,7 @@ ids, scores = view_for(country, package).recommend(history, k=20, exclude=ignore
 
 ## Saving and loading
 
-`save(path)` writes a directory; `ItemKNN.load(path)` reads it back and checks
+`save(path)` writes a directory; `SparseKNN.load(path)` reads it back and checks
 it before use. A view can't be saved: save the base
 model and build views after `load`.
 
@@ -179,7 +180,7 @@ model and build views after `load`.
 |--------|-------------|
 | `load(path, mmap=True)` | Maps the files read-only: one copy shared by every worker process. *(default)* |
 | `load(path, mmap=False)` | Reads the files into memory, e.g. on a network file system (NFS). |
-| `load(path, block_size=...)` | As `ItemKNN`'s `block_size`: how this process runs requests, so not saved. *(default: `'auto'`)* |
+| `load(path, block_size=...)` | As `SparseKNN`'s `block_size`: how this process runs requests, so not saved. *(default: `'auto'`)* |
 | `save(path)` | Writes into a new (or empty) directory; refuses a non-empty one. |
 
 - **A saved model is never changed**: save each version to its own directory
@@ -188,9 +189,9 @@ model and build views after `load`.
   truncating a file that a process has loaded is undefined behaviour (a crash
   or wrong results), not an error; `mmap=False` reads the files once.
 - **Load files you trust**: a corrupted file is an error, but sizes aren't capped.
-- **Pickle vs save/load**: an `ItemKNN` pickles (multiprocessing, joblib, Ray),
+- **Pickle vs save/load**: a `SparseKNN` pickles (multiprocessing, joblib, Ray),
   but only to the same similaripy version, and every pickle is a full copy of S.
-  For storage, deploys and big models, pass the path and `ItemKNN.load` it in
+  For storage, deploys and big models, pass the path and `SparseKNN.load` it in
   each worker: one memory-mapped copy shared by all of them.
 
 A saved model is a plain directory of `.npy` files plus `meta.json`, readable
@@ -202,9 +203,9 @@ similaripy" error.
 
 A similarity matrix such as `sim.cosine(URM.T, k=100)` keeps the top 100 items per row: row `i` holds item `i`'s most similar items. It can be served in two ways:
 
-- `ItemKNN(S)` scores a candidate from the neighbours of each history item.
+- `SparseKNN(S)` scores a candidate from the neighbours of each history item.
   Steady latency: each history item adds at most `k` entries.
-- `ItemKNN(S.T)` scores a candidate from its own neighbours in the history.
+- `SparseKNN(S.T)` scores a candidate from its own neighbours in the history.
   A row of `S.T` can be long: a popular item is in many top-k lists.
 
 Which one scores better depends on the dataset and the similarity: evaluate
@@ -217,6 +218,20 @@ A few tips based on the similarity family:
 | Symmetric (`cosine`, `jaccard`, `dice`, `dot_product`) | Both are valid models. In our tests `S.T` scored better, more so at larger `k`. |
 | Asymmetric (`asymmetric_cosine`, `tversky`, `s_plus`) | Transposing swaps the weights: `asymmetric_cosine(alpha).T` scores as `asymmetric_cosine(1 - alpha)`, `tversky(alpha, beta).T` as `tversky(beta, alpha)`, `s_plus` swaps `t1, t2` and `c1, c2`: both valid, tune the weights in the one you pick. |
 | Graph (`p3alpha`, `rp3beta`) | Prefer `S`: with `alpha = 1`, `S.T` scores candidates like `rp3beta` with `beta = 1` whatever `beta` you pass (only the history weights change). Tune `beta` with `S`. |
+
+## Beyond items
+
+Nothing in `SparseKNN` is specific to items: it serves any square sparse KNN
+graph over one set of ids. The "items" are the graph's nodes, a history is a
+set of nodes, and `recommend` returns the nodes closest to it.
+
+- **Lookalike users**: `SparseKNN(sim.cosine(URM, k=100), item_ids=user_ids)`
+  (user-user); the history is a seed audience, the answer its lookalikes.
+- **More like this**: `SparseKNN(sim.cosine(sim.normalization.bm25(DTM), k=50), item_ids=doc_ids)`
+  over a document-term matrix (one row per document); the history is one
+  document, or the ones a user read.
+
+`item_ids` and `candidate_items` then name the nodes (users, documents).
 
 ## Use cases
 
@@ -249,10 +264,10 @@ A minimal FastAPI service (`fetch_history` is your store):
 ```python
 from fastapi import FastAPI
 from similaripy.preprocessing import rank_decay
-from similaripy.serving import ItemKNN
+from similaripy.serving import SparseKNN
 
 app = FastAPI()
-model = ItemKNN.load("models/v3")    # mmap: one copy of S for every worker process
+model = SparseKNN.load("models/v3")    # mmap: one copy of S for every worker process
 
 
 @app.get("/recommend/{user_id}")
@@ -291,7 +306,7 @@ class ItemKNNRecommender:
 
     def fit(self, URM):
         S = self.similarity(URM.T, **self.params)
-        self.model = ItemKNN(S.T if self.transpose else S)
+        self.model = SparseKNN(S.T if self.transpose else S)
         return self
 
     def recommend(self, URM, k=10):

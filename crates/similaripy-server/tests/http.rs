@@ -143,7 +143,7 @@ impl Reply {
     }
 }
 
-/// Python's call: `ItemKNN.recommend` → `serve::recommend` with the block
+/// Python's call: `SparseKNN.recommend` → `serve::recommend` with the block
 /// resolved for every core busy (`ServeModel`).
 fn python(m: &Model, req: &Request) -> (Vec<i64>, Vec<u32>) {
     let block = BlockSize::Auto.resolve(m.n_active(), usize::MAX).unwrap();
@@ -187,7 +187,7 @@ fn same_ids_and_bits_as_python_recommend() {
                 (case % 7 == 2).then(|| (0..5).map(|_| 1000 + rng.below(N) as i64 * 7).collect());
             let (k, exclude_seen) = (1 + rng.below(50), case % 3 != 0);
             let body = serde_json::json!({
-                "ids": ids, "weights": weights, "k": k, "exclude_seen": exclude_seen,
+                "history": ids, "weights": weights, "k": k, "exclude_seen": exclude_seen,
                 "include": include, "exclude": exclude,
             });
             let (status, text) = post(addr, &body.to_string()).await;
@@ -224,7 +224,7 @@ fn defaults_are_pythons() {
     let reference = model();
     let ids = [1000, 1007, 1014, 1070];
     block_on(async {
-        let (status, text) = post(addr, r#"{"ids": [1000, 1007, 1014, 1070]}"#).await;
+        let (status, text) = post(addr, r#"{"history": [1000, 1007, 1014, 1070]}"#).await;
         assert_eq!(status, StatusCode::OK, "{text}");
         let got: Reply = serde_json::from_str(&text).unwrap();
         let req = Request {
@@ -263,7 +263,7 @@ fn json_f32_parsed_as_python() {
                 format!("{mid:.40}1"),
                 format!("{random:e}"),
             ] {
-                let body = format!(r#"{{"ids": [1000], "weights": [{s}], "k": 50}}"#);
+                let body = format!(r#"{{"history": [1000], "weights": [{s}], "k": 50}}"#);
                 let (status, text) = post(addr, &body).await;
                 assert_eq!(status, StatusCode::OK, "{text}");
                 let got: Reply = serde_json::from_str(&text).unwrap();
@@ -294,27 +294,33 @@ fn edge_rejections() {
     let addr = start(config(1), false);
     block_on(async {
         for (body, status, msg) in [
-            (r#"{"ids": [1000], "weight": [2.0]}"#, 400, "unknown field"),
-            (r#"{"ids": [1000], "k": 51}"#, 400, "k_max"),
             (
-                r#"{"ids": [1000, 1007], "weights": [1.0]}"#,
+                r#"{"history": [1000], "weight": [2.0]}"#,
+                400,
+                "unknown field",
+            ),
+            (r#"{"history": [1000], "k": 51}"#, 400, "k_max"),
+            // The pre-1.0 name: a clear error, never an empty history.
+            (r#"{"ids": [1000]}"#, 400, "unknown field `ids`"),
+            (
+                r#"{"history": [1000, 1007], "weights": [1.0]}"#,
                 400,
                 "len(weights)",
             ),
-            (r#"{"ids": "x"}"#, 400, "invalid type"),
+            (r#"{"history": "x"}"#, 400, "invalid type"),
             (r#"{"k": 3}"#, 400, "missing field"),
         ] {
             let (got, text) = post(addr, body).await;
             assert_eq!(got.as_u16(), status, "{body}: {text}");
             assert!(text.contains(msg), "{body}: {text}");
         }
-        let big = format!(r#"{{"ids": [{}1]}}"#, "1,".repeat(BODY_LIMIT / 2));
+        let big = format!(r#"{{"history": [{}1]}}"#, "1,".repeat(BODY_LIMIT / 2));
         let (got, _) = post(addr, &big).await;
         assert_eq!(got, StatusCode::PAYLOAD_TOO_LARGE);
         let m = get_text(addr, "/metrics").await;
-        // JSON x 3 + k: the edge; weights: the worker.
+        // JSON x 4 + k: the edge; weights: the worker.
         assert!(
-            m.contains("similaripy_server_bad_requests_total 4\n"),
+            m.contains("similaripy_server_bad_requests_total 5\n"),
             "{m}"
         );
         assert!(m.contains("similaripy_server_errors_total 1\n"), "{m}");
@@ -328,7 +334,7 @@ fn a_panicking_request_leaves_its_thread_serving() {
         let mut c = connect(addr).await.unwrap();
         assert!(send(&mut c, "/panic", None).await.is_err());
         // The one thread serves the next connection, its worker clean.
-        let (status, text) = post(addr, r#"{"ids": [1000, 1007]}"#).await;
+        let (status, text) = post(addr, r#"{"history": [1000, 1007]}"#).await;
         assert_eq!(status, StatusCode::OK, "{text}");
         assert_eq!(get_text(addr, "/health").await, "ok");
     });
@@ -341,8 +347,8 @@ fn metrics_count_served_requests_per_thread() {
         // Two connections: round-robin puts one on each thread. Warm-up
         // requests are not counted.
         let long: Vec<i64> = (0..25).map(|i| 1000 + 7 * i).collect();
-        post(addr, r#"{"ids": [1000, 1007, 99]}"#).await;
-        post(addr, &serde_json::json!({ "ids": long }).to_string()).await;
+        post(addr, r#"{"history": [1000, 1007, 99]}"#).await;
+        post(addr, &serde_json::json!({ "history": long }).to_string()).await;
         let m = get_text(addr, "/metrics").await;
         for line in [
             "similaripy_server_threads 2\n",
@@ -416,7 +422,7 @@ fn grpc_answers_equal_json() {
                 (case % 7 == 2).then(|| (0..5).map(|_| 1000 + rng.below(N) as i64 * 7).collect());
             let k = 1 + rng.below(50);
             let body = serde_json::json!({
-                "ids": ids, "weights": weights, "k": k,
+                "history": ids, "weights": weights, "k": k,
                 "exclude_seen": case % 3 != 0, "include": include, "exclude": exclude,
                 "sorted": case % 4 != 3,
             })
@@ -440,14 +446,14 @@ fn grpc_presence_rules() {
         let mut c = grpc(addr).await;
         // Nothing but ids: JSON's defaults (k 10, exclude_seen, sorted).
         let only_ids = RecommendRequest {
-            ids: ids.clone(),
+            history: ids.clone(),
             ..Default::default()
         };
         let defaults = ask(&mut c, only_ids.clone()).await;
         assert_eq!(defaults.0.len(), 10);
         assert_eq!(
             defaults,
-            ask_json(addr, r#"{"ids": [1000, 1007, 1014, 1070]}"#).await
+            ask_json(addr, r#"{"history": [1000, 1007, 1014, 1070]}"#).await
         );
         // Empty weights = not sent = unweighted.
         let unweighted = RecommendRequest {
@@ -461,7 +467,11 @@ fn grpc_presence_rules() {
             ..only_ids.clone()
         };
         assert_eq!(ask(&mut c, none).await, (vec![], vec![]));
-        let json = ask_json(addr, r#"{"ids": [1000, 1007, 1014, 1070], "include": []}"#).await;
+        let json = ask_json(
+            addr,
+            r#"{"history": [1000, 1007, 1014, 1070], "include": []}"#,
+        )
+        .await;
         assert_eq!(json, (vec![], vec![]));
         // An empty history: an empty answer, not an error.
         let empty = ask(&mut c, RecommendRequest::default()).await;
@@ -477,7 +487,7 @@ fn grpc_errors_are_status_codes() {
         for (q, msg) in [
             (
                 RecommendRequest {
-                    ids: vec![1000],
+                    history: vec![1000],
                     k: Some(51),
                     ..Default::default()
                 },
@@ -485,7 +495,7 @@ fn grpc_errors_are_status_codes() {
             ),
             (
                 RecommendRequest {
-                    ids: vec![1000, 1007],
+                    history: vec![1000, 1007],
                     weights: vec![1.0],
                     ..Default::default()
                 },
@@ -498,19 +508,19 @@ fn grpc_errors_are_status_codes() {
         }
         // Over the 1 MB limit (tonic's own, not DefaultBodyLimit's).
         let big = RecommendRequest {
-            ids: vec![i64::MAX; BODY_LIMIT / 8], // 9 bytes each as a varint
+            history: vec![i64::MAX; BODY_LIMIT / 8], // 9 bytes each as a varint
             ..Default::default()
         };
         let e = c.recommend(big).await.unwrap_err();
         assert_eq!(e.code(), Code::OutOfRange, "{e:?}");
         // The connection still serves; JSON on the same port too.
         let q = RecommendRequest {
-            ids: vec![1000, 1007],
+            history: vec![1000, 1007],
             ..Default::default()
         };
         assert!(!ask(&mut c, q).await.0.is_empty());
         assert!(
-            !ask_json(addr, r#"{"ids": [1000, 1007]}"#)
+            !ask_json(addr, r#"{"history": [1000, 1007]}"#)
                 .await
                 .0
                 .is_empty()
@@ -540,7 +550,7 @@ fn config_sets_sorted_default_and_history_policy() {
     cfg.limits.history_policy = HistoryPolicy::Reject;
     let addr = start(cfg.clone(), false);
     let ids: Vec<i64> = (0..20).map(|i| 1000 + 7 * i).collect(); // = max_history
-    let body = |extra: &str| format!(r#"{{"ids": {ids:?}, "k": 50{extra}}}"#);
+    let body = |extra: &str| format!(r#"{{"history": {ids:?}, "k": 50{extra}}}"#);
     block_on(async {
         // `sorted` not sent = the server's default (false), both formats.
         let absent = ask_json(addr, &body("")).await;
@@ -549,7 +559,7 @@ fn config_sets_sorted_default_and_history_policy() {
         assert_ne!(absent, sorted);
         let mut c = grpc(addr).await;
         let q = RecommendRequest {
-            ids: ids.clone(),
+            history: ids.clone(),
             k: Some(50),
             ..Default::default()
         };
@@ -561,11 +571,11 @@ fn config_sets_sorted_default_and_history_policy() {
         assert_eq!(ask(&mut c, q_sorted).await, sorted);
         // reject: one id past max_history is a 400 / INVALID_ARGUMENT.
         let long = [&ids[..], &[1140]].concat();
-        let (status, text) = post(addr, &serde_json::json!({ "ids": long }).to_string()).await;
+        let (status, text) = post(addr, &serde_json::json!({ "history": long }).to_string()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
         assert!(text.contains("21 history ids > max_history = 20"), "{text}");
         let e = c
-            .recommend(RecommendRequest { ids: long, ..q })
+            .recommend(RecommendRequest { history: long, ..q })
             .await
             .unwrap_err();
         assert_eq!(e.code(), Code::InvalidArgument, "{e:?}");
@@ -604,7 +614,7 @@ fn context_and_history_counts() {
     ids.splice(0..0, [1427, 1000, 1007, 1014, 1021]);
     ids.extend([1420, 5, 1420]);
     assert_eq!(ids.len(), 25);
-    let body = serde_json::json!({ "ids": ids, "k": 7, "sorted": false }).to_string();
+    let body = serde_json::json!({ "history": ids, "k": 7, "sorted": false }).to_string();
     block_on(async {
         let (status, h, text) = post_with(addr, &body, &[("x-request-id", "abc-1")]).await;
         assert_eq!(status, StatusCode::OK, "{text}");
@@ -637,7 +647,7 @@ fn context_and_history_counts() {
         let h = r.history.unwrap();
         assert_eq!((h.sent, h.truncated, h.unknown), (25, 5, 3));
         // Exactly max_history ids: nothing cut.
-        let at_max = serde_json::json!({ "ids": &ids[5..] }).to_string();
+        let at_max = serde_json::json!({ "history": &ids[5..] }).to_string();
         let (_, _, text) = post_with(addr, &at_max, &[]).await;
         let got: Reply = serde_json::from_str(&text).unwrap();
         assert_eq!(
@@ -645,7 +655,7 @@ fn context_and_history_counts() {
             (20, 0, 3)
         );
         // Defaults applied: k 10, sorted true; nothing cut, nothing unknown.
-        let (_, _, text) = post_with(addr, r#"{"ids": [1000, 1007]}"#, &[]).await;
+        let (_, _, text) = post_with(addr, r#"{"history": [1000, 1007]}"#, &[]).await;
         let got: Reply = serde_json::from_str(&text).unwrap();
         assert_eq!((got.k, got.sorted), (10, true));
         assert_eq!(
@@ -658,7 +668,7 @@ fn context_and_history_counts() {
 #[test]
 fn request_id_kept_if_printable_else_generated() {
     let addr = start(config(2), false);
-    let body = r#"{"ids": [1000, 1007]}"#;
+    let body = r#"{"history": [1000, 1007]}"#;
     let long = "a".repeat(129);
     block_on(async {
         let ask = |id: Option<&'static str>| async move {
@@ -699,8 +709,12 @@ fn request_id_kept_if_printable_else_generated() {
         distinct.dedup();
         assert_eq!(distinct.len(), seen.len(), "{seen:?}");
         // Errors carry it too: JSON header, gRPC status metadata.
-        let (status, h, _) =
-            post_with(addr, r#"{"ids": [], "k": 51}"#, &[("x-request-id", "e1")]).await;
+        let (status, h, _) = post_with(
+            addr,
+            r#"{"history": [], "k": 51}"#,
+            &[("x-request-id", "e1")],
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(h["x-request-id"], "e1");
         let mut c = grpc(addr).await;
@@ -723,7 +737,7 @@ fn same_request_same_bytes() {
     block_on(async {
         for sorted in [true, false] {
             let body = serde_json::json!({
-                "ids": [1000, 1007, 1014, 1070, 1077, 1300], "k": 40, "sorted": sorted,
+                "history": [1000, 1007, 1014, 1070, 1077, 1300], "k": 40, "sorted": sorted,
             })
             .to_string();
             let h = [("x-request-id", "same")];
@@ -837,7 +851,7 @@ fn view_answers_equal_core_view_and_and_with_include_exclude() {
             let name = ["", "even", "head", "both"][case % 4];
             let k = 1 + rng.below(50);
             let body = serde_json::json!({
-                "ids": ids, "k": k, "include": include, "exclude": exclude, "view": name,
+                "history": ids, "k": k, "include": include, "exclude": exclude, "view": name,
             })
             .to_string();
             let want = python(
@@ -915,20 +929,20 @@ fn default_view_empty_name_unknown_name_and_views_listing() {
     block_on(async {
         // Absent and null = defaults.view; "" = the whole model.
         for body in [
-            r#"{"ids": [1000, 1014, 1021]}"#,
-            r#"{"ids": [1000, 1014, 1021], "view": null}"#,
+            r#"{"history": [1000, 1014, 1021]}"#,
+            r#"{"history": [1000, 1014, 1021], "view": null}"#,
         ] {
             let (_, text) = post(addr, body).await;
             let got: Reply = serde_json::from_str(&text).unwrap();
             assert_eq!(got.view.as_deref(), Some("even"));
             assert_eq!(got.answer(), req(&core_view(&reference, "even", &files)));
         }
-        let (_, text) = post(addr, r#"{"ids": [1000, 1014, 1021], "view": ""}"#).await;
+        let (_, text) = post(addr, r#"{"history": [1000, 1014, 1021], "view": ""}"#).await;
         let got: Reply = serde_json::from_str(&text).unwrap();
         assert_eq!((got.answer(), got.view), (req(&reference), None));
         let mut c = grpc(addr).await;
         let q = RecommendRequest {
-            ids: ids.to_vec(),
+            history: ids.to_vec(),
             ..Default::default()
         };
         let r = c.recommend(q.clone()).await.unwrap().into_inner();
@@ -944,7 +958,7 @@ fn default_view_empty_name_unknown_name_and_views_listing() {
         // history past max_history is rejected before the cut (not counted
         // as truncated).
         let long: Vec<i64> = (0..30).map(|i| 1000 + 7 * i).collect();
-        let body = serde_json::json!({"ids": long, "view": "nope"}).to_string();
+        let body = serde_json::json!({"history": long, "view": "nope"}).to_string();
         let (status, text) = post(addr, &body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(text.contains("unknown view \\\"nope\\\""), "{text}");
@@ -995,7 +1009,7 @@ fn swap_serves_new_views_from_the_next_request() {
     let r = router(app.clone());
     let served = app.clone();
     std::thread::spawn(move || serve(listener, served, r, std::future::pending()));
-    let body = r#"{"ids": [1000, 1014, 1021], "k": 50, "view": "even"}"#;
+    let body = r#"{"history": [1000, 1014, 1021], "k": 50, "view": "even"}"#;
     block_on(async {
         let before = ask_json(addr, body).await;
         assert!(before.0.iter().all(|id| (id - 1000) / 7 % 2 == 0));

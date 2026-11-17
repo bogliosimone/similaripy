@@ -1,10 +1,10 @@
 """
-Serving engine, the online half: `ItemKNN`, a prepared item-item model built
-once from S (computed offline by the similarity functions, e.g. `sim.cosine`),
+Serving engine, the online half: `SparseKNN`, a prepared item-KNN model built
+once from a square sparse similarity matrix S (computed offline by the similarity functions, e.g. `sim.cosine`),
 then the top-k items of one history (`recommend`) or of many
 (`recommend_batch`), or the scores of given items (`score`, `score_batch`), in
 Rust without the GIL. One import path:
-`from similaripy.serving import ItemKNN`.
+`from similaripy.serving import SparseKNN`.
 
 Everything is in the caller's item ids (`item_ids`, or S's column indices
 without them); ids the model doesn't have are ignored. The internal layout
@@ -31,7 +31,7 @@ from scipy.sparse import issparse, sparray, spmatrix
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
 from ._s_plus import SparseInput, _canonical_csr, _indptr_dtype
 
-__all__ = ["ItemKNN"]
+__all__ = ["SparseKNN"]
 
 _INT64_MAX = np.iinfo(np.int64).max
 # What `__reduce__` writes: pickles are same-version only, this makes another
@@ -150,9 +150,10 @@ def _csr_arrays(S: SparseInput, num_threads):
     )
 
 
-class ItemKNN:
+class SparseKNN:
     """
-    Item-based KNN recommendations from an item-item similarity matrix S.
+    Item-KNN recommendations from an item-item similarity matrix S, or from any
+    square sparse KNN graph ("Beyond items" in the Serving guide).
 
     `score[j] = sum_i w_i * S[i, j]` over the history items `i`; the best `k`
     items with a positive score, best first (ties: see `item_order`). Ids
@@ -266,7 +267,7 @@ class ItemKNN:
         *,
         include: list[int] | np.ndarray | None = None,
         exclude: list[int] | np.ndarray | None = None,
-    ) -> "ItemKNN":
+    ) -> "SparseKNN":
         """
         The same model with a default availability: only the `include` items
         (None = all) minus the `exclude` items. S is shared (no copy), only a
@@ -289,7 +290,7 @@ class ItemKNN:
             exclude: never recommend these item ids.
 
         Returns:
-            model: a new `ItemKNN` sharing S, with these rules for every
+            model: a new `SparseKNN` sharing S, with these rules for every
                 request.
 
         Raises:
@@ -479,7 +480,7 @@ class ItemKNN:
 
     def save(self, path) -> None:
         """
-        Saves the model to a new directory, for `ItemKNN.load` in this or any
+        Saves the model to a new directory, for `SparseKNN.load` in this or any
         later 1.x version. A saved model is never replaced: save each version
         to its own directory and switch what the workers load. A view can't be
         saved: save the base model and build views after `load`. Details: the
@@ -497,7 +498,7 @@ class ItemKNN:
         self._model.save(path, f"similaripy {__version__}")
 
     @classmethod
-    def load(cls, path, *, mmap: bool = True, block_size: int | Literal["auto"] | None = "auto") -> "ItemKNN":
+    def load(cls, path, *, mmap: bool = True, block_size: int | Literal["auto"] | None = "auto") -> "SparseKNN":
         """
         A model saved by `save`, checked before use.
 
@@ -506,10 +507,10 @@ class ItemKNN:
             mmap: map the files read-only: one copy in the OS page cache,
                 shared by every process that loads them, and fast to load.
                 False reads them into memory (e.g. on a network file system).
-            block_size: as `ItemKNN`'s (not saved with the model).
+            block_size: as `SparseKNN`'s (not saved with the model).
 
         Returns:
-            model: the `ItemKNN`.
+            model: the `SparseKNN`.
 
         Raises:
             FileNotFoundError: on a missing directory or file.
@@ -534,7 +535,7 @@ class ItemKNN:
 def _from_parts(cls, pickle_format, *parts):
     if not isinstance(pickle_format, int) or pickle_format != _PICKLE_FORMAT:
         raise ValueError(
-            "an ItemKNN pickled by another similaripy version: rebuild it, or move models between versions "
-            "with save() / ItemKNN.load()"
+            "a SparseKNN pickled by another similaripy version: rebuild it, or move models between versions "
+            "with save() / SparseKNN.load()"
         )
     return cls._wrap(_core.ServeModel.from_parts(*parts))

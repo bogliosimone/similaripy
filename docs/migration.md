@@ -108,7 +108,7 @@ accepts them with a few rules per function: see [Signed Input](signed-input.md).
       to 2^31 - 1 entries, int64 past it, as the similarities.
     - New: `similaripy.normalization.binarize(X)`, the `binary=True` of the similarities as a
       separate step.
-    - New: `similaripy.serving.ItemKNN`, an online engine over a similarity
+    - New: `similaripy.serving.SparseKNN`, an online engine over a similarity
       matrix (save / load with mmap, include / exclude rules, a cache-friendly
       `item_order`): see [Serving](serving.md).
     - `num_threads=0` (the default) runs on one shared pool: concurrent calls

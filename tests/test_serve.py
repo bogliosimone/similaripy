@@ -1,4 +1,4 @@
-"""Serving engine: `ItemKNN` against a dense float64 reference."""
+"""Serving engine: `SparseKNN` against a dense float64 reference."""
 
 import json
 import pickle
@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from similaripy.serving import ItemKNN
+from similaripy.serving import SparseKNN
 
 
 def _S(n, signed, seed, density=0.3):
@@ -72,7 +72,7 @@ def test_matches_dense_reference(signed, external, n):
     if external:  # random ids plus the int64 edge keys as real items
         ext = rng.choice(10**12, size=n, replace=False).astype(np.int64)
         ext[1:4] = [np.iinfo(np.int64).min, np.iinfo(np.int64).max, -1]
-    rec = ItemKNN(S, item_ids=ext if external else None)
+    rec = SparseKNN(S, item_ids=ext if external else None)
     assert np.array_equal(rec.item_ids, ext)  # item 0 (no similarities) still listed
     unknown = -5 if external else n + 3
     for trial in range(30):
@@ -93,14 +93,14 @@ def test_matches_dense_reference(signed, external, n):
             assert sorted(zip(unsorted[0], unsorted[1].view(np.int32))) == sorted(zip(got[0], got[1].view(np.int32)))
             if include is not None:  # trimmed S == a view == the per-call include (small integers under the head: bits)
                 for other in (
-                    ItemKNN(S, item_ids=ext if external else None, candidate_items=include),
+                    SparseKNN(S, item_ids=ext if external else None, candidate_items=include),
                     rec.view(include=include),
                 ):
                     assert _same(other.recommend(hist, weights=weights, **opts), got)
 
 
 def test_default_path_and_dtypes():
-    rec = ItemKNN(_S(30, False, seed=3))
+    rec = SparseKNN(_S(30, False, seed=3))
     ids, scores = rec.recommend([5, 6, 7], k=5)
     assert ids.dtype == np.int64 and scores.dtype == np.float32
     assert np.all(np.diff(scores) <= 0)
@@ -111,19 +111,19 @@ def test_default_path_and_dtypes():
 
 
 def test_keyword_only_options():
-    rec = ItemKNN(_S(30, False, seed=3))
+    rec = SparseKNN(_S(30, False, seed=3))
     with pytest.raises(TypeError):
         rec.recommend([5, 6], None, 5)  # weights, k: by name
     with pytest.raises(TypeError):
         rec.recommend_batch([[5]], None, 5)
     with pytest.raises(TypeError):
-        ItemKNN(_S(30, False, seed=3), np.arange(30))
+        SparseKNN(_S(30, False, seed=3), np.arange(30))
 
 
 def test_item_ids_property():
     S = _S(20, False, seed=2)
-    assert np.array_equal(ItemKNN(S).item_ids, np.arange(20))
-    rec = ItemKNN(S, item_ids=np.arange(100, 120))
+    assert np.array_equal(SparseKNN(S).item_ids, np.arange(20))
+    rec = SparseKNN(S, item_ids=np.arange(100, 120))
     ids = rec.item_ids
     assert np.array_equal(ids, np.arange(100, 120)) and ids.dtype == np.int64
     with pytest.raises(ValueError):
@@ -133,7 +133,7 @@ def test_item_ids_property():
 
 def test_unknown_ids_are_ignored():
     # 100 has no similarities (dropped internally), 7 is no item: both ignored, never an error
-    rec = ItemKNN(_S(20, False, seed=2), item_ids=np.arange(100, 120))
+    rec = SparseKNN(_S(20, False, seed=2), item_ids=np.arange(100, 120))
     assert _same(rec.recommend([105, 7, 100], k=3), rec.recommend([105], k=3))
     assert _same(rec.recommend([105], include=[7, 100], k=3), rec.recommend([105], include=[], k=3))
     assert _same(rec.recommend([105], exclude=[7, 100], k=3), rec.recommend([105], k=3))
@@ -143,7 +143,7 @@ def test_unknown_ids_are_ignored():
 
 def test_float_bits_independent_of_order_and_duplicates():
     rng = np.random.default_rng(0)
-    rec = ItemKNN(sp.random_array((200, 200), density=0.1, rng=rng, format="csr"))
+    rec = SparseKNN(sp.random_array((200, 200), density=0.1, rng=rng, format="csr"))
     hist = rng.choice(200, size=30, replace=False)
     ids, scores = rec.recommend(hist, k=20)
     for other in (
@@ -161,8 +161,8 @@ def test_batch_matches_single_bits(block):
     rng = np.random.default_rng(4)
     S = sp.random_array((300, 300), density=0.05, rng=rng, format="csr")
     ext = rng.choice(10**9, size=300, replace=False)
-    rec = ItemKNN(S, item_ids=ext, block_size=block)
-    one_block = ItemKNN(S, item_ids=ext, block_size=None)
+    rec = SparseKNN(S, item_ids=ext, block_size=block)
+    one_block = SparseKNN(S, item_ids=ext, block_size=None)
     users = 50
     hists = [rng.choice(ext, size=rng.integers(0, 15)) for _ in range(users)]
     hists[3] = np.r_[hists[3], -7]  # an unknown id
@@ -194,7 +194,7 @@ def test_batch_from_a_user_item_matrix():
     URM = sp.random_array((40, 60), density=0.1, rng=rng, format="csr")
     S = sim.cosine(URM.T, k=20)
     item_ids = rng.choice(10**6, size=60, replace=False)
-    rec = ItemKNN(S, item_ids=item_ids)
+    rec = SparseKNN(S, item_ids=item_ids)
     histories = np.split(item_ids[URM.indices], URM.indptr[1:-1])
     weights = np.split(URM.data, URM.indptr[1:-1])
     ids, scores = rec.recommend_batch(histories, weights=weights, k=5)
@@ -207,7 +207,7 @@ def test_batch_from_a_user_item_matrix():
 
 def test_view_include_exclude_and_per_call():
     S = _S(60, False, seed=12)
-    rec = ItemKNN(S)
+    rec = SparseKNN(S)
     hist = [5, 6, 7, 8]
     full = list(rec.recommend(hist, k=60, exclude_seen=False)[0])
     a, b = list(range(0, 60, 2)), list(range(0, 60, 3))
@@ -230,26 +230,26 @@ def test_view_include_exclude_and_per_call():
     # to widen, start from the base model
     assert list(rec.view().recommend(hist, k=60, exclude_seen=False)[0]) == full
     # candidate_items trims for good: a view can't widen past it
-    trimmed = ItemKNN(S, candidate_items=a)
+    trimmed = SparseKNN(S, candidate_items=a)
     assert set(trimmed.view().recommend(hist, k=60, exclude_seen=False)[0]) <= set(a)
 
 
 def test_block_size_validation():
     S = _S(10, False, seed=1)
     for ok in ("auto", None, 1, 1000):
-        ItemKNN(S, block_size=ok)
+        SparseKNN(S, block_size=ok)
     for bad in (0, -1, "big", 1.5, True):
         with pytest.raises(ValueError, match="block_size"):
-            ItemKNN(S, block_size=bad)
+            SparseKNN(S, block_size=bad)
 
 
 def test_item_order_validation():
     S = _S(10, False, seed=1)
     for ok in ("auto", "clustered", "popularity", "original"):
-        ItemKNN(S, item_order=ok)
+        SparseKNN(S, item_order=ok)
     for bad in ("fast", "Auto", None, 1):
         with pytest.raises((ValueError, TypeError), match="item_order"):
-            ItemKNN(S, item_order=bad)
+            SparseKNN(S, item_order=bad)
 
 
 def test_item_orders_same_scores_ties_by_internal_order(tmp_path):
@@ -270,14 +270,14 @@ def test_item_orders_same_scores_ties_by_internal_order(tmp_path):
     for order in ("auto", "clustered", "popularity", "original"):
         for trim in (False, True):
             opts = {"item_order": order, "candidate_items": cand if trim else None}
-            rec = ItemKNN(S, **opts)
+            rec = SparseKNN(S, **opts)
             new_to_old = rec._model.parts()[3]
             if order == "clustered":
                 rec.save(tmp_path / str(trim))
-                for back in (pickle.loads(pickle.dumps(rec)), ItemKNN.load(tmp_path / str(trim))):
+                for back in (pickle.loads(pickle.dumps(rec)), SparseKNN.load(tmp_path / str(trim))):
                     for a, b in zip(rec._model.parts(), back._model.parts()):
                         assert a == b if not isinstance(a, np.ndarray) else np.array_equal(a, b)
-                assert np.array_equal(ItemKNN(S, **opts, num_threads=1)._model.parts()[3], new_to_old)
+                assert np.array_equal(SparseKNN(S, **opts, num_threads=1)._model.parts()[3], new_to_old)
             if trim:
                 n_cand = np.count_nonzero(counts[cand])
                 assert rec._model.n_active == n_cand
@@ -308,7 +308,7 @@ def test_pickle_round_trip_keeps_layout_and_mask():
     rng = np.random.default_rng(5)
     S = _S(80, True, seed=5)
     ext = rng.choice(10**9, size=80, replace=False)
-    rec = ItemKNN(S, item_ids=ext, candidate_items=ext[5:70], block_size=None).view(include=ext[10:60])
+    rec = SparseKNN(S, item_ids=ext, candidate_items=ext[5:70], block_size=None).view(include=ext[10:60])
     back = pickle.loads(pickle.dumps(rec))
     assert np.array_equal(back.item_ids, ext) and back._model.parts()[-1] is None  # block size as given
     for _ in range(20):
@@ -317,7 +317,7 @@ def test_pickle_round_trip_keeps_layout_and_mask():
 
 
 def test_pickle_from_another_version_is_refused():
-    func, (cls, fmt, *parts) = ItemKNN(_S(10, False, seed=1)).__reduce__()
+    func, (cls, fmt, *parts) = SparseKNN(_S(10, False, seed=1)).__reduce__()
     assert func(cls, fmt, *parts).item_ids.size == 10
     for other in (fmt + 1, parts[0]):  # a newer tag; an untagged tuple (indptr first)
         with pytest.raises(ValueError, match="another similaripy version"):
@@ -327,14 +327,14 @@ def test_pickle_from_another_version_is_refused():
 def test_rejects_bad_input():
     S = _S(10, False, seed=1)
     with pytest.raises(ValueError, match="square"):
-        ItemKNN(sp.random_array((3, 4), density=0.5, format="csr"))
+        SparseKNN(sp.random_array((3, 4), density=0.5, format="csr"))
     with pytest.raises(ValueError, match="unique"):
-        ItemKNN(S, item_ids=np.zeros(10, dtype=np.int64))
+        SparseKNN(S, item_ids=np.zeros(10, dtype=np.int64))
     with pytest.raises(ValueError, match="one id per item"):
-        ItemKNN(S, item_ids=np.arange(3))
+        SparseKNN(S, item_ids=np.arange(3))
     with pytest.raises(TypeError, match="integer ids"):
-        ItemKNN(S, item_ids=np.arange(10.0))
-    rec = ItemKNN(S)
+        SparseKNN(S, item_ids=np.arange(10.0))
+    rec = SparseKNN(S)
     with pytest.raises(TypeError, match="integer ids"):
         rec.recommend([1.9])
     with pytest.raises(TypeError, match="integer ids"):
@@ -358,7 +358,7 @@ def test_rejects_bad_input():
         rec.recommend_batch([[5]], weights=[[np.inf]])
     # common mistakes get a message naming the argument
     with pytest.raises(TypeError, match="sparse"):
-        ItemKNN(S.toarray())
+        SparseKNN(S.toarray())
     with pytest.raises(ValueError, match="history must be 1-d, got a scalar"):
         rec.recommend(5)
     with pytest.raises(ValueError, match="weights must be 1-d, got a scalar"):
@@ -378,7 +378,7 @@ def test_score_dense_reference_recommend_bits_and_masks(external, block):
     S = _S(n, True, seed=21)
     rng = np.random.default_rng(2)
     ext = rng.choice(10**9, size=n, replace=False) if external else np.arange(n)
-    rec = ItemKNN(S, item_ids=ext if external else None, block_size=block)
+    rec = SparseKNN(S, item_ids=ext if external else None, block_size=block)
     D = S.toarray()
     pos = {e: i for i, e in enumerate(ext)}
     unknown = -5 if external else n + 3
@@ -400,7 +400,7 @@ def test_score_dense_reference_recommend_bits_and_masks(external, block):
         for other in (
             rec.view(include=a),
             rec.view(exclude=np.setdiff1d(ext, a)),
-            ItemKNN(S, item_ids=ext if external else None, candidate_items=a),
+            SparseKNN(S, item_ids=ext if external else None, candidate_items=a),
         ):
             np.testing.assert_array_equal(other.score(hist, items, weights=w), np.where(np.isin(items, a), want, 0.0))
     assert rec.score([], items).tolist() == [0.0] * items.size
@@ -411,7 +411,7 @@ def test_score_batch_matches_single_bits():
     rng = np.random.default_rng(8)
     S = sp.random_array((300, 300), density=0.05, rng=rng, format="csr")
     ext = rng.choice(10**9, size=300, replace=False)
-    rec = ItemKNN(S, item_ids=ext, block_size=7).view(exclude=ext[:30])
+    rec = SparseKNN(S, item_ids=ext, block_size=7).view(exclude=ext[:30])
     users = 40
     hists = [rng.choice(ext, size=rng.integers(0, 15)) for _ in range(users)]
     items = [rng.choice(ext, size=rng.integers(0, 50)) for _ in range(users)]
@@ -426,7 +426,7 @@ def test_score_batch_matches_single_bits():
 
 
 def test_score_rejects_bad_input():
-    rec = ItemKNN(_S(10, False, seed=1))
+    rec = SparseKNN(_S(10, False, seed=1))
     with pytest.raises(TypeError, match="items must be integer ids"):
         rec.score([5], [1.5])
     with pytest.raises(ValueError, match="len"):
@@ -447,7 +447,7 @@ def test_caller_arrays_unchanged():
     S = _S(20, True, seed=5)
     hists = [np.array([3, 4, 5]), np.array([6])]
     before = [S.data.copy(), S.indices.copy(), S.indptr.copy()] + [h.copy() for h in hists]
-    rec = ItemKNN(S)
+    rec = SparseKNN(S)
     rec.recommend_batch(hists, weights=[np.ones(3), None])
     rec.recommend(hists[0], include=hists[1])
     after = [S.data, S.indices, S.indptr] + hists
@@ -458,7 +458,7 @@ def test_any_input_form_same_model():
     """Duplicates, explicit zeros, unsorted rows, other formats and dtypes:
     the same model as the canonical float32 CSR, array for array."""
     S = _S(40, True, seed=9)
-    want = ItemKNN(S)._model.parts()
+    want = SparseKNN(S)._model.parts()
     coo = S.tocoo()
     # each entry as two exact halves, shuffled, plus explicit zeros
     rows = np.concatenate([coo.row, coo.row, [0, 3]])
@@ -471,7 +471,7 @@ def test_any_input_form_same_model():
     assert not raw_csr.has_canonical_format
     raw_coo = sp.coo_array((vals, (rows, cols)), shape=S.shape)
     for m in (raw_csr, raw_coo, S.tocsc(), S.astype(np.float64), sp.csr_matrix(S)):
-        got = ItemKNN(m)._model.parts()
+        got = SparseKNN(m)._model.parts()
         for a, b in zip(got[:5], want[:5]):
             assert np.array_equal(a, b)
 
@@ -482,13 +482,13 @@ def test_int64_indptr_input_same_model(monkeypatch):
     from similaripy import _s_plus
 
     S = _S(40, True, seed=9)
-    want = ItemKNN(S)._model.parts()
+    want = SparseKNN(S)._model.parts()
     assert want[0].dtype == np.int64
     monkeypatch.setattr(_s_plus, "_MAX_INT32_NNZ", 0)
     S64 = S.copy()
     S64.indptr, S64.indices = S.indptr.astype(np.int64), S.indices.astype(np.int64)
     for m in (S64, S.tocoo()):
-        for a, b in zip(ItemKNN(m)._model.parts()[:5], want[:5]):
+        for a, b in zip(SparseKNN(m)._model.parts()[:5], want[:5]):
             assert np.array_equal(a, b)
 
 
@@ -496,13 +496,13 @@ def test_int64_indptr_input_same_model(monkeypatch):
 def test_concurrent_calls_identical(tmp_path, mapped):
     """One model shared by threads (scratch per OS thread, GIL released), built or mapped from disk."""
     rng = np.random.default_rng(2)
-    rec = ItemKNN(sp.random_array((500, 500), density=0.05, rng=rng, format="csr"))
+    rec = SparseKNN(sp.random_array((500, 500), density=0.05, rng=rng, format="csr"))
     hists = [rng.choice(500, size=20) for _ in range(64)]
     incs = [None if i % 2 else rng.choice(500, size=200) for i in range(64)]
     want = [rec.recommend(h, k=10, include=i) for h, i in zip(hists, incs)]
     if mapped:
         rec.save(tmp_path / "m")
-        rec = ItemKNN.load(tmp_path / "m")
+        rec = SparseKNN.load(tmp_path / "m")
     with ThreadPoolExecutor(8) as ex:
         got = list(ex.map(lambda hi: rec.recommend(hi[0], k=10, include=hi[1]), list(zip(hists, incs)) * 4))
     for g, w in zip(got, want * 4):
@@ -511,21 +511,21 @@ def test_concurrent_calls_identical(tmp_path, mapped):
 
 def test_empty_models():
     for S in (sp.csr_array((0, 0)), sp.csr_array((5, 5))):
-        rec = ItemKNN(S)
+        rec = SparseKNN(S)
         assert rec.item_ids.size == S.shape[0]
         assert rec.recommend([0, 1], k=3)[0].size == 0
         ids, scores = rec.recommend_batch([[0], []])
         assert [a.size for a in ids] == [0, 0] and [a.size for a in scores] == [0, 0]
         assert rec.recommend_batch([]) == ([], [])
         assert pickle.loads(pickle.dumps(rec)).item_ids.size == S.shape[0]
-    rec = ItemKNN(_S(20, False, seed=6), candidate_items=[])
+    rec = SparseKNN(_S(20, False, seed=6), candidate_items=[])
     assert rec.recommend([5, 6, 7], k=5)[0].size == 0
 
 
 def test_zero_as_a_real_external_id():
     S = _S(10, False, seed=8)
     ext = np.arange(10) * 7 - 14  # item 2 has id 0
-    rec = ItemKNN(S, item_ids=ext)
+    rec = SparseKNN(S, item_ids=ext)
     D = S.toarray()
     hist = [ext[j] for j in range(10) if D[j].any()][:3]
     want = _reference(S, ext, hist, None, 10, True)
@@ -534,7 +534,7 @@ def test_zero_as_a_real_external_id():
 
 
 def test_reuse_after_an_error():
-    rec = ItemKNN(_S(30, False, seed=10))
+    rec = SparseKNN(_S(30, False, seed=10))
     want = rec.recommend([5, 6], k=5, include=list(range(30)))
     with pytest.raises(ValueError, match="finite"):
         rec.recommend([5, 6], weights=[1.0, np.nan], k=5, include=[3])
@@ -544,8 +544,8 @@ def test_reuse_after_an_error():
 def test_boundary_types():
     S = _S(10, False, seed=1)
     with pytest.raises(ValueError, match="fit in int64"):
-        ItemKNN(S, item_ids=np.array([2**63] + list(range(9)), dtype=np.uint64))
-    rec = ItemKNN(S)
+        SparseKNN(S, item_ids=np.array([2**63] + list(range(9)), dtype=np.uint64))
+    rec = SparseKNN(S)
     with pytest.raises(ValueError, match="fit in int64"):
         rec.recommend([2**63])
     with pytest.raises(ValueError, match="1-d"):
@@ -553,9 +553,9 @@ def test_boundary_types():
     assert rec.recommend(np.array([5, 6], dtype=np.uint32), k=2**70)[0].size > 0
     bad = sp.csr_array(np.array([[0.0, np.inf], [1.0, 0.0]]))
     with pytest.raises(ValueError, match="finite"):
-        ItemKNN(bad)
+        SparseKNN(bad)
     with pytest.raises(ValueError, match="finite"):
-        ItemKNN(sp.csr_array(np.array([[0.0, 1e300], [1.0, 0.0]])))
+        SparseKNN(sp.csr_array(np.array([[0.0, 1e300], [1.0, 0.0]])))
 
 
 def _bits(a):
@@ -571,19 +571,19 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
     S = _S(80, True, seed=11) @ sp.diags_array(keep)  # items 3-5: no column
     S = sp.diags_array(np.r_[np.ones(5), 0, np.ones(74)]) @ S  # item 5: no row either (dropped)
     ext = rng.choice(10**12, size=80, replace=False)
-    rec = ItemKNN(S, item_ids=ext, candidate_items=ext[2:75], block_size=block_size)
+    rec = SparseKNN(S, item_ids=ext, candidate_items=ext[2:75], block_size=block_size)
     with pytest.raises(ValueError, match="save the base model"):
         rec.view(include=ext[5:60]).save(tmp_path / "v")
     rec.save(tmp_path / "m")
-    back = ItemKNN.load(tmp_path / "m", mmap=mmap, block_size=block_size)
+    back = SparseKNN.load(tmp_path / "m", mmap=mmap, block_size=block_size)
     for a, b in zip(rec._model.parts(), back._model.parts()):
         assert a == b if not isinstance(a, np.ndarray) else np.array_equal(a, b)
     assert back._model.parts()[-1] == block_size
     # The block size is a runtime setting, not saved (W1): `load` takes its own.
-    assert ItemKNN.load(tmp_path / "m", mmap=mmap)._model.parts()[-1] == "auto"
-    assert ItemKNN.load(tmp_path / "m", mmap=mmap, block_size=3)._model.parts()[-1] == 3
+    assert SparseKNN.load(tmp_path / "m", mmap=mmap)._model.parts()[-1] == "auto"
+    assert SparseKNN.load(tmp_path / "m", mmap=mmap, block_size=3)._model.parts()[-1] == 3
     with pytest.raises(ValueError, match="block_size"):
-        ItemKNN.load(tmp_path / "m", mmap=mmap, block_size=0)
+        SparseKNN.load(tmp_path / "m", mmap=mmap, block_size=0)
     for _ in range(20):
         hist = rng.choice(ext, size=8)
         a, b = rec.recommend(hist, k=15), back.recommend(hist, k=15)
@@ -609,23 +609,23 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
 def test_load_files_written_by_numpy(tmp_path):
     """Headers as numpy writes them (padding for growth): load reads them."""
     S = _S(30, False, seed=12)
-    rec = ItemKNN(S)
+    rec = SparseKNN(S)
     rec.save(tmp_path / "m")
     for f in (tmp_path / "m").glob("*.npy"):
         np.save(f, np.load(f))
-    back = ItemKNN.load(tmp_path / "m")
+    back = SparseKNN.load(tmp_path / "m")
     assert np.array_equal(back.recommend([1, 2, 3])[0], rec.recommend([1, 2, 3])[0])
 
 
 def test_save_only_into_a_new_or_empty_directory(tmp_path):
-    a, b = ItemKNN(_S(20, False, seed=1)), ItemKNN(_S(20, False, seed=2))
+    a, b = SparseKNN(_S(20, False, seed=1)), SparseKNN(_S(20, False, seed=2))
     a.save(tmp_path / "m")
-    mapped = ItemKNN.load(tmp_path / "m")
+    mapped = SparseKNN.load(tmp_path / "m")
     want = mapped.recommend([1, 2], k=5)
     with pytest.raises(FileExistsError, match="new directory"):
         b.save(tmp_path / "m")  # a saved model is never replaced
     assert _same(mapped.recommend([1, 2], k=5), want)
-    assert _same(ItemKNN.load(tmp_path / "m").recommend([1, 2], k=5), want)
+    assert _same(SparseKNN.load(tmp_path / "m").recommend([1, 2], k=5), want)
     (tmp_path / "other").mkdir()
     (tmp_path / "other" / "keep.txt").write_text("x")
     with pytest.raises(FileExistsError, match="new directory"):
@@ -634,13 +634,13 @@ def test_save_only_into_a_new_or_empty_directory(tmp_path):
     (tmp_path / "empty").mkdir()
     a.save(tmp_path / "empty")  # an empty directory is fine
     a.save(tmp_path / "new" / "v1")  # parents are created
-    assert _same(ItemKNN.load(tmp_path / "new" / "v1").recommend([1, 2], k=5), want)
+    assert _same(SparseKNN.load(tmp_path / "new" / "v1").recommend([1, 2], k=5), want)
 
 
 def test_concurrent_saves_to_one_path_keep_one_model(tmp_path):
     """Two savers on one path aren't supported (all but one fail), but the one
     that wins keeps a complete model: a loser never removes it."""
-    a = ItemKNN(_S(20, False, seed=1))
+    a = SparseKNN(_S(20, False, seed=1))
 
     def save():
         try:
@@ -650,7 +650,7 @@ def test_concurrent_saves_to_one_path_keep_one_model(tmp_path):
 
     with ThreadPoolExecutor(8) as ex:
         list(ex.map(lambda _: save(), range(16)))
-    assert _same(ItemKNN.load(tmp_path / "m").recommend([1, 2], k=5), a.recommend([1, 2], k=5))
+    assert _same(SparseKNN.load(tmp_path / "m").recommend([1, 2], k=5), a.recommend([1, 2], k=5))
 
 
 def _corrupt(d, name, fn):
@@ -717,24 +717,24 @@ def _swap_first_row(a):
 )
 def test_load_rejects_corrupted_files(tmp_path, corrupt, error):
     S = _S(40, False, seed=13)
-    rec = ItemKNN(S, item_ids=np.arange(40) * 3 + 1)
+    rec = SparseKNN(S, item_ids=np.arange(40) * 3 + 1)
     d = tmp_path / "m"
     rec.save(d)
     corrupt(d)
     for mmap in (True, False):
         if isinstance(error, str):
             with pytest.raises(ValueError, match=error):
-                ItemKNN.load(d, mmap=mmap)
+                SparseKNN.load(d, mmap=mmap)
         else:
             with pytest.raises(error):
-                ItemKNN.load(d, mmap=mmap)
+                SparseKNN.load(d, mmap=mmap)
 
 
 @pytest.mark.parametrize("mmap", [True, False])
 def test_loads_a_committed_format_1_model(mmap):
     # 1.x loads every older 1.x format: these files were written by format 1 and
     # stay as they are. Changing what the files mean bumps the format instead.
-    model = ItemKNN.load(Path(__file__).parent / "data" / "itemknn-format1", mmap=mmap)
+    model = SparseKNN.load(Path(__file__).parent / "data" / "sparseknn-format1", mmap=mmap)
     assert np.array_equal(model.item_ids, [10, 20, 30, 40, 50, 60, 70])
     f32 = lambda x: np.array(x, dtype=np.float32)
     assert _same(model.recommend([20, 40], k=3), ([30, 10, 50], f32([1.75, 0.75, 0.5])))
@@ -752,11 +752,11 @@ def test_strided_and_float64_coo_input():
     order = np.argsort(rows, kind="stable")
     indptr = np.r_[0, np.cumsum(np.bincount(rows, minlength=30))]
     raw_csr = sp.csr_array((vals[order], cols[order], indptr), shape=(30, 30))  # duplicates kept
-    want = ItemKNN(raw_csr)._model.parts()
+    want = SparseKNN(raw_csr)._model.parts()
     coo = sp.coo_array((vals, (rows, cols)), shape=(30, 30))
     d2, i2 = np.repeat(vals[order], 2), np.repeat(cols[order], 2)
     strided = sp.csr_array((d2[::2], i2[::2], indptr), shape=(30, 30))
     for m in (coo, strided):
-        got = ItemKNN(m)._model.parts()
+        got = SparseKNN(m)._model.parts()
         for a, b in zip(got[:5], want[:5]):
             assert np.array_equal(a, b)
