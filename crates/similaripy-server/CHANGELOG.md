@@ -12,7 +12,7 @@ First release, beside similaripy 1.0.0. Reads models saved by similaripy 1.x
 (saved format 1).
 
 - `POST /v1/recommend` (JSON) and gRPC `similaripy.v1.Recommender/Recommend`
-  on one port: same answers as Python's `ItemKNN.recommend` (ids and
+  on one port: same answers as Python's `SparseKNN.recommend` (ids and
   `float32` scores), plus the request's context (model name, request id, k,
   sorted, view, history counts).
 - `x-request-id` in and out (generated if not sent); `Server-Timing` with the

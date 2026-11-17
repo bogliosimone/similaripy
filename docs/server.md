@@ -1,7 +1,7 @@
 # 🖥️ Running the server
 
 `similaripy-server` serves a model saved with
-[`ItemKNN.save`](serving.md#saving-and-loading) over HTTP/JSON and gRPC, on
+[`SparseKNN.save`](serving.md#saving-and-loading) over HTTP/JSON and gRPC, on
 one port. It is a single binary (or a Docker image): no Python at serving
 time.
 
@@ -23,9 +23,9 @@ time.
 Save a model in Python:
 
 ```python
-from similaripy.serving import ItemKNN
+from similaripy.serving import SparseKNN
 
-ItemKNN(S.T, item_ids=item_ids).save("models/v3")
+SparseKNN(S.T, item_ids=item_ids).save("models/v3")
 ```
 
 Run the server on it (it listens on `127.0.0.1:8080` by default):
@@ -37,7 +37,7 @@ similaripy-server --model models/v3
 Ask for recommendations:
 
 ```bash
-curl -s 127.0.0.1:8080/v1/recommend -d '{"ids": [10, 20], "k": 3}'
+curl -s 127.0.0.1:8080/v1/recommend -d '{"history": [10, 20], "k": 3}'
 ```
 
 ```json
@@ -46,7 +46,7 @@ curl -s 127.0.0.1:8080/v1/recommend -d '{"ids": [10, 20], "k": 3}'
  "history":{"sent":2,"truncated":0,"unknown":0}}
 ```
 
-Same answer as `ItemKNN.load("models/v3").recommend([10, 20], k=3)`: same
+Same answer as `SparseKNN.load("models/v3").recommend([10, 20], k=3)`: same
 ids, same `float32` scores, at most `k` items (only those with a positive
 score: here 2).
 
@@ -134,14 +134,14 @@ similaripy-server --config server.toml --server.threads 4
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `model.path` | (required) | An `ItemKNN.save` directory. |
+| `model.path` | (required) | A `SparseKNN.save` directory. |
 | `model.mmap` | `true` | Map the model's files instead of reading them into memory (one copy shared by every process on the machine). |
 | `model.name` | the directory's name | Returned in every answer: tells model versions apart (e.g. `itemknn-2026-11-16`). |
 | `server.addr` | `127.0.0.1:8080` | `host:port` to listen on. |
 | `server.threads` | P-cores (macOS), available CPUs (Linux, container CPU limit included) | Server threads, one request at a time each. |
 | `server.block_size` | `auto` | `auto`, `off` or entries per block, as in [Serving](serving.md#parameters). |
 | `limits.k_max` | `2000` | A larger `k` is rejected. |
-| `limits.max_history` | `200` | History ids a request uses. |
+| `limits.max_history` | `1000` | History ids a request uses (Python has no cap). |
 | `limits.history_policy` | `truncate` | A longer history: `truncate` (keep the last `max_history` ids) or `reject` ([History](#history)). |
 | `defaults.sorted` | `true` | `sorted` of a request that doesn't send it ([Sorted or not](#sorted-or-not)). |
 | `defaults.view` | `""` (the whole model) | `view` of a request that doesn't send it ([Views](#views)). |
@@ -166,7 +166,7 @@ Fields and defaults as Python's
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `ids` | (required) | The user's history, oldest first; ids the model doesn't have are ignored. |
+| `history` | (required) | The user's history, oldest first; ids the model doesn't have are ignored. |
 | `weights` | all 1.0 | One per id. |
 | `k` | `10` | Items to return (at most `limits.k_max`). |
 | `exclude_seen` | `true` | Never return the history's items. |
@@ -207,7 +207,7 @@ no reflection: pass the proto):
 
 ```bash
 grpcurl -plaintext -proto recommender.proto -H 'x-request-id: abc-1' \
-  -d '{"ids": [10, 20], "k": 3}' 127.0.0.1:8080 similaripy.v1.Recommender/Recommend
+  -d '{"history": [10, 20], "k": 3}' 127.0.0.1:8080 similaripy.v1.Recommender/Recommend
 ```
 
 Differences from JSON (protobuf's rules):
