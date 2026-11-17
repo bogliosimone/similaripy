@@ -133,9 +133,13 @@ pub struct Info<'a> {
     pub block: usize,
     pub items: usize,
     pub active_items: usize,
-    /// (name, requests over every thread); names need no escaping
-    /// (`Config::check_views`).
-    pub views: Vec<(&'a str, u64)>,
+    /// (name, requests over every thread, failed reloads); names need no
+    /// escaping (`Config::check_views`).
+    pub views: Vec<(&'a str, u64, u64)>,
+    /// View reloads that rebuilt a view (V21 C) and the last one (Unix
+    /// seconds, 0 = none).
+    pub view_reloads: u64,
+    pub last_view_reload: f64,
 }
 
 /// Prometheus text exposition of every thread's metrics, summed (requests
@@ -252,12 +256,34 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
         "counter",
         "Requests per named view (the rest used the whole model).",
     );
-    for (name, v) in &info.views {
+    for (name, v, _) in &info.views {
         let _ = writeln!(
             o,
             "similaripy_server_view_requests_total{{view=\"{name}\"}} {v}"
         );
     }
+    let help = "View reloads that rebuilt a view whose file changed (views.reload_interval).";
+    head(&mut o, "view_reloads_total", "counter", help);
+    let _ = writeln!(
+        o,
+        "similaripy_server_view_reloads_total {}",
+        info.view_reloads
+    );
+    let help = "Changes per view whose files failed to read (the view kept its previous ids).";
+    head(&mut o, "view_reload_errors_total", "counter", help);
+    for (name, _, e) in &info.views {
+        let _ = writeln!(
+            o,
+            "similaripy_server_view_reload_errors_total{{view=\"{name}\"}} {e}"
+        );
+    }
+    let help = "Unix time of the last view reload that rebuilt a view, 0 = none since start.";
+    head(&mut o, "view_last_reload_timestamp_seconds", "gauge", help);
+    let _ = writeln!(
+        o,
+        "similaripy_server_view_last_reload_timestamp_seconds {}",
+        info.last_view_reload
+    );
     let help = "Worker time (recommend or score), per endpoint and request format.";
     histogram(&mut o, "compute_seconds", help, threads, |t| &t.compute);
     let help = "Handler time, per endpoint and request format: JSON parsed, computed, \

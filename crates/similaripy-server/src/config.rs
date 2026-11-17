@@ -22,9 +22,7 @@ pub struct Config {
     pub limits: Limits,
     pub defaults: Defaults,
     pub timeouts: Timeouts,
-    /// Named views (V2): `[views.<name>]` with an include and / or exclude
-    /// id file.
-    pub views: BTreeMap<String, ViewConfig>,
+    pub views: Views,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -109,6 +107,21 @@ pub struct Timeouts {
     pub shutdown_grace: f64,
 }
 
+/// `[views]`: the named views (V2) and how often their files are checked.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Views {
+    /// Seconds between checks of the view files (V21 C): a changed file
+    /// (contents, or a renamed / symlinked new file in its place) rebuilds
+    /// the views, served from the next request on; 0 = read at start only.
+    pub reload_interval: f64,
+    /// `[views.<name>]` with an include and / or exclude id file
+    /// (`reload_interval` is not a view name; flatten allows no
+    /// deny_unknown_fields: `parse` names a stray key).
+    #[serde(flatten)]
+    pub named: BTreeMap<String, ViewConfig>,
+}
+
 /// A named view: the items in `include_file` (absent: all) minus those in
 /// `exclude_file` (absent: none); files hold one id per line.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -162,6 +175,15 @@ impl Default for Defaults {
     }
 }
 
+impl Default for Views {
+    fn default() -> Self {
+        Self {
+            reload_interval: 10.0,
+            named: BTreeMap::new(),
+        }
+    }
+}
+
 impl Default for Timeouts {
     fn default() -> Self {
         Self {
@@ -204,19 +226,25 @@ impl Config {
     /// `a-z 0-9 _ -` (settable as a flag or env var: no `.`, lowercase;
     /// Prometheus labels and URLs without escaping), at least one file each,
     /// `defaults.view` "" or a view.
-    /// Seconds from 0 to a year (more is a typo in ms), header_read > 0;
+    /// The timeouts and `views.reload_interval`: seconds from 0 to a year
+    /// (more is a typo in ms), header_read > 0;
     /// `parse` and `App::new` both call it (`secs` relies on it).
     pub fn check_timeouts(&self) -> Result<(), String> {
         let t = &self.timeouts;
         for (key, v) in [
-            ("header_read", t.header_read),
-            ("drain_delay", t.drain_delay),
-            ("shutdown_grace", t.shutdown_grace),
+            ("timeouts.header_read", t.header_read),
+            ("timeouts.drain_delay", t.drain_delay),
+            ("timeouts.shutdown_grace", t.shutdown_grace),
+            ("views.reload_interval", self.views.reload_interval),
         ] {
-            if !(0.0..=31_536_000.0).contains(&v) || (key == "header_read" && v == 0.0) {
-                return Err(format!(
-                    "timeouts.{key} = {v}: seconds, 0 to a year (header_read > 0)"
-                ));
+            let positive = key == "timeouts.header_read";
+            if !(0.0..=31_536_000.0).contains(&v) || (positive && v == 0.0) {
+                let from = if positive { "more than 0" } else { "0" };
+                return Err(format!("{key} = {v}: seconds, {from} to a year"));
+            }
+            // A stat loop, or a zero Duration (tokio's interval panics)
+            if key == "views.reload_interval" && v > 0.0 && v < 0.1 {
+                return Err(format!("{key} = {v}: 0 (off) or at least 0.1 seconds"));
             }
         }
         Ok(())
@@ -239,7 +267,7 @@ impl Config {
     }
 
     pub fn check_views(&self) -> Result<(), String> {
-        for (name, v) in &self.views {
+        for (name, v) in &self.views.named {
             let ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b);
             if !(1..=64).contains(&name.len()) || !name.bytes().all(ok) {
                 return Err(format!("view {name:?}: a name is 1-64 of a-z 0-9 _ -"));
@@ -251,7 +279,7 @@ impl Config {
             }
         }
         let d = &self.defaults.view;
-        if !d.is_empty() && !self.views.contains_key(d) {
+        if !d.is_empty() && !self.views.named.contains_key(d) {
             return Err(format!("defaults.view = {d:?}: no such view"));
         }
         Ok(())
@@ -350,6 +378,16 @@ pub fn parse(
         .map(|(key, v)| (key.clone(), v, format!("--{key}")));
     for (key, v, source) in env.into_iter().chain(flags) {
         set(&mut table, &defaults, &key, v).map_err(|e| format!("{source}: {e}"))?;
+    }
+    // [views] holds reload_interval and view sections: any other value is a typo
+    if let Some(Value::Table(views)) = table.get("views")
+        && let Some((k, _)) = views
+            .iter()
+            .find(|(k, v)| *k != "reload_interval" && !v.is_table())
+    {
+        return Err(format!(
+            "views.{k}: unknown key (a view is a [views.NAME] section)"
+        ));
     }
     let mut cfg: Config = Value::Table(table)
         .try_into()
@@ -547,14 +585,17 @@ mod tests {
                 drain_delay: 5.0,
                 shutdown_grace: 0.25,
             },
-            views: [(
-                "instock".to_string(),
-                ViewConfig {
-                    include_file: Some("2026.txt".into()),
-                    exclude_file: Some("/ids/adult.txt".into()),
-                },
-            )]
-            .into(),
+            views: Views {
+                reload_interval: 2.0,
+                named: [(
+                    "instock".to_string(),
+                    ViewConfig {
+                        include_file: Some("2026.txt".into()),
+                        exclude_file: Some("/ids/adult.txt".into()),
+                    },
+                )]
+                .into(),
+            },
         };
         let keys = [
             ("model.path", "/models/x"),
@@ -575,6 +616,7 @@ mod tests {
             // an integer for a float key
             ("timeouts.drain_delay", "5"),
             ("timeouts.shutdown_grace", "0.25"),
+            ("views.reload_interval", "2"),
             // a number-like path stays a string (`*_file`)
             ("views.instock.include_file", "2026.txt"),
             ("views.instock.exclude_file", "/ids/adult.txt"),
@@ -649,6 +691,18 @@ mod tests {
         assert!(e.contains("max_body_bytes"), "{e}");
         let e = cfg(&["--model", "/m", "--limits.max_items", "0"], &[]).unwrap_err();
         assert!(e.contains("max_items"), "{e}");
+        // views.reload_interval: seconds; a typo in [views] reads as a view
+        let e = cfg(&["--model", "/m", "--views.reload_interval", "-1"], &[]).unwrap_err();
+        assert!(e.contains("views.reload_interval = -1"), "{e}");
+        let e = cfg(&["--model", "/m", "--views.reload_interval", "1e-10"], &[]).unwrap_err();
+        assert!(e.contains("at least 0.1"), "{e}");
+        let e = cfg(&["--model", "/m", "--views.reload_intervall", "5"], &[]).unwrap_err();
+        assert!(e.contains("views.reload_intervall: unknown key"), "{e}");
+        let f = file("[model]\npath = \"/m\"\n[views]\nreload_interval = 0\n");
+        assert_eq!(
+            cfg(&["--config", &f.0], &[]).unwrap().views.reload_interval,
+            0.0
+        );
         // Timeouts: an integer in the file is seconds too; out of range = error
         let f = file("[model]\npath = \"/m\"\n[timeouts]\nheader_read = 3\n");
         let c = cfg(&["--config", &f.0], &[]).unwrap();

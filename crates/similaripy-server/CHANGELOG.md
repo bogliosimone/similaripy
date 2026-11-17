@@ -37,6 +37,14 @@ First release, beside similaripy 1.0.0. Reads models saved by similaripy 1.x
   error.
 - Named views from id files (`[views.NAME]` include / exclude files), picked
   per request, ANDed with the request's include / exclude; `GET /v1/views`.
+- View reload without a restart: the files are checked every
+  `views.reload_interval` seconds (default 10, 0 = off; a rename or a
+  swapped symlink, as in a Kubernetes ConfigMap, counts as a change); a file
+  that fails to read keeps its view. Metrics `view_reloads_total`,
+  `view_reload_errors_total{view}`, `view_last_reload_timestamp_seconds`;
+  `GET /v1/views` shows each file's `modified` time and a view's `error`.
+- `model.path` is resolved once at start: a symlink flipped during the load
+  can't mix two model versions.
 - `GET /metrics` (Prometheus: `similaripy_server_info{version, model}`,
   request / compute histograms per endpoint and format, counters,
   `process_start_time_seconds`,

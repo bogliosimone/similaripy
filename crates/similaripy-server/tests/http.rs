@@ -14,6 +14,7 @@
 
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::http::StatusCode;
 use axum::routing::get;
@@ -54,6 +55,11 @@ impl Rng {
 /// A random S over N items (float values: the bits matter), external ids
 /// 1000 + 7i. Deterministic: two calls build equal models.
 fn model() -> Model {
+    model_times(1.0)
+}
+
+/// `model()` with every similarity times `f` (same items, same n_active).
+fn model_times(f: f32) -> Model {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     let (mut indptr, mut indices, mut data) = (vec![0i64], vec![], vec![]);
     for _ in 0..N {
@@ -62,7 +68,7 @@ fn model() -> Model {
         cols.dedup();
         for c in cols {
             indices.push(c);
-            data.push(rng.unit() + 0.01);
+            data.push((rng.unit() + 0.01) * f);
         }
         indptr.push(indices.len() as i64);
     }
@@ -933,7 +939,7 @@ fn views_config(threads: usize) -> (Config, [IdFile; 2]) {
         include_file: inc.map(|f| f.0.clone()),
         exclude_file: exc.map(|f| f.0.clone()),
     };
-    c.views = [
+    c.views.named = [
         ("even".to_string(), view(Some(&even), None)),
         ("head".to_string(), view(None, Some(&head))),
         ("both".to_string(), view(Some(&even), Some(&head))),
@@ -1025,6 +1031,7 @@ struct ViewInfo {
     allowed: usize,
     include: Option<FileInfo>,
     exclude: Option<FileInfo>,
+    error: Option<String>,
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -1033,6 +1040,17 @@ struct FileInfo {
     file: String,
     ids: usize,
     known: usize,
+    modified: Option<f64>,
+}
+
+/// `p`'s mtime as `GET /v1/views` shows it.
+fn mtime(p: &std::path::Path) -> Option<f64> {
+    let t = std::fs::metadata(p).unwrap().modified().unwrap();
+    Some(
+        t.duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64(),
+    )
 }
 
 #[test]
@@ -1122,6 +1140,7 @@ fn default_view_empty_name_unknown_name_and_views_listing() {
             file: f.0.display().to_string(),
             ids,
             known,
+            modified: mtime(&f.0),
         };
         let even = &v.views["even"];
         assert_eq!(even.allowed, N / 2);
@@ -1130,6 +1149,7 @@ fn default_view_empty_name_unknown_name_and_views_listing() {
         assert_eq!(v.views["head"].allowed, N - 10);
         assert_eq!(v.views["head"].exclude, Some(file(&files[1], 10, 10)));
         assert_eq!(v.views["both"].allowed, N / 2 - 5);
+        assert!(v.views.values().all(|v| v.error.is_none()));
     });
 }
 
@@ -1181,6 +1201,252 @@ fn swap_serves_new_views_from_the_next_request() {
     });
 }
 
+// ---- V21 C view reload ----
+
+/// `app` served on a free loopback port (threads live until the test ends).
+fn start_app(app: &Arc<App>) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (r, app) = (router(app.clone()), app.clone());
+    std::thread::spawn(move || serve(listener, app, r, std::future::pending()));
+    addr
+}
+
+const EVEN: &str = r#"{"history": [1000, 1014, 1021], "k": 50, "view": "even"}"#;
+
+/// The answer's ids are items 1000 + 7i with i of `parity` (0 even, 1 odd).
+fn all_of(ids: &[i64], parity: i64) -> bool {
+    !ids.is_empty() && ids.iter().all(|id| (id - 1000) / 7 % 2 == parity)
+}
+
+fn odd_items() -> String {
+    lines((1..N as i64).step_by(2).map(|i| 1000 + 7 * i))
+}
+
+async fn views_listing(addr: SocketAddr) -> Views {
+    serde_json::from_str(&get_text(addr, "/v1/views").await).unwrap()
+}
+
+#[test]
+fn view_reload_serves_a_renamed_file_from_the_next_request() {
+    let (mut cfg, files) = views_config(2);
+    cfg.views.reload_interval = 0.1;
+    let app = Arc::new(App::new(model(), cfg).unwrap());
+    let addr = start_app(&app);
+    block_on(async {
+        assert!(all_of(&ask_json(addr, EVEN).await.0, 0));
+        // Atomic replace: a new file renamed over the old one (new inode).
+        let tmp = id_file("even-new", &odd_items());
+        std::fs::rename(&tmp.0, &files[0].0).unwrap();
+        // The poller's next tick (100 ms): bounded wait, then every thread.
+        let t = std::time::Instant::now();
+        while !all_of(&ask_json(addr, EVEN).await.0, 1) {
+            assert!(t.elapsed() < Duration::from_secs(10), "never reloaded");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        for _ in 0..4 {
+            assert!(all_of(&ask_json(addr, EVEN).await.0, 1));
+        }
+        let v = views_listing(addr).await;
+        let even = v.views["even"].include.as_ref().unwrap();
+        assert_eq!((even.ids, even.modified), (N / 2, mtime(&files[0].0)));
+        let m = get_text(addr, "/metrics").await;
+        assert_eq!(
+            metric(&m, "similaripy_server_view_reloads_total"),
+            Some(1.0),
+            "{m}"
+        );
+        let last = metric(&m, "similaripy_server_view_last_reload_timestamp_seconds").unwrap();
+        assert!(last > 1.7e9, "{m}");
+    });
+}
+
+#[test]
+fn view_reload_only_on_a_change_and_a_broken_file_keeps_its_view() {
+    // No poller (reload_interval 0): `reload_views` called here.
+    let (mut cfg, files) = views_config(1);
+    cfg.views.reload_interval = 0.0;
+    let app = Arc::new(App::new(model(), cfg).unwrap());
+    let addr = start_app(&app);
+    block_on(async {
+        assert!(!app.reload_views(), "nothing changed");
+        // Edited in place (same inode): mtime / size.
+        std::fs::write(&files[0].0, odd_items()).unwrap();
+        assert!(app.reload_views());
+        assert!(!app.reload_views(), "already read");
+        assert!(all_of(&ask_json(addr, EVEN).await.0, 1));
+        // A broken `even` file and an edited `head` file: `even` (and
+        // `both`, which reads it too) keep their ids, `head` reloads.
+        std::fs::write(&files[0].0, "1007\nx\n").unwrap();
+        std::fs::write(&files[1].0, lines([1000])).unwrap();
+        assert!(app.reload_views());
+        assert!(all_of(&ask_json(addr, EVEN).await.0, 1));
+        let v = views_listing(addr).await;
+        for name in ["even", "both"] {
+            let e = v.views[name].error.as_deref().unwrap();
+            assert!(e.contains(":2:") && e.contains("\"x\""), "{e}");
+        }
+        assert_eq!(v.views["even"].include.as_ref().unwrap().ids, N / 2);
+        assert_eq!(
+            (v.views["head"].allowed, &v.views["head"].error),
+            (N - 1, &None)
+        );
+        let m = get_text(addr, "/metrics").await;
+        let errors =
+            |view| format!("similaripy_server_view_reload_errors_total{{view=\"{view}\"}}");
+        assert_eq!(metric(&m, &errors("even")), Some(1.0), "{m}");
+        assert_eq!(metric(&m, &errors("head")), Some(0.0), "{m}");
+        let reloads = "similaripy_server_view_reloads_total";
+        assert_eq!(metric(&m, reloads), Some(2.0), "{m}");
+        // Another view's change: the broken file is not read (or counted) again.
+        std::fs::write(&files[1].0, lines([1000, 1007])).unwrap();
+        assert!(app.reload_views());
+        let m = get_text(addr, "/metrics").await;
+        assert_eq!(metric(&m, &errors("even")), Some(1.0), "{m}");
+        assert_eq!(metric(&m, reloads), Some(3.0), "{m}");
+        // A missing file: same; only failures: not a reload in the metrics.
+        std::fs::remove_file(&files[0].0).unwrap();
+        assert!(app.reload_views());
+        assert!(!app.reload_views(), "still missing: retried, not a change");
+        assert!(all_of(&ask_json(addr, EVEN).await.0, 1));
+        let m = get_text(addr, "/metrics").await;
+        assert_eq!(metric(&m, reloads), Some(3.0), "{m}");
+        assert_eq!(metric(&m, &errors("even")), Some(2.0), "{m}");
+        // Ids the model doesn't have (another id space): allows 0 (V22
+        // warns in the log), served as such.
+        std::fs::write(&files[0].0, lines([5, 6])).unwrap();
+        assert!(app.reload_views());
+        let v = views_listing(addr).await;
+        assert_eq!(
+            (v.views["even"].allowed, &v.views["even"].error),
+            (0, &None)
+        );
+        assert!(ask_json(addr, EVEN).await.0.is_empty());
+        // Fixed: served, error cleared.
+        std::fs::write(
+            &files[0].0,
+            lines((0..N as i64).step_by(2).map(|i| 1000 + 7 * i)),
+        )
+        .unwrap();
+        assert!(app.reload_views());
+        assert!(all_of(&ask_json(addr, EVEN).await.0, 0));
+        assert!(
+            views_listing(addr)
+                .await
+                .views
+                .values()
+                .all(|v| v.error.is_none())
+        );
+    });
+}
+
+/// A Kubernetes ConfigMap volume: `ids.txt` -> `..data/ids.txt`, `..data`
+/// -> `..<version>`; an update writes a new version directory and renames
+/// a new `..data` link over the old one.
+#[cfg(unix)]
+#[test]
+fn view_reload_follows_a_configmap_symlink_swap() {
+    use std::os::unix::fs::symlink;
+    let dir = std::env::temp_dir().join(format!("similaripy-cm-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let version = |name: &str, text: String| {
+        std::fs::create_dir_all(dir.join(name)).unwrap();
+        std::fs::write(dir.join(name).join("ids.txt"), text).unwrap();
+    };
+    version(
+        "..v1",
+        lines((0..N as i64).step_by(2).map(|i| 1000 + 7 * i)),
+    );
+    symlink("..v1", dir.join("..data")).unwrap();
+    symlink("..data/ids.txt", dir.join("ids.txt")).unwrap();
+    let (mut cfg, _files) = views_config(1);
+    cfg.views.reload_interval = 0.0;
+    cfg.views.named.retain(|k, _| k == "even");
+    cfg.views.named.get_mut("even").unwrap().include_file = Some(dir.join("ids.txt"));
+    let app = Arc::new(App::new(model(), cfg).unwrap());
+    let addr = start_app(&app);
+    block_on(async {
+        assert!(all_of(&ask_json(addr, EVEN).await.0, 0));
+        version("..v2", odd_items());
+        symlink("..v2", dir.join("..data_tmp")).unwrap();
+        std::fs::rename(dir.join("..data_tmp"), dir.join("..data")).unwrap();
+        std::fs::remove_dir_all(dir.join("..v1")).unwrap();
+        assert!(app.reload_views());
+        assert!(all_of(&ask_json(addr, EVEN).await.0, 1));
+        assert!(!app.reload_views());
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// V22: a view reload racing a model swap never reinstalls the older model.
+#[test]
+fn view_reload_never_rolls_back_a_swapped_model() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+    let (mut cfg, files) = views_config(1);
+    cfg.views.reload_interval = 0.0;
+    let app = Arc::new(App::new(model(), cfg).unwrap());
+    let addr = start_app(&app);
+    let (stop, reloads) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let reloader = {
+        let (app, stop, reloads) = (app.clone(), stop.clone(), reloads.clone());
+        let head = files[1].0.clone();
+        std::thread::spawn(move || {
+            // Every reload a change: head's file alternates 9 / 10 ids.
+            for i in 0.. {
+                if stop.load(Relaxed) {
+                    break;
+                }
+                let n = 9 + i % 2;
+                std::fs::write(&head, lines((0..n).map(|i| 1000 + 7 * i))).unwrap();
+                // False when a swap read the file first: counted too.
+                app.reload_views();
+                reloads.fetch_add(1, Relaxed);
+            }
+        })
+    };
+    let ids = [1000, 1014, 1021];
+    let q = Request {
+        ids: &ids,
+        weights: None,
+        k: 50,
+        exclude_seen: true,
+        include: None,
+        exclude: None,
+        sorted: true,
+    };
+    let whole = r#"{"history": [1000, 1014, 1021], "k": 50}"#;
+    block_on(async {
+        for f in 2..=30 {
+            app.swap(model_times(f as f32)).unwrap();
+            // Two reloads done since: one began after the swap, so a reload
+            // that read the older model has landed too.
+            let r = reloads.load(Relaxed);
+            while reloads.load(Relaxed) < r + 2 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            let want = python(&model_times(f as f32), &q);
+            assert_eq!(
+                ask_json(addr, whole).await,
+                want,
+                "rolled back after swap {f}"
+            );
+        }
+    });
+    stop.store(true, Relaxed);
+    reloader.join().unwrap();
+    // The views too are over the last model.
+    let last = model_times(30.0);
+    block_on(async {
+        assert_eq!(
+            ask_json(addr, EVEN).await,
+            python(&core_view(&last, "even", &files), &q)
+        );
+    });
+}
+
 #[test]
 fn view_errors_at_start_name_view_file_and_line() {
     let (mut cfg, files) = views_config(1);
@@ -1191,14 +1457,14 @@ fn view_errors_at_start_name_view_file_and_line() {
         e.contains("\"both\"") && e.contains(&at) && e.contains("ten"),
         "{e}"
     );
-    cfg.views.get_mut("head").unwrap().exclude_file = Some("/nonexistent/ids.txt".into());
-    cfg.views.remove("both");
+    cfg.views.named.get_mut("head").unwrap().exclude_file = Some("/nonexistent/ids.txt".into());
+    cfg.views.named.remove("both");
     let e = App::new(model(), cfg.clone()).err().unwrap();
     assert!(
         e.contains("\"head\"") && e.contains("/nonexistent/ids.txt"),
         "{e}"
     );
-    cfg.views.remove("head");
+    cfg.views.named.remove("head");
     cfg.defaults.view = "head".into();
     let e = App::new(model(), cfg.clone()).err().unwrap();
     assert!(e.contains("defaults.view"), "{e}");
@@ -1207,11 +1473,13 @@ fn view_errors_at_start_name_view_file_and_line() {
     // lowercase), or not a plain label.
     for bad in ["bad name", "in.stock", "InStock", ""] {
         let mut c = cfg.clone();
-        c.views.insert(bad.into(), cfg.views["even"].clone());
+        c.views
+            .named
+            .insert(bad.into(), cfg.views.named["even"].clone());
         let e = App::new(model(), c).err().unwrap();
         assert!(e.contains(&format!("{bad:?}")), "{e}");
     }
-    cfg.views.insert("none".into(), Default::default());
+    cfg.views.named.insert("none".into(), Default::default());
     assert!(
         App::new(model(), cfg)
             .err()

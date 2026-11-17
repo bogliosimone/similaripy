@@ -134,7 +134,7 @@ similaripy-server --config server.toml --server.threads 4
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `model.path` | (required) | A `SparseKNN.save` directory. |
+| `model.path` | (required) | A `SparseKNN.save` directory. A symlink is resolved once at start (set `model.name`, else it is the link's name). |
 | `model.mmap` | `true` | Map the model's files instead of reading them into memory (one copy shared by every process on the machine). |
 | `model.name` | the directory's name | Returned in every answer: tells model versions apart (e.g. `itemknn-2026-11-16`). |
 | `server.addr` | `127.0.0.1:8080` | `host:port` to listen on. |
@@ -151,6 +151,7 @@ similaripy-server --config server.toml --server.threads 4
 | `timeouts.header_read` | `30` | Seconds a connection has to send a request's headers (and a JSON body: else 408). Also the idle time after which an HTTP/1.1 keep-alive connection is closed. |
 | `timeouts.drain_delay` | `0` | After SIGTERM: seconds still accepting connections with `/ready` answering 503 ([Shutdown](#shutdown)). |
 | `timeouts.shutdown_grace` | `10` | Then seconds for open requests to finish. |
+| `views.reload_interval` | `10` | Seconds between checks of the view files (`0` or at least `0.1`): a changed file is served from the next request on; `0` = read at start only ([Updating a view](#updating-a-view)). |
 | `views.NAME.include_file` | | View `NAME` allows only the ids in this file. |
 | `views.NAME.exclude_file` | | View `NAME` never returns the ids in this file (either file or both). |
 
@@ -279,7 +280,7 @@ Differences from JSON (protobuf's rules):
 | `GET /ready` | `ok`, or 503 `draining` after SIGTERM (readiness) |
 | `GET /metrics` | Prometheus text ([Metrics](#metrics)) |
 | `GET /config` | The resolved config (JSON) |
-| `GET /v1/views` | The views, their sizes and their files' known ids ([Views](#views)) |
+| `GET /v1/views` | The views, their sizes, their files' known ids and modification times, a failed reload's error ([Views](#views)) |
 
 ## Answers
 
@@ -345,8 +346,74 @@ narrow a view, never widen it. Example: view `in_stock` = items 1-1000,
 request `"include": [5, 7, 2000]` → candidates 5 and 7 (2000 is not in
 stock).
 
-To change a view, edit its file and restart the server (in Kubernetes: a
-rolling restart).
+### Updating a view
+
+The server checks the view files every `views.reload_interval` seconds
+(default 10) and rebuilds the views whose files changed: the next request
+uses them, requests in flight finish with the old ones. Only the masks are
+rebuilt (one bit per item, milliseconds); the model is not touched. So a
+stock list refreshed every few minutes needs no restart and no new model.
+
+- **Write a new file, then rename it over the old one** (`mv` is atomic on
+  one file system), or swap a symlink: the reader never sees half a file.
+  Don't edit the file in place: a check during the write can read part of
+  it, and on file systems with coarse modification times the rest of the
+  write may never be noticed.
+- **A file that fails to read** (missing, a bad line) keeps its view as it
+  was: logged once per change of the file, counted in
+  `view_reload_errors_total{view}`, and shown as the view's `error` in
+  `GET /v1/views`. The other views still reload. A view in error is read
+  again at every check, so a passing failure heals by itself.
+- **Is my edit live?** `GET /v1/views` shows each file's `modified` time as
+  read and its `ids`; `view_last_reload_timestamp_seconds` the last reload.
+- **Adding or removing a view** is a config change: restart (a rolling
+  update in Kubernetes).
+
+**Small lists: a ConfigMap.** A ConfigMap holds at most 1 MiB, about 100k
+ids. Kubernetes updates a mounted ConfigMap by writing a new directory and
+swapping a symlink, which the server follows; the change reaches the pods
+within about a minute, plus `reload_interval`. Don't mount it with
+`subPath`: those files never update.
+
+```yaml
+# kubectl create configmap views --from-file=in_stock.txt \
+#   --dry-run=client -o yaml | kubectl apply -f -      (to create or update it)
+spec:
+  containers:
+    - name: server
+      env:
+        - {name: SIMILARIPY_VIEWS__IN_STOCK__INCLUDE_FILE, value: /views/in_stock.txt}
+      volumeMounts:
+        - {name: views, mountPath: /views, readOnly: true}
+  volumes:
+    - name: views
+      configMap: {name: views}
+```
+
+**Large lists: a sidecar.** A container in the same pod downloads the file
+into a shared `emptyDir` and renames it into place; an init container does
+the first copy (the server reads the views at start, so the file must be
+there):
+
+```yaml
+spec:
+  initContainers:
+    - name: views-init
+      image: amazon/aws-cli
+      command: [sh, -c, "aws s3 cp s3://my-bucket/views/in_stock.txt /views/in_stock.txt"]
+      volumeMounts: [{name: views, mountPath: /views}]
+  containers:
+    - name: server
+      env:
+        - {name: SIMILARIPY_VIEWS__IN_STOCK__INCLUDE_FILE, value: /views/in_stock.txt}
+      volumeMounts: [{name: views, mountPath: /views, readOnly: true}]
+    - name: views-sync
+      image: amazon/aws-cli
+      command: [sh, -c, "while true; do sleep 300; aws s3 cp s3://my-bucket/views/in_stock.txt /views/.in_stock.tmp && mv /views/.in_stock.tmp /views/in_stock.txt; done"]
+      volumeMounts: [{name: views, mountPath: /views}]
+  volumes:
+    - {name: views, emptyDir: {}}
+```
 
 Cost (Yambda 500M, one thread): a request without a view pays nothing; a
 broad view (90% of the items) about +3% CPU per request; a narrow one (10%)
@@ -368,6 +435,9 @@ against it.
 | `truncated_total` | Histories cut to `max_history` |
 | `history_ids_total`, `known_ids_total` | History ids used, and those the model has |
 | `view_requests_total{view}` | Requests per named view (only with views configured) |
+| `view_reloads_total` | View reloads that rebuilt a view whose file changed ([Updating a view](#updating-a-view)) |
+| `view_reload_errors_total{view}` | Changes to a view's files that failed to read (it kept its previous ids) |
+| `view_last_reload_timestamp_seconds` | Unix time of the last reload that rebuilt a view, 0 = none since start: alert when it gets older than your update period |
 | `compute_seconds{endpoint, proto}` | Histogram: the model's compute, per endpoint (`recommend`, `score`) and format (`json`, `grpc`) |
 | `request_seconds{endpoint, proto}` | Histogram: the handler (JSON: parse + compute + serialize) |
 
@@ -509,3 +579,22 @@ spec:
   under 30 s, or retry.
 - A new model = a new directory and a new `--model` path: a rolling update
   replaces the pods one by one.
+
+### Changing the model
+
+- **Never write into a directory a server is serving**, not even to
+  overwrite a file with the same contents: with `mmap` (the default) the
+  files are mapped, and changing one under the server crashes it (SIGBUS)
+  or serves mixed data. Save each model to a new directory
+  (`models/itemknn-2026-11-17`); deleting the old one once no server uses it
+  is safe.
+- **A `current` symlink** to the latest directory works: the server resolves
+  it once at start and reads every file from that directory, even if the
+  link is flipped during the load. Flipping it later changes nothing until a
+  restart. Set `model.name` (e.g. from your deploy script), or every answer
+  names the model `current`.
+- **Save with item ids** (`SparseKNN(S, item_ids=...)`): the ids in requests
+  are then your catalogue's ids, and a client that sends ids from another
+  catalogue or model version shows up in `history.unknown` and
+  `known_ids_total`. A model saved without ids accepts any id below its
+  item count, so such a mismatch goes unnoticed.

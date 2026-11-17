@@ -15,7 +15,8 @@ similaripy-server [--config FILE] [--section.key VALUE ...]
   127.0.0.1 by default; put an ingress / mesh with TLS and auth in front).
 
 Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flags.
-  --model.path DIR            a SparseKNN.save directory (required)
+  --model.path DIR            a SparseKNN.save directory (required); a symlink is
+                              resolved once at start (then set model.name)
   --model.mmap BOOL           map the model's files; default true
   --model.name NAME           the model name in every answer; default the directory's name
   --server.addr HOST:PORT     default 127.0.0.1:8080
@@ -29,6 +30,9 @@ Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flag
   --defaults.k N              a request's k when it doesn't send one (<= k_max); default 10
   --defaults.sorted BOOL      a request's sorted when it doesn't send one; default true
   --defaults.view NAME        a request's view when it doesn't send one; default empty (the whole model)
+  --views.reload_interval S   seconds between checks of the view files: a changed
+                              file is served from the next request on; 0 = read at
+                              start only; default 10
   --views.NAME.include_file F  view NAME allows only the ids in F (one per line)
   --views.NAME.exclude_file F  view NAME never returns the ids in F; either or both
                                (NAME: 1-64 of a-z 0-9 _ -; F relative to the working directory)

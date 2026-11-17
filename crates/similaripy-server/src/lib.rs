@@ -159,7 +159,7 @@ impl Fail {
 }
 
 /// What is served: the model and its named views (each a `Model::view` of
-/// it). Never changed: replaced whole by `App::swap`.
+/// it). Never changed: replaced whole by `App::install`.
 struct Served {
     model: Model,
     views: BTreeMap<String, View>,
@@ -177,12 +177,24 @@ pub struct App {
     /// `swap` its next request takes the new one, in-flight requests keep
     /// theirs.
     // ponytail: an idle thread holds the old state until its next request;
-    // 0.2's hot swap nudges idle threads if an old model must be freed.
+    // 1.1's hot swap nudges idle threads if an old model must be freed.
     state: Mutex<Arc<Served>>,
     version: AtomicU64,
     /// Requests per view and thread: kept across swaps (the views' names
     /// come from the config, which a swap doesn't change).
     served: BTreeMap<String, Arc<[Counter]>>,
+    /// Held through a whole swap or view reload, never by a serving thread:
+    /// one writer at a time, so a reload rebuilds over the model it then
+    /// installs, never an older one (V22); the state lock is only taken to
+    /// read and to install (a scrape never waits on file reads). Holds the
+    /// stamps of the files the served views were read from.
+    writer: Mutex<views::Stamps>,
+    /// View reloads (V21 C, written under `writer`) that rebuilt a view,
+    /// the last one (Unix seconds as f64 bits, 0 = none), failed reads per
+    /// view.
+    reloads: AtomicU64,
+    last_reload: AtomicU64,
+    reload_errors: BTreeMap<String, AtomicU64>,
     /// Set by `serve` on shutdown: `/ready` answers 503.
     draining: AtomicBool,
 }
@@ -204,6 +216,7 @@ impl App {
             .collect();
         let served: BTreeMap<_, Arc<[Counter]>> = cfg
             .views
+            .named
             .keys()
             .map(|k| {
                 (
@@ -214,9 +227,17 @@ impl App {
                 )
             })
             .collect();
+        let stamps = views::stamps(&cfg);
         let views = views::build(&model, &cfg, &served)?;
         Ok(Self {
+            reload_errors: served
+                .keys()
+                .map(|k| (k.clone(), AtomicU64::new(0)))
+                .collect(),
             served,
+            writer: Mutex::new(stamps),
+            reloads: AtomicU64::new(0),
+            last_reload: AtomicU64::new(0),
             n_active: model.n_active(),
             cfg,
             block,
@@ -228,10 +249,10 @@ impl App {
     }
 
     /// Serves `model` with the config's views, rebuilt from their files, from
-    /// each thread's next request on (0.2's view reload and model hot swap
-    /// call this). An error leaves the served state as it was.
+    /// each thread's next request on (1.1's model hot swap calls this). An
+    /// error leaves the served state as it was.
     // ponytail: the workers' block size was resolved from the first model's
-    // n_active: another n_active is refused, not re-resolved (0.2's hot swap
+    // n_active: another n_active is refused, not re-resolved (1.1's hot swap
     // re-resolves it per worker if models of other sizes must swap).
     pub fn swap(&self, model: Model) -> Result<(), String> {
         if model.n_active() != self.n_active {
@@ -241,15 +262,56 @@ impl App {
                 self.n_active
             ));
         }
-        // The lock across the build: swaps install in the order they read
-        // the files (a slower, older read never lands last).
-        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut seen = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let stamps = views::stamps(&self.cfg);
         let views = views::build(&model, &self.cfg, &self.served)?;
-        *s = Arc::new(Served { model, views });
+        *seen = stamps;
+        self.install(Served { model, views });
+        Ok(())
+    }
+
+    /// Rebuilds the views whose files changed since they were read (V21 C)
+    /// over the served model, from each thread's next request on; one whose
+    /// files fail keeps what it served (logged and counted once per change,
+    /// its `error` in `GET /v1/views`). True if a file changed.
+    pub fn reload_views(&self) -> bool {
+        let mut seen = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        // Under `writer`: no swap can serve another model before ours lands.
+        let s = self.state();
+        let Some(r) = views::rebuild(&s.model, &self.cfg, &s.views, &mut seen) else {
+            return false;
+        };
+        for name in &r.failed {
+            self.reload_errors[name].fetch_add(1, Relaxed);
+        }
+        let items = s.model.n_items();
+        let lines: Vec<String> = (r.rebuilt.iter().chain(&r.failed))
+            .map(|name| views::describe_one(name, &r.views[name], items))
+            .collect();
+        self.install(Served {
+            model: s.model.view(None, None),
+            views: r.views,
+        });
+        if !r.rebuilt.is_empty() {
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default();
+            self.last_reload.store(now.as_secs_f64().to_bits(), Relaxed);
+            self.reloads.fetch_add(1, Relaxed);
+        }
+        for line in lines {
+            eprintln!("similaripy-server: reload: {line}");
+        }
+        true
+    }
+
+    /// `s` served from each thread's next request on.
+    fn install(&self, s: Served) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        *state = Arc::new(s);
         // Under the lock: a thread that sees this version gets this state
         // (or a newer one).
         self.version.fetch_add(1, Release);
-        Ok(())
     }
 
     /// The current state (a lock: start-up, scrapes, a thread after a swap).
@@ -1070,8 +1132,13 @@ async fn metrics(State(app): State<Arc<App>>) -> String {
         views: app
             .served
             .iter()
-            .map(|(k, c)| (k.as_str(), c.iter().map(Counter::get).sum()))
+            .map(|(k, c)| {
+                let errors = app.reload_errors[k].load(Relaxed);
+                (k.as_str(), c.iter().map(Counter::get).sum(), errors)
+            })
             .collect(),
+        view_reloads: app.reloads.load(Relaxed),
+        last_view_reload: f64::from_bits(app.last_reload.load(Relaxed)),
     };
     metrics::render(&app.metrics, &info)
 }
@@ -1208,7 +1275,11 @@ pub fn serve(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    rt.block_on(async {
+    let result = rt.block_on(async {
+        let every = app.cfg.views.reload_interval;
+        if every > 0.0 && !app.served.is_empty() {
+            tokio::spawn(reload_views(app.clone(), secs(every)));
+        }
         listener.set_nonblocking(true)?;
         let listener = tokio::net::TcpListener::from_std(listener)?;
         let mut next = 0;
@@ -1234,7 +1305,23 @@ pub fn serve(
             }
             _ => Err(io::Error::other("a server thread panicked at shutdown")),
         }
-    })
+    });
+    // Not waiting for a view reload stuck on a slow file system.
+    rt.shutdown_background();
+    result
+}
+
+/// Checks the view files every `every` and reloads them on a change (V21
+/// C), on the acceptor's runtime (never a serving thread); the stat and
+/// reads in a blocking task. Ends with the runtime.
+async fn reload_views(app: Arc<App>, every: Duration) {
+    let mut tick = tokio::time::interval(every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let app = app.clone();
+        let _ = tokio::task::spawn_blocking(move || app.reload_views()).await;
+    }
 }
 
 /// Hands `listener`'s connections round-robin to `threads` until `until`
