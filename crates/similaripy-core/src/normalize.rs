@@ -1,7 +1,7 @@
 //! In-place CSR normalizations (l1, l2, max, TF-IDF, BM25+), and the per-event
 //! decay of `time_decay` / `rank_decay` (`Decay`, `user_ages`). Generic over
-//! f32/f64 data and i32/i64 indices, since `similaripy.normalization` keeps the
-//! input dtypes.
+//! f32/f64 data, since `similaripy.normalization` keeps the input's float type
+//! (indices are i32, indptr i64).
 //!
 //! Float math: per-row sums in the data type, `log` and the BM25 terms in f64,
 //! rounded back to the data type. Matches similaripy 0.7.0 within rtol 1e-5
@@ -12,10 +12,8 @@ use std::ops::{Add, Div, Mul, Sub};
 use rayon::prelude::*;
 
 use crate::Error;
-use crate::csr::check_indptr;
-
-/// Rows per parallel leaf are grouped until they hold at least this many entries.
-const LEAF_NNZ: usize = 1 << 16;
+use crate::csr::{check_indptr, check_structure};
+use crate::prep::{LEAF_NNZ, par_leaves_one};
 
 pub trait Value:
     Copy
@@ -203,7 +201,7 @@ fn idf_and_doc_len<T: Value>(
     let mut counts = vec![0usize; n_cols];
     let mut doc_len = Vec::with_capacity(if with_doc_len { n_docs } else { 0 });
     for r in 0..n_docs {
-        let (a, z) = (ix(indptr[r]), ix(indptr[r + 1]));
+        let (a, z) = (indptr[r] as usize, indptr[r + 1] as usize);
         let mut len = T::ZERO;
         for (&x, &c) in data[a..z].iter().zip(&indices[a..z]) {
             len = len + x;
@@ -356,10 +354,9 @@ pub fn user_ages(
     if users.iter().any(|&u| u < 0 || u as usize >= n_users) {
         return bad("user code out of range");
     }
-    let t = match (t, kind) {
-        (None, UserAge::SinceLatest) => return bad("SinceLatest needs timestamps"),
-        (t, _) => t,
-    };
+    if t.is_none() && kind == UserAge::SinceLatest {
+        return bad("SinceLatest needs timestamps");
+    }
     let mut start = vec![0usize; n_users + 1];
     for &u in users {
         start[u as usize + 1] += 1;
@@ -418,91 +415,38 @@ fn log_logbase<T: Value>(logbase: f64) -> T {
     T::narrow(T::narrow(logbase).wide().ln())
 }
 
-fn ix(i: i64) -> usize {
-    i as usize
-}
-
 /// The canonical CSR the Python prep passes (`_canonical_csr`): indptr from 0
 /// to nnz, one value per entry, column indices in `0..n_cols`.
 fn check_csr<T>(data: &[T], indices: &[i32], indptr: &[i64], n_cols: usize) -> Result<(), Error> {
-    check_indptr("normalize", indptr, indices.len())?;
+    check_structure("normalize", indptr, indices, n_cols)?;
     if data.len() != indices.len() {
-        return Err(Error::InvalidInput("len(data) != len(indices)".into()));
-    }
-    if indices.iter().any(|&c| c < 0 || c as usize >= n_cols) {
-        return Err(Error::InvalidInput("column index out of range".into()));
+        return Err(Error::InvalidInput(
+            "normalize: len(data) != len(indices)".into(),
+        ));
     }
     Ok(())
 }
 
-/// Runs `f(row, start, row_data)` for every row, in parallel. `data` covers
-/// entries `indptr[0]..indptr[last]` (a split's `indptr` starts past 0);
-/// `start` is the row's absolute offset. Splits by entries, not rows, so
-/// popularity-ordered rows still balance. Same split as `prep::par_leaves`,
-/// kept separate: one data slice (prep's has two).
+/// Runs `f(row, start, row_data)` for every row, in parallel, on
+/// `prep::par_leaves_one`'s leaves (split by entries, so popularity-ordered
+/// rows still balance); `start` is the row's offset in `data`.
 fn par_rows<T, F>(data: &mut [T], indptr: &[i64], f: &F)
 where
     T: Send,
     F: Fn(usize, usize, &mut [T]) + Sync,
 {
-    rows_from(data, indptr, 0, LEAF_NNZ, f)
-}
-
-fn rows_from<T, F>(data: &mut [T], indptr: &[i64], first_row: usize, leaf: usize, f: &F)
-where
-    T: Send,
-    F: Fn(usize, usize, &mut [T]) + Sync,
-{
-    let n = indptr.len() - 1;
-    let base = ix(indptr[0]);
-    if n > 1 && data.len() > leaf {
-        let half = base + data.len() / 2;
-        let mid = indptr.partition_point(|&p| ix(p) <= half).clamp(1, n - 1);
-        let (l, r) = data.split_at_mut(ix(indptr[mid]) - base);
-        rayon::join(
-            || rows_from(l, &indptr[..=mid], first_row, leaf, f),
-            || rows_from(r, &indptr[mid..], first_row + mid, leaf, f),
-        );
-    } else {
-        for i in 0..n {
-            let (a, z) = (ix(indptr[i]), ix(indptr[i + 1]));
-            f(first_row + i, a, &mut data[a - base..z - base]);
+    par_leaves_one(indptr, data, LEAF_NNZ, &|row0, ip, d| {
+        let base = ip[0] as usize;
+        for (i, w) in ip.windows(2).enumerate() {
+            let (a, z) = (w[0] as usize, w[1] as usize);
+            f(row0 + i, a, &mut d[a - base..z - base]);
         }
-    }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
-    use std::sync::Mutex;
-
-    proptest! {
-        // Miri runs ~1000x slower: 8 cases (256 made the Miri job 80-105 min).
-        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
-        // Every row is visited once, with its own offset and entries, however it splits.
-        #[test]
-        fn par_rows_visits_each_row_once(
-            lens in proptest::collection::vec(0usize..6, 1..40),
-            leaf in 0usize..8,
-            offset in 0usize..3,
-        ) {
-            let mut indptr = vec![offset as i64];
-            for l in &lens {
-                indptr.push(indptr.last().unwrap() + *l as i64);
-            }
-            let total = *indptr.last().unwrap() as usize;
-            let mut data: Vec<f32> = (0..total).map(|i| i as f32).collect();
-            let seen = Mutex::new(vec![0; lens.len()]);
-            rows_from(&mut data[offset..], &indptr, 0, leaf, &|r, start, row: &mut [f32]| {
-                assert_eq!(start, indptr[r] as usize);
-                assert_eq!(row.len(), lens[r]);
-                assert!(row.iter().enumerate().all(|(j, &x)| x == (start + j) as f32));
-                seen.lock().unwrap()[r] += 1;
-            });
-            prop_assert!(seen.into_inner().unwrap().iter().all(|&c| c == 1));
-        }
-    }
 
     #[test]
     fn decay_curves() {

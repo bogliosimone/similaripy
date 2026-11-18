@@ -115,11 +115,7 @@ fn canonicalize_with_leaf<V: Value>(
 /// `eliminate_zeros`: sorted by column, duplicates summed (in sorted order),
 /// zeros dropped. Returns the kept length; the result is at the front.
 /// `pairs`: scratch reused across rows.
-pub(crate) fn canonical_row<V: Value>(
-    cols: &mut [i32],
-    vals: &mut [V],
-    pairs: &mut Vec<(i32, V)>,
-) -> usize {
+fn canonical_row<V: Value>(cols: &mut [i32], vals: &mut [V], pairs: &mut Vec<(i32, V)>) -> usize {
     sort_row(cols, vals, pairs);
     let mut n = 0; // entries kept so far, sums still open
     for j in 0..cols.len() {
@@ -180,7 +176,7 @@ fn sort_row<V: Copy>(cols: &mut [i32], vals: &mut [V], pairs: &mut Vec<(i32, V)>
 }
 
 /// Runs `f(first_row, indptr, indices, data)` on leaves of whole rows, in
-/// parallel. Splits by entries (as `normalize::par_rows`), so skewed rows
+/// parallel. Splits by entries, so skewed rows
 /// balance; a leaf's `indptr` slice is absolute, its `indices`/`data` start at
 /// `indptr[0]`.
 pub(crate) fn par_leaves<I: Send, V: Send, F>(
@@ -310,12 +306,12 @@ pub fn group_interactions(
             let c = &b_col[a..z];
             let v = b_val.as_deref().map(|b| &b[a..z]);
             let ts = b_t.as_deref().map(|b| &b[a..z]);
+            // Within a column, by timestamp only where first/last needs it.
+            let by_t = ts.filter(|_| matches!(duplicates, Duplicates::First | Duplicates::Last));
             let mut order: Vec<usize> = (0..z - a).collect();
             order.sort_by(|&x, &y| {
-                c[x].cmp(&c[y]).then_with(|| match (ts, duplicates) {
-                    (Some(ts), Duplicates::First | Duplicates::Last) => ts[x].total_cmp(&ts[y]),
-                    _ => std::cmp::Ordering::Equal,
-                })
+                c[x].cmp(&c[y])
+                    .then_with(|| by_t.map_or(std::cmp::Ordering::Equal, |t| t[x].total_cmp(&t[y])))
             });
             let (mut oc, mut ov) = (Vec::new(), Vec::new());
             let mut g = 0;
