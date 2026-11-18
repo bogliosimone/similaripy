@@ -1155,7 +1155,10 @@ fn default_view_empty_name_unknown_name_and_views_listing() {
 
 #[test]
 fn swap_serves_new_views_from_the_next_request() {
-    let (cfg, files) = views_config(2);
+    let (mut cfg, files) = views_config(2);
+    // No poller: this tests `swap` alone (a tick could reload the rewritten
+    // file first: flaky in CI before).
+    cfg.views.reload_interval = 0.0;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let app = Arc::new(App::new(model(), cfg).unwrap());
