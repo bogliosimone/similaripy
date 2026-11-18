@@ -717,7 +717,9 @@ fn views_checked_and_counted() {
 // blocks (the head spans several drains): the branchy tail after it runs on
 // every request, k 1..4; == the reference (integer sums, exact). Each history
 // row has its own columns (j % 10 == i % 10) and few distinct scores, so the
-// head cuts and then meets ties with lower columns from the next row.
+// head cuts and then meets ties with lower columns from the next row. With
+// 0, 1 (the include) and 2 masks (a view + the include): masked-out
+// candidates in the head and past it.
 #[test]
 fn past_the_drain_head() {
     let n = 300;
@@ -747,18 +749,48 @@ fn past_the_drain_head() {
             excluded: None,
             sorted: true,
         };
-        let (m, ids, want) = (model(&c), ids(&c), reference(&c));
-        for block in [0, 7, 64] {
-            let mut got = (vec![], vec![]);
-            recommend(
-                &m,
-                block,
-                &req(&c, &ids, None, None),
-                &mut got.0,
-                &mut got.1,
-            )
-            .unwrap();
-            assert_eq!(got, want, "k {k}, block {block}");
+        let (m, ids) = (model(&c), ids(&c));
+        let flags = |f: fn(usize) -> bool| Some((0..n as usize).map(f).collect::<Vec<_>>());
+        let (a, b, e) = (
+            flagged(&c, &flags(|j| j % 3 != 0)),
+            flagged(&c, &flags(|j| j % 4 != 1)),
+            flagged(&c, &flags(|j| j % 11 == 5)),
+        );
+        let view = m.view(a.as_deref(), e.as_deref());
+        for masks in 0..3 {
+            let (served, include, c) = match masks {
+                0 => (&m, None, c.clone()),
+                1 => (
+                    &m,
+                    b.as_deref(),
+                    Case {
+                        allowed: flags(|j| j % 4 != 1),
+                        ..c.clone()
+                    },
+                ),
+                _ => (
+                    &view,
+                    b.as_deref(),
+                    Case {
+                        allowed: flags(|j| j % 3 != 0 && j % 4 != 1),
+                        excluded: flags(|j| j % 11 == 5),
+                        ..c.clone()
+                    },
+                ),
+            };
+            let want = reference(&c);
+            for block in [0, 7, 64] {
+                let mut got = (vec![], vec![]);
+                recommend(
+                    served,
+                    block,
+                    &req(&c, &ids, include, None),
+                    &mut got.0,
+                    &mut got.1,
+                )
+                .unwrap();
+                assert_eq!(got, want, "k {k}, masks {masks}, block {block}");
+            }
         }
     }
 }

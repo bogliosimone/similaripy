@@ -15,6 +15,8 @@ use crate::topk::TopK;
 /// As the similarity functions' default threshold 0: negative scores never
 /// enter the top-K, 0.0 ones are dropped by `TopK`.
 const THRESHOLD: f32 = 0.0;
+// `drain_head` masks a candidate out with score -inf: every floor must stay above it.
+const _: () = assert!(THRESHOLD > f32::NEG_INFINITY);
 /// Candidates per request through the branchless drain head, in units of k (`drain_head`; tuned on the M2:
 /// 8 x k, the x86 day confirms it).
 const HEAD: usize = 8;
@@ -785,14 +787,16 @@ impl Scratch {
                     let n = touched.len().min(*head);
                     *head -= n;
                     if n > 0 {
-                        drain_head(sums, &touched[..n], topk, offset);
+                        drain_head::<0>(sums, &touched[..n], topk, offset, &[], &[]);
                     }
                     drain_impl::<0>(sums, &touched[n..], topk, offset, &[], &[])
                 }
                 Masks(Some(a), None) | Masks(None, Some(a)) => {
-                    drain_impl::<1>(sums, touched, topk, offset, a, &[])
+                    drain_masked::<1>(sums, touched, topk, offset, a, &[], head)
                 }
-                Masks(Some(a), Some(b)) => drain_impl::<2>(sums, touched, topk, offset, a, b),
+                Masks(Some(a), Some(b)) => {
+                    drain_masked::<2>(sums, touched, topk, offset, a, b, head)
+                }
             }
         }
         self.touched.clear();
@@ -915,24 +919,64 @@ fn next_col(p: &[Entry], n: usize) -> usize {
     p.get(n).map_or(usize::MAX, |e| e.col as usize)
 }
 
-/// The first `HEAD` x k candidates of a request (no mask), drained without the floor branch: early on most pass
-/// the floor and the branch mispredicts (~k / m taken after m candidates: ~150 per cap-10 request, ~400 at
-/// cap 200). Probe (M2 Pro, Y500M k 100, per request): cap 10 −7..−8%, cap 50 −3..−5%, cap 200 −1%; k 1000 /
-/// 2000 −4..−7%. Past the head, the floor rejects most candidates and the branchy loop wins (a whole-drain
-/// branchless variant lost +2.6% at cap 200).
+/// The first `HEAD` x k candidates of a request, drained without the floor branch: early on most pass the floor and
+/// the branch mispredicts (~k / m taken after m candidates: ~150 per cap-10 request, ~400 at cap 200). Probe (M2
+/// Pro, Y500M k 100, per request): cap 10 −7..−8%, cap 50 −3..−5%, cap 200 −1%; k 1000 / 2000 −4..−7%. Past the
+/// head, the floor rejects most candidates and the branchy loop wins (a whole-drain branchless variant lost +2.6%
+/// at cap 200). `MASKS` as `drain_impl`'s: a masked-out candidate gets score -inf, below every floor (>= 0), so
+/// `push_all` keeps the same pushes and cuts as the gated loop (H2b: selective masks keep the floor at 0 longest).
 ///
 /// # Safety
-/// As `Scratch::drain`.
+/// As `drain_impl`.
 #[inline(never)]
-unsafe fn drain_head(sums: &mut [f32], touched: &[u32], topk: &mut TopK, offset: usize) {
+unsafe fn drain_head<const MASKS: u8>(
+    sums: &mut [f32],
+    touched: &[u32],
+    topk: &mut TopK,
+    offset: usize,
+    a: &[u64],
+    b: &[u64],
+) {
     topk.push_all(
         THRESHOLD,
         touched.iter().map(|&local| {
-            // SAFETY: touched < sums.len().
-            let val = unsafe { std::mem::take(sums.get_unchecked_mut(local as usize)) };
-            ((offset + local as usize) as i32, val)
+            let col = offset + local as usize;
+            // SAFETY: touched < sums.len(); col < n_items and every mask holds words(n_items) words, so the bits
+            // are in bounds for every candidate, not only the ones past the floor (`drain_impl` tests those only).
+            unsafe {
+                let val = std::mem::take(sums.get_unchecked_mut(local as usize));
+                let ok = MASKS == 0 || (bit(a, col) & (MASKS == 1 || bit(b, col)));
+                (col as i32, if ok { val } else { f32::NEG_INFINITY })
+            }
         }),
     );
+}
+
+/// `drain` with one or two masks: the head (`drain_head`), then the gated loop. Out of line: `Scratch::drain`'s
+/// no-mask arm keeps its code (inlined here, the masked heads cost it a reload per accepted push).
+///
+/// # Safety
+/// As `drain_impl`.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+unsafe fn drain_masked<const MASKS: u8>(
+    sums: &mut [f32],
+    touched: &[u32],
+    topk: &mut TopK,
+    offset: usize,
+    a: &[u64],
+    b: &[u64],
+    head: &mut usize,
+) {
+    let n = touched.len().min(*head);
+    *head -= n;
+    // SAFETY: forwarded.
+    unsafe {
+        if n > 0 {
+            drain_head::<MASKS>(sums, &touched[..n], topk, offset, a, b);
+        }
+        drain_impl::<MASKS>(sums, &touched[n..], topk, offset, a, b)
+    }
 }
 
 /// The view's mask and the request's include bits (each None = all allowed),
