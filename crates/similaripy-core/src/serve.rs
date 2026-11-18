@@ -29,8 +29,8 @@ mod request;
 
 pub use model::{BlockSize, CLUSTER_HEAD, Core, Entry, FORMAT, ItemOrder, Model, Parts};
 pub use request::{
-    Batch, BatchRequest, Lists, Request, Stats, Worker, recommend, recommend_batch, score,
-    score_batch,
+    Batch, BatchRequest, Lists, MAX_VIEWS, Request, ScoreRequest, Stats, Worker, recommend,
+    recommend_batch, score, score_batch,
 };
 
 use crate::Error;

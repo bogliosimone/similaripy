@@ -1,5 +1,6 @@
 """Serving engine: `SparseKNN` against a dense float64 reference."""
 
+import inspect
 import json
 import pickle
 from concurrent.futures import ThreadPoolExecutor
@@ -9,6 +10,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
+from similaripy import _core
 from similaripy.serving import SparseKNN
 
 
@@ -118,6 +120,15 @@ def test_keyword_only_options():
         rec.recommend_batch([[5]], None, 5)
     with pytest.raises(TypeError):
         SparseKNN(_S(30, False, seed=3), np.arange(30))
+
+
+def test_defaults_match_the_core():
+    # k, exclude_seen, sorted: the signatures' literals == the Rust core's
+    # Request::default() (the server reads the same: config.rs test, D-A2-3).
+    for f in (SparseKNN.recommend, SparseKNN.recommend_batch):
+        p = inspect.signature(f).parameters
+        got = (p["k"].default, p["exclude_seen"].default, p["sorted"].default)
+        assert got == _core.REQUEST_DEFAULTS, f.__name__
 
 
 def test_item_ids_property():

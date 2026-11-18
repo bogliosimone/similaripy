@@ -18,8 +18,13 @@ const THRESHOLD: f32 = 0.0;
 /// 8 x k, the x86 day confirms it).
 const HEAD: usize = 8;
 
+/// Extra views per request at most (`Request::views`, `ScoreRequest::views`).
+pub const MAX_VIEWS: usize = 8;
+
 /// One history. Ids are the caller's (the model's external ids, or S's column
 /// indices without them); ids the model doesn't have are ignored everywhere.
+/// `Default`: the library's defaults (k 10, exclude_seen, sorted), no history,
+/// no rules: set what differs, `..Default::default()` for the rest.
 pub struct Request<'a> {
     pub ids: &'a [i64],
     /// One finite weight per id; None = all 1.0.
@@ -34,6 +39,36 @@ pub struct Request<'a> {
     pub exclude: Option<&'a [i64]>,
     /// Best first; false = the same items in any order (no sort).
     pub sorted: bool,
+    /// More views of the served model (`Model::view` of the same base, at
+    /// most `MAX_VIEWS`): an item must be allowed by every one, ANDed with the
+    /// served model's mask and `include` (V16).
+    pub views: &'a [&'a Model],
+}
+
+impl Default for Request<'_> {
+    fn default() -> Self {
+        Self {
+            ids: &[],
+            weights: None,
+            k: 10,
+            exclude_seen: true,
+            include: None,
+            exclude: None,
+            sorted: true,
+            views: &[],
+        }
+    }
+}
+
+/// One history and the items to score (`Worker::score`): ids as `Request`'s,
+/// `views` as `Request::views` (an item one of them excludes scores 0.0).
+#[derive(Default)]
+pub struct ScoreRequest<'a> {
+    pub ids: &'a [i64],
+    /// One finite weight per id; None = all 1.0.
+    pub weights: Option<&'a [f32]>,
+    pub items: &'a [i64],
+    pub views: &'a [&'a Model],
 }
 
 /// Per-thread state reused across requests; between requests `sums` is all
@@ -177,6 +212,12 @@ impl Worker {
                 return invalid("weights must be finite");
             }
         }
+        if !req.views.is_empty()
+            && let Err(e) = check_views(model, req.views)
+        {
+            self.stats.errors += 1;
+            return Err(e);
+        }
         let mut s = self.scratch.take().unwrap_or_default();
         let known = s.run(model, self.block, req, out);
         self.stats.known_ids += known as u64;
@@ -184,31 +225,32 @@ impl Worker {
         Ok(())
     }
 
-    /// The scores of `items` for one history into `out` (replaced), aligned
-    /// with `items` (duplicates repeated): `sum_i w_i * S[i, j]`, the same
-    /// bits as `recommend`'s score of j (same accumulation; the block size
-    /// changes no column's addition order). No top-K, no threshold. 0.0 for
-    /// items the model doesn't have, items with no column (e.g. outside a
-    /// trimmed build's candidates) and items the view's mask excludes; the
-    /// request has no include / exclude (availability is retrieval's).
+    /// The scores of `req.items` for one history into `out` (replaced),
+    /// aligned with the items (duplicates repeated): `sum_i w_i * S[i, j]`,
+    /// the same bits as `recommend`'s score of j (same accumulation; the block
+    /// size changes no column's addition order). No top-K, no threshold. 0.0
+    /// for items the model doesn't have, items with no column (e.g. outside a
+    /// trimmed build's candidates) and items the view's mask or `req.views`
+    /// exclude; the request has no include / exclude (availability is
+    /// retrieval's).
     pub fn score(
         &mut self,
         model: &Model,
-        ids: &[i64],
-        weights: Option<&[f32]>,
-        items: &[i64],
+        req: &ScoreRequest,
         out: &mut Vec<f32>,
     ) -> Result<(), Error> {
         self.stats.requests += 1;
-        self.stats.ids += ids.len() as u64;
-        if let Err(e) = check_weights(ids, weights) {
+        self.stats.ids += req.ids.len() as u64;
+        if let Err(e) =
+            check_weights(req.ids, req.weights).and_then(|()| check_views(model, req.views))
+        {
             self.stats.errors += 1;
             return Err(e);
         }
         out.clear();
-        out.resize(items.len(), 0.0);
+        out.resize(req.items.len(), 0.0);
         let mut s = self.scratch.take().unwrap_or_default();
-        let known = s.score(model, self.block, ids, weights, items, &mut self.cand, out);
+        let known = s.score(model, self.block, req, &mut self.cand, out);
         self.stats.known_ids += known as u64;
         self.scratch = Some(s);
         Ok(())
@@ -245,17 +287,25 @@ fn check_weights(ids: &[i64], weights: Option<&[f32]>) -> Result<(), Error> {
     Ok(())
 }
 
+/// `views`: at most `MAX_VIEWS`, each a view of `model`'s base. Out of line
+/// and only called with views: the request path keeps its registers.
+#[cold]
+#[inline(never)]
+fn check_views(model: &Model, views: &[&Model]) -> Result<(), Error> {
+    if views.len() > MAX_VIEWS {
+        return invalid(format!("views: at most {MAX_VIEWS} per request"));
+    }
+    if !views.iter().all(|v| v.same_core(model)) {
+        return invalid("views: each must be a view of the served model (the same base)");
+    }
+    Ok(())
+}
+
 /// `Worker::score` on the calling thread's implicit worker, with a resolved
 /// `block` (`BlockSize::resolve`).
-pub fn score(
-    model: &Model,
-    block: usize,
-    ids: &[i64],
-    weights: Option<&[f32]>,
-    items: &[i64],
-) -> Result<Vec<f32>, Error> {
+pub fn score(model: &Model, block: usize, req: &ScoreRequest) -> Result<Vec<f32>, Error> {
     let mut out = Vec::new();
-    with_worker(block, |w| w.score(model, ids, weights, items, &mut out))?;
+    with_worker(block, |w| w.score(model, req, &mut out))?;
     Ok(out)
 }
 
@@ -269,6 +319,7 @@ pub fn score_batch(
     histories: Lists,
     weights: Option<&[f32]>,
     items: Lists,
+    views: &[&Model],
 ) -> Result<Vec<f32>, Error> {
     let users = histories.offsets.len().saturating_sub(1);
     histories.check("histories", users)?;
@@ -285,13 +336,13 @@ pub fn score_batch(
                 histories.offsets[u] as usize,
                 histories.offsets[u + 1] as usize,
             );
-            score(
-                model,
-                block,
-                &histories.ids[a..z],
-                weights.map(|w| &w[a..z]),
-                items.get(u),
-            )
+            let req = ScoreRequest {
+                ids: &histories.ids[a..z],
+                weights: weights.map(|w| &w[a..z]),
+                items: items.get(u),
+                views,
+            };
+            score(model, block, &req)
         })
         .collect::<Result<_, _>>()?;
     Ok(rows.concat())
@@ -342,7 +393,8 @@ impl<'a> Lists<'a> {
 
 /// Many histories, each answered as a `Request` with the same options:
 /// `weights` aligned with `histories.ids`, `include` / `exclude` one list per
-/// user (`no_include[u]`: user u has no include rule).
+/// user (`no_include[u]`: user u has no include rule), `views` for every user.
+/// `Default`: no users, `Request::default()`'s options.
 pub struct BatchRequest<'a> {
     pub histories: Lists<'a>,
     pub weights: Option<&'a [f32]>,
@@ -352,6 +404,27 @@ pub struct BatchRequest<'a> {
     pub no_include: Option<&'a [bool]>,
     pub exclude: Option<Lists<'a>>,
     pub sorted: bool,
+    pub views: &'a [&'a Model],
+}
+
+impl Default for BatchRequest<'_> {
+    fn default() -> Self {
+        let r = Request::default();
+        Self {
+            histories: Lists {
+                offsets: &[0],
+                ids: &[],
+            },
+            weights: None,
+            k: r.k,
+            exclude_seen: r.exclude_seen,
+            include: None,
+            no_include: None,
+            exclude: None,
+            sorted: r.sorted,
+            views: &[],
+        }
+    }
 }
 
 /// Batch results, one list per user: (offsets, the caller's ids, scores).
@@ -401,6 +474,7 @@ pub fn recommend_batch(
                     .map(|l| l.get(u)),
                 exclude: b.exclude.map(|l| l.get(u)),
                 sorted: b.sorted,
+                views: b.views,
             };
             // Sized by the row's one exact-size `extend`, not k: every row
             // stays alive until the batch ends (k ~ n_items x many users).
@@ -456,10 +530,18 @@ impl Scratch {
         }
         self.topk.set_k(req.k.min(m.n_active));
         let block = self.block(m, block);
-        let allowed = Masks(m.allowed.as_deref(), req.include.map(|_| &include[..]));
+        let include_bits = req.include.map(|_| &include[..]);
+        let mut buf = [(0, &[][..]); MAX_MASKS];
+        let (allowed, many) = if req.views.iter().all(|v| v.allowed.is_none()) {
+            (Masks(m.allowed.as_deref(), include_bits), &[][..])
+        } else {
+            let n_include = include_bits.map_or(0, |_| self.included.len());
+            masks(m, include_bits, n_include, req.views, &mut buf)
+        };
         // SAFETY: hist / blocked ids < n_items (lookup); sums.len() >= block;
-        // the view's mask and `include` hold >= words(n_items) words.
-        unsafe { self.accumulate_all(m, block, allowed) };
+        // every mask holds words(n_items) words (views share the core:
+        // `check_views`).
+        unsafe { self.accumulate_all(m, block, allowed, many) };
         #[cfg(test)]
         tests::panic_if_asked();
         if req.include.is_some() {
@@ -496,16 +578,13 @@ impl Scratch {
         block
     }
 
-    /// Scores of `items` into `out` (zeros, one per item): see
+    /// Scores of `req.items` into `out` (zeros, one per item): see
     /// `Worker::score`. Returns how many history ids the model has.
-    #[allow(clippy::too_many_arguments)]
     fn score(
         &mut self,
         m: &Model,
         block: usize,
-        ids: &[i64],
-        weights: Option<&[f32]>,
-        items: &[i64],
+        req: &ScoreRequest,
         cand: &mut Vec<(u32, u32)>,
         out: &mut [f32],
     ) -> usize {
@@ -514,20 +593,23 @@ impl Scratch {
         // The worker's, not a scratch field (recommend's Scratch layout, and
         // so its asm, stays as it is).
         cand.clear();
-        cand.extend(items.iter().enumerate().filter_map(|(pos, &id)| {
+        cand.extend(req.items.iter().enumerate().filter_map(|(pos, &id)| {
             let i = m.internal(id)?;
-            // SAFETY: i < n_items; the mask holds words(n_items) words.
-            let allowed = m
-                .allowed
-                .as_deref()
-                .is_none_or(|a| unsafe { bit(a, i as usize) });
-            ((i as usize) < m.n_active && allowed).then_some((i, pos as u32))
+            let allowed = |v: &Model| {
+                // SAFETY: i < n_items; every mask holds words(n_items) words
+                // (the views share the core: `check_views`).
+                v.allowed
+                    .as_deref()
+                    .is_none_or(|a| unsafe { bit(a, i as usize) })
+            };
+            ((i as usize) < m.n_active && allowed(m) && req.views.iter().all(|v| allowed(v)))
+                .then_some((i, pos as u32))
         }));
         cand.sort_unstable();
         self.hist.clear();
         // Looked up even with no candidate: `known` stays exact (the
         // server's `history.unknown`).
-        m.lookup_into::<true>(ids, weights, &mut self.hist);
+        m.lookup_into::<true>(req.ids, req.weights, &mut self.hist);
         let known = self.hist.len();
         let Some(&(last, _)) = cand.last() else {
             return known;
@@ -581,7 +663,13 @@ impl Scratch {
 
     /// # Safety
     /// See the call in `run`.
-    unsafe fn accumulate_all(&mut self, m: &Model, block: usize, allowed: Masks) {
+    unsafe fn accumulate_all(
+        &mut self,
+        m: &Model,
+        block: usize,
+        allowed: Masks,
+        many: &[(usize, &[u64])],
+    ) {
         let pairs: &[Entry] = &m.pairs;
         let n_active = m.n_active;
         // Per-row column blocks, as the kernel's `blocked_row`; one block (every
@@ -597,7 +685,13 @@ impl Scratch {
             unsafe { self.accumulate_block(pairs, start, hi, n_active) };
             if !self.touched.is_empty() {
                 // SAFETY: forwarded.
-                unsafe { self.drain(start, allowed, &mut head) };
+                unsafe {
+                    if many.is_empty() {
+                        self.drain(start, allowed, &mut head);
+                    } else {
+                        self.drain_many(start, many);
+                    }
+                };
             }
             // Even when the drain was skipped: the slots were set.
             self.preset(start, hi, 0.0);
@@ -690,6 +784,16 @@ impl Scratch {
                 Masks(Some(a), Some(b)) => drain_impl::<2>(sums, touched, topk, offset, a, b),
             }
         }
+        self.touched.clear();
+    }
+
+    /// `drain` with three or more masks (`masks`' list).
+    ///
+    /// # Safety
+    /// As `drain`; every mask holds words(n_items) words.
+    unsafe fn drain_many(&mut self, offset: usize, masks: &[(usize, &[u64])]) {
+        // SAFETY: forwarded.
+        unsafe { drain_many(&mut self.sums, &self.touched, &mut self.topk, offset, masks) };
         self.touched.clear();
     }
 }
@@ -820,9 +924,49 @@ unsafe fn drain_head(sums: &mut [f32], touched: &[u32], topk: &mut TopK, offset:
     );
 }
 
-/// The view's mask and the request's include bits (each None = all allowed).
+/// The view's mask and the request's include bits (each None = all allowed),
+/// or any two masks of a request with views.
 #[derive(Clone, Copy)]
 struct Masks<'a>(Option<&'a [u64]>, Option<&'a [u64]>);
+
+/// The served model's mask, the include bits and `MAX_VIEWS` views' masks.
+const MAX_MASKS: usize = MAX_VIEWS + 2;
+
+/// The masks of a request with views: the served model's, the include bits
+/// (`n_include` ids set) and the views', the present ones only, most
+/// selective first (fewest allowed: a rejected item stops at the first test,
+/// D-A2-1). Up to two go to today's drains (`Masks`, the list empty), more to
+/// `drain_many` (the list). Out of line: requests without views never call it.
+#[inline(never)]
+fn masks<'a>(
+    m: &'a Model,
+    include: Option<&'a [u64]>,
+    n_include: usize,
+    views: &[&'a Model],
+    buf: &'a mut [(usize, &'a [u64]); MAX_MASKS],
+) -> (Masks<'a>, &'a [(usize, &'a [u64])]) {
+    let mut n = 0;
+    let served = m.allowed.as_deref().map(|a| (m.n_allowed, a));
+    let rest = views
+        .iter()
+        .filter_map(|v| Some((v.n_allowed, v.allowed.as_deref()?)));
+    for e in served
+        .into_iter()
+        .chain(include.map(|a| (n_include, a)))
+        .chain(rest)
+    {
+        buf[n] = e;
+        n += 1;
+    }
+    let found = &mut buf[..n];
+    found.sort_unstable_by_key(|&(count, _)| count);
+    match *found {
+        [] => (Masks(None, None), &[]),
+        [(_, a)] => (Masks(Some(a), None), &[]),
+        [(_, a), (_, b)] => (Masks(Some(a), Some(b)), &[]),
+        _ => (Masks(None, None), found),
+    }
+}
 
 /// DOT drain: score = sum; `MASKS` masks (0, 1 in `a`, 2 in `a` and `b`)
 /// are tested only for scores that pass the floor (most never do: <= 1%
@@ -846,6 +990,37 @@ unsafe fn drain_impl<const MASKS: u8>(
             let val = std::mem::take(sums.get_unchecked_mut(local as usize));
             let col = offset + local as usize;
             if val >= floor && (MASKS == 0 || (bit(a, col) && (MASKS == 1 || bit(b, col)))) {
+                topk.push(col as i32, val);
+                floor = topk.floor(THRESHOLD);
+            }
+        }
+    }
+}
+
+/// `drain_impl` over three or more masks (`masks`' list), each tested only
+/// for a score that passes the floor, the most selective first. Out of line,
+/// beside `Scratch::drain`: the two-mask drains keep their code. Under
+/// selective masks the floor stays at the threshold longest (2k allowed
+/// pushes before the first cut), so most positive candidates pay the first
+/// test.
+///
+/// # Safety
+/// As `Scratch::drain`; every mask holds words(n_items) words.
+#[inline(never)]
+unsafe fn drain_many(
+    sums: &mut [f32],
+    touched: &[u32],
+    topk: &mut TopK,
+    offset: usize,
+    masks: &[(usize, &[u64])],
+) {
+    let mut floor = topk.floor(THRESHOLD);
+    for &local in touched {
+        // SAFETY: touched < sums.len(); col < n_items (caller).
+        unsafe {
+            let val = std::mem::take(sums.get_unchecked_mut(local as usize));
+            let col = offset + local as usize;
+            if val >= floor && masks.iter().all(|&(_, a)| bit(a, col)) {
                 topk.push(col as i32, val);
                 floor = topk.floor(THRESHOLD);
             }
@@ -899,12 +1074,9 @@ mod tests {
         let m = Model::with_order(s, vec![0, 1, 2], None).unwrap();
         let req = |include| Request {
             ids: &[0],
-            weights: None,
             k: 5,
-            exclude_seen: true,
             include: Some(include),
-            exclude: None,
-            sorted: true,
+            ..Default::default()
         };
         let run = |w: &mut Worker, r: &Request| {
             let mut out = (vec![], vec![]);

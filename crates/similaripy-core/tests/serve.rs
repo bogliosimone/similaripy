@@ -7,8 +7,8 @@
 use proptest::prelude::*;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{
-    BatchRequest, BlockSize, Entry, ItemOrder, Lists, Model, Request, Stats, Worker, recommend,
-    recommend_batch, score, score_batch,
+    BatchRequest, BlockSize, Entry, ItemOrder, Lists, MAX_VIEWS, Model, Request, ScoreRequest,
+    Stats, Worker, recommend, recommend_batch, score, score_batch,
 };
 
 #[derive(Debug, Clone)]
@@ -306,6 +306,16 @@ fn req<'a>(
         include,
         exclude,
         sorted: c.sorted,
+        ..Default::default()
+    }
+}
+
+fn sreq<'a>(c: &'a Case, ids: &'a [i64], items: &'a [i64]) -> ScoreRequest<'a> {
+    ScoreRequest {
+        ids,
+        weights: c.weights.as_deref(),
+        items,
+        ..Default::default()
     }
 }
 
@@ -462,7 +472,7 @@ proptest! {
             include: pi.as_ref().map(|(o, i)| Lists { offsets: o, ids: i }),
             no_include: inc.as_ref().map(|_| &[false, true, false][..]),
             exclude: pe.as_ref().map(|(o, i)| Lists { offsets: o, ids: i }),
-            sorted: true,
+            ..Default::default()
         }).unwrap();
         let l = want.0.len();
         prop_assert_eq!(o, vec![0, l as i64, l as i64, 2 * l as i64]);
@@ -515,7 +525,7 @@ proptest! {
         let m = model(&c).view(inc.as_deref(), exc.as_deref());
         let n = c.s.len();
         let items: Vec<i64> = (0..n).rev().chain([0]).map(|j| ext_of(&c, j)).chain([unknown_id(&c)]).collect();
-        let got = score(&m, block, &ids(&c), c.weights.as_deref(), &items).unwrap();
+        let got = score(&m, block, &sreq(&c, &ids(&c), &items)).unwrap();
         let want: Vec<f32> = (0..n).rev().chain([0]).map(|j| {
             let ok = kept(&c, j) && c.allowed.as_ref().is_none_or(|a| a[j])
                 && !c.excluded.as_ref().is_some_and(|x| x[j]);
@@ -536,11 +546,11 @@ proptest! {
         let mut rec = (vec![], vec![]);
         let all = Request { k: c.s.len(), exclude_seen: false, include: None, exclude: None, ..req(&c, &ids, None, None) };
         recommend(&m, block, &all, &mut rec.0, &mut rec.1).unwrap();
-        let got = score(&m, block, &ids, c.weights.as_deref(), &rec.0).unwrap();
+        let got = score(&m, block, &sreq(&c, &ids, &rec.0)).unwrap();
         prop_assert_eq!(bits(&got), bits(&rec.1));
         // Batch [history, empty history with items, history with no items].
         let items: Vec<i64> = (0..c.s.len()).map(|j| ext_of(&c, j)).collect();
-        let single = score(&m, block, &ids, c.weights.as_deref(), &items).unwrap();
+        let single = score(&m, block, &sreq(&c, &ids, &items)).unwrap();
         let (h, k) = (ids.len() as i64, items.len() as i64);
         let both: Vec<i64> = ids.iter().chain(&ids).copied().collect();
         let w2 = c.weights.as_ref().map(|w| w.iter().chain(w).copied().collect::<Vec<_>>());
@@ -551,6 +561,7 @@ proptest! {
             Lists { offsets: &[0, h, h, 2 * h], ids: &both },
             w2.as_deref(),
             Lists { offsets: &[0, k, 2 * k, 2 * k], ids: &it2 },
+            &[],
         ).unwrap();
         prop_assert_eq!(bits(&flat[..k as usize]), bits(&single));
         prop_assert!(flat[k as usize..].iter().all(|&v| v == 0.0));
@@ -590,10 +601,120 @@ proptest! {
                 prop_assert_eq!(x, y);
             }
             let mut sc = vec![1.0];
-            w.score(m, &ids, c.weights.as_deref(), &got.0, &mut sc).unwrap();
-            prop_assert_eq!(bits(&sc), bits(&score(m, 0, &ids, c.weights.as_deref(), &got.0).unwrap()));
+            w.score(m, &sreq(&c, &ids, &got.0), &mut sc).unwrap();
+            prop_assert_eq!(bits(&sc), bits(&score(m, 0, &sreq(&c, &ids, &got.0)).unwrap()));
         }
     }
+
+    // Several views per request (V16) == one combined view (a view of a view
+    // ANDs): the served model (the base, or the case's include / exclude
+    // view) with 0..4 extra views and maybe the case's include per call ==
+    // the served model narrowed by every view, the same ids and bits (any
+    // order: the same pushes), any block; batch and score too. 0..6 masks:
+    // the two-mask drains and `drain_many`, in every order of selectivity.
+    #[test]
+    fn views_match_one_combined_view(
+        (c, extra) in case(true).prop_flat_map(|c| {
+            let n = c.s.len();
+            let flags = move |p| prop::option::of(prop::collection::vec(prop::bool::weighted(p), n));
+            (Just(c), prop::collection::vec((flags(0.7), flags(0.2)), 0..5))
+        }),
+        served_view in prop::bool::ANY,
+        call_include in prop::bool::ANY,
+        block in 0usize..6,
+    ) {
+        let base = model(&c);
+        let (inc, exc) = (flagged(&c, &c.allowed), flagged(&c, &c.excluded));
+        let served = if served_view { base.view(inc.as_deref(), exc.as_deref()) } else { base.view(None, None) };
+        let rules: Vec<_> = extra.iter().map(|(i, e)| (flagged(&c, i), flagged(&c, e))).collect();
+        let views: Vec<Model> = rules.iter().map(|(i, e)| base.view(i.as_deref(), e.as_deref())).collect();
+        let views: Vec<&Model> = views.iter().collect();
+        let combined = rules.iter().fold(served.view(None, None), |m, (i, e)| m.view(i.as_deref(), e.as_deref()));
+        let ids = ids(&c);
+        let include = if call_include { inc.as_deref() } else { None };
+        let r = Request { include, ..req(&c, &ids, None, None) };
+        let (mut got, mut want) = ((vec![], vec![]), (vec![], vec![]));
+        recommend(&served, block, &Request { views: &views, ..r }, &mut got.0, &mut got.1).unwrap();
+        recommend(&combined, block, &r, &mut want.0, &mut want.1).unwrap();
+        prop_assert_eq!(&got.0, &want.0);
+        prop_assert_eq!(bits(&got.1), bits(&want.1));
+        // Batch of [history, history]: views shared by every user.
+        let n = ids.len() as i64;
+        let both: Vec<i64> = ids.iter().chain(&ids).copied().collect();
+        let w2 = c.weights.as_ref().map(|w| w.iter().chain(w).copied().collect::<Vec<_>>());
+        let offsets = [0, n, 2 * n];
+        let b = |views| BatchRequest {
+            histories: Lists { offsets: &offsets, ids: &both },
+            weights: w2.as_deref(),
+            k: c.k,
+            exclude_seen: c.exclude_seen,
+            sorted: c.sorted,
+            views,
+            ..Default::default()
+        };
+        let (got_b, want_b) = (
+            recommend_batch(&served, block_size(block), &b(&views)).unwrap(),
+            recommend_batch(&combined, block_size(block), &b(&[])).unwrap(),
+        );
+        prop_assert_eq!(&got_b.1, &want_b.1);
+        prop_assert_eq!(bits(&got_b.2), bits(&want_b.2));
+        // Score: an item a view excludes scores 0.0.
+        let items: Vec<i64> = (0..c.s.len()).map(|j| ext_of(&c, j)).collect();
+        let s = sreq(&c, &ids, &items);
+        let got_s = score(&served, block, &ScoreRequest { views: &views, ..s }).unwrap();
+        prop_assert_eq!(bits(&got_s), bits(&score(&combined, block, &s).unwrap()));
+    }
+}
+
+// Views per request: at most MAX_VIEWS, each of the served model's base (a
+// model built again from the same S is another model), counted as errors;
+// `n_allowed` counts items, not the last word's spare bits.
+#[test]
+fn views_checked_and_counted() {
+    let n = 70; // two mask words, 6 spare bits
+    let s: Vec<Vec<f32>> = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| if (i + j) % 3 == 0 { 1.0 } else { 0.0 })
+                .collect()
+        })
+        .collect();
+    let order: Vec<i32> = (0..n as i32).collect();
+    let (m, other) = (
+        build(&s, &order, None).unwrap(),
+        build(&s, &order, None).unwrap(),
+    );
+    assert_eq!(m.n_allowed(), n);
+    assert_eq!(m.view(None, Some(&[0, 1, 99])).n_allowed(), n - 2);
+    let v = m.view(Some(&[3, 4, 5]), None);
+    assert_eq!(
+        (v.n_allowed(), v.view(None, Some(&[4])).n_allowed()),
+        (3, 2)
+    );
+    let mut w = Worker::new(&m, BlockSize::Off, 1).unwrap();
+    let mut out = (vec![], vec![]);
+    let foreign = other.view(None, None);
+    let many: Vec<&Model> = vec![&v; MAX_VIEWS + 1];
+    for (views, ok) in [
+        (&[&foreign][..], false),
+        (&many[..MAX_VIEWS], true),
+        (&many[..], false),
+    ] {
+        let r = Request {
+            ids: &[0],
+            views,
+            ..Default::default()
+        };
+        assert_eq!(w.recommend(&m, &r, &mut out.0, &mut out.1).is_ok(), ok);
+        let sr = ScoreRequest {
+            ids: &[0],
+            items: &[3],
+            views,
+            ..Default::default()
+        };
+        assert_eq!(w.score(&m, &sr, &mut vec![]).is_ok(), ok);
+    }
+    assert_eq!((w.stats().requests, w.stats().errors), (6, 4));
 }
 
 // More candidates than the drain head (8 x k) takes, in one block and across
@@ -668,9 +789,7 @@ fn worker_block_and_stats() {
         weights,
         k: 5,
         exclude_seen: false,
-        include: None,
-        exclude: None,
-        sorted: true,
+        ..Default::default()
     };
     let mut out = (vec![], vec![]);
     // ids 0, 0, 2 known, 3 and 9 unknown.
@@ -685,9 +804,14 @@ fn worker_block_and_stats() {
             .is_err()
     );
     let mut sc = vec![];
-    w.score(&m, &[0, 9], None, &[1, 2, 3], &mut sc).unwrap();
+    let sr = |ids, items| ScoreRequest {
+        ids,
+        items,
+        ..Default::default()
+    };
+    w.score(&m, &sr(&[0, 9], &[1, 2, 3]), &mut sc).unwrap();
     assert_eq!(sc, vec![1.0, 0.0, 0.0]);
-    w.score(&m, &[0], None, &[2], &mut sc).unwrap(); // no candidate column: still looked up
+    w.score(&m, &sr(&[0], &[2]), &mut sc).unwrap(); // no candidate column: still looked up
     assert_eq!(sc, vec![0.0]);
     assert_eq!(
         w.stats(),
@@ -718,10 +842,7 @@ fn rejects_bad_input() {
         ids,
         weights: w,
         k: 5,
-        exclude_seen: true,
-        include: None,
-        exclude: None,
-        sorted: true,
+        ..Default::default()
     };
     assert!(run(&r(&[0], Some(&[f32::NAN]))).is_err());
     assert!(run(&r(&[0], Some(&[1.0, 2.0]))).is_err());
@@ -766,11 +887,7 @@ fn rejects_bad_input() {
                 histories: Lists { offsets, ids },
                 weights,
                 k: usize::MAX / 2,
-                exclude_seen: true,
-                include: None,
-                no_include: None,
-                exclude: None,
-                sorted: true,
+                ..Default::default()
             },
         )
     };
@@ -894,12 +1011,8 @@ fn save_load_round_trip_and_versions() {
         let mut out = (vec![], vec![]);
         let r = Request {
             ids: &[10],
-            weights: None,
             k: 5,
-            exclude_seen: true,
-            include: None,
-            exclude: None,
-            sorted: true,
+            ..Default::default()
         };
         recommend(m, 2, &r, &mut out.0, &mut out.1).unwrap();
         out

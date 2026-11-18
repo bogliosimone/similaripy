@@ -249,7 +249,7 @@ fn same_ids_and_bits_as_python_recommend() {
                     exclude_seen,
                     include: include.as_deref(),
                     exclude: excluded.as_deref(),
-                    sorted: true,
+                    ..Default::default()
                 },
             );
             assert_eq!(got.answer(), want, "case {case}: {body}");
@@ -269,12 +269,7 @@ fn defaults_are_pythons() {
         let got: Reply = serde_json::from_str(&text).unwrap();
         let req = Request {
             ids: &ids,
-            weights: None,
-            k: 10,
-            exclude_seen: true,
-            include: None,
-            exclude: None,
-            sorted: true,
+            ..Default::default()
         };
         assert_eq!(got.answer(), python(&reference, &req));
     });
@@ -312,10 +307,7 @@ fn json_f32_parsed_as_python() {
                     ids: &[1000],
                     weights: Some(&w),
                     k: 50,
-                    exclude_seen: true,
-                    include: None,
-                    exclude: None,
-                    sorted: true,
+                    ..Default::default()
                 };
                 assert_eq!(got.answer(), python(&reference, &req), "{s}");
             }
@@ -994,12 +986,10 @@ fn view_answers_equal_core_view_and_and_with_include_exclude() {
                 &core_view(&reference, name, &files),
                 &Request {
                     ids: &ids,
-                    weights: None,
                     k,
-                    exclude_seen: true,
                     include: include.as_deref(),
                     exclude: exclude.as_deref(),
-                    sorted: true,
+                    ..Default::default()
                 },
             );
             let (status, text) = post(addr, &body).await;
@@ -1065,12 +1055,7 @@ fn default_view_empty_name_unknown_name_and_views_listing() {
             m,
             &Request {
                 ids: &ids,
-                weights: None,
-                k: 10,
-                exclude_seen: true,
-                include: None,
-                exclude: None,
-                sorted: true,
+                ..Default::default()
             },
         )
     };
@@ -1413,12 +1398,8 @@ fn view_reload_never_rolls_back_a_swapped_model() {
     let ids = [1000, 1014, 1021];
     let q = Request {
         ids: &ids,
-        weights: None,
         k: 50,
-        exclude_seen: true,
-        include: None,
-        exclude: None,
-        sorted: true,
+        ..Default::default()
     };
     let whole = r#"{"history": [1000, 1014, 1021], "k": 50}"#;
     block_on(async {
@@ -1854,7 +1835,13 @@ async fn post_score(addr: SocketAddr, body: &str) -> (StatusCode, axum::http::He
 /// Python's `SparseKNN.score` (on the view's model): score bits.
 fn python_score(m: &Model, ids: &[i64], weights: Option<&[f32]>, items: &[i64]) -> Vec<u32> {
     let block = BlockSize::Auto.resolve(m.n_active(), usize::MAX).unwrap();
-    let s = score(m, block, ids, weights, items).unwrap();
+    let req = similaripy_core::serve::ScoreRequest {
+        ids,
+        weights,
+        items,
+        ..Default::default()
+    };
+    let s = score(m, block, &req).unwrap();
     s.iter().map(|x| x.to_bits()).collect()
 }
 

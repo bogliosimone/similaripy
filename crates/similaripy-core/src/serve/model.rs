@@ -66,6 +66,9 @@ pub struct Model {
     pub(super) core: Arc<Core>,
     /// Bitset over internal ids; None = all allowed.
     pub(super) allowed: Option<Vec<u64>>,
+    /// Items `allowed` allows (n_items without a mask): counted once, when
+    /// the view is made (a request orders its masks by it, D-A2-1).
+    pub(super) n_allowed: usize,
 }
 
 impl std::ops::Deref for Model {
@@ -347,10 +350,28 @@ impl Model {
             n,
             ext.map(Buf::from),
         )?;
-        Ok(Self {
+        Ok(Self::base(core))
+    }
+
+    /// A model with no mask.
+    fn base(core: Core) -> Self {
+        Self {
+            n_allowed: core.n_items(),
             core: Arc::new(core),
             allowed: None,
-        })
+        }
+    }
+
+    /// A model of `core` with the mask `allowed` (words(n_items) words).
+    fn masked(core: Arc<Core>, allowed: Option<Vec<u64>>) -> Self {
+        let n_allowed = allowed
+            .as_deref()
+            .map_or(core.n_items(), |a| count(a, core.n_items()));
+        Self {
+            core,
+            allowed,
+            n_allowed,
+        }
     }
 
     /// A model from `parts` (pickling, loading), checked as a build's output.
@@ -376,10 +397,7 @@ impl Model {
         {
             return invalid("allowed: one bit per item expected");
         }
-        Ok(Self {
-            core: Arc::new(core),
-            allowed,
-        })
+        Ok(Self::masked(Arc::new(core), allowed))
     }
 
     /// Saves the model in `dir`: one `.npy` per array (S in internal ids,
@@ -475,10 +493,7 @@ impl Model {
         if (core.n_items() as u64, core.pairs.len() as u64) != (uint("n_items")?, uint("nnz")?) {
             return Err(bad("n_items / nnz don't match the arrays".into()));
         }
-        Ok(Self {
-            core: Arc::new(core),
-            allowed: None,
-        })
+        Ok(Self::base(core))
     }
 
     /// The same model (S shared, no copy) whose default mask allows the
@@ -503,10 +518,17 @@ impl Model {
             }
             Some(bits)
         };
-        Self {
-            core: Arc::clone(&self.core),
-            allowed,
-        }
+        Self::masked(Arc::clone(&self.core), allowed)
+    }
+
+    /// Items the view's mask allows (n_items without a mask).
+    pub fn n_allowed(&self) -> usize {
+        self.n_allowed
+    }
+
+    /// Whether `other` is a view of the same model (S shared, no copy).
+    pub(super) fn same_core(&self, other: &Model) -> bool {
+        Arc::ptr_eq(&self.core, &other.core)
     }
 
     pub fn parts(&self) -> Parts<'_> {
@@ -519,6 +541,16 @@ impl Model {
             allowed: self.allowed.as_deref(),
         }
     }
+}
+
+/// Set bits of a mask over `n` items. The last word's bits past `n` can be
+/// set (an exclude-only view starts from all ones): not items, not counted.
+fn count(bits: &[u64], n: usize) -> usize {
+    let full: usize = bits[..n / 64].iter().map(|w| w.count_ones() as usize).sum();
+    let tail = bits
+        .get(n / 64)
+        .map_or(0, |w| (w & ((1 << (n % 64)) - 1)).count_ones());
+    full + tail as usize
 }
 
 impl Core {
