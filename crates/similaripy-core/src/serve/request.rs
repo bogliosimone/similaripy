@@ -20,6 +20,11 @@ const _: () = assert!(THRESHOLD > f32::NEG_INFINITY);
 /// Candidates per request through the branchless drain head, in units of k (`drain_head`; tuned on the M2:
 /// 8 x k, the x86 day confirms it).
 const HEAD: usize = 8;
+/// A request with masks takes the drain head only when its most selective mask allows at least
+/// `n_items / MASKED_HEAD_DIV` items. Below that share, most candidates fail the mask, the gated loop predicts
+/// "reject" well, and the branchless head pays a key store and bit loads per candidate. Views priced (M2 Pro,
+/// Y500M, us / request vs the gated loop): one 0.06% mask +1..+22% (cap 10 +22%), 3-5% neutral, 63% -5..-29%.
+const MASKED_HEAD_DIV: usize = 10;
 
 /// Extra views per request at most (`Request::views`, `ScoreRequest::views`,
 /// `BatchRequest::views`, `score_batch`'s).
@@ -551,10 +556,15 @@ impl Scratch {
             buf = [(0, &[][..]); MAX_MASKS];
             masks(m, include_bits, n_include, req.views, &mut buf)
         };
+        let k = self.topk.k();
+        let head = match allowed {
+            Masks(None, None) => HEAD.saturating_mul(k),
+            _ => masked_head(k, m, req.views, include_bits.map(|_| self.included.len())),
+        };
         // SAFETY: hist / blocked ids < n_items (lookup); sums.len() >= block;
         // every mask holds words(n_items) words (views share the core:
         // `check_views`).
-        unsafe { self.accumulate_all(m, block, allowed, many) };
+        unsafe { self.accumulate_all(m, block, allowed, many, head) };
         #[cfg(test)]
         tests::panic_if_asked();
         if req.include.is_some() {
@@ -682,6 +692,7 @@ impl Scratch {
         block: usize,
         allowed: Masks,
         many: &[(usize, &[u64])],
+        mut head: usize,
     ) {
         let pairs: &[Entry] = &m.pairs;
         let n_active = m.n_active;
@@ -689,7 +700,6 @@ impl Scratch {
         // catalog <= the block size) is this loop once.
         // SAFETY: forwarded.
         unsafe { self.set_cursors(m) };
-        let mut head = HEAD.saturating_mul(self.topk.k());
         let mut start = 0;
         while start < n_active {
             let hi = (start + block).min(n_active);
@@ -979,6 +989,34 @@ unsafe fn drain_masked<const MASKS: u8>(
     }
 }
 
+/// The drain head's budget for a request: `HEAD` x k candidates, or 0 (the gated loop only) when its most
+/// selective mask allows fewer than `n_items / MASKED_HEAD_DIV` items (`fewest`; usize::MAX = no mask).
+#[inline(always)]
+fn head_budget(k: usize, fewest: usize, n_items: usize) -> usize {
+    if fewest >= n_items / MASKED_HEAD_DIV {
+        HEAD.saturating_mul(k)
+    } else {
+        0
+    }
+}
+
+/// `head_budget` of a request with one or two masks, from the fewest allowed by the served model, the include
+/// (`n_include` ids, an upper bound) and the views. Out of line: the no-mask path keeps its registers (computed
+/// in `run`, the history lookup loop kept its length on the stack).
+#[inline(never)]
+fn masked_head(k: usize, m: &Model, views: &[&Model], n_include: Option<usize>) -> usize {
+    let fewest = views
+        .iter()
+        .copied()
+        .chain([m])
+        .filter(|v| v.allowed.is_some())
+        .map(|v| v.n_allowed)
+        .chain(n_include)
+        .min()
+        .unwrap_or(usize::MAX);
+    head_budget(k, fewest, m.n_items())
+}
+
 /// The view's mask and the request's include bits (each None = all allowed),
 /// or any two masks of a request with views.
 #[derive(Clone, Copy)]
@@ -1112,6 +1150,34 @@ mod tests {
 
     thread_local! {
         static PANIC: Cell<bool> = const { Cell::new(false) };
+    }
+
+    #[test]
+    fn masked_head_only_above_the_share() {
+        let n = 100 * MASKED_HEAD_DIV;
+        assert_eq!(head_budget(3, usize::MAX, n), HEAD * 3); // no mask
+        assert_eq!(head_budget(3, 100, n), HEAD * 3); // exactly the share
+        assert_eq!(head_budget(3, 99, n), 0);
+        assert_eq!(head_budget(3, 0, n), 0);
+        assert_eq!(head_budget(usize::MAX, usize::MAX, n), usize::MAX);
+        // The most selective of the served model, the views and the include.
+        let n = 2 * MASKED_HEAD_DIV;
+        let mut indptr = vec![0i64; n + 1];
+        indptr[1..].fill(1);
+        let s = CsrView::new("S", &indptr, &[1], &[1.0f32], n).unwrap();
+        let m = Model::with_order(s, (0..n as i32).collect(), None).unwrap();
+        let ids: Vec<i64> = (0..n as i64).collect();
+        let (broad, one) = (
+            m.view(Some(&ids[..n - 2]), None),
+            m.view(Some(&ids[..1]), None),
+        );
+        let full = HEAD * 3;
+        assert_eq!(masked_head(3, &m, &[], None), full);
+        assert_eq!(masked_head(3, &broad, &[], None), full);
+        assert_eq!(masked_head(3, &m, &[&broad], Some(2)), full); // 2 = n / DIV
+        assert_eq!(masked_head(3, &broad, &[&one], None), 0);
+        assert_eq!(masked_head(3, &one, &[&broad], None), 0);
+        assert_eq!(masked_head(3, &broad, &[&broad], Some(1)), 0);
     }
 
     /// Called by `Scratch::run` mid-request (include bits set, top-K full).
