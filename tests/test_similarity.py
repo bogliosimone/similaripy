@@ -1,14 +1,9 @@
 import numpy as np
 import pytest
 import scipy.sparse as sp
+from _helpers import random_csr, raw_csr
 
 import similaripy as sim
-
-
-def generate_random_matrix(n_rows=100, n_cols=50, density=0.05, seed=42):
-    rng = np.random.default_rng(seed)
-    return sp.random_array((n_rows, n_cols), density=density, format="csr", dtype=np.float32, random_state=rng)
-
 
 # ---- Dense float64 reference: every pair's score from the formulas ----
 
@@ -130,7 +125,7 @@ def test_similarity_matches_dense_reference(name, kw, shrink_type, k, block_size
     # Regression (bayesian): without a normalization term it returned an empty matrix
     if shrink_type is not None:
         kw = {**kw, "shrink": 2.0, "shrink_type": shrink_type}
-    m = generate_random_matrix(400, 300, density=0.03)
+    m = random_csr(400, 300, density=0.03)
     out = getattr(sim, name)(m, k=k, block_size=block_size, verbose=False, **kw)
     _check_scores(out, _dense_scores(m, name, kw), k)
 
@@ -139,7 +134,7 @@ def test_similarity_matches_dense_reference(name, kw, shrink_type, k, block_size
 
 
 def _selector_case():
-    m = generate_random_matrix(400, 300, density=0.03)
+    m = random_csr(400, 300, density=0.03)
     ids = np.random.default_rng(42).choice(400, size=60, replace=False)
     return m, ids, _dense_scores(m, "cosine", {})
 
@@ -176,7 +171,7 @@ def test_filter_cols_matrix():
 
 def test_s_plus_alpha_without_normalization():
     # Regression: alpha was ignored when no normalization term was active
-    m = generate_random_matrix(80, 30, density=0.1).tocsr()
+    m = random_csr(80, 30, density=0.1).tocsr()
     xy = (m @ m.T).toarray()
     out = sim.s_plus(m, l1=0, l2=0, l3=0, alpha=2, k=m.shape[0], verbose=False)
     np.testing.assert_allclose(out.toarray(), xy**2, rtol=1e-5)
@@ -187,7 +182,7 @@ def test_binary_keeps_random_walk_normalization(name):
     # Regression: binary=True was applied after the l1 normalization and erased it
     from similaripy.normalization import binarize
 
-    m = generate_random_matrix(80, 30, density=0.1).tocsr()
+    m = random_csr(80, 30, density=0.1).tocsr()
     f = getattr(sim, name)
     out = f(m, k=10, binary=True, verbose=False)
     np.testing.assert_allclose(out.toarray(), f(binarize(m), k=10, verbose=False).toarray(), rtol=1e-6)
@@ -285,12 +280,9 @@ def test_rp3beta_popularity_on_summed_duplicates(fmt):
     vals[i] += 1  # the pair sums to the original value
     if fmt == "coo":
         dup = sp.coo_array((vals, (rows, cols)), shape=m.shape)
-    else:  # non-canonical CSR: rows grouped, the duplicate last in its row
-        order = np.argsort(rows, kind="stable")
-        rows, cols, vals = rows[order], cols[order], vals[order]
-        indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=m.shape[0]))])
-        dup = sp.csr_array((vals, cols, indptr), shape=m.shape)
-    before = dup.data.copy()  # dup shares vals' buffer
+    else:  # non-canonical CSR: the duplicate last in its row
+        dup = raw_csr(rows, cols, vals, m.shape)
+    before = dup.data.copy()
     np.testing.assert_array_equal(
         sim.rp3beta(dup, beta=0.6, verbose=False).toarray(), sim.rp3beta(m, beta=0.6, verbose=False).toarray()
     )
