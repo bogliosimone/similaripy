@@ -106,6 +106,45 @@ impl TopK {
         self.cut = true;
     }
 
+    /// `push` of every item, without a data-dependent branch: the key is always
+    /// written at the buffer's end and the length advances by `score >= floor`
+    /// (`floor(threshold)`, as the drains' gate). Same pushes, same cuts, same
+    /// results as the gated `push` loop; it wins where most candidates pass the
+    /// floor (a request's first ones, before the cuts raise it), where the
+    /// branch mispredicts. A NaN score is never kept (the compare is false).
+    #[inline(always)]
+    pub fn push_all(&mut self, threshold: f32, items: impl Iterator<Item = (i32, f32)>) {
+        let (k, cap) = (self.k, self.cap);
+        if k == 0 {
+            items.for_each(drop);
+            return;
+        }
+        // One compare per call: the unchecked writes below need n < cap <= capacity.
+        assert!(self.buf.len() < cap && cap <= self.buf.capacity());
+        let mut floor = self.floor(threshold);
+        let mut n = self.buf.len();
+        let mut p = self.buf.as_mut_ptr();
+        for (col, score) in items {
+            // SAFETY: n < cap <= capacity (asserted; a cut leaves n = k < cap).
+            unsafe { p.add(n).write(key(score, col)) };
+            n += (score >= floor) as usize;
+            if n == cap {
+                // SAFETY: entries [0, n) were written.
+                unsafe { self.buf.set_len(n) };
+                self.cut_to_k();
+                floor = self.min;
+                n = k;
+                p = self.buf.as_mut_ptr();
+            }
+        }
+        // SAFETY: entries [0, n) were written.
+        unsafe { self.buf.set_len(n) };
+    }
+
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
     /// Sets k for the next row (serving reuses one `TopK` across requests with
     /// different k). The buffer must be empty, as after a drain.
     pub fn set_k(&mut self, k: usize) {
@@ -359,31 +398,38 @@ mod tests {
 
         // The callers' contract: one `TopK` from `Default` reused across rows
         // with `set_k` (serving), pushes gated by `val >= floor(threshold)` as
-        // the drains do, 0.0 re-pushes of already-pushed columns, k = 0..n+2.
-        // Each row keeps the brute-force k best non-zero entries.
+        // the drains do, after a prefix through `push_all` (serving's drain
+        // head; 0 = none), 0.0 re-pushes of already-pushed columns, -inf
+        // scores (blocked items), k = 0..n+2. Each row keeps the brute-force
+        // k best positive entries.
         #[test]
         fn reused_and_floor_gated_rows_match_brute_force(
             rows in prop::collection::vec(
-                prop::collection::vec((0u8..4, prop::bool::ANY), 0..30)
+                prop::collection::vec((0u8..5, prop::bool::ANY), 0..30)
                     .prop_flat_map(|s| {
                         let n = s.len();
-                        (Just(s).prop_shuffle(), 0..=n + 2)
+                        let cols = Just((0..n as i32).collect::<Vec<_>>()).prop_shuffle();
+                        (Just(s), 0..=n + 2, 0..=2 * n, cols)
                     }),
                 1..6,
             )
         ) {
             let mut t = TopK::default();
-            for (row, k) in rows {
-                // column c: score v at index c; a `true` flag re-pushes c with 0.0 later
+            for (row, k, head, cols) in rows {
+                // push i: column cols[i] (any order: a later push can tie with a lower
+                // column), score v (4 = -inf); a `true` flag re-pushes it with 0.0 later
+                let score = |v: u8| if v == 4 { f32::NEG_INFINITY } else { f32::from(v) };
                 let mut pushes: Vec<(i32, f32)> =
-                    row.iter().enumerate().map(|(c, &(v, _))| (c as i32, f32::from(v))).collect();
-                pushes.extend(row.iter().enumerate().filter(|(_, (_, z))| *z).map(|(c, _)| (c as i32, 0.0)));
-                let mut want: Vec<(i32, f32)> = pushes.iter().copied().filter(|&(_, s)| s != 0.0).collect();
+                    row.iter().zip(&cols).map(|(&(v, _), &c)| (c, score(v))).collect();
+                pushes.extend(row.iter().zip(&cols).filter(|((_, z), _)| *z).map(|(_, &c)| (c, 0.0)));
+                let mut want: Vec<(i32, f32)> = pushes.iter().copied().filter(|&(_, s)| s > 0.0).collect();
                 want.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
                 want.truncate(k);
                 want.sort_by_key(|&(c, _)| c);
                 t.set_k(k);
-                for (c, s) in pushes {
+                let head = head.min(pushes.len());
+                t.push_all(0.0, pushes[..head].iter().copied());
+                for &(c, s) in &pushes[head..] {
                     if s >= t.floor(0.0) {
                         t.push(c, s);
                     }

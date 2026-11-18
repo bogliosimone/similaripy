@@ -596,6 +596,56 @@ proptest! {
     }
 }
 
+// More candidates than the drain head (8 x k) takes, in one block and across
+// blocks (the head spans several drains): the branchy tail after it runs on
+// every request, k 1..4; == the reference (integer sums, exact). Each history
+// row has its own columns (j % 10 == i % 10) and few distinct scores, so the
+// head cuts and then meets ties with lower columns from the next row.
+#[test]
+fn past_the_drain_head() {
+    let n = 300;
+    let s: Vec<Vec<f32>> = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| {
+                    if j % 10 == i % 10 {
+                        ((i * 7 + j * 13) % 4 + 1) as f32
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    for k in 1..5 {
+        let c = Case {
+            s: s.clone(),
+            new_to_old: (0..n).rev().collect(),
+            ext: None,
+            hist: vec![Some(3), Some(250), Some(17)],
+            weights: None,
+            k,
+            exclude_seen: true,
+            allowed: None,
+            excluded: None,
+            sorted: true,
+        };
+        let (m, ids, want) = (model(&c), ids(&c), reference(&c));
+        for block in [0, 7, 64] {
+            let mut got = (vec![], vec![]);
+            recommend(
+                &m,
+                block,
+                &req(&c, &ids, None, None),
+                &mut got.0,
+                &mut got.1,
+            )
+            .unwrap();
+            assert_eq!(got, want, "k {k}, block {block}");
+        }
+    }
+}
+
 #[test]
 fn worker_block_and_stats() {
     // Item 2 has no column; item 3 is dropped (unknown).

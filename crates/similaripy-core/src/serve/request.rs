@@ -14,6 +14,9 @@ use crate::topk::TopK;
 /// As the similarity functions' default threshold 0: negative scores never
 /// enter the top-K, 0.0 ones are dropped by `TopK`.
 const THRESHOLD: f32 = 0.0;
+/// Candidates per request through the branchless drain head, in units of k (`drain_head`; tuned on the M2:
+/// 8 x k, the x86 day confirms it).
+const HEAD: usize = 8;
 
 /// One history. Ids are the caller's (the model's external ids, or S's column
 /// indices without them); ids the model doesn't have are ignored everywhere.
@@ -585,6 +588,7 @@ impl Scratch {
         // catalog <= the block size) is this loop once.
         // SAFETY: forwarded.
         unsafe { self.set_cursors(m) };
+        let mut head = HEAD.saturating_mul(self.topk.k());
         let mut start = 0;
         while start < n_active {
             let hi = (start + block).min(n_active);
@@ -593,7 +597,7 @@ impl Scratch {
             unsafe { self.accumulate_block(pairs, start, hi, n_active) };
             if !self.touched.is_empty() {
                 // SAFETY: forwarded.
-                unsafe { self.drain(start, allowed) };
+                unsafe { self.drain(start, allowed, &mut head) };
             }
             // Even when the drain was skipped: the slots were set.
             self.preset(start, hi, 0.0);
@@ -667,12 +671,19 @@ impl Scratch {
     /// Touched + `offset` < n_items; `allowed` sized for n_items.
     // Out of line, as the kernel's drain (benchmarks/README.md).
     #[inline(never)]
-    unsafe fn drain(&mut self, offset: usize, allowed: Masks) {
+    unsafe fn drain(&mut self, offset: usize, allowed: Masks, head: &mut usize) {
         let (sums, touched, topk) = (&mut self.sums, &self.touched, &mut self.topk);
         // SAFETY: forwarded.
         unsafe {
             match allowed {
-                Masks(None, None) => drain_impl::<0>(sums, touched, topk, offset, &[], &[]),
+                Masks(None, None) => {
+                    let n = touched.len().min(*head);
+                    *head -= n;
+                    if n > 0 {
+                        drain_head(sums, &touched[..n], topk, offset);
+                    }
+                    drain_impl::<0>(sums, &touched[n..], topk, offset, &[], &[])
+                }
                 Masks(Some(a), None) | Masks(None, Some(a)) => {
                     drain_impl::<1>(sums, touched, topk, offset, a, &[])
                 }
@@ -787,6 +798,26 @@ unsafe fn accumulate_row(
 #[inline(always)]
 fn next_col(p: &[Entry], n: usize) -> usize {
     p.get(n).map_or(usize::MAX, |e| e.col as usize)
+}
+
+/// The first `HEAD` x k candidates of a request (no mask), drained without the floor branch: early on most pass
+/// the floor and the branch mispredicts (~k / m taken after m candidates: ~150 per cap-10 request, ~400 at
+/// cap 200). Probe (M2 Pro, Y500M k 100, per request): cap 10 −7..−8%, cap 50 −3..−5%, cap 200 −1%; k 1000 /
+/// 2000 −4..−7%. Past the head, the floor rejects most candidates and the branchy loop wins (a whole-drain
+/// branchless variant lost +2.6% at cap 200).
+///
+/// # Safety
+/// As `Scratch::drain`.
+#[inline(never)]
+unsafe fn drain_head(sums: &mut [f32], touched: &[u32], topk: &mut TopK, offset: usize) {
+    topk.push_all(
+        THRESHOLD,
+        touched.iter().map(|&local| {
+            // SAFETY: touched < sums.len().
+            let val = unsafe { std::mem::take(sums.get_unchecked_mut(local as usize)) };
+            ((offset + local as usize) as i32, val)
+        }),
+    );
 }
 
 /// The view's mask and the request's include bits (each None = all allowed).
