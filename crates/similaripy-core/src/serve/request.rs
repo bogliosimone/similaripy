@@ -572,6 +572,8 @@ impl Scratch {
                 (pos, end, next_col(pairs.get_unchecked(pos..end), 0))
             }
         }));
+        // The row loop hints row i + PREFETCH_ROWS, so the first rows get theirs here.
+        prefetch_head(pairs, &self.cursor);
     }
 
     /// # Safety
@@ -722,6 +724,20 @@ unsafe fn accumulate<const BOUNDED: bool>(
     // SAFETY: entries [len, n) were written above, n <= capacity.
     unsafe { touched.set_len(n) };
     taken
+}
+
+/// Hints the first `PREFETCH_ROWS` history rows, once per request (`recommend` and `score`): the row loop only
+/// hints rows ahead of it. Probe (M2 Pro, Y500M k 100, per request): cap 10 −4..−5%, cap 50 −1..−2%,
+/// cap 200 0..+1.5%. Out of line: the request path keeps its registers.
+#[inline(never)]
+fn prefetch_head(pairs: &[Entry], cursor: &[(usize, usize, usize)]) {
+    for &(pos, end, _) in cursor.iter().take(PREFETCH_ROWS) {
+        let bytes = (end - pos).min(PREFETCH_LINES * 8) * std::mem::size_of::<Entry>();
+        let base = pairs.as_ptr().wrapping_add(pos).cast::<u8>();
+        for off in (0..bytes).step_by(64) {
+            prefetch(base.wrapping_add(off));
+        }
+    }
 }
 
 /// History rows ahead to prefetch, and the most lines prefetched per row (16 lines = 128 entries: a whole
