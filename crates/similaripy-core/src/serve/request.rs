@@ -43,7 +43,10 @@ pub struct Request<'a> {
     pub sorted: bool,
     /// More views of the served model (`Model::view` of the same base, at
     /// most `MAX_VIEWS`): an item must be allowed by every one, ANDed with the
-    /// served model's mask and `include` (V16).
+    /// served model's mask and `include` (V16). Up to two masks in all cost
+    /// what one view costs; three or more pay a test per mask for each
+    /// candidate (+15..+50% per request vs the same AND as one view, Y500M):
+    /// for a combination served often, build it once (`view` of a view).
     pub views: &'a [&'a Model],
 }
 
