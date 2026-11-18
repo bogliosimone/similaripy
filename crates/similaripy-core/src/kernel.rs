@@ -390,7 +390,7 @@ impl Params {
     /// denominator; with no denominator term the value is `xy_pow`, times the
     /// bayesian factor if set.
     ///
-    /// K1: `bound` is `k1_bound(floor)`. With a denominator (`COSINE`,
+    /// Reject bound: `bound` is `k1_bound(floor)`. With a denominator (`COSINE`,
     /// `FULL`) a column whose `xy_pow < bound * den` (den > 0) scores below
     /// `floor` for sure and returns NaN before any division; every other
     /// column takes the exact path. The caller's `val >= floor` drops the NaN
@@ -533,7 +533,8 @@ impl RowMarks {
 struct Scratch {
     sums: Vec<f32>,
     touched: Vec<u32>,
-    /// Blocked path: `(pos, end)` in m2 per entry of the current m1 row.
+    /// Blocked path: per entry of the current m1 row, the unread rest of its m2
+    /// row (`pos..end`) and its next column (`usize::MAX` once empty).
     cursor: Vec<(usize, usize, usize)>,
     topk: TopK,
     filter: RowMarks,
@@ -588,7 +589,7 @@ impl Scratch {
             for i in 0..u_cols.len() {
                 // Prefetch the head of the m2 row PREFETCH_ROWS ahead: each row starts at an address the
                 // hardware prefetcher can't predict; long rows stream after that. M2 Pro vs no prefetch
-                // (night13, bits unchanged): ML-32M −4..−5%, Y500M −2..−4%, Y50M flat; short rows gain most.
+                // (bits unchanged): ML-32M −4..−5%, Y500M −2..−4%, Y50M flat; short rows gain most.
                 if let Some(&un) = u_cols.get(i + PREFETCH_ROWS) {
                     let (pc, pv) = inp.m2.row_unchecked(un as usize);
                     prefetch_span(pc, pv);
@@ -751,9 +752,9 @@ unsafe fn drain_impl<const POW: bool, const MODE: u8>(
     let k1 = p.bayesian_shrink >= 0.0;
     let mut bound = k1_bound(floor, k1);
     // Back to front: the floor rises sooner, 35-73% fewer top-K replacements
-    // (perf gates T0 counters: ML-32M, Y50M, Y500M; cosine, rp3beta). Same
-    // result: the top-K keeps a strict total order. Not in the serving drain:
-    // there it doubled the batch time (ML-32M, perf gates night 2).
+    // (counted on ML-32M, Y50M, Y500M; cosine, rp3beta). Same result: the
+    // top-K keeps a strict total order. Not in the serving drain: there it
+    // doubled the batch time (ML-32M).
     for &local in touched.iter().rev() {
         // SAFETY: touched columns are < sums.len().
         let s = unsafe { sums.get_unchecked_mut(local as usize) };
@@ -780,7 +781,7 @@ unsafe fn drain_impl<const POW: bool, const MODE: u8>(
     }
 }
 
-/// K1's reject bound for `Params::score`: `floor * (1 - 2^-10)` for a normal
+/// The reject bound for `Params::score`: `floor * (1 - 2^-10)` for a normal
 /// `floor > 0`, NaN (no reject) otherwise or when `!ok` (a negative or NaN
 /// bayesian shrink, which can lift a score past its quotient). Why exact: the
 /// bound and its product with den round by <= 2^-23 relative (or below the f32
@@ -1071,7 +1072,7 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 4096 }))]
-        // K1: `score` with `k1_bound` either returns the exact
+        // `score` with `k1_bound` either returns the exact
         // path's bits or NaN for a score the exact path puts below `floor`,
         // in every mode, so the drain pushes the same columns with the same
         // values. Three quarters of the cases put xy a few ulps from
