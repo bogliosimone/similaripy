@@ -10,8 +10,15 @@ def generate_random_matrix(n_rows=100, n_cols=50, density=0.05, seed=42):
     return sp.random_array((n_rows, n_cols), density=density, format="csr", dtype=np.float32, random_state=rng)
 
 
-def test_binarize():
-    X = generate_random_matrix()
+def _signed(seed=0):
+    X = generate_random_matrix(seed=seed)
+    X.data[::3] *= -1
+    return X
+
+
+@pytest.mark.parametrize("signed", [False, True])
+def test_binarize(signed):
+    X = _signed() if signed else generate_random_matrix()
     X.data[::5] = 0  # explicit zeros must go, not become 1
     before = X.data.copy()
     B = norm.binarize(X)
@@ -28,42 +35,6 @@ def test_binarize():
         sim.jaccard(X, k=10, binary=True, verbose=False).toarray(),
         rtol=1e-6,
     )
-
-
-def test_normalize_l1():
-    X = generate_random_matrix()
-    X_norm = norm.normalize(X, norm="l1")
-
-    expected = X.copy()
-    row_sums = np.asarray(expected.sum(axis=1)).ravel()
-    row_sums[row_sums == 0] = 1
-    expected.data /= np.repeat(row_sums, np.diff(expected.indptr))
-
-    np.testing.assert_allclose(X_norm.toarray(), expected.toarray(), rtol=1e-5)
-
-
-def test_normalize_l2():
-    X = generate_random_matrix()
-    X_norm = norm.normalize(X, norm="l2")
-
-    expected = X.copy()
-    row_norms = np.asarray(np.sqrt(expected.multiply(expected).sum(axis=1))).ravel()
-    row_norms[row_norms == 0] = 1
-    expected.data /= np.repeat(row_norms, np.diff(expected.indptr))
-
-    np.testing.assert_allclose(X_norm.toarray(), expected.toarray(), rtol=1e-5)
-
-
-def test_normalize_max():
-    X = generate_random_matrix()
-    X_norm = norm.normalize(X, norm="max")
-
-    expected = X.copy()
-    max_values = expected.max(axis=1).toarray().flatten()
-    max_values[max_values == 0] = 1
-    expected.data /= np.repeat(max_values, np.diff(expected.indptr))
-
-    np.testing.assert_allclose(X_norm.toarray(), expected.toarray(), rtol=1e-5)
 
 
 def test_tfidf():
@@ -112,31 +83,12 @@ def test_bm25():
     np.testing.assert_allclose(X_bm25.toarray(), bm25_ref.toarray(), rtol=1e-3)
 
 
-def test_binarize_sums_duplicates():
-    # Entry (0, 1) stored twice, (1, 2) as +1 and -1: summed first, so one 1.0 and a dropped zero
-    X = sp.csr_array(
-        (np.array([1, 1, 1, -1, 2], dtype=np.float32), np.array([1, 1, 2, 2, 0]), np.array([0, 2, 4, 5])), shape=(3, 3)
-    )
-    B = norm.binarize(X)
-    np.testing.assert_array_equal(B.toarray(), [[0, 1, 0], [0, 0, 0], [1, 0, 0]])
-    import similaripy as sim
-
-    np.testing.assert_array_equal(
-        sim.dot_product(B, k=3, verbose=False).toarray(), sim.dot_product(X, k=3, binary=True, verbose=False).toarray()
-    )
-
-
 # ---- Signed input ----
 
 
-def _signed(seed=0):
-    X = generate_random_matrix(seed=seed)
-    X.data[::3] *= -1
-    return X
-
-
-def test_normalize_signed():
-    X = _signed()
+@pytest.mark.parametrize("signed", [False, True])
+def test_normalize(signed):
+    X = _signed() if signed else generate_random_matrix()
     A = X.toarray().astype(np.float64)
     for name, d in (("l1", np.abs(A).sum(axis=1)), ("l2", np.sqrt((A**2).sum(axis=1))), ("max", np.abs(A).max(axis=1))):
         expected = np.divide(A, d[:, None], out=np.zeros_like(A), where=d[:, None] != 0)
@@ -144,11 +96,6 @@ def test_normalize_signed():
     # all-negative row: max divides by its largest |x| (before: left unchanged)
     neg = sp.csr_array(np.array([[-2.0, -4.0]], dtype=np.float32))
     np.testing.assert_array_equal(norm.normalize(neg, norm="max").toarray(), [[-0.5, -1.0]])
-
-
-def test_binarize_signed():
-    X = _signed()
-    np.testing.assert_array_equal(norm.binarize(X).toarray(), (X.toarray() != 0).astype(np.float32))
 
 
 def test_term_weightings_reject_negatives():

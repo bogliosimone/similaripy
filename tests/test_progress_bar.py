@@ -23,3 +23,15 @@ def test_progress_bar_silent(capfd, kw):
     m = sp.random(300, 200, density=0.05, format="csr", dtype=np.float32, random_state=0)
     sim.cosine(m, k=10, **kw)
     assert capfd.readouterr() == ("", "")
+
+
+def test_progress_bar_closed_on_prep_error(capfd, monkeypatch):
+    from similaripy import _s_plus
+
+    def boom(cols, num_threads):
+        raise RuntimeError("prep failed")
+
+    monkeypatch.setattr(_s_plus, "_matrix_selector", boom)
+    with pytest.raises(RuntimeError, match="prep failed"):
+        sim.cosine(sp.random_array((60, 40), density=0.2, format="csr", rng=0), k=5, verbose=True)
+    assert capfd.readouterr().err.split("\r")[-1].startswith("Failed:")

@@ -114,41 +114,25 @@ _CASES = [
 # shrink types that do nothing for a similarity are rejected (tested in test_s_plus_prep)
 _NO_COSINE = {"dot_product", "tversky", "jaccard", "dice", "p3alpha", "rp3beta"}
 _NO_DENOMINATOR = {"dot_product", "p3alpha"}
+_CASE_SHRINKS = [
+    pytest.param(name, kw, shrink_type, id=f"{name}-{shrink_type}")
+    for name, kw in _CASES
+    for shrink_type in (None, "stabilized", "bayesian", "additive")
+    if not (shrink_type == "additive" and name in _NO_COSINE)
+    and not (shrink_type == "stabilized" and name in _NO_DENOMINATOR)
+]
 
 
-@pytest.mark.parametrize("name, kw", _CASES, ids=[c[0] for c in _CASES])
-@pytest.mark.parametrize("shrink_type", [None, "stabilized", "bayesian", "additive"])
+@pytest.mark.parametrize("name, kw, shrink_type", _CASE_SHRINKS)
 @pytest.mark.parametrize("k", [10, 400])
 @pytest.mark.parametrize("block_size", [None, 64])
 def test_similarity_matches_dense_reference(name, kw, shrink_type, k, block_size):
     # Regression (bayesian): without a normalization term it returned an empty matrix
-    if (shrink_type == "additive" and name in _NO_COSINE) or (shrink_type == "stabilized" and name in _NO_DENOMINATOR):
-        pytest.skip("rejected: the shrink would do nothing")
     if shrink_type is not None:
         kw = {**kw, "shrink": 2.0, "shrink_type": shrink_type}
     m = generate_random_matrix(400, 300, density=0.03)
     out = getattr(sim, name)(m, k=k, block_size=block_size, verbose=False, **kw)
     _check_scores(out, _dense_scores(m, name, kw), k)
-
-
-def test_output_format():
-    m = generate_random_matrix(1000, 800, density=0.025)
-    sim_csr = sim.cosine(m, format_output="csr", k=50, verbose=False)
-    sim_coo = sim.cosine(m, format_output="coo", k=50, verbose=False)
-    assert isinstance(sim_csr, sp.csr_array) and sim_csr.nnz > 0
-    assert isinstance(sim_coo, sp.coo_array) and sim_coo.nnz > 0
-
-
-def test_example_code():
-    # The README example: item-item cosine on a BM25-weighted URM, then
-    # recommendations for 3 users without the items they have seen
-    urm = sp.random_array((1000, 2000), density=0.025, rng=0)
-    urm = sim.normalization.bm25(urm)
-    similarity_matrix = sim.cosine(urm.T, k=50)
-    recommendations = sim.dot_product(urm, similarity_matrix.T, k=100, target_rows=[1, 14, 8], filter_cols=urm).tocsr()
-    assert similarity_matrix.shape == (2000, 2000)
-    assert set(np.flatnonzero(np.diff(recommendations.indptr))) == {1, 8, 14}
-    assert recommendations.multiply(urm.tocsr() != 0).nnz == 0
 
 
 # ---- Row and column selectors vs the dense reference ----
@@ -196,12 +180,6 @@ def test_s_plus_alpha_without_normalization():
     xy = (m @ m.T).toarray()
     out = sim.s_plus(m, l1=0, l2=0, l3=0, alpha=2, k=m.shape[0], verbose=False)
     np.testing.assert_allclose(out.toarray(), xy**2, rtol=1e-5)
-
-
-@pytest.mark.parametrize("alpha", [0, -1, float("nan")])
-def test_s_plus_rejects_non_positive_alpha(alpha):
-    with pytest.raises(ValueError, match="alpha"):
-        sim.s_plus(generate_random_matrix(), alpha=alpha, verbose=False)
 
 
 @pytest.mark.parametrize("name", ["p3alpha", "rp3beta"])

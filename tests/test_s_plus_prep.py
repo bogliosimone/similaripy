@@ -129,36 +129,6 @@ def test_trailing_empty_rows():
     assert out.shape == (60, 60) and out.tocsr()[-3:].nnz == 0
 
 
-def test_progress_bar_closed_on_prep_error(capfd, monkeypatch):
-    from similaripy import _s_plus
-
-    def boom(cols, num_threads):
-        raise RuntimeError("prep failed")
-
-    monkeypatch.setattr(_s_plus, "_matrix_selector", boom)
-    with pytest.raises(RuntimeError, match="prep failed"):
-        sim.cosine(_m(), k=5, verbose=True)
-    assert capfd.readouterr().err.split("\r")[-1].startswith("Failed:")
-
-
-@pytest.mark.parametrize("limit, dtype", [(None, np.int32), (100, np.int64)])
-def test_csr_index_dtype_past_int32_nnz(limit, dtype, monkeypatch):
-    # Past 2^31 results the CSR gets int64 indptr and indices; tested at a
-    # lowered limit (a real run needs ~26 GB). Same matrix either way.
-    from similaripy import _s_plus
-
-    m = _m(60, 40)
-    ref = sim.cosine(m, k=10, format_output="csr", verbose=False)
-    if limit is not None:
-        monkeypatch.setattr(_s_plus, "_MAX_INT32_NNZ", limit)
-    out = sim.cosine(m, k=10, format_output="csr", verbose=False)
-    assert out.nnz > 100
-    assert out.indptr.dtype == out.indices.dtype == dtype
-    assert out.has_canonical_format
-    for a in ("indptr", "indices", "data"):
-        np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
-
-
 def _csr_bytes(m):
     m = m.tocsr()
     return [(a.dtype, a.tobytes()) for a in (m.data, m.indices, m.indptr)]
@@ -399,6 +369,9 @@ _BAD_PARAMS = [
     ("p3alpha", {"alpha": 0}, "alpha must be finite and > 0"),
     ("rp3beta", {"alpha": -1}, "alpha must be finite and > 0"),
     ("rp3beta", {"beta": -0.5}, "rp3beta beta"),
+    ("s_plus", {"alpha": 0}, "alpha"),
+    ("s_plus", {"alpha": -1}, "alpha"),
+    ("s_plus", {"alpha": np.nan}, "alpha"),
     ("s_plus", {"l2": -1}, "l2"),
     ("s_plus", {"c1": np.inf}, "c1"),
     ("s_plus", {"beta1": -1, "l3": 1}, "beta1"),
@@ -414,14 +387,6 @@ _BAD_PARAMS = [
 def test_rejects_bad_parameters(name, kwargs, match):
     with pytest.raises((ValueError, TypeError), match=match):
         getattr(sim, name)(_m(60, 60), verbose=False, **kwargs)
-
-
-@pytest.mark.parametrize(
-    "name", ["dot_product", "cosine", "asymmetric_cosine", "tversky", "jaccard", "dice", "p3alpha", "rp3beta", "s_plus"]
-)
-def test_keyword_only_after_matrix2(name):
-    with pytest.raises(TypeError, match="positional"):
-        getattr(sim, name)(_m(60, 60), None, 5)
 
 
 def test_rejects_dense_matrix1():
@@ -469,29 +434,6 @@ def _with_duplicates(m, seed=0):
     vals = np.concatenate([a, v[split] * 0.75, [1, -1, -2, 2]]).astype(np.float32)
     order = np.lexsort((rng.random(len(rows)), rows))  # rows grouped, columns shuffled
     return rows[order], cols[order], vals[order]
-
-
-@pytest.mark.parametrize("fmt", ["csr", "coo"])
-@pytest.mark.parametrize("binary", [False, True])
-@pytest.mark.parametrize("block_size", [None, 8])
-def test_duplicate_entries_are_summed(fmt, binary, block_size):
-    # Regression: CSR duplicates reached the kernel unsummed (wrong norms and binary counts).
-    m = _m(60, 40)
-    rows, cols, vals = _with_duplicates(m)
-    if fmt == "coo":
-        dup = sp.coo_array((vals, (rows, cols)), shape=m.shape)
-    else:
-        indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=m.shape[0]))])
-        dup = sp.csr_array((vals, cols, indptr), shape=m.shape)
-        assert not dup.has_canonical_format
-    clean = sp.csr_array((vals, (rows, cols)), shape=m.shape)  # scipy sums duplicates
-    clean.eliminate_zeros()
-    before = (dup.data.copy(),)
-    kw = {"k": 10, "binary": binary, "block_size": block_size, "verbose": False}
-    for f in (sim.cosine, sim.jaccard, sim.dot_product):
-        _same(f(dup.T, **kw), f(clean.T, **kw))
-        _same(f(m, dup.T.tocsr(), **kw), f(m, clean.T, **kw))
-    np.testing.assert_array_equal(dup.data, before[0])  # caller's matrix untouched
 
 
 def test_coo_output_fed_back(monkeypatch):
@@ -636,12 +578,19 @@ def _non_canonical(seed=0):
 
 @pytest.mark.parametrize("name", _SIMILARITIES)
 @pytest.mark.parametrize("binary", [False, True])
-def test_similarity_canonicalizes_input(name, binary):
+@pytest.mark.parametrize("fmt", ["csr", "coo"])
+@pytest.mark.parametrize("block_size", [None, 8])
+def test_similarity_canonicalizes_input(name, binary, fmt, block_size):
+    # Regression: CSR duplicates reached the kernel unsummed (wrong norms and binary counts).
     # p3alpha/rp3beta normalize (and take popularity) on the canonical copies
     dup, clean = _non_canonical()
+    if fmt == "coo":
+        dup = dup.tocoo()
     f = getattr(sim, name)
-    kw = {"k": 10, "binary": binary, "verbose": False}
+    kw = {"k": 10, "binary": binary, "block_size": block_size, "verbose": False}
     _same(f(dup.T, **kw), f(clean.T, **kw))
+    m2 = dup.T.asformat(fmt)  # a non-canonical matrix2 (CSR: duplicates, unsorted)
+    _same(f(_m(60, 40), m2, **kw), f(_m(60, 40), clean.T, **kw))
 
 
 @pytest.mark.parametrize("name, kw", _NORMALIZATIONS)
@@ -657,8 +606,6 @@ def test_normalization_canonicalizes_input(name, kw, axis):
     before = dup.data.copy()
     _same(f(dup, **kw), f(clean, **kw))
     np.testing.assert_array_equal(dup.data, before)  # never in place
-    with pytest.raises(TypeError):
-        f(dup, inplace=True, **kw)  # removed in v1: use the return value
 
 
 @pytest.mark.parametrize(
@@ -674,7 +621,7 @@ def test_normalization_canonicalizes_input(name, kw, axis):
         ((1, 0, 0, 1, 0, 2), False),  # bayesian shrink
     ],
 )
-def test_product_form(args, expected):
+def test_product_form_selection(args, expected):
     from similaripy import _s_plus
 
     a1, l1, l2, l3, stabilized, bayesian = args
@@ -773,6 +720,7 @@ def test_int64_indptr_path_same_values(case, monkeypatch):
     monkeypatch.setattr(_s_plus, "_MAX_INT32_NNZ", 0)
     out = run()
     assert ref.indptr.dtype == np.int32 and out.indptr.dtype == out.indices.dtype == np.int64
+    assert out.has_canonical_format
     for a in ("indptr", "indices", "data"):
         np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
 

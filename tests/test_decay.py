@@ -67,7 +67,7 @@ def test_rank_decay_matches_reference(shape, with_t):
     np.testing.assert_allclose(w, np.float32(ref), rtol=1e-6)
 
 
-def test_rank_decay_one_history_and_table():
+def test_rank_decay_single_history():
     t = np.array([5.0, 1.0, 9.0, 9.0])
     assert rank_decay(timestamps=t, shape="linear", scale=4).tolist() == pytest.approx([0.5, 0.25, 0.75, 1.0])
     table = rank_decay(np.zeros(10, dtype=int), shape="linear", scale=4)
