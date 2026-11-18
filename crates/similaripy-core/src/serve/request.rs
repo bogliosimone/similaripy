@@ -22,8 +22,10 @@ const _: () = assert!(THRESHOLD > f32::NEG_INFINITY);
 const HEAD: usize = 8;
 /// A request with masks takes the drain head only when its most selective mask allows at least
 /// `n_items / MASKED_HEAD_DIV` items. Below that share, most candidates fail the mask, the gated loop predicts
-/// "reject" well, and the branchless head pays a key store and bit loads per candidate. Views priced (M2 Pro,
-/// Y500M, us / request vs the gated loop): one 0.06% mask +1..+22% (cap 10 +22%), 3-5% neutral, 63% -5..-29%.
+/// "reject" well, and the branchless head pays a key store and bit loads per candidate. Head vs gated loop (M2 Pro,
+/// hpbench-views, us / request, Y500M cap 10 / 50 / 200 + ML-32M): one 0.06% mask +1..+22%, 5% neutral, 10% mixed
+/// (cap 10 -8.5%, cap 50 +3% in one noisy pair of four), 15% -1.5..-14%, 20% -1..-19%, 40% -4..-33%, 63% -5..-29%.
+/// With 10%: the masks below it neutral (0.06% +22% -> +0.4%), the ones above keep the head's win.
 const MASKED_HEAD_DIV: usize = 10;
 
 /// Extra views per request at most (`Request::views`, `ScoreRequest::views`,
