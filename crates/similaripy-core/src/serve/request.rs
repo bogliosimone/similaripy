@@ -286,8 +286,9 @@ fn check_weights(ids: &[i64], weights: Option<&[f32]>) -> Result<(), Error> {
 }
 
 /// `views`: at most `MAX_VIEWS`, each a view of `model`'s base. Out of line
-/// (a request calls it only with views, a batch once for all its users): the
-/// request path keeps its registers.
+/// (a request calls it only with views; a batch once up front, for a clear
+/// error before any user runs, then each user's request again): the request
+/// path keeps its registers.
 #[cold]
 #[inline(never)]
 fn check_views(model: &Model, views: &[&Model]) -> Result<(), Error> {
@@ -539,7 +540,8 @@ impl Scratch {
         let (allowed, many) = if req.views.iter().all(|v| v.allowed.is_none()) {
             (Masks(m.allowed.as_deref(), include_bits), &[][..])
         } else {
-            // Include ids as sent (duplicates too): an upper bound, enough to order by.
+            // The include ids the model knows, duplicates counted: an upper bound,
+            // enough to order by.
             let n_include = include_bits.map_or(0, |_| self.included.len());
             buf = [(0, &[][..]); MAX_MASKS];
             masks(m, include_bits, n_include, req.views, &mut buf)
