@@ -20,17 +20,17 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
-      # A runner-side failure (e.g. a broken rustup install) shouldn't cancel the other 14 jobs
+      # A runner-side failure (e.g. a broken rustup install) shouldn't cancel the other jobs
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # No macOS here: the macOS wheel job builds and tests there (cp314 on PRs,
+        # every Python on push), and macOS arm64 runners are scarce (cells here were
+        # cancelled unstarted, "not acquired", turning post-merge runs red)
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
-        # macOS/Windows: the oldest and newest Python only (9 cells, not 15). The
-        # wheel jobs test every version there (cp314 on PRs, all on push).
+        # Windows: the oldest and newest Python only (7 cells, not 10). The wheel
+        # jobs test every version there (cp314 on PRs, all on push).
         exclude:
-          - { os: macos-latest, python-version: "3.12" }
-          - { os: macos-latest, python-version: "3.13" }
-          - { os: macos-latest, python-version: "3.14" }
           - { os: windows-latest, python-version: "3.12" }
           - { os: windows-latest, python-version: "3.13" }
           - { os: windows-latest, python-version: "3.14" }
