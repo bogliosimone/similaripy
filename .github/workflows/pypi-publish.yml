@@ -20,6 +20,7 @@ on:
       - "rust-toolchain.toml"
       - ".cargo/config.toml"
       - ".github/workflows/pypi-publish.yml"
+      - ".github/actions/rust-toolchain/**"
   pull_request:
     paths: *build-paths
   workflow_dispatch:
@@ -53,17 +54,10 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
-        # macOS/Windows build on the host: explicit, so a runner image with a
-        # half-installed pin (rustup: "detected conflict: bin/cargo-clippy") is
-        # cleaned up and retried once instead of failing inside the build. Linux
-        # builds in the manylinux container, which installs rustup itself.
+        # macOS/Windows build on the host; Linux builds in the manylinux
+        # container, which installs rustup itself (pyproject.toml before-all)
         if: runner.os != 'Linux'
-        shell: bash
-        run: |
-          rustup toolchain install || {
-            rustup toolchain uninstall "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
-            rustup toolchain install
-          }
+        uses: ./.github/actions/rust-toolchain
 
       - name: Build and test wheels
         uses: pypa/cibuildwheel@v4.3.1
@@ -89,15 +83,8 @@ jobs:
           python-version: '3.11'
 
       - name: Install the pinned toolchain
-        # As in the wheel jobs: maturin's sdist runs cargo metadata, and rustup's
-        # auto-install of a half-installed pin failed here ("'cargo' is not
-        # installed for the toolchain"); clean up and retry once
-        shell: bash
-        run: |
-          rustup toolchain install || {
-            rustup toolchain uninstall "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
-            rustup toolchain install
-          }
+        # maturin's sdist runs cargo metadata
+        uses: ./.github/actions/rust-toolchain
 
       - name: Install build tools
         run: |
