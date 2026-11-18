@@ -165,11 +165,13 @@ impl Default for Limits {
     }
 }
 
+/// The core's request defaults (D-A0-4: one source).
 impl Default for Defaults {
     fn default() -> Self {
+        let r = similaripy_core::serve::Request::default();
         Self {
-            k: 10,
-            sorted: true,
+            k: r.k,
+            sorted: r.sorted,
             view: String::new(),
         }
     }
@@ -834,6 +836,15 @@ mod tests {
             parse(["--version".into()], none),
             Ok(Cli::Version)
         ));
+        // `--print-config` prints the core's request defaults (D-A2-3; the
+        // Python signatures are checked against the same in test_serve.py).
+        let d = similaripy_core::serve::Request::default();
+        let toml = cfg(&["--model", "/m"], &[]).unwrap().to_toml();
+        assert!(toml.contains(&format!("\nk = {}\n", d.k)), "{toml}");
+        assert!(
+            toml.contains(&format!("\nsorted = {}\n", d.sorted)),
+            "{toml}"
+        );
         let args = ["--print-config", "--model", "/m"].map(String::from);
         assert!(matches!(
             parse(args, std::iter::empty()),

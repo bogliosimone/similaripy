@@ -12,8 +12,8 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{
-    BatchRequest, BlockSize, Entry, ItemOrder, Lists, Model, Request, recommend, recommend_batch,
-    score, score_batch,
+    BatchRequest, BlockSize, Entry, ItemOrder, Lists, Model, Request, ScoreRequest, recommend,
+    recommend_batch, score, score_batch,
 };
 
 use crate::{Indptr, to_py, with_pool};
@@ -237,6 +237,7 @@ impl PyModel {
             include: slice(&include)?,
             exclude: slice(&exclude)?,
             sorted,
+            ..Default::default()
         };
         let (model, block) = (&self.model, self.block);
         let (out_ids, out_scores) = py
@@ -284,6 +285,7 @@ impl PyModel {
             no_include: slice(&no_include)?,
             exclude: lists(slice(&exclude_offsets)?, slice(&exclude_ids)?),
             sorted,
+            ..Default::default()
         };
         let (model, block_size) = (&self.model, self.block_size);
         let (o, i, s) = py
@@ -301,11 +303,14 @@ impl PyModel {
         weights: Option<PyReadonlyArray1<'_, f32>>,
         items: PyReadonlyArray1<'_, i64>,
     ) -> PyResult<Arr<'py, f32>> {
-        let (ids, weights, items) = (ids.as_slice()?, slice(&weights)?, items.as_slice()?);
+        let req = ScoreRequest {
+            ids: ids.as_slice()?,
+            weights: slice(&weights)?,
+            items: items.as_slice()?,
+            ..Default::default()
+        };
         let (model, block) = (&self.model, self.block);
-        let out = py
-            .detach(|| score(model, block, ids, weights, items))
-            .map_err(to_py)?;
+        let out = py.detach(|| score(model, block, &req)).map_err(to_py)?;
         Ok(out.into_pyarray(py))
     }
 
@@ -336,7 +341,7 @@ impl PyModel {
         let out = py
             .detach(|| {
                 with_pool(num_threads, || {
-                    score_batch(model, block_size, histories, weights, items)
+                    score_batch(model, block_size, histories, weights, items, &[])
                 })
             })
             .map_err(to_py)?;

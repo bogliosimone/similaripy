@@ -38,7 +38,7 @@ use hyper_util::server::graceful::GracefulShutdown;
 use hyper_util::service::TowerToHyperService;
 use serde::{Deserialize, Serialize};
 use similaripy_core::Error;
-use similaripy_core::serve::{Model, Request, Stats, Worker};
+use similaripy_core::serve::{Model, Request, ScoreRequest, Stats, Worker};
 
 pub use config::Config;
 use config::{HistoryPolicy, secs};
@@ -507,7 +507,13 @@ impl App {
             ));
         }
         let call = |w: &mut Worker, model: &Model, c: Cut, _: &mut _, scores: &mut _| {
-            w.score(model, c.ids, c.weights, items, scores)
+            let req = ScoreRequest {
+                ids: c.ids,
+                weights: c.weights,
+                items,
+                ..Default::default()
+            };
+            w.score(model, &req, scores)
         };
         let at = (Endpoint::Score, p);
         self.run(m, at, history, weights, view, call, encode)
@@ -529,6 +535,7 @@ impl App {
             include: q.include.as_deref(),
             exclude: q.exclude.as_deref(),
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
+            ..Default::default()
         };
         self.recommend(m, Proto::Json, &req, q.view.as_deref(), |a| {
             let reply = Reply {
@@ -588,10 +595,11 @@ impl App {
             // proto3: an empty list is not sent; unweighted (T17)
             weights: (!q.weights.is_empty()).then_some(&q.weights[..]),
             k: q.k.map_or(self.cfg.defaults.k, |k| k as usize),
-            exclude_seen: q.exclude_seen.unwrap_or(true),
+            exclude_seen: q.exclude_seen.unwrap_or(default_exclude_seen()),
             include: q.include.as_ref().map(|l| &l.ids[..]),
             exclude: (!q.exclude.is_empty()).then_some(&q.exclude[..]),
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
+            ..Default::default()
         };
         // T18: one copy of the answer, prost's default codec encodes it
         let view = q.view.as_deref();
@@ -645,12 +653,9 @@ impl App {
         for include in [None, Some(&ids[..])] {
             let req = Request {
                 ids: &ids,
-                weights: None,
                 k: self.cfg.limits.k_max,
-                exclude_seen: true,
                 include,
-                exclude: None,
-                sorted: true,
+                ..Default::default()
             };
             w.recommend(model, &req, &mut out_ids, &mut out_scores)?;
         }
@@ -667,7 +672,12 @@ impl App {
                 .take(self.cfg.limits.max_items)
                 .collect(),
         };
-        w.score(model, &ids, None, &items, &mut out_scores)?;
+        let req = ScoreRequest {
+            ids: &ids,
+            items: &items,
+            ..Default::default()
+        };
+        w.score(model, &req, &mut out_scores)?;
         Ok(())
     }
 }
@@ -686,7 +696,7 @@ struct Query {
     weights: Option<Vec<f64>>,
     #[serde(default)]
     k: Option<usize>,
-    #[serde(default = "yes")]
+    #[serde(default = "default_exclude_seen")]
     exclude_seen: bool,
     #[serde(default)]
     include: Option<Vec<i64>>,
@@ -768,8 +778,9 @@ struct Cut<'a> {
     weights: Option<&'a [f32]>,
 }
 
-fn yes() -> bool {
-    true
+/// `exclude_seen` when a JSON request leaves it out: the core's default.
+fn default_exclude_seen() -> bool {
+    Request::default().exclude_seen
 }
 
 /// A served answer, borrowed from the worker's buffers.
