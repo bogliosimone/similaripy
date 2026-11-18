@@ -561,8 +561,10 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 1000 }))]
 
     // One worker (any block) across two models of different sizes and a view,
-    // in turns: each answer == the reference path's bits (sorted), the same
-    // items and scores unsorted; scores too.
+    // in turns: each answer == the single-call path's ids and bits (sorted),
+    // the same items and scores unsorted; scores too. Float cases, so the
+    // oracle is the engine, not the f64 `reference`: f32 sums can tie where
+    // f64 ones don't, and ties go to the lower internal id.
     #[test]
     fn one_worker_across_models(a in case(true), b in case(true), block in 0usize..6) {
         let (ma, mb) = (model(&a), model(&b));
@@ -573,13 +575,11 @@ proptest! {
         for (c, m, view) in [(&a, &ma, false), (&b, &mb, false), (&b, &vb, true), (&a, &ma, false)] {
             let c = Case { allowed: if view { c.allowed.clone() } else { None }, excluded: None, ..c.clone() };
             let ids = ids(&c);
-            let want = reference(&c);
             let mut got = (vec![], vec![]);
             w.recommend(m, &req(&c, &ids, None, None), &mut got.0, &mut got.1).unwrap();
-            let got = by_score(&c, got, &want);
-            prop_assert_eq!(&got.0, &want.0);
             let sorted = run(&Case { sorted: true, ..c.clone() }, m);
             if c.sorted {
+                prop_assert_eq!(&got.0, &sorted.0);
                 prop_assert_eq!(bits(&got.1), bits(&sorted.1));
             } else {
                 // Unsorted: the same items and scores as sorted, any block.
