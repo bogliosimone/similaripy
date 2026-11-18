@@ -1,5 +1,6 @@
-//! One history (`recommend`) and a batch of them (`recommend_batch`: rayon
-//! over users calling the same function), in the caller's ids.
+//! One history (`Worker::recommend`, `recommend`), a batch of them
+//! (`recommend_batch`: rayon over users calling the same function) and the
+//! scores of given items (`score`, `score_batch`), in the caller's ids.
 
 use std::cell::Cell;
 
@@ -18,7 +19,8 @@ const THRESHOLD: f32 = 0.0;
 /// 8 x k, the x86 day confirms it).
 const HEAD: usize = 8;
 
-/// Extra views per request at most (`Request::views`, `ScoreRequest::views`).
+/// Extra views per request at most (`Request::views`, `ScoreRequest::views`,
+/// `BatchRequest::views`, `score_batch`'s).
 pub const MAX_VIEWS: usize = 8;
 
 /// One history. Ids are the caller's (the model's external ids, or S's column
@@ -96,7 +98,7 @@ struct Scratch {
 pub struct Stats {
     /// Calls, failed ones included.
     pub requests: u64,
-    /// Calls rejected as invalid (weights).
+    /// Calls rejected as invalid (weights, views).
     pub errors: u64,
     /// History ids as sent.
     pub ids: u64,
@@ -138,16 +140,11 @@ impl Worker {
         ))
     }
 
-    const fn with_block(block: usize) -> Self {
+    fn with_block(block: usize) -> Self {
         Self {
             scratch: None,
             block,
-            stats: Stats {
-                requests: 0,
-                errors: 0,
-                ids: 0,
-                known_ids: 0,
-            },
+            stats: Stats::default(),
             out: Vec::new(),
             cand: Vec::new(),
         }
@@ -241,9 +238,10 @@ impl Worker {
     ) -> Result<(), Error> {
         self.stats.requests += 1;
         self.stats.ids += req.ids.len() as u64;
-        if let Err(e) =
-            check_weights(req.ids, req.weights).and_then(|()| check_views(model, req.views))
-        {
+        if let Err(e) = check_weights(req.ids, req.weights).and_then(|()| match req.views {
+            [] => Ok(()),
+            v => check_views(model, v),
+        }) {
             self.stats.errors += 1;
             return Err(e);
         }
@@ -288,7 +286,8 @@ fn check_weights(ids: &[i64], weights: Option<&[f32]>) -> Result<(), Error> {
 }
 
 /// `views`: at most `MAX_VIEWS`, each a view of `model`'s base. Out of line
-/// and only called with views: the request path keeps its registers.
+/// (a request calls it only with views, a batch once for all its users): the
+/// request path keeps its registers.
 #[cold]
 #[inline(never)]
 fn check_views(model: &Model, views: &[&Model]) -> Result<(), Error> {
@@ -311,8 +310,9 @@ pub fn score(model: &Model, block: usize, req: &ScoreRequest) -> Result<Vec<f32>
 
 /// `score` per user on the current rayon pool (user u's scores equal
 /// `score` of that history and items bit for bit), flat: aligned with
-/// `items.ids` (user u's at `items.offsets[u]..items.offsets[u + 1]`). The
-/// block is resolved once, for the pool's threads.
+/// `items.ids` (user u's at `items.offsets[u]..items.offsets[u + 1]`);
+/// `views` (`ScoreRequest::views`) for every user. The block is resolved
+/// once, for the pool's threads.
 pub fn score_batch(
     model: &Model,
     block_size: BlockSize,
@@ -321,24 +321,18 @@ pub fn score_batch(
     items: Lists,
     views: &[&Model],
 ) -> Result<Vec<f32>, Error> {
-    let users = histories.offsets.len().saturating_sub(1);
-    histories.check("histories", users)?;
+    let users = users(histories, weights)?;
     items.check("items", users)?;
-    if weights.is_some_and(|w| w.len() != histories.ids.len()) {
-        return invalid("weights: one weight per history id expected");
-    }
+    check_views(model, views)?;
     let block = block_size.resolve(model.n_active, rayon::current_num_threads())?;
     let rows: Vec<Vec<f32>> = (0..users)
         .into_par_iter()
         .with_max_len(4)
         .map(|u| {
-            let (a, z) = (
-                histories.offsets[u] as usize,
-                histories.offsets[u + 1] as usize,
-            );
+            let r = histories.span(u);
             let req = ScoreRequest {
-                ids: &histories.ids[a..z],
-                weights: weights.map(|w| &w[a..z]),
+                ids: &histories.ids[r.clone()],
+                weights: weights.map(|w| &w[r]),
                 items: items.get(u),
                 views,
             };
@@ -350,7 +344,7 @@ pub fn score_batch(
 
 /// The internal → caller's id map of a model's results.
 fn caller_id(model: &Model) -> impl Fn(u32) -> i64 + '_ {
-    let ext = model.ext.as_ref().map(|e| &e.out[..]);
+    let ext = model.ext.as_ref().map(|e| &e.by_internal[..]);
     let new_to_old: &[i32] = &model.new_to_old;
     move |c| ext.map_or(i64::from(new_to_old[c as usize]), |e| e[c as usize])
 }
@@ -386,9 +380,24 @@ impl<'a> Lists<'a> {
         Ok(())
     }
 
-    fn get(&self, u: usize) -> &'a [i64] {
-        &self.ids[self.offsets[u] as usize..self.offsets[u + 1] as usize]
+    /// User u's range in `ids` (and in weights aligned with them).
+    fn span(&self, u: usize) -> std::ops::Range<usize> {
+        self.offsets[u] as usize..self.offsets[u + 1] as usize
     }
+
+    fn get(&self, u: usize) -> &'a [i64] {
+        &self.ids[self.span(u)]
+    }
+}
+
+/// A batch's user count, its histories and their weights checked.
+fn users(histories: Lists, weights: Option<&[f32]>) -> Result<usize, Error> {
+    let users = histories.offsets.len().saturating_sub(1);
+    histories.check("histories", users)?;
+    if weights.is_some_and(|w| w.len() != histories.ids.len()) {
+        return invalid("weights: one weight per history id expected");
+    }
+    Ok(users)
 }
 
 /// Many histories, each answered as a `Request` with the same options:
@@ -439,11 +448,8 @@ pub fn recommend_batch(
     block_size: BlockSize,
     b: &BatchRequest,
 ) -> Result<Batch, Error> {
-    let users = b.histories.offsets.len().saturating_sub(1);
-    b.histories.check("histories", users)?;
-    if b.weights.is_some_and(|w| w.len() != b.histories.ids.len()) {
-        return invalid("weights: one weight per history id expected");
-    }
+    let users = users(b.histories, b.weights)?;
+    check_views(model, b.views)?;
     if let Some(l) = b.include {
         l.check("include", users)?;
     }
@@ -459,13 +465,10 @@ pub fn recommend_batch(
         // Small tasks: request cost varies 100x across users.
         .with_max_len(4)
         .map(|u| {
-            let (a, z) = (
-                b.histories.offsets[u] as usize,
-                b.histories.offsets[u + 1] as usize,
-            );
+            let r = b.histories.span(u);
             let req = Request {
-                ids: &b.histories.ids[a..z],
-                weights: b.weights.map(|w| &w[a..z]),
+                ids: &b.histories.ids[r.clone()],
+                weights: b.weights.map(|w| &w[r]),
                 k: b.k,
                 exclude_seen: b.exclude_seen,
                 include: b
@@ -531,11 +534,14 @@ impl Scratch {
         self.topk.set_k(req.k.min(m.n_active));
         let block = self.block(m, block);
         let include_bits = req.include.map(|_| &include[..]);
-        let mut buf = [(0, &[][..]); MAX_MASKS];
+        // Initialized only for a request with views: no stores on the others.
+        let mut buf;
         let (allowed, many) = if req.views.iter().all(|v| v.allowed.is_none()) {
             (Masks(m.allowed.as_deref(), include_bits), &[][..])
         } else {
+            // Include ids as sent (duplicates too): an upper bound, enough to order by.
             let n_include = include_bits.map_or(0, |_| self.included.len());
+            buf = [(0, &[][..]); MAX_MASKS];
             masks(m, include_bits, n_include, req.views, &mut buf)
         };
         // SAFETY: hist / blocked ids < n_items (lookup); sums.len() >= block;
@@ -935,8 +941,10 @@ const MAX_MASKS: usize = MAX_VIEWS + 2;
 /// The masks of a request with views: the served model's, the include bits
 /// (`n_include` ids set) and the views', the present ones only, most
 /// selective first (fewest allowed: a rejected item stops at the first test,
-/// D-A2-1). Up to two go to today's drains (`Masks`, the list empty), more to
-/// `drain_many` (the list). Out of line: requests without views never call it.
+/// D-A2-1). Up to two go to the two-mask drains (`Scratch::drain`: `Masks`,
+/// the list empty; the same code as today, the masks in selectivity order),
+/// more to `drain_many` (the list). Out of line: requests without views never
+/// call it.
 #[inline(never)]
 fn masks<'a>(
     m: &'a Model,

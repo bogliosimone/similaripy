@@ -12,13 +12,14 @@
 //! A request: the caller's ids → internal ids (dense gather or hash; unknown
 //! ids ignored), history sorted with duplicates merged, the slots of seen and
 //! excluded items pre-set to `-inf` (never touched, never drained),
-//! `scores = h · S` accumulated, then drained through the view's mask and the
-//! request's include bits (tested only after the floor reject) into a top-K,
-//! best first, internal → caller's ids. A `Worker` (one per serving thread)
-//! owns the per-request state and the block size, resolved once; the free
-//! functions use the calling thread's implicit one. Batch = rayon over users
-//! calling the same function, so a user gets the same bits from both. Choices measured in
-//! step 4.1 (`reports/step4-explore.md` in the planning notes, D64); API D69.
+//! `scores = h · S` accumulated, then drained through the masks (the served
+//! view's, the request's include bits and its `views`', tested only after the
+//! floor reject) into a top-K, best first, internal → caller's ids. A `Worker`
+//! (one per serving thread) owns the per-request state and the block size,
+//! resolved once; the free functions use the calling thread's implicit one.
+//! Batch = rayon over users calling the same function, so a user gets the
+//! same bits from both. Choices measured in step 4.1
+//! (`reports/step4-explore.md` in the planning notes, D64); API D69, A0.
 //!
 //! Files: `model` (build, the one check, save/load, views), `ids` (id maps),
 //! `request` (the worker, one history, batch).
