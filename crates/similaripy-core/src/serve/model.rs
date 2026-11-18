@@ -350,16 +350,7 @@ impl Model {
             n,
             ext.map(Buf::from),
         )?;
-        Ok(Self::base(core))
-    }
-
-    /// A model with no mask.
-    fn base(core: Core) -> Self {
-        Self {
-            n_allowed: core.n_items(),
-            core: Arc::new(core),
-            allowed: None,
-        }
+        Ok(Self::masked(Arc::new(core), None))
     }
 
     /// A model of `core` with the mask `allowed` (words(n_items) words).
@@ -375,7 +366,6 @@ impl Model {
     }
 
     /// A model from `parts` (pickling, loading), checked as a build's output.
-    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         indptr: Vec<i64>,
         pairs: Vec<Entry>,
@@ -493,7 +483,7 @@ impl Model {
         if (core.n_items() as u64, core.pairs.len() as u64) != (uint("n_items")?, uint("nnz")?) {
             return Err(bad("n_items / nnz don't match the arrays".into()));
         }
-        Ok(Self::base(core))
+        Ok(Self::masked(Arc::new(core), None))
     }
 
     /// The same model (S shared, no copy) whose default mask allows the
@@ -536,8 +526,8 @@ impl Model {
             indptr: &self.indptr,
             pairs: &self.pairs,
             new_to_old: &self.new_to_old,
-            n_cols: self.dense_in.len(),
-            ext: self.ext.as_ref().map(|e| &e.by_col[..]),
+            n_cols: self.n_cols(),
+            ext: self.item_ids(),
             allowed: self.allowed.as_deref(),
         }
     }
@@ -557,7 +547,6 @@ impl Core {
     /// The internal layout, checked once whatever made it (a build, a pickle,
     /// a saved model): every invariant the unchecked reads rely on, plus
     /// finite values. O(nnz).
-    #[allow(clippy::too_many_arguments)]
     fn from_arrays(
         indptr: Buf<i64>,
         pairs: Buf<Entry>,

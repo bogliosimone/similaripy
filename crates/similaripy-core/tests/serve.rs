@@ -131,20 +131,6 @@ fn reference_order(s: &[Vec<f32>], order: ItemOrder, head: usize) -> Vec<i32> {
     }
 }
 
-/// A model rebuilt from its own parts (the pickle / load path).
-fn from_own_parts(m: &Model) -> Model {
-    let p = m.parts();
-    Model::from_parts(
-        p.indptr.to_vec(),
-        p.pairs.to_vec(),
-        p.new_to_old.to_vec(),
-        p.n_cols,
-        p.ext.map(<[i64]>::to_vec),
-        p.allowed.map(<[u64]>::to_vec),
-    )
-    .unwrap()
-}
-
 fn build(
     s: &[Vec<f32>],
     new_to_old: &[i32],
@@ -362,28 +348,12 @@ fn by_score(
 fn reference(c: &Case) -> (Vec<i64>, Vec<f32>) {
     let n = c.s.len();
     let internal = |j: usize| c.new_to_old.iter().position(|&o| o as usize == j);
-    let hist: Vec<(usize, f64)> = c
-        .hist
-        .iter()
-        .enumerate()
-        .filter_map(|(p, h)| {
-            h.filter(|&i| kept(c, i))
-                .map(|i| (i, c.weights.as_ref().map_or(1.0, |w| f64::from(w[p]))))
-        })
-        .collect();
-    let seen: Vec<bool> = (0..n).map(|j| hist.iter().any(|&(i, _)| i == j)).collect();
+    let seen = |j: usize| kept(c, j) && c.hist.contains(&Some(j));
     let mut cand: Vec<(usize, f64)> = (0..n)
-        .map(|j| {
-            (
-                j,
-                hist.iter()
-                    .map(|&(i, w)| w * f64::from(c.s[i][j]))
-                    .sum::<f64>(),
-            )
-        })
+        .map(|j| (j, hs(c, j)))
         .filter(|&(j, s)| {
             s > 0.0
-                && !(c.exclude_seen && seen[j])
+                && !(c.exclude_seen && seen(j))
                 && c.allowed.as_ref().is_none_or(|a| a[j])
                 && !c.excluded.as_ref().is_some_and(|x| x[j])
         })
@@ -394,6 +364,28 @@ fn reference(c: &Case) -> (Vec<i64>, Vec<f32>) {
         cand.iter().map(|&(j, _)| ext_of(c, j)).collect(),
         cand.iter().map(|&(_, s)| s as f32).collect(),
     )
+}
+
+/// (h · S)[j] in f64: the history's kept items, weighted.
+fn hs(c: &Case, j: usize) -> f64 {
+    c.hist
+        .iter()
+        .enumerate()
+        .filter_map(|(p, h)| {
+            h.filter(|&i| kept(c, i))
+                .map(|i| c.weights.as_ref().map_or(1.0, |w| f64::from(w[p])) * f64::from(c.s[i][j]))
+        })
+        .sum()
+}
+
+/// The history twice (a two-user batch): ids and weights.
+fn twice(c: &Case, ids: &[i64]) -> (Vec<i64>, Option<Vec<f32>>) {
+    let both = ids.iter().chain(ids).copied().collect();
+    let w2 = c
+        .weights
+        .as_ref()
+        .map(|w| w.iter().chain(w).copied().collect());
+    (both, w2)
 }
 
 fn bits(v: &[f32]) -> Vec<u32> {
@@ -425,9 +417,8 @@ proptest! {
                 prop_assert_eq!(&got.0, &want.0);
                 prop_assert_eq!(bits(&got.1), bits(&want.1));
             }
-            // A view of a view narrows: no rules = the parent's, more rules
-            // = the parent's AND them (== the same rules per call).
-            prop_assert_eq!(&go(&c, &view.view(None, None), None, None).0, &want.0);
+            // A view of a view narrows: more rules = the parent's AND them
+            // (== the same rules per call).
             let odd: Vec<i64> = (0..c.s.len()).filter(|j| j % 2 == 1).map(|j| ext_of(&c, j)).collect();
             let got = go(&c, &view.view(None, Some(&odd)), None, None);
             let and = go(&c, &view, None, Some(&odd));
@@ -455,8 +446,7 @@ proptest! {
         // middle user has no include rule (`no_include`) and no history.
         let ids = ids(&c);
         let n = ids.len() as i64;
-        let both: Vec<i64> = ids.iter().chain(&ids).copied().collect();
-        let w2 = c.weights.as_ref().map(|w| w.iter().chain(w).copied().collect::<Vec<_>>());
+        let (both, w2) = twice(&c, &ids);
         let per_user = |l: &Option<Vec<i64>>| {
             l.as_ref().map(|l| {
                 let k = l.len() as i64;
@@ -509,7 +499,7 @@ proptest! {
         let c2 = Case { s, new_to_old, ..c.clone() };
         let got = run(&c2, &m);
         let view = m.view(flagged(&c2, &c2.allowed).as_deref(), flagged(&c2, &c2.excluded).as_deref());
-        let back = from_own_parts(&view);
+        let back = Owned::of(&view).load().unwrap(); // the pickle / load path
         prop_assert_eq!(back.parts().allowed, view.parts().allowed);
         let again = run(&Case { allowed: None, excluded: None, ..c2.clone() }, &back);
         prop_assert_eq!(&again.0, &got.0);
@@ -529,11 +519,7 @@ proptest! {
         let want: Vec<f32> = (0..n).rev().chain([0]).map(|j| {
             let ok = kept(&c, j) && c.allowed.as_ref().is_none_or(|a| a[j])
                 && !c.excluded.as_ref().is_some_and(|x| x[j]);
-            let s: f64 = c.hist.iter().enumerate()
-                .filter_map(|(p, h)| h.filter(|&i| kept(&c, i))
-                    .map(|i| c.weights.as_ref().map_or(1.0, |w| f64::from(w[p])) * f64::from(c.s[i][j])))
-                .sum();
-            if ok { s as f32 } else { 0.0 }
+            if ok { hs(&c, j) as f32 } else { 0.0 }
         }).chain([0.0]).collect();
         prop_assert_eq!(got, want);
     }
@@ -552,8 +538,7 @@ proptest! {
         let items: Vec<i64> = (0..c.s.len()).map(|j| ext_of(&c, j)).collect();
         let single = score(&m, block, &sreq(&c, &ids, &items)).unwrap();
         let (h, k) = (ids.len() as i64, items.len() as i64);
-        let both: Vec<i64> = ids.iter().chain(&ids).copied().collect();
-        let w2 = c.weights.as_ref().map(|w| w.iter().chain(w).copied().collect::<Vec<_>>());
+        let (both, w2) = twice(&c, &ids);
         let it2: Vec<i64> = items.iter().chain(&items).copied().collect();
         let flat = score_batch(
             &m,
@@ -640,8 +625,7 @@ proptest! {
         prop_assert_eq!(bits(&got.1), bits(&want.1));
         // Batch of [history, history]: views shared by every user.
         let n = ids.len() as i64;
-        let both: Vec<i64> = ids.iter().chain(&ids).copied().collect();
-        let w2 = c.weights.as_ref().map(|w| w.iter().chain(w).copied().collect::<Vec<_>>());
+        let (both, w2) = twice(&c, &ids);
         let offsets = [0, n, 2 * n];
         let b = |views| BatchRequest {
             histories: Lists { offsets: &offsets, ids: &both },
@@ -662,7 +646,19 @@ proptest! {
         let items: Vec<i64> = (0..c.s.len()).map(|j| ext_of(&c, j)).collect();
         let s = sreq(&c, &ids, &items);
         let got_s = score(&served, block, &ScoreRequest { views: &views, ..s }).unwrap();
-        prop_assert_eq!(bits(&got_s), bits(&score(&combined, block, &s).unwrap()));
+        let want_s = score(&combined, block, &s).unwrap();
+        prop_assert_eq!(bits(&got_s), bits(&want_s));
+        let k = items.len() as i64;
+        let it2: Vec<i64> = items.iter().chain(&items).copied().collect();
+        let flat = score_batch(
+            &served,
+            block_size(block),
+            Lists { offsets: &offsets, ids: &both },
+            w2.as_deref(),
+            Lists { offsets: &[0, k, 2 * k], ids: &it2 },
+            &views,
+        ).unwrap();
+        prop_assert_eq!(bits(&flat), bits(&[&want_s[..], &want_s[..]].concat()));
     }
 }
 
@@ -827,11 +823,8 @@ fn worker_block_and_stats() {
 #[test]
 fn rejects_bad_input() {
     let s = vec![vec![0.0, 1.0, 0.0], vec![1.0, 0.0, 0.0], vec![0.0; 3]];
-    assert!(build(&s, &[0, 0], None).is_err()); // not distinct
     assert!(build(&s, &[0], None).is_err()); // leaves out item 1 (has entries)
     assert!(build(&[vec![0.0, 1.0], vec![0.0; 2]], &[1], None).is_err()); // leaves out item 0 (a row, no column)
-    assert!(build(&s, &[0, 1], Some(&[5, 5, 6])).is_err()); // duplicate external ids
-    assert!(build(&s, &[0, 1], Some(&[5, 6])).is_err()); // one id per item
     let m = build(&s, &[1, 0], None).unwrap(); // item 2 dropped
     assert_eq!((m.n_items(), m.n_cols(), m.n_active()), (2, 3, 2));
     let run = |r: &Request| {

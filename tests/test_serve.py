@@ -58,6 +58,13 @@ def _same(a, b):
     return np.array_equal(a[0], b[0]) and np.array_equal(a[1].view(np.int32), b[1].view(np.int32))
 
 
+def _same_parts(rec, want, n=None):
+    """`rec`'s model parts == `want`'s (a model or its parts), the first `n`."""
+    want = want._model.parts() if isinstance(want, SparseKNN) else want
+    for a, b in zip(rec._model.parts()[:n], want[:n]):
+        assert np.array_equal(a, b) if isinstance(a, np.ndarray) else a == b
+
+
 def _same_set(a, b):
     """`_same` up to order (sorted=False: the order can differ between calls)."""
     ia, ib = np.argsort(a[0], kind="stable"), np.argsort(b[0], kind="stable")
@@ -145,10 +152,8 @@ def test_item_ids_property():
 def test_unknown_ids_are_ignored():
     # 100 has no similarities (dropped internally), 7 is no item: both ignored, never an error
     rec = SparseKNN(_S(20, False, seed=2), item_ids=np.arange(100, 120))
-    assert _same(rec.recommend([105, 7, 100], k=3), rec.recommend([105], k=3))
+    # (in a history, an exclude and a view: test_matches_dense_reference)
     assert _same(rec.recommend([105], include=[7, 100], k=3), rec.recommend([105], include=[], k=3))
-    assert _same(rec.recommend([105], exclude=[7, 100], k=3), rec.recommend([105], k=3))
-    assert _same(rec.view(include=np.arange(100, 130)).recommend([105], k=3), rec.recommend([105], k=3))
     assert rec.recommend([105], include=[], k=3)[0].size == 0
 
 
@@ -286,8 +291,7 @@ def test_item_orders_same_scores_ties_by_internal_order(tmp_path):
             if order == "clustered":
                 rec.save(tmp_path / str(trim))
                 for back in (pickle.loads(pickle.dumps(rec)), SparseKNN.load(tmp_path / str(trim))):
-                    for a, b in zip(rec._model.parts(), back._model.parts()):
-                        assert a == b if not isinstance(a, np.ndarray) else np.array_equal(a, b)
+                    _same_parts(rec, back)
                 assert np.array_equal(SparseKNN(S, **opts, num_threads=1)._model.parts()[3], new_to_old)
             if trim:
                 n_cand = np.count_nonzero(counts[cand])
@@ -482,9 +486,7 @@ def test_any_input_form_same_model():
     assert not raw_csr.has_canonical_format
     raw_coo = sp.coo_array((vals, (rows, cols)), shape=S.shape)
     for m in (raw_csr, raw_coo, S.tocsc(), S.astype(np.float64), sp.csr_matrix(S)):
-        got = SparseKNN(m)._model.parts()
-        for a, b in zip(got[:5], want[:5]):
-            assert np.array_equal(a, b)
+        _same_parts(SparseKNN(m), want, 5)
 
 
 def test_int64_indptr_input_same_model(monkeypatch):
@@ -499,8 +501,7 @@ def test_int64_indptr_input_same_model(monkeypatch):
     S64 = S.copy()
     S64.indptr, S64.indices = S.indptr.astype(np.int64), S.indices.astype(np.int64)
     for m in (S64, S.tocoo()):
-        for a, b in zip(SparseKNN(m)._model.parts()[:5], want[:5]):
-            assert np.array_equal(a, b)
+        _same_parts(SparseKNN(m), want, 5)
 
 
 @pytest.mark.parametrize("mapped", [False, True])
@@ -569,10 +570,6 @@ def test_boundary_types():
         SparseKNN(sp.csr_array(np.array([[0.0, 1e300], [1.0, 0.0]])))
 
 
-def _bits(a):
-    return a.view(np.int32) if a.dtype == np.float32 else a
-
-
 @pytest.mark.parametrize("mmap", [True, False])
 @pytest.mark.parametrize("block_size", ["auto", None, 7])
 def test_save_load_round_trip(tmp_path, mmap, block_size):
@@ -587,8 +584,7 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
         rec.view(include=ext[5:60]).save(tmp_path / "v")
     rec.save(tmp_path / "m")
     back = SparseKNN.load(tmp_path / "m", mmap=mmap, block_size=block_size)
-    for a, b in zip(rec._model.parts(), back._model.parts()):
-        assert a == b if not isinstance(a, np.ndarray) else np.array_equal(a, b)
+    _same_parts(rec, back)
     assert back._model.parts()[-1] == block_size
     # The block size is a runtime setting, not saved (W1): `load` takes its own.
     assert SparseKNN.load(tmp_path / "m", mmap=mmap)._model.parts()[-1] == "auto"
@@ -598,7 +594,7 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
     for _ in range(20):
         hist = rng.choice(ext, size=8)
         a, b = rec.recommend(hist, k=15), back.recommend(hist, k=15)
-        assert np.array_equal(a[0], b[0]) and np.array_equal(_bits(a[1]), _bits(b[1]))
+        assert _same(a, b)
     hists = [rng.choice(ext, size=8) for _ in range(6)]
     got, want = back.recommend_batch(hists, k=5), rec.recommend_batch(hists, k=5)
     assert all(_same((gi, gs), (wi, ws)) for gi, gs, wi, ws in zip(*got, *want))
@@ -768,6 +764,4 @@ def test_strided_and_float64_coo_input():
     d2, i2 = np.repeat(vals[order], 2), np.repeat(cols[order], 2)
     strided = sp.csr_array((d2[::2], i2[::2], indptr), shape=(30, 30))
     for m in (coo, strided):
-        got = SparseKNN(m)._model.parts()
-        for a, b in zip(got[:5], want[:5]):
-            assert np.array_equal(a, b)
+        _same_parts(SparseKNN(m), want, 5)

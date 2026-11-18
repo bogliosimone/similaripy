@@ -22,7 +22,7 @@ pub(super) struct ExtIds {
     /// External id per original column, dropped items too (`parts`).
     pub(super) by_col: Buf<i64>,
     /// External id per internal id.
-    pub(super) out: Vec<i64>,
+    pub(super) by_internal: Vec<i64>,
     /// (external id, internal id); internal `EMPTY` = free slot.
     slots: Vec<(i64, u32)>,
     /// Random seed per table: ids crafted to collide under a fixed hash
@@ -40,12 +40,12 @@ impl ExtIds {
         }
         drop(sorted);
         let b: &[i64] = &by_col;
-        let out: Vec<i64> = new_to_old.iter().map(|&c| b[c as usize]).collect();
-        let cap = (2 * out.len()).next_power_of_two().max(2);
+        let by_internal: Vec<i64> = new_to_old.iter().map(|&c| b[c as usize]).collect();
+        let cap = (2 * by_internal.len()).next_power_of_two().max(2);
         let shift = 64 - cap.trailing_zeros();
         let seed = std::hash::BuildHasher::hash_one(&std::hash::RandomState::new(), 0u8);
         let mut slots = vec![(0i64, EMPTY); cap];
-        for (internal, &key) in out.iter().enumerate() {
+        for (internal, &key) in by_internal.iter().enumerate() {
             let mut s = hash(key, seed, shift);
             while slots[s].1 != EMPTY {
                 s = (s + 1) & (cap - 1);
@@ -54,7 +54,7 @@ impl ExtIds {
         }
         Ok(Self {
             by_col,
-            out,
+            by_internal,
             slots,
             seed,
             shift,
