@@ -226,7 +226,7 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
         ),
         (
             "bad_requests_total",
-            "Requests rejected at the edge (JSON body: parse, read, 408, 413; k, history, view; not gRPC decode errors).",
+            "Requests rejected at the edge (JSON body: parse, read, 408, 413; k, history, view(s); not gRPC decode errors).",
             |t| &t.bad_requests,
         ),
         (
@@ -254,7 +254,7 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
         &mut o,
         "view_requests_total",
         "counter",
-        "Requests per named view (the rest used the whole model).",
+        "Requests per named view: the view used and each name in `views`.",
     );
     for (name, v, _) in &info.views {
         let _ = writeln!(

@@ -220,7 +220,7 @@ fn build_one(
     );
     let file = |f: Option<Read>| {
         f.map(|(p, mut ids, modified)| {
-            let known = allowed(&base.view(Some(&ids), None));
+            let known = base.view(Some(&ids), None).n_allowed();
             ids.sort_unstable();
             ids.dedup();
             FileInfo {
@@ -232,7 +232,7 @@ fn build_one(
         })
     };
     let info = ViewInfo {
-        allowed: allowed(&model),
+        allowed: model.n_allowed(),
         include: file(include),
         exclude: file(exclude),
         error: None,
@@ -242,21 +242,6 @@ fn build_one(
         info,
         served: served.clone(),
     })
-}
-
-/// Items `m`'s mask allows (all without a mask). The last word's bits
-/// past `n_items` can be set (an exclude-only view starts from all ones):
-/// not items, not counted.
-fn allowed(m: &Model) -> usize {
-    let n = m.n_items();
-    let Some(bits) = m.parts().allowed else {
-        return n;
-    };
-    let full: usize = bits[..n / 64].iter().map(|w| w.count_ones() as usize).sum();
-    let tail = bits
-        .get(n / 64)
-        .map_or(0, |w| (w & ((1 << (n % 64)) - 1)).count_ones());
-    full + tail as usize
 }
 
 /// The start-up log's lines: one per view, then the memory they hold.

@@ -38,7 +38,7 @@ use hyper_util::server::graceful::GracefulShutdown;
 use hyper_util::service::TowerToHyperService;
 use serde::{Deserialize, Serialize};
 use similaripy_core::Error;
-use similaripy_core::serve::{Model, Request, ScoreRequest, Stats, Worker};
+use similaripy_core::serve::{MAX_VIEWS, Model, Request, ScoreRequest, Stats, Worker};
 
 pub use config::Config;
 use config::{HistoryPolicy, secs};
@@ -81,6 +81,8 @@ enum Code {
     /// Over `max_history` under `history_policy = reject`.
     HistoryOverMax,
     UnknownView,
+    /// More than `MAX_VIEWS` names in a request's `views`.
+    TooManyViews,
     /// Rejected by the worker: its only request checks are the weights'
     /// (length, finite; test `edge_rejections`; recommend and score); a cut
     /// history's weights of the wrong length are rejected at the edge.
@@ -99,6 +101,7 @@ impl Code {
             Code::ItemsOverMax => "items_over_max",
             Code::HistoryOverMax => "history_over_max",
             Code::UnknownView => "unknown_view",
+            Code::TooManyViews => "too_many_views",
             Code::BadWeights => "bad_weights",
             Code::BodyTimeout => "body_timeout",
             Code::BodyTooLarge => "body_too_large",
@@ -336,9 +339,10 @@ impl App {
 
     /// A history (whole, with its weights) through the edge checks, the
     /// history cap and this thread's worker (`call`, given the kept ids and
-    /// weights and the reused outputs), over the model of `view`
-    /// (None: `defaults.view`; "": the whole model); `encode` turns the
-    /// answer into the response while the worker's buffers are borrowed.
+    /// weights, the request's `views` and the reused outputs), over the model
+    /// of `view` (None: `defaults.view`; "": the whole model) ANDed with the
+    /// named `views` (at most `MAX_VIEWS`, V16); `encode` turns the answer
+    /// into the response while the worker's buffers are borrowed.
     #[allow(clippy::too_many_arguments)]
     fn run<T>(
         &self,
@@ -346,10 +350,25 @@ impl App {
         (e, p): (Endpoint, Proto),
         history: &[i64],
         weights: Option<&[f32]>,
-        view: Option<&str>,
-        call: impl FnOnce(&mut Worker, &Model, Cut, &mut Vec<i64>, &mut Vec<f32>) -> Result<(), Error>,
+        (view, views): (Option<&str>, &[String]),
+        call: impl FnOnce(
+            &mut Worker,
+            &Model,
+            &[&Model],
+            Cut,
+            &mut Vec<i64>,
+            &mut Vec<f32>,
+        ) -> Result<(), Error>,
         encode: impl FnOnce(&Answer) -> T,
     ) -> Result<T, Fail> {
+        if views.len() > MAX_VIEWS {
+            m.bad_request();
+            let n = views.len();
+            return Err(Fail(
+                Code::TooManyViews,
+                format!("{n} views > {MAX_VIEWS} per request"),
+            ));
+        }
         let limits = &self.cfg.limits;
         LOCAL.with_borrow_mut(|l| {
             let l = l.as_mut().expect("a request on a server thread");
@@ -367,21 +386,31 @@ impl App {
                 state,
                 ..
             } = l;
+            let unknown = |name: &str| {
+                m.bad_request();
+                Fail(
+                    Code::UnknownView,
+                    format!("unknown view {name:?} (GET /v1/views lists them)"),
+                )
+            };
             let name = view.unwrap_or(&self.cfg.defaults.view);
             let (model, view, served) = if name.is_empty() {
                 (&state.model, None, None)
             } else {
                 match state.views.get_key_value(name) {
                     Some((name, v)) => (&v.model, Some(name.as_str()), Some(&v.served)),
-                    None => {
-                        m.bad_request();
-                        return Err(Fail(
-                            Code::UnknownView,
-                            format!("unknown view {name:?} (GET /v1/views lists them)"),
-                        ));
-                    }
+                    None => return Err(unknown(name)),
                 }
             };
+            // On the stack: no allocation for a request with views.
+            let mut extra = [&state.model; MAX_VIEWS];
+            for (slot, name) in extra.iter_mut().zip(views) {
+                match state.views.get(name) {
+                    Some(v) => *slot = &v.model,
+                    None => return Err(unknown(name)),
+                }
+            }
+            let extra = &extra[..views.len()];
             let n = history.len();
             let cut = n.saturating_sub(limits.max_history);
             if cut > 0 {
@@ -413,7 +442,7 @@ impl App {
             scores.clear();
             let before = worker.stats();
             let t = Instant::now();
-            let r = call(worker, model, kept, ids, scores);
+            let r = call(worker, model, extra, kept, ids, scores);
             let compute = t.elapsed();
             m.compute[e as usize][p as usize].record(compute);
             let stats = worker.stats();
@@ -427,13 +456,18 @@ impl App {
             };
             match r {
                 Ok(()) => {
+                    let t = THREAD.get();
                     if let Some(c) = served {
-                        c[THREAD.get()].add();
+                        c[t].add();
+                    }
+                    for name in views {
+                        state.views[name].served[t].add();
                     }
                     Ok(encode(&Answer {
                         ids,
                         scores,
                         view,
+                        views,
                         history,
                         compute,
                     }))
@@ -452,7 +486,7 @@ impl App {
         m: &metrics::Thread,
         p: Proto,
         q: &Request,
-        view: Option<&str>,
+        view: (Option<&str>, &[String]),
         encode: impl FnOnce(&Answer) -> T,
     ) -> Result<T, Fail> {
         let k_max = self.cfg.limits.k_max;
@@ -472,11 +506,17 @@ impl App {
             (0, _) | (_, false) => None,
             (_, true) => Some([&q.ids[..cut], q.exclude.unwrap_or_default()].concat()),
         };
-        let call = |w: &mut Worker, model: &Model, c: Cut, ids: &mut _, scores: &mut _| {
+        let call = |w: &mut Worker,
+                    model: &Model,
+                    views: &[&Model],
+                    c: Cut,
+                    ids: &mut _,
+                    scores: &mut _| {
             let req = Request {
                 ids: c.ids,
                 weights: c.weights,
                 exclude: exclude.as_deref().or(q.exclude),
+                views,
                 ..*q
             };
             w.recommend(model, &req, ids, scores)
@@ -495,7 +535,7 @@ impl App {
         history: &[i64],
         weights: Option<&[f32]>,
         items: &[i64],
-        view: Option<&str>,
+        view: (Option<&str>, &[String]),
         encode: impl FnOnce(&Answer) -> T,
     ) -> Result<T, Fail> {
         let max = self.cfg.limits.max_items;
@@ -506,15 +546,16 @@ impl App {
                 format!("{} items > max_items = {max}", items.len()),
             ));
         }
-        let call = |w: &mut Worker, model: &Model, c: Cut, _: &mut _, scores: &mut _| {
-            let req = ScoreRequest {
-                ids: c.ids,
-                weights: c.weights,
-                items,
-                ..Default::default()
+        let call =
+            |w: &mut Worker, model: &Model, views: &[&Model], c: Cut, _: &mut _, scores: &mut _| {
+                let req = ScoreRequest {
+                    ids: c.ids,
+                    weights: c.weights,
+                    items,
+                    views,
+                };
+                w.score(model, &req, scores)
             };
-            w.score(model, &req, scores)
-        };
         let at = (Endpoint::Score, p);
         self.run(m, at, history, weights, view, call, encode)
     }
@@ -537,7 +578,8 @@ impl App {
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
             ..Default::default()
         };
-        self.recommend(m, Proto::Json, &req, q.view.as_deref(), |a| {
+        let views = q.views.as_deref().unwrap_or_default();
+        self.recommend(m, Proto::Json, &req, (q.view.as_deref(), views), |a| {
             let reply = Reply {
                 items: Items(a.ids, a.scores),
                 model: ModelInfo {
@@ -547,6 +589,7 @@ impl App {
                 k: req.k,
                 sorted: req.sorted,
                 view: a.view,
+                views: a.views,
                 history: a.history,
             };
             timed(reply.response(), a.compute)
@@ -568,7 +611,7 @@ impl App {
             &q.history,
             w,
             &q.items,
-            q.view.as_deref(),
+            (q.view.as_deref(), q.views.as_deref().unwrap_or_default()),
             |a| {
                 let reply = ScoreReply {
                     scores: a.scores,
@@ -577,6 +620,7 @@ impl App {
                     },
                     request_id,
                     view: a.view,
+                    views: a.views,
                     history: a.history,
                 };
                 timed(json(StatusCode::OK, &reply), a.compute)
@@ -602,7 +646,7 @@ impl App {
             ..Default::default()
         };
         // T18: one copy of the answer, prost's default codec encodes it
-        let view = q.view.as_deref();
+        let view = (q.view.as_deref(), &q.views[..]);
         self.recommend(m, Proto::Grpc, &req, view, |a| pb::RecommendResponse {
             ids: a.ids.to_vec(),
             scores: a.scores.to_vec(),
@@ -611,6 +655,7 @@ impl App {
             k: req.k as u32, // <= k_max: checked in recommend
             sorted: req.sorted,
             view: a.view.map(String::from),
+            views: a.views.to_vec(),
             history: Some(a.history.into()),
         })
     }
@@ -622,13 +667,14 @@ impl App {
         request_id: &str,
     ) -> Result<pb::ScoreResponse, Fail> {
         let weights = (!q.weights.is_empty()).then_some(&q.weights[..]);
-        let view = q.view.as_deref();
+        let view = (q.view.as_deref(), &q.views[..]);
         self.score(m, Proto::Grpc, &q.history, weights, &q.items, view, |a| {
             pb::ScoreResponse {
                 scores: a.scores.to_vec(),
                 model: Some(self.model_info()),
                 request_id: request_id.to_string(),
                 view: a.view.map(String::from),
+                views: a.views.to_vec(),
                 history: Some(a.history.into()),
             }
         })
@@ -707,6 +753,10 @@ struct Query {
     /// Absent or null = `defaults.view`; "" = the whole model.
     #[serde(default)]
     view: Option<String>,
+    /// More named views, ANDed with `view` (at most `MAX_VIEWS`); absent or
+    /// null = none.
+    #[serde(default)]
+    views: Option<Vec<String>>,
 }
 
 /// A `POST /v1/recommend` body as the gRPC request with the same answer
@@ -728,6 +778,7 @@ pub fn proto_from_json(body: &[u8]) -> Result<pb::RecommendRequest, serde_json::
         exclude: q.exclude.unwrap_or_default(),
         sorted: q.sorted,
         view: q.view,
+        views: q.views.unwrap_or_default(),
         history: q.history,
     })
 }
@@ -745,6 +796,9 @@ struct ScoreQuery {
     /// As `Query`'s.
     #[serde(default)]
     view: Option<String>,
+    /// As `Query`'s.
+    #[serde(default)]
+    views: Option<Vec<String>>,
 }
 
 /// A JSON body as `T`, else a counted `bad_json`.
@@ -789,6 +843,8 @@ struct Answer<'a> {
     scores: &'a [f32],
     /// The view's name; None = the whole model.
     view: Option<&'a str>,
+    /// The request's `views`, as sent.
+    views: &'a [String],
     history: History,
     compute: Duration,
 }
@@ -821,6 +877,7 @@ struct Reply<'a> {
     k: usize,
     sorted: bool,
     view: Option<&'a str>,
+    views: &'a [String],
     history: History,
 }
 
@@ -832,6 +889,7 @@ struct ScoreReply<'a> {
     model: ModelInfo<'a>,
     request_id: &'a str,
     view: Option<&'a str>,
+    views: &'a [String],
     history: History,
 }
 
@@ -843,6 +901,7 @@ struct ReplyTail<'a> {
     k: usize,
     sorted: bool,
     view: Option<&'a str>,
+    views: &'a [String],
     history: History,
 }
 
@@ -911,6 +970,7 @@ impl Reply<'_> {
             k,
             sorted,
             view,
+            views,
             history,
         } = self;
         let (ids, scores) = (items.0, items.1);
@@ -946,6 +1006,7 @@ impl Reply<'_> {
             k: *k,
             sorted: *sorted,
             view: *view,
+            views,
             history: *history,
         };
         let at = v.len();
@@ -1620,10 +1681,11 @@ mod body_tests {
         while ids.len() < scores.len() {
             ids.push(ids.len() as i64);
         }
-        for (n, view, name) in [
-            (0, None, "m"),
-            (1, Some("v"), "a\"b\n"),
-            (ids.len(), None, "model"),
+        let names = ["even".to_string(), "in \"stock\"".to_string()];
+        for (n, view, views, name) in [
+            (0, None, &[][..], "m"),
+            (1, Some("v"), &names[..], "a\"b\n"),
+            (ids.len(), None, &names[..1], "model"),
         ] {
             let r = Reply {
                 items: Items(&ids[..n], &scores[..n.min(scores.len())]),
@@ -1632,6 +1694,7 @@ mod body_tests {
                 k: n,
                 sorted: true,
                 view,
+                views,
                 history: History {
                     sent: 3,
                     truncated: 1,
@@ -1648,6 +1711,7 @@ mod body_tests {
             k: 1,
             sorted: false,
             view: None,
+            views: &[],
             history: History {
                 sent: 0,
                 truncated: 0,
