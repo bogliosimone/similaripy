@@ -7,7 +7,7 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::ops::Deref;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use memmap2::Mmap;
@@ -200,16 +200,6 @@ fn read_header<T: Pod>(r: &mut impl Read) -> Result<(usize, usize), String> {
     Ok((n, start + len))
 }
 
-/// Writes `a` as `dir/name.npy`; never replaces an existing file.
-pub(crate) fn write<T: Pod>(dir: &Path, name: &str, a: &[T]) -> Result<(), Error> {
-    little_endian()?;
-    let path = dir.join(format!("{name}.npy"));
-    let mut f = File::create_new(&path).map_err(io(&path))?;
-    f.write_all(&header::<T>(a.len())).map_err(io(&path))?;
-    f.write_all(bytes(a)).map_err(io(&path))?;
-    f.sync_all().map_err(io(&path))
-}
-
 /// Reads `dir/name.npy`, mapped or into a `Vec`; the header and the file
 /// size are checked before anything is allocated.
 pub(crate) fn read<T: Pod>(dir: &Path, name: &str, mmap: bool) -> Result<Buf<T>, Error> {
@@ -246,45 +236,86 @@ pub(crate) fn read<T: Pod>(dir: &Path, name: &str, mmap: bool) -> Result<Buf<T>,
     }
 }
 
-/// Writes `text` as `dir/name`; never replaces an existing file.
-pub(crate) fn write_text(dir: &Path, name: &str, text: &str) -> Result<(), Error> {
-    let path = dir.join(name);
-    let mut f = File::create_new(&path).map_err(io(&path))?;
-    f.write_all(text.as_bytes()).map_err(io(&path))?;
-    f.sync_all().map_err(io(&path))
+/// The directory a save writes into; remembers the files this save created,
+/// so a failed save removes only its own (never another saver's model).
+pub(crate) struct SaveDir<'a> {
+    dir: &'a Path,
+    created: Vec<PathBuf>,
+}
+
+impl SaveDir<'_> {
+    /// A new file `dir/name`, never replacing one (another saver's is "not empty").
+    fn create(&mut self, name: &str) -> Result<(File, PathBuf), Error> {
+        let path = self.dir.join(name);
+        let f = File::create_new(&path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => not_empty(self.dir),
+            _ => io(&path)(e),
+        })?;
+        self.created.push(path.clone());
+        Ok((f, path))
+    }
+
+    /// Writes `a` as `dir/name.npy`.
+    pub(crate) fn npy<T: Pod>(&mut self, name: &str, a: &[T]) -> Result<(), Error> {
+        little_endian()?;
+        let (mut f, path) = self.create(&format!("{name}.npy"))?;
+        f.write_all(&header::<T>(a.len())).map_err(io(&path))?;
+        f.write_all(bytes(a)).map_err(io(&path))?;
+        f.sync_all().map_err(io(&path))
+    }
+
+    /// Writes `text` as `dir/name`.
+    pub(crate) fn text(&mut self, name: &str, text: &str) -> Result<(), Error> {
+        let (mut f, path) = self.create(name)?;
+        f.write_all(text.as_bytes()).map_err(io(&path))?;
+        f.sync_all().map_err(io(&path))
+    }
+}
+
+fn not_empty(dir: &Path) -> Error {
+    Error::Io(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "{}: not empty: save each model version to a new directory",
+            dir.display()
+        ),
+    )
 }
 
 /// Runs `write` into `dir`, which must be missing or empty: a saved model is
 /// never replaced (save each version to a new directory), so no file a
 /// reader may have mapped ever changes. Every file is new
 /// (`File::create_new`) and `write` puts `meta.json` last, so an interrupted
-/// save leaves no directory `load` accepts; a failed one removes the
-/// directory it created.
+/// save leaves no directory `load` accepts. A failed save removes the files
+/// it created, then `dir` if it created it and it is empty: concurrent saves
+/// to one path leave the winner's model whole (at most one wins, as the
+/// files are created in one order and the first `create_new` decides).
 pub(crate) fn save_dir(
     dir: &Path,
-    write: impl Fn(&Path) -> Result<(), Error>,
+    write: impl FnOnce(&mut SaveDir) -> Result<(), Error>,
 ) -> Result<(), Error> {
     if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(io(parent))?;
     }
-    // Only the saver that created `dir` removes it on failure (never another's model).
     let created = match fs::create_dir(dir) {
         Ok(()) => true,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(e) => return Err(io(dir)(e)),
     };
     if !created && fs::read_dir(dir).map_err(io(dir))?.next().is_some() {
-        return Err(Error::Io(
-            std::io::ErrorKind::AlreadyExists,
-            format!(
-                "{}: not empty: save each model version to a new directory",
-                dir.display()
-            ),
-        ));
+        return Err(not_empty(dir));
     }
-    write(dir).inspect_err(|_| {
+    let mut d = SaveDir {
+        dir,
+        created: Vec::new(),
+    };
+    write(&mut d).inspect_err(|_| {
+        for f in &d.created {
+            let _ = fs::remove_file(f);
+        }
         if created {
-            let _ = fs::remove_dir_all(dir);
+            // not recursive: fails while another saver's files are in it
+            let _ = fs::remove_dir(dir);
         }
     })
 }
@@ -343,5 +374,27 @@ mod tests {
         let mut v = [0i32; 2];
         bytes_mut(&mut v).copy_from_slice(&[1, 0, 0, 0, 255, 255, 255, 255]);
         assert_eq!(v, [1, -1]);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // file I/O
+    fn failed_save_removes_only_what_it_created() {
+        let fail = |d: &mut SaveDir| {
+            d.npy("a", &[1i32])?;
+            d.text("b.txt", "x")?;
+            Err(Error::InvalidInput("boom".into()))
+        };
+        let base = std::env::temp_dir().join(format!("similaripy-store-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        // a directory it created goes too
+        let new = base.join("new");
+        assert!(save_dir(&new, fail).is_err());
+        assert!(!new.exists());
+        // a directory that was there (empty) stays, empty
+        let old = base.join("old");
+        fs::create_dir_all(&old).unwrap();
+        assert!(save_dir(&old, fail).is_err());
+        assert_eq!(fs::read_dir(&old).unwrap().count(), 0);
+        fs::remove_dir_all(&base).unwrap();
     }
 }

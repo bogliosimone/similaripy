@@ -402,11 +402,11 @@ impl Model {
         }
         let p = self.parts();
         store::save_dir(dir, |d| {
-            store::write(d, "indptr", p.indptr)?;
-            store::write(d, "pairs", p.pairs)?;
-            store::write(d, "new_to_old", p.new_to_old)?;
+            d.npy("indptr", p.indptr)?;
+            d.npy("pairs", p.pairs)?;
+            d.npy("new_to_old", p.new_to_old)?;
             if let Some(e) = p.ext {
-                store::write(d, "item_ids", e)?;
+                d.npy("item_ids", e)?;
             }
             let meta = serde_json::json!({
                 "format": FORMAT,
@@ -419,7 +419,7 @@ impl Model {
                 "item_ids": p.ext.is_some(),
             });
             let text = serde_json::to_string_pretty(&meta).expect("plain JSON values") + "\n";
-            store::write_text(d, "meta.json", &text)
+            d.text("meta.json", &text)
         })
     }
 

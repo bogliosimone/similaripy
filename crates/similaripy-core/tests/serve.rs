@@ -1096,3 +1096,33 @@ fn save_load_round_trip_and_versions() {
     std::fs::remove_dir_all(&dir).unwrap();
     std::fs::remove_dir_all(&other).unwrap();
 }
+
+/// Savers racing on one path: at most one wins, and a loser's cleanup never
+/// removes the winner's files (it used to `remove_dir_all` the directory it
+/// created: about one round in five left no model, some after an `Ok`).
+#[test]
+#[cfg_attr(miri, ignore)] // threads x rounds of file I/O
+fn concurrent_saves_to_one_path_keep_the_winners_model() {
+    let s = vec![
+        vec![0.0, 1.0, 2.0],
+        vec![1.0, 0.0, 0.5],
+        vec![0.0, 3.0, 0.0],
+    ];
+    let m = build(&s, &[0, 1, 2], Some(&[10, 11, 12])).unwrap();
+    let base = tmp("race");
+    for round in 0..200 {
+        let dir = base.join(round.to_string());
+        let ok = std::thread::scope(|sc| {
+            let saves: Vec<_> = (0..8).map(|_| sc.spawn(|| m.save(&dir, "test"))).collect();
+            saves
+                .into_iter()
+                .map(|h| h.join().unwrap().is_ok())
+                .filter(|&ok| ok)
+                .count()
+        });
+        assert_eq!(ok, 1, "round {round}: {ok} savers returned Ok");
+        let back = Model::load(&dir, false).unwrap_or_else(|e| panic!("round {round}: {e}"));
+        assert_eq!(Owned::of(&back), Owned::of(&m));
+    }
+    std::fs::remove_dir_all(&base).unwrap();
+}
