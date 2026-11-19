@@ -717,7 +717,10 @@ fn views_checked_and_counted() {
 // blocks (the head spans several drains): the branchy tail after it runs on
 // every request, k 1..4; == the reference (integer sums, exact). Each history
 // row has its own columns (j % 10 == i % 10) and few distinct scores, so the
-// head cuts and then meets ties with lower columns from the next row.
+// head cuts and then meets ties with lower columns from the next row. With
+// 0, 1 (the include) and 2 masks (a view + the include), allowing 75% / 50%
+// (the masked head: masked-out candidates in it and past it) or ~5% of
+// the items (below `MASKED_HEAD_DIV`'s share: the gated loop only).
 #[test]
 fn past_the_drain_head() {
     let n = 300;
@@ -747,18 +750,65 @@ fn past_the_drain_head() {
             excluded: None,
             sorted: true,
         };
-        let (m, ids, want) = (model(&c), ids(&c), reference(&c));
-        for block in [0, 7, 64] {
-            let mut got = (vec![], vec![]);
-            recommend(
-                &m,
-                block,
-                &req(&c, &ids, None, None),
-                &mut got.0,
-                &mut got.1,
-            )
-            .unwrap();
-            assert_eq!(got, want, "k {k}, block {block}");
+        let (m, ids) = (model(&c), ids(&c));
+        let flags = |f: fn(usize) -> bool| Some((0..n as usize).map(f).collect::<Vec<_>>());
+        let (a, b, e, few) = (
+            flagged(&c, &flags(|j| j % 3 != 0)),
+            flagged(&c, &flags(|j| j % 4 != 1)),
+            flagged(&c, &flags(|j| j % 11 == 5)),
+            flagged(&c, &flags(|j| j % 40 == 3 || j % 40 == 7)),
+        );
+        let view = m.view(a.as_deref(), e.as_deref());
+        for masks in 0..5 {
+            let (served, include, c) = match masks {
+                0 => (&m, None, c.clone()),
+                1 | 3 => (
+                    &m,
+                    if masks == 1 {
+                        b.as_deref()
+                    } else {
+                        few.as_deref()
+                    },
+                    Case {
+                        allowed: flags(if masks == 1 {
+                            |j| j % 4 != 1
+                        } else {
+                            |j| j % 40 == 3 || j % 40 == 7
+                        }),
+                        ..c.clone()
+                    },
+                ),
+                _ => (
+                    &view,
+                    if masks == 2 {
+                        b.as_deref()
+                    } else {
+                        few.as_deref()
+                    },
+                    Case {
+                        allowed: flags(if masks == 2 {
+                            |j| j % 3 != 0 && j % 4 != 1
+                        } else {
+                            |j| j % 3 != 0 && (j % 40 == 3 || j % 40 == 7)
+                        }),
+                        excluded: flags(|j| j % 11 == 5),
+                        ..c.clone()
+                    },
+                ),
+            };
+            let want = reference(&c);
+            for block in [0, 7, 64] {
+                let mut got = (vec![], vec![]);
+                recommend(
+                    served,
+                    block,
+                    &req(&c, &ids, include, None),
+                    &mut got.0,
+                    &mut got.1,
+                )
+                .unwrap();
+                assert_eq!(got, want, "k {k}, masks {masks}, block {block}");
+            }
         }
     }
 }
