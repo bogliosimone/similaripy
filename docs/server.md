@@ -183,10 +183,11 @@ server's defaults):
 | `exclude` | none | Never these items. |
 | `sorted` | `defaults.sorted` | Best first (`true`) or in no particular order. |
 | `view` | `defaults.view` | A named view; `""` = the whole model. |
+| `views` | none | More named views, ANDed with `view` ([Views](#views)); at most 8. |
 
 The answer: `items` (best first when sorted), then the request's context:
 which `model` answered, the `request_id`, the `k`, `sorted` and `view` used
-(defaults applied), and `history` counts ([History](#history)).
+(defaults applied), the `views` as sent, and `history` counts ([History](#history)).
 
 Headers:
 
@@ -209,6 +210,7 @@ included.
 | `weights` | all 1.0 | One per id. |
 | `items` | (required) | The items to score, at most `limits.max_items`; duplicates are scored again. |
 | `view` | `defaults.view` | A named view: its excluded items score 0. |
+| `views` | none | More named views, as `/v1/recommend`'s: an item any of them excludes scores 0. |
 
 ```bash
 curl -s 127.0.0.1:8080/v1/score -d '{"history": [10, 20], "items": [30, 40, 99]}'
@@ -217,7 +219,7 @@ curl -s 127.0.0.1:8080/v1/score -d '{"history": [10, 20], "items": [30, 40, 99]}
 The answer: `scores`, one per item in the request's order (0 for an item the
 model doesn't have, has no column for, e.g. outside a trimmed build's
 candidates, or the view excludes), then the request's context:
-`model`, `request_id`, `view` and `history` counts, as `/v1/recommend`'s. The
+`model`, `request_id`, `view`, `views` and `history` counts, as `/v1/recommend`'s. The
 same headers and errors as `/v1/recommend`, plus `items_over_max`.
 
 ### Errors
@@ -238,7 +240,8 @@ Branch on `code` (fixed strings: new ones may be added, none change), show
 | 400 | `k_over_max` | `k` > `limits.k_max` |
 | 400 | `items_over_max` | More score `items` than `limits.max_items` |
 | 400 | `history_over_max` | A history over `max_history` with `history_policy = reject` |
-| 400 | `unknown_view` | A `view` not in the config |
+| 400 | `unknown_view` | A `view` (or a name in `views`) not in the config |
+| 400 | `too_many_views` | More than 8 names in `views` |
 | 400 | `bad_weights` | Weights of the wrong length, or not finite |
 | 400 | `bad_body` | The body couldn't be read (e.g. malformed chunked encoding) |
 | 408 | `body_timeout` | The body didn't arrive within `timeouts.header_read` |
@@ -352,6 +355,16 @@ narrow a view, never widen it. Example: view `in_stock` = items 1-1000,
 request `"include": [5, 7, 2000]` → candidates 5 and 7 (2000 is not in
 stock).
 
+`"views": ["no_adult", "eu"]` adds more views: an item must be allowed by
+`view` (or `defaults.view`) and by every one of them, so several rules
+combine per request without a view for each combination. `"view": ""` drops
+the default and keeps only `views`. At most 8 names (more: 400
+`too_many_views`), by design: every view past the second adds a test per
+candidate, so a combination that needs more is cheaper precomputed as one
+configured view (its include / exclude files), or sent as the request's
+`include`. Each name must be configured (else `unknown_view`). The answer
+echoes them, and `view_requests_total{view}` counts each name a request used.
+
 ### Updating a view
 
 The server checks the view files every `views.reload_interval` seconds
@@ -424,7 +437,10 @@ spec:
 Cost (Yambda 500M, one thread): a request without a view pays nothing; a
 broad view (90% of the items) about +3% CPU per request; a narrow one (10%)
 +10-14% at `k` 100 and +3% at `k` 2000, as more candidates are checked
-against it.
+against it. `view` plus one name in `views` (two masks) costs what one view
+costs; three or more masks pay a test per mask for each candidate (+15-50%
+per request vs the same rules as one configured view): for a combination
+served often, configure it as one view.
 
 ## Metrics
 
@@ -440,7 +456,7 @@ against it.
 | `errors_total` | Requests the model rejected (weights) |
 | `truncated_total` | Histories cut to `max_history` |
 | `history_ids_total`, `known_ids_total` | History ids used, and those the model has |
-| `view_requests_total{view}` | Requests per named view (only with views configured) |
+| `view_requests_total{view}` | Requests per named view, `view` and each name in `views` (only with views configured) |
 | `view_reloads_total` | View reloads that rebuilt a view whose file changed ([Updating a view](#updating-a-view)) |
 | `view_reload_errors_total{view}` | Changes to a view's files that failed to read (it kept its previous ids) |
 | `view_last_reload_timestamp_seconds` | Unix time of the last reload that rebuilt a view, 0 = none since start: alert when it gets older than your update period |

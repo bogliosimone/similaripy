@@ -132,6 +132,7 @@ struct Reply {
     k: usize,
     sorted: bool,
     view: Option<String>,
+    views: Vec<String>,
     history: History,
 }
 
@@ -1026,6 +1027,129 @@ fn view_answers_equal_core_view_and_and_with_include_exclude() {
     });
 }
 
+/// `views` (A3, V16): the masks are (`view` ?? `defaults.view`) AND every
+/// named view, `"view": ""` drops the default; names echoed in both formats;
+/// each served name counted; > MAX_VIEWS = too_many_views, an unknown name =
+/// unknown_view (neither counted as served).
+#[test]
+fn views_and_with_view_and_default_view() {
+    let (mut cfg, files) = views_config(2);
+    cfg.defaults.view = "head".into();
+    let addr = start(cfg, false);
+    let reference = model();
+    let mut rng = Rng(11);
+    let names = ["even", "head", "both"];
+    let (mut want_served, mut json_ok) = ([0.0; 3], 0);
+    block_on(async {
+        let mut c = grpc(addr).await;
+        for case in 0..200 {
+            let len = 1 + rng.below(20);
+            let ids: Vec<i64> = (0..len).map(|_| 1000 + rng.below(N) as i64 * 7).collect();
+            // view: absent (= the default "head"), "" (none) or a name
+            let view: Option<&str> = [None, Some(""), Some("even"), Some("both")][case % 4];
+            let views: Vec<String> = (0..case % 4)
+                .map(|_| names[rng.below(3)].to_string())
+                .collect();
+            let k = 1 + rng.below(50);
+            let mut body = serde_json::json!({ "history": ids, "k": k, "views": views });
+            if let Some(v) = view {
+                body["view"] = v.into();
+            }
+            let body = body.to_string();
+            let used = view.unwrap_or("head");
+            let extra: Vec<Model> = views
+                .iter()
+                .map(|n| core_view(&reference, n, &files))
+                .collect();
+            let extra: Vec<&Model> = extra.iter().collect();
+            let want = python(
+                &core_view(&reference, used, &files),
+                &Request {
+                    ids: &ids,
+                    k,
+                    views: &extra,
+                    ..Default::default()
+                },
+            );
+            let (status, text) = post(addr, &body).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            let got: Reply = serde_json::from_str(&text).unwrap();
+            assert_eq!(got.answer(), want, "JSON case {case}: {body}");
+            let used = (!used.is_empty()).then(|| used.to_string());
+            assert_eq!((&got.view, &got.views), (&used, &views), "{body}");
+            let q = proto_from_json(body.as_bytes()).unwrap();
+            let r = c.recommend(q).await.unwrap().into_inner();
+            let got_bits = r.scores.iter().map(|s| s.to_bits()).collect();
+            assert_eq!((r.ids, got_bits), want, "gRPC case {case}: {body}");
+            assert_eq!((r.view, r.views), (used.clone(), views.clone()));
+            // score: the same masks (0 where any excludes)
+            let items: Vec<i64> = (0..5).map(|_| 1000 + rng.below(N) as i64 * 7).collect();
+            let mut sbody = serde_json::json!({ "history": ids, "items": items, "views": views });
+            if let Some(v) = view {
+                sbody["view"] = v.into();
+            }
+            let (status, _, text) = post_score(addr, &sbody.to_string()).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            let got: ScoreReply = serde_json::from_str(&text).unwrap();
+            let base = core_view(&reference, view.unwrap_or("head"), &files);
+            let block = BlockSize::Auto
+                .resolve(base.n_active(), usize::MAX)
+                .unwrap();
+            let sreq = similaripy_core::serve::ScoreRequest {
+                ids: &ids,
+                items: &items,
+                views: &extra,
+                ..Default::default()
+            };
+            let swant = score(&base, block, &sreq).unwrap();
+            assert_eq!(bits(&got.scores), bits(&swant), "score case {case}");
+            assert_eq!(got.views, views);
+            // served: the view used + each listed name, per request (3 here)
+            for n in used
+                .iter()
+                .map(String::as_str)
+                .chain(views.iter().map(String::as_str))
+            {
+                want_served[names.iter().position(|x| *x == n).unwrap()] += 3.0;
+            }
+            json_ok += 1;
+        }
+        assert_eq!(json_ok, 200);
+        // Too many names; an unknown one: 400 / INVALID_ARGUMENT, not served.
+        let nine = vec!["even"; 9];
+        for (views, code) in [
+            (nine, "too_many_views"),
+            (vec!["even", "nope"], "unknown_view"),
+        ] {
+            let body = serde_json::json!({ "history": [1000], "views": views }).to_string();
+            let (status, h, text) = post_with(addr, &body, &[]).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+            assert_eq!(error_of(&h, &text).code, code, "{text}");
+            let q = proto_from_json(body.as_bytes()).unwrap();
+            let e = c.recommend(q).await.unwrap_err();
+            assert_eq!((e.code(), grpc_code(&e)), (Code::InvalidArgument, code));
+            let (status, h, text) = post_score(
+                addr,
+                &serde_json::json!({ "history": [1000], "items": [1000], "views": views })
+                    .to_string(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+            assert_eq!(error_of(&h, &text).code, code, "{text}");
+        }
+        let m = get_text(addr, "/metrics").await;
+        for (n, want) in names.iter().zip(want_served) {
+            let key = format!("similaripy_server_view_requests_total{{view=\"{n}\"}}");
+            assert_eq!(metric(&m, &key), Some(want), "{n}: {m}");
+        }
+        assert_eq!(
+            metric(&m, "similaripy_server_bad_requests_total"),
+            Some(6.0),
+            "{m}"
+        );
+    });
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 struct Views {
@@ -1843,6 +1967,7 @@ struct ScoreReply {
     model: ModelInfo,
     request_id: String,
     view: Option<String>,
+    views: Vec<String>,
     history: History,
 }
 
@@ -1917,6 +2042,7 @@ fn score_same_bits_as_python_on_views_json_and_grpc() {
                 weights: weights.clone().unwrap_or_default(),
                 items: items.clone(),
                 view: Some(name.into()),
+                views: vec![],
             };
             let r = c.score(q).await.unwrap().into_inner();
             assert_eq!(bits(&r.scores), want, "gRPC case {case}: {body}");
@@ -2207,7 +2333,7 @@ fn openapi_spec_matches_the_server() {
         // Answers: every key in the spec and every required one answered.
         let full = r#"{"history": [1000, 1007, 5], "weights": [1, 2, 3], "k": 3,
             "exclude_seen": true, "include": null, "exclude": [1014], "sorted": true,
-            "view": "both"}"#;
+            "view": "both", "views": ["even"]}"#;
         let answers = [
             (
                 "/v1/recommend",
@@ -2219,7 +2345,7 @@ fn openapi_spec_matches_the_server() {
                 "200",
                 post_score(
                     addr,
-                    r#"{"history": [1000], "items": [1007], "view": "even"}"#,
+                    r#"{"history": [1000], "items": [1007], "view": "even", "views": ["head"]}"#,
                 )
                 .await,
             ),

@@ -65,7 +65,7 @@
             }
           },
           "400": {
-            "description": "A client error: `error.code` says which (`bad_json`, `history_over_max`, `unknown_view`, `bad_weights`, `bad_body`, `k_over_max`).",
+            "description": "A client error: `error.code` says which (`bad_json`, `history_over_max`, `unknown_view`, `too_many_views`, `bad_weights`, `bad_body`, `k_over_max`).",
             "headers": {
               "x-request-id": {
                 "$ref": "#/components/headers/RequestId"
@@ -179,7 +179,7 @@
             }
           },
           "400": {
-            "description": "A client error: `error.code` says which (`bad_json`, `history_over_max`, `unknown_view`, `bad_weights`, `bad_body`, `items_over_max`).",
+            "description": "A client error: `error.code` says which (`bad_json`, `history_over_max`, `unknown_view`, `too_many_views`, `bad_weights`, `bad_body`, `items_over_max`).",
             "headers": {
               "x-request-id": {
                 "$ref": "#/components/headers/RequestId"
@@ -445,6 +445,17 @@
               "null"
             ],
             "description": "A named view (`GET /v1/views`); absent or null = `defaults.view`, `\"\"` = the whole model."
+          },
+          "views": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "description": "More named views, ANDed with `view` (absent: `defaults.view`; `\"\"`: none), `include` and `exclude`: an item must be allowed by every one. At most 8 (more = 400 `too_many_views`); absent or null = none."
           }
         }
       },
@@ -488,6 +499,17 @@
               "null"
             ],
             "description": "As `/v1/recommend`'s: the view's excluded items score 0."
+          },
+          "views": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "description": "As `/v1/recommend`'s: an item any of them excludes scores 0."
           }
         }
       },
@@ -500,6 +522,7 @@
           "k",
           "sorted",
           "view",
+          "views",
           "history"
         ],
         "properties": {
@@ -531,6 +554,13 @@
             ],
             "description": "The view used; null = the whole model."
           },
+          "views": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The request's `views`, as sent (`[]`: none)."
+          },
           "history": {
             "$ref": "#/components/schemas/History"
           }
@@ -543,6 +573,7 @@
           "model",
           "request_id",
           "view",
+          "views",
           "history"
         ],
         "properties": {
@@ -566,6 +597,13 @@
               "null"
             ],
             "description": "The view used; null = the whole model."
+          },
+          "views": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The request's `views`, as sent (`[]`: none)."
           },
           "history": {
             "$ref": "#/components/schemas/History"
