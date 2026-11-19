@@ -195,7 +195,7 @@ model and build views after `load`.
   each worker: one memory-mapped copy shared by all of them.
 
 A saved model is a plain directory of `.npy` files plus `meta.json`, readable
-with `np.load`. The model is saved as built: its `item_order` and
+with `np.load` ([format spec](saved-format.md)). The model is saved as built: its `item_order` and
 `candidate_items` come with it (`load` has no such options). A model saved by a newer format is a clear "upgrade
 similaripy" error.
 

@@ -1,7 +1,7 @@
 # 🖥️ Running the server
 
 `similaripy-server` serves a model saved with
-[`SparseKNN.save`](serving.md#saving-and-loading) over HTTP/JSON and gRPC, on
+[`SparseKNN.save`](serving.md#saving-and-loading) ([format](saved-format.md)) over HTTP/JSON and gRPC, on
 one port. It is a single binary (or a Docker image): no Python at serving
 time.
 
