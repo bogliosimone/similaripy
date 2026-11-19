@@ -4,6 +4,7 @@ regressions they fixed."""
 import numpy as np
 import pytest
 import scipy.sparse as sp
+from _helpers import assert_same_csr, raw_csr
 
 import similaripy as sim
 
@@ -303,9 +304,7 @@ def _cancelling_selector(fmt):
     rows, cols, vals = [0, 0, 0, 1, 2], [5, 7, 5, 3, 9], np.array([1, 1, -1, 1, 0], dtype=np.float32)
     if fmt == "coo":
         return sp.coo_array((vals, (rows, cols)), shape=(60, 60))
-    order = np.argsort(rows, kind="stable")
-    indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=60))])
-    return sp.csr_array((vals[order], np.array(cols)[order], indptr), shape=(60, 60))
+    return raw_csr(rows, cols, vals, (60, 60))
 
 
 @pytest.mark.parametrize("fmt", ["csr", "coo"])
@@ -502,8 +501,7 @@ def test_output_exact_and_canonical(order, block_size, monkeypatch):
     _assert_canonical(out)
     assert out.indptr[6] == out.indptr[5]
     ref = sim.cosine(m.T, block_size=None, format_output="csr", **kw)
-    for a in ("indptr", "indices", "data"):
-        np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
+    assert_same_csr(out, ref)
     coo = sim.cosine(m.T, block_size=block_size, format_output="coo", **kw)
     assert coo.has_canonical_format
     want = out.tocoo()
@@ -568,8 +566,7 @@ def _non_canonical(seed=0):
     """(CSR with duplicates, unsorted columns and explicit zeros, its canonical form)."""
     m = _m(60, 40, seed)
     rows, cols, vals = _with_duplicates(m, seed)
-    indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=m.shape[0]))])
-    dup = sp.csr_array((vals, cols, indptr), shape=m.shape)
+    dup = raw_csr(rows, cols, vals, m.shape)
     assert not dup.has_canonical_format
     clean = sp.csr_array((vals, (rows, cols)), shape=m.shape)  # scipy sums duplicates
     clean.eliminate_zeros()
@@ -721,8 +718,7 @@ def test_int64_indptr_path_same_values(case, monkeypatch):
     out = run()
     assert ref.indptr.dtype == np.int32 and out.indptr.dtype == out.indices.dtype == np.int64
     assert out.has_canonical_format
-    for a in ("indptr", "indices", "data"):
-        np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
+    assert_same_csr(out, ref)
 
 
 @pytest.mark.parametrize(

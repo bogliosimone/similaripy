@@ -1,24 +1,20 @@
 import numpy as np
 import pytest
 import scipy.sparse as sp
+from _helpers import assert_same_csr, random_csr
 
 import similaripy.normalization as norm
 
 
-def generate_random_matrix(n_rows=100, n_cols=50, density=0.05, seed=42):
-    rng = np.random.default_rng(seed)
-    return sp.random_array((n_rows, n_cols), density=density, format="csr", dtype=np.float32, random_state=rng)
-
-
 def _signed(seed=0):
-    X = generate_random_matrix(seed=seed)
+    X = random_csr(seed=seed)
     X.data[::3] *= -1
     return X
 
 
 @pytest.mark.parametrize("signed", [False, True])
 def test_binarize(signed):
-    X = _signed() if signed else generate_random_matrix()
+    X = _signed() if signed else random_csr()
     X.data[::5] = 0  # explicit zeros must go, not become 1
     before = X.data.copy()
     B = norm.binarize(X)
@@ -37,28 +33,41 @@ def test_binarize(signed):
     )
 
 
-def test_tfidf():
-    X = generate_random_matrix(n_rows=200, n_cols=100, density=0.05)
-    X_tfidf = norm.tfidf(X, tf_mode="sqrt", idf_mode="smooth", logbase=np.e)
+def _tf_idf_reference(X, tf_mode, idf_mode, logbase):
+    """TF, IDF and document lengths as the core computes them (`tf` / `idf` in normalize.rs), dense float64."""
+    A = X.toarray().astype(np.float64)
+    doc_len = A.sum(axis=1, keepdims=True)
+    tf = {
+        "binary": (A != 0).astype(np.float64),
+        "raw": A,
+        "sqrt": np.sqrt(A),
+        "freq": A / np.where(doc_len == 0, 1, doc_len),
+        "log": np.log1p(A) / np.log(logbase),
+    }[tf_mode]
+    n, df = A.shape[0], (A > 0).sum(axis=0)
+    with np.errstate(divide="ignore"):
+        idf = {
+            "unary": np.ones(A.shape[1]),
+            "base": np.log(n / df),
+            "smooth": np.log(n / (1 + df)),
+            "prob": np.log((n - df) / df),
+            "bm25": np.log((n - df + 0.5) / (df + 0.5)),
+        }[idf_mode] / (1 if idf_mode == "unary" else np.log(logbase))
+    return tf, np.where(df == 0, 0.0, idf), doc_len
 
-    tf = X.copy().tocsr()
 
-    # compute tf (sqrt of raw freq)
-    tf.data = np.sqrt(tf.data)
-
-    # document frequency (DF): count of docs where term appears
-    df = np.diff((X > 0).tocsc().indptr)
-    idf = np.log(X.shape[0] / (1 + df))
-
-    tf = tf.tocsc()
-    tf.data *= np.repeat(idf, np.diff(tf.indptr))
-    tf = tf.tocsr()
-
-    np.testing.assert_allclose(X_tfidf.toarray(), tf.toarray(), rtol=1e-4)
+@pytest.mark.parametrize("tf_mode", ["binary", "raw", "sqrt", "freq", "log"])
+@pytest.mark.parametrize("idf_mode", ["unary", "base", "smooth", "prob", "bm25"])
+def test_tfidf_matches_formulas(tf_mode, idf_mode):
+    X = random_csr(n_rows=200, n_cols=100, density=0.05)
+    X.data *= 5
+    tf, idf, _ = _tf_idf_reference(X, tf_mode, idf_mode, 2.0)
+    out = norm.tfidf(X, tf_mode=tf_mode, idf_mode=idf_mode, logbase=2.0)
+    np.testing.assert_allclose(out.toarray(), tf * idf, rtol=1e-5, atol=1e-7)
 
 
 def test_bm25():
-    X = generate_random_matrix(n_rows=200, n_cols=100, density=0.05)
+    X = random_csr(n_rows=200, n_cols=100, density=0.05)
     X_bm25 = norm.bm25(X, k1=1.2, b=0.75, tf_mode="raw", idf_mode="bm25", logbase=np.e)
 
     tf = X.copy().tocsr()
@@ -83,12 +92,28 @@ def test_bm25():
     np.testing.assert_allclose(X_bm25.toarray(), bm25_ref.toarray(), rtol=1e-3)
 
 
+def test_bm25plus_delta_adds_delta_idf():
+    # bm25plus = bm25 + delta * idf on every stored entry
+    X = random_csr(n_rows=200, n_cols=100, density=0.05)
+    _, idf, _ = _tf_idf_reference(X, "raw", "bm25", np.e)
+    plus, plain = norm.bm25plus(X, delta=0.5), norm.bm25(X)
+    assert np.array_equal(plus.indices, plain.indices)
+    np.testing.assert_allclose(plus.data - plain.data, 0.5 * idf[plus.indices], rtol=1e-4, atol=1e-6)
+
+
+@pytest.mark.parametrize("name", ["tfidf", "bm25", "bm25plus"])
+def test_axis_0_is_the_transpose(name):
+    X = random_csr(n_rows=200, n_cols=100, density=0.05)
+    f = getattr(norm, name)
+    np.testing.assert_allclose(f(X, axis=0).toarray(), f(X.T).T.toarray(), rtol=1e-6)
+
+
 # ---- Signed input ----
 
 
 @pytest.mark.parametrize("signed", [False, True])
 def test_normalize(signed):
-    X = _signed() if signed else generate_random_matrix()
+    X = _signed() if signed else random_csr()
     A = X.toarray().astype(np.float64)
     for name, d in (("l1", np.abs(A).sum(axis=1)), ("l2", np.sqrt((A**2).sum(axis=1))), ("max", np.abs(A).max(axis=1))):
         expected = np.divide(A, d[:, None], out=np.zeros_like(A), where=d[:, None] != 0)
@@ -114,7 +139,7 @@ def test_term_weightings_reject_negatives():
 def test_output_dtypes():
     # float32/float64 values kept, anything else float32; indices always int32,
     # whatever the input's, as the similarities (one cleaner, `_canonical_csr`)
-    X = generate_random_matrix()
+    X = random_csr()
     X.data = np.ceil(X.data * 9)  # counts: exact in every dtype
     X.indices, X.indptr = X.indices.astype(np.int64), X.indptr.astype(np.int64)
     for dtype, want in ((np.float32, np.float32), (np.float64, np.float64), (np.int64, np.float32)):
@@ -131,7 +156,7 @@ def test_int64_indptr_path_same_values(name, monkeypatch):
     # indices, scipy's rule); forced with a limit of 0
     from similaripy import _s_plus
 
-    X = generate_random_matrix()
+    X = random_csr()
     f = getattr(norm, name)
     for kw in ({},) if name == "binarize" else ({"axis": 0}, {"axis": 1}):
         ref = f(X, **kw)
@@ -139,15 +164,14 @@ def test_int64_indptr_path_same_values(name, monkeypatch):
             mp.setattr(_s_plus, "_MAX_INT32_NNZ", 0)
             out = f(X, **kw)
         assert ref.indptr.dtype == np.int32 and out.indptr.dtype == out.indices.dtype == np.int64
-        for a in ("indptr", "indices", "data"):
-            np.testing.assert_array_equal(getattr(out, a), getattr(ref, a))
+        assert_same_csr(out, ref)
 
 
 @pytest.mark.parametrize("bad", [np.nan, np.inf])
 @pytest.mark.parametrize("name", ["normalize", "binarize", "tfidf", "bm25", "bm25plus"])
 def test_rejects_non_finite(name, bad):
     # NaN/inf would spread through the row's norm or idf; binarize checks before writing 1s
-    X = generate_random_matrix()
+    X = random_csr()
     X.data[3] = bad
     with pytest.raises(ValueError, match="finite"):
         getattr(norm, name)(X)
@@ -165,4 +189,4 @@ def test_rejects_non_finite(name, bad):
 )
 def test_rejects_bad_arguments(call, error, match):
     with pytest.raises(error, match=match):
-        call(generate_random_matrix())
+        call(random_csr())

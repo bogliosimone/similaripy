@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 import scipy.sparse as sp
+from _helpers import assert_same_csr
 
 import similaripy as sim
 from similaripy.preprocessing import interactions_to_histories, interactions_to_urm, time_decay, urm_to_histories
@@ -129,8 +130,7 @@ def test_int64_indptr_past_int32_pairs(monkeypatch):
     monkeypatch.setattr(_s_plus, "_MAX_INT32_NNZ", 0)
     URM, _, _ = interactions_to_urm(users, items)
     assert ref.indptr.dtype == np.int32 and URM.indptr.dtype == URM.indices.dtype == np.int64
-    for a in ("indptr", "indices", "data"):
-        np.testing.assert_array_equal(getattr(URM, a), getattr(ref, a))
+    assert_same_csr(URM, ref)
     assert all(np.array_equal(a, b) for a, b in zip(urm_to_histories(URM)[0], urm_to_histories(ref)[0]))
 
 
