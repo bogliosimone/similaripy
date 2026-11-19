@@ -40,6 +40,16 @@ can break your code come first; the full lists are at the end.
   top-k can differ from 0.7.0.
 - **Output layout:** rows are sorted by column; COO output has no padding, and
   exact `0` scores are dropped in both formats.
+- **BM25** (`bm25`, `bm25plus`): `idf_mode='bm25'` is now
+  `log(1 + (N - df + 0.5) / (df + 0.5))`, always positive (0.7.0's Robertson
+  IDF was negative for terms in more than half the documents, so two common
+  terms multiplied to a large positive similarity), and the TF part drops the
+  constant `(k1 + 1)`: the formula of Lucene, Elasticsearch and bm25s (same
+  numbers as bm25s; Lucene rounds document lengths).
+  For 0.7.0's values, use `idf_mode='bm25_robertson'` and multiply by
+  `k1 + 1`; for `bm25plus`, also pass `delta=delta / (k1 + 1)`. The TF part is
+  now below 1, so `bm25plus`'s default `delta=1.0` weighs about `k1 + 1` times
+  more against it than in 0.7.0: its rankings move more than `bm25`'s.
 - **0.7.0 bugs fixed:** CSR inputs with duplicate entries, unsorted rows with
   blocking, bayesian shrink on `dot_product` / `p3alpha`, `binary=True` in
   `p3alpha` / `rp3beta`, `s_plus(alpha=...)` without normalization, idf counts

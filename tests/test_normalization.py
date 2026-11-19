@@ -51,13 +51,14 @@ def _tf_idf_reference(X, tf_mode, idf_mode, logbase):
             "base": np.log(n / df),
             "smooth": np.log(n / (1 + df)),
             "prob": np.log((n - df) / df),
-            "bm25": np.log((n - df + 0.5) / (df + 0.5)),
+            "bm25": np.log1p((n - df + 0.5) / (df + 0.5)),
+            "bm25_robertson": np.log((n - df + 0.5) / (df + 0.5)),
         }[idf_mode] / (1 if idf_mode == "unary" else np.log(logbase))
     return tf, np.where(df == 0, 0.0, idf), doc_len
 
 
 @pytest.mark.parametrize("tf_mode", ["binary", "raw", "sqrt", "freq", "log"])
-@pytest.mark.parametrize("idf_mode", ["unary", "base", "smooth", "prob", "bm25"])
+@pytest.mark.parametrize("idf_mode", ["unary", "base", "smooth", "prob", "bm25", "bm25_robertson"])
 def test_tfidf_matches_formulas(tf_mode, idf_mode):
     X = random_csr(n_rows=200, n_cols=100, density=0.05)
     X.data *= 5
@@ -66,30 +67,44 @@ def test_tfidf_matches_formulas(tf_mode, idf_mode):
     np.testing.assert_allclose(out.toarray(), tf * idf, rtol=1e-5, atol=1e-7)
 
 
-def test_bm25():
-    X = random_csr(n_rows=200, n_cols=100, density=0.05)
-    X_bm25 = norm.bm25(X, k1=1.2, b=0.75, tf_mode="raw", idf_mode="bm25", logbase=np.e)
+def _bm25_tf(A, doc_len, k1, b):
+    """BM25's TF part on raw counts, dense float64: tf / (tf + k1 (1 - b + b len / avg_len))."""
+    return A / (A + k1 * (1 - b + b * doc_len / doc_len.mean()))
 
-    tf = X.copy().tocsr()
-    dl = np.array(tf.sum(axis=1)).flatten()
-    avgdl = np.mean(dl)
 
-    # Compute IDF
-    df = np.diff((tf > 0).tocsc().indptr)
-    idf = np.log((tf.shape[0] - df + 0.5) / (df + 0.5))
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("delta", [0.0, 0.5])
+@pytest.mark.parametrize("k1, b", [(1.2, 0.75), (2.0, 0.3)])
+def test_bm25_matches_formula(k1, b, delta, dtype):
+    X = random_csr(n_rows=200, n_cols=100, density=0.05).astype(dtype)
+    X.data *= 5
+    A = X.toarray().astype(np.float64)
+    _, idf, doc_len = _tf_idf_reference(X, "raw", "bm25", np.e)
+    out = norm.bm25plus(X, k1=k1, b=b, delta=delta) if delta else norm.bm25(X, k1=k1, b=b)
+    want = np.where(A > 0, (_bm25_tf(A, doc_len, k1, b) + delta) * idf, 0.0)
+    np.testing.assert_allclose(out.toarray(), want, rtol=1e-5, atol=1e-7)
 
-    # Compute BM25 weights
-    row, col = tf.nonzero()
-    values = tf.data.copy()
-    new_data = []
-    for i, j, tf_ij in zip(row, col, values):
-        denom = tf_ij + 1.2 * (1 - 0.75 + 0.75 * dl[i] / avgdl)
-        score = tf_ij * (1.2 + 1) / denom * idf[j]
-        new_data.append(score)
 
-    bm25_ref = sp.csr_array((new_data, (row, col)), shape=tf.shape)
+@pytest.mark.parametrize("delta", [0.0, 1.0])
+def test_bm25_robertson_gives_v070_values(delta):
+    # the migration recipe: 0.7.0 = (k1 + 1) x bm25_robertson with delta / (k1 + 1)
+    X = random_csr(n_rows=200, n_cols=100, density=0.55)  # some terms in > half the documents
+    X.data *= 5
+    A, k1, b = X.toarray().astype(np.float64), 1.2, 0.75
+    _, idf, doc_len = _tf_idf_reference(X, "raw", "bm25_robertson", np.e)
+    assert (idf < 0).any()
+    v070 = np.where(A > 0, ((k1 + 1) * _bm25_tf(A, doc_len, k1, b) + delta) * idf, 0.0)
+    out = norm.bm25plus(X, k1=k1, b=b, delta=delta / (k1 + 1), idf_mode="bm25_robertson")
+    np.testing.assert_allclose(out.toarray() * (k1 + 1), v070, rtol=1e-5, atol=1e-6)
 
-    np.testing.assert_allclose(X_bm25.toarray(), bm25_ref.toarray(), rtol=1e-3)
+
+def test_bm25_weights_positive_for_common_terms():
+    # Regression: Robertson's IDF (0.7.0's default) is negative for a term in more than
+    # half the documents, so cosine on two such rows multiplied two negatives
+    X = sp.csr_array(np.array([[1, 1, 0], [1, 0, 1], [1, 0, 0]], dtype=np.float32))  # term 0 in every document
+    for f in (norm.bm25, norm.bm25plus):
+        assert (f(X).data > 0).all()
+    assert (norm.bm25(X, idf_mode="bm25_robertson")[:, [0]].data < 0).all()
 
 
 def test_bm25plus_delta_adds_delta_idf():

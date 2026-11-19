@@ -5,7 +5,8 @@
 //!
 //! Float math: per-row sums in the data type, `log` and the BM25 terms in f64,
 //! rounded back to the data type. Matches similaripy 0.7.0 within rtol 1e-5
-//! (`benchmarks/parity_normalization.py`), not bitwise.
+//! (`benchmarks/parity_normalization.py`), not bitwise; BM25 changed on purpose
+//! (always-positive IDF, TF without `(k1 + 1)`: see `bm25plus`).
 
 use std::ops::{Add, Div, Mul, Sub};
 
@@ -78,7 +79,10 @@ pub enum IdfMode {
     Base,
     Smooth,
     Prob,
+    /// `ln(1 + (N - df + 0.5) / (df + 0.5))`, always > 0 (Lucene, bm25s).
     Bm25,
+    /// Robertson's `ln((N - df + 0.5) / (df + 0.5))`: negative for df > N/2.
+    Bm25Robertson,
 }
 
 impl TfMode {
@@ -102,6 +106,7 @@ impl IdfMode {
             "smooth" => Self::Smooth,
             "prob" => Self::Prob,
             "bm25" => Self::Bm25,
+            "bm25_robertson" => Self::Bm25Robertson,
             _ => return Err(Error::InvalidInput(format!("unknown idf_mode '{s}'"))),
         })
     }
@@ -151,6 +156,9 @@ pub fn tfidf<T: Value>(
 }
 
 /// BM25+ in place (`delta = 0` is plain BM25); rows are documents, columns are terms.
+/// Weight `idf * (tf / (tf + k1 * (1 - b + b * len / avg_len)) + delta)`: the TF
+/// part without Robertson's `(k1 + 1)` numerator (Lucene, bm25s), so it is in
+/// [0, 1); 0.7.0's values are `(k1 + 1)` times these with `delta / (k1 + 1)`.
 #[allow(clippy::too_many_arguments)]
 pub fn bm25plus<T: Value>(
     data: &mut [T],
@@ -178,7 +186,7 @@ pub fn bm25plus<T: Value>(
         let norm_len = T::narrow((1.0 - b.wide()) + (b * doc_len[r] / avg).wide());
         for (x, c) in row.iter_mut().zip(&indices[start..]) {
             let t = tf(*x, doc_len[r], tf_mode, lb);
-            let w = t.wide() * (k1.wide() + 1.0) / (t + k1 * norm_len).wide() + delta.wide();
+            let w = t.wide() / (t + k1 * norm_len).wide() + delta.wide();
             *x = T::narrow(idf_[*c as usize].wide() * w);
         }
     });
@@ -250,7 +258,8 @@ fn idf<T: Value>(df: T, n_docs: T, mode: IdfMode, lb: T) -> T {
         IdfMode::Base => (n_docs / df).wide().ln() / lb,
         IdfMode::Smooth => (n_docs / (T::ONE + df)).wide().ln() / lb,
         IdfMode::Prob => ((n_docs - df) / df).wide().ln() / lb,
-        IdfMode::Bm25 => (((n_docs - df).wide() + 0.5) / (df.wide() + 0.5)).ln() / lb,
+        IdfMode::Bm25 => (((n_docs - df).wide() + 0.5) / (df.wide() + 0.5)).ln_1p() / lb,
+        IdfMode::Bm25Robertson => (((n_docs - df).wide() + 0.5) / (df.wide() + 0.5)).ln() / lb,
     })
 }
 

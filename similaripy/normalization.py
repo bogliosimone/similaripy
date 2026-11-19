@@ -15,7 +15,7 @@ __all__ = ["binarize", "bm25", "bm25plus", "normalize", "tfidf"]
 # ---- Valid mode strings ----
 _NORMALIZATIONS = ("l1", "l2", "max")
 _TF_MODES = ("binary", "raw", "sqrt", "freq", "log")
-_IDF_MODES = ("unary", "base", "smooth", "prob", "bm25")
+_IDF_MODES = ("unary", "base", "smooth", "prob", "bm25", "bm25_robertson")
 
 
 # ---- Private helpers ----
@@ -162,10 +162,15 @@ def bm25(
     b: float = 0.75,
     logbase: float = e,
     tf_mode: Literal["binary", "raw", "sqrt", "freq", "log"] = "raw",
-    idf_mode: Literal["unary", "base", "smooth", "prob", "bm25"] = "bm25",
+    idf_mode: Literal["unary", "base", "smooth", "prob", "bm25", "bm25_robertson"] = "bm25",
 ) -> sps.csr_array:
     """
     Apply BM25 normalization to a sparse matrix.
+
+    Each entry becomes `idf * tf / (tf + k1 * (1 - b + b * len / avg_len))`, the
+    Lucene / Elasticsearch / bm25s formula: positive with the default
+    `idf_mode`, and without Robertson's `(k1 + 1)` factor, a constant that
+    changes no ranking.
 
     Args:
         X: sparse matrix of term frequencies (e.g. the URM): values >= 0,
@@ -176,8 +181,9 @@ def bm25(
         logbase: base of the IDF logarithm.
         tf_mode: term-frequency transform: "binary", "raw", "sqrt", "freq" or
             "log" (see the TF modes in the Normalizations guide).
-        idf_mode: inverse document frequency: "unary", "base", "smooth", "prob"
-            or "bm25" (see the IDF modes in the Normalizations guide).
+        idf_mode: inverse document frequency: "unary", "base", "smooth", "prob",
+            "bm25" (always > 0) or "bm25_robertson" (negative for terms in more
+            than half the documents); see the IDF modes in the Normalizations guide.
 
     Returns:
         A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
@@ -203,10 +209,14 @@ def bm25plus(
     delta: float = 1.0,
     logbase: float = e,
     tf_mode: Literal["binary", "raw", "sqrt", "freq", "log"] = "raw",
-    idf_mode: Literal["unary", "base", "smooth", "prob", "bm25"] = "bm25",
+    idf_mode: Literal["unary", "base", "smooth", "prob", "bm25", "bm25_robertson"] = "bm25",
 ) -> sps.csr_array:
     """
     Apply BM25+ normalization to a sparse matrix.
+
+    Each entry becomes `idf * (tf / (tf + k1 * (1 - b + b * len / avg_len)) + delta)`:
+    `bm25` plus `delta * idf`, with the same TF part as `bm25` (no `(k1 + 1)`
+    factor): to rank like the paper's BM25+ with delta d, pass `delta=d / (k1 + 1)`.
 
     Args:
         X: sparse matrix of term frequencies (e.g. the URM): values >= 0,
@@ -219,8 +229,9 @@ def bm25plus(
         logbase: base of the IDF logarithm.
         tf_mode: term-frequency transform: "binary", "raw", "sqrt", "freq" or
             "log" (see the TF modes in the Normalizations guide).
-        idf_mode: inverse document frequency: "unary", "base", "smooth", "prob"
-            or "bm25" (see the IDF modes in the Normalizations guide).
+        idf_mode: inverse document frequency: "unary", "base", "smooth", "prob",
+            "bm25" (always > 0) or "bm25_robertson" (negative for terms in more
+            than half the documents); see the IDF modes in the Normalizations guide.
 
     Returns:
         A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
@@ -252,7 +263,7 @@ def tfidf(
     axis: int = 1,
     logbase: float = e,
     tf_mode: Literal["binary", "raw", "sqrt", "freq", "log"] = "sqrt",
-    idf_mode: Literal["unary", "base", "smooth", "prob", "bm25"] = "smooth",
+    idf_mode: Literal["unary", "base", "smooth", "prob", "bm25", "bm25_robertson"] = "smooth",
 ) -> sps.csr_array:
     """
     Apply TF-IDF normalization to a sparse matrix.
@@ -264,8 +275,9 @@ def tfidf(
         logbase: base of the IDF logarithm.
         tf_mode: term-frequency transform: "binary", "raw", "sqrt", "freq" or
             "log" (see the TF modes in the Normalizations guide).
-        idf_mode: inverse document frequency: "unary", "base", "smooth", "prob"
-            or "bm25" (see the IDF modes in the Normalizations guide).
+        idf_mode: inverse document frequency: "unary", "base", "smooth", "prob",
+            "bm25" (always > 0) or "bm25_robertson" (negative for terms in more
+            than half the documents); see the IDF modes in the Normalizations guide.
 
     Returns:
         A new CSR matrix (duplicates summed, explicit zeros dropped, the input's

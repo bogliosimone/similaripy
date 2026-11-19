@@ -13,8 +13,8 @@ import similaripy as sim   # sim.normalization.bm25, sim.normalization.normalize
 | `binarize(X)` | Sets non-zero entries to 1.0 and drops explicit zeros, as `binary=True` in the similarity functions, but as a separate step. |
 | `normalize(X, norm='l2')` | Standard row or column-wise normalization. Supports `'l1'`, `'l2'`, and `'max'`. |
 | `tfidf(X, tf_mode='sqrt', idf_mode='smooth')` | TF-IDF weighting with customizable term-frequency and inverse-document-frequency modes. |
-| `bm25(X, k1=1.2, b=0.75)` | BM25 weighting, a standard IR normalization used for relevance scoring. |
-| `bm25plus(X, k1=1.2, b=0.75, delta=1.0)` | BM25+ variant with an additional smoothing `delta` parameter. |
+| `bm25(X, k1=1.2, b=0.75)` | BM25 weighting, a standard IR normalization used for relevance scoring: `idf × tf / (tf + k1 (1 − b + b · len / avg_len))`, the formula of Lucene, Elasticsearch and bm25s. |
+| `bm25plus(X, k1=1.2, b=0.75, delta=1.0)` | BM25+: `bm25` plus `delta × idf` on every entry, so a rare term in a long document keeps a minimum weight. |
 
 ## Common Parameters
 
@@ -43,9 +43,10 @@ All normalization functions in SimilariPy share the following parameters:
 |----------|-------------|
 | `'unary'`  | No IDF applied |
 | `'base'`   | log(N / df) |
-| `'smooth'` | log(1 + N / df) |
+| `'smooth'` | log(N / (1 + df)) |
 | `'prob'`   | log((N - df) / df) |
-| `'bm25'`   | BM25-style IDF weighting |
+| `'bm25'`   | log(1 + (N - df + 0.5) / (df + 0.5)), always > 0 (Lucene, Elasticsearch, bm25s) |
+| `'bm25_robertson'` | log((N - df + 0.5) / (df + 0.5)), Robertson's original: negative for terms in more than half the documents |
 
 ## Notes
 
