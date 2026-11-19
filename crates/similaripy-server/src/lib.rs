@@ -572,7 +572,7 @@ impl App {
             ids: &q.history,
             weights: weights.as_deref(),
             k: q.k.unwrap_or(self.cfg.defaults.k),
-            exclude_history: q.exclude_seen,
+            exclude_history: q.exclude_history,
             include: q.include.as_deref(),
             exclude: q.exclude.as_deref(),
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
@@ -639,7 +639,7 @@ impl App {
             // proto3: an empty list is not sent; unweighted (T17)
             weights: (!q.weights.is_empty()).then_some(&q.weights[..]),
             k: q.k.map_or(self.cfg.defaults.k, |k| k as usize),
-            exclude_history: q.exclude_seen.unwrap_or(default_exclude_seen()),
+            exclude_history: q.exclude_history.unwrap_or(default_exclude_history()),
             include: q.include.as_ref().map(|l| &l.ids[..]),
             exclude: (!q.exclude.is_empty()).then_some(&q.exclude[..]),
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
@@ -742,8 +742,8 @@ struct Query {
     weights: Option<Vec<f64>>,
     #[serde(default)]
     k: Option<usize>,
-    #[serde(default = "default_exclude_seen")]
-    exclude_seen: bool,
+    #[serde(default = "default_exclude_history")]
+    exclude_history: bool,
     #[serde(default)]
     include: Option<Vec<i64>>,
     #[serde(default)]
@@ -773,7 +773,7 @@ pub fn proto_from_json(body: &[u8]) -> Result<pb::RecommendRequest, serde_json::
             .map(|&x| x as f32)
             .collect(),
         k: q.k.map(|k| k.try_into().unwrap_or(u32::MAX)),
-        exclude_seen: Some(q.exclude_seen),
+        exclude_history: Some(q.exclude_history),
         include: q.include.map(|ids| pb::IdList { ids }),
         exclude: q.exclude.unwrap_or_default(),
         sorted: q.sorted,
@@ -832,8 +832,8 @@ struct Cut<'a> {
     weights: Option<&'a [f32]>,
 }
 
-/// `exclude_seen` when a JSON request leaves it out: the core's default.
-fn default_exclude_seen() -> bool {
+/// `exclude_history` when a JSON request leaves it out: the core's default.
+fn default_exclude_history() -> bool {
     Request::default().exclude_history
 }
 

@@ -70,7 +70,7 @@ pub struct Limits {
 #[serde(rename_all = "lowercase")]
 pub enum HistoryPolicy {
     /// Keep the last `max_history` ids (client order = oldest → newest, Q4);
-    /// the cut ids stay excluded under `exclude_seen`.
+    /// the cut ids stay excluded under `exclude_history`.
     Truncate,
     /// 400 / INVALID_ARGUMENT.
     Reject,
