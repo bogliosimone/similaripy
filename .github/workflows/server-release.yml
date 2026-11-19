@@ -20,6 +20,7 @@ on:
       - ".cargo/config.toml"
       - "tests/data/sparseknn-format1/**"
       - ".github/workflows/server-release.yml"
+      - ".github/actions/rust-toolchain/**"
 
 # A new push cancels the outdated run of the same PR; tag runs are never cancelled
 concurrency:
@@ -125,12 +126,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
-        # One retry after cleaning up a half-installed pin, as in the other workflows
-        run: |
-          rustup toolchain install || {
-            rustup toolchain uninstall "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
-            rustup toolchain install
-          }
+        uses: ./.github/actions/rust-toolchain
 
       - name: Build
         run: cargo build --release --locked -p similaripy-server

@@ -1,0 +1,16 @@
+# The rust-toolchain.toml pin, installed explicitly (runner images ship rustup;
+# no args = install what rust-toolchain.toml says). A runner image with a
+# half-installed pin (rustup: "detected conflict: bin/cargo-clippy", or "'cargo'
+# is not installed for the toolchain") is cleaned up and retried once instead of
+# failing inside the build. Needs actions/checkout first.
+name: Install the pinned Rust toolchain
+description: rustup toolchain install from rust-toolchain.toml, one retry after a clean-up
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        rustup toolchain install || {
+          rustup toolchain uninstall "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install
+        }
