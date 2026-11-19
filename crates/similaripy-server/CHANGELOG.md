@@ -19,7 +19,8 @@ First release, beside similaripy 1.0.0. Reads models saved by similaripy 1.x
   one history (a ranker's feature), the same bits as Python's
   `SparseKNN.score`; at most `limits.max_items` items (default 10000).
 - An OpenAPI 3.1 spec of the JSON endpoints (`openapi.json`, in the release
-  archive beside `recommender.proto`).
+  archive beside `recommender.proto`) and `server.example.toml` (every config
+  key with its default, commented).
 - `x-request-id` in and out (generated if not sent); `Server-Timing` with the
   compute time (JSON).
 - Config: a TOML file, `SIMILARIPY_<SECTION>__<KEY>` env vars and

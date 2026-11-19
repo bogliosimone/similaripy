@@ -515,6 +515,23 @@ mod tests {
         }
     }
 
+    /// `server.example.toml` (in the release archive) lists every key, set
+    /// or commented out, and its values are the defaults.
+    #[test]
+    fn example_config_is_every_key_at_its_default() {
+        let p = concat!(env!("CARGO_MANIFEST_DIR"), "/server.example.toml");
+        let text = std::fs::read_to_string(p).unwrap();
+        let want = cfg(&["--model", "models/v3"], &[]).unwrap();
+        for line in want.to_toml().lines().filter(|l| l.contains(" = ")) {
+            let key = format!("{} = ", line.split(" = ").next().unwrap());
+            let listed = text
+                .lines()
+                .any(|l| l.trim_start_matches("# ").starts_with(&key));
+            assert!(listed, "{key:?} not in {p}");
+        }
+        assert_eq!(cfg(&["--config", p], &[]).unwrap(), want);
+    }
+
     /// A config file, removed on drop (no tempfile dependency).
     struct File(String);
 

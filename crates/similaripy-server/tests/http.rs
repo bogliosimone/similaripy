@@ -231,8 +231,9 @@ fn same_ids_and_bits_as_python_recommend() {
             let ids: Vec<i64> = (0..len)
                 .map(|_| 1000 + rng.below(N + 5) as i64 * 7)
                 .collect();
+            // signed: a negative weight is a dislike (docs: Dislikes)
             let weights: Option<Vec<f32>> =
-                (case % 2 == 0).then(|| (0..len).map(|_| rng.unit() * 3.0).collect());
+                (case % 2 == 0).then(|| (0..len).map(|_| rng.unit() * 4.0 - 1.0).collect());
             let include: Option<Vec<i64>> =
                 (case % 5 == 1).then(|| (0..30).map(|_| 1000 + rng.below(N) as i64 * 7).collect());
             let exclude: Option<Vec<i64>> =
@@ -505,8 +506,9 @@ fn grpc_answers_equal_json() {
             let ids: Vec<i64> = (0..len)
                 .map(|_| 1000 + rng.below(N + 5) as i64 * 7)
                 .collect();
+            // signed: a negative weight is a dislike (docs: Dislikes)
             let weights: Option<Vec<f32>> =
-                (case % 2 == 0).then(|| (0..len).map(|_| rng.unit() * 3.0).collect());
+                (case % 2 == 0).then(|| (0..len).map(|_| rng.unit() * 4.0 - 1.0).collect());
             let include: Option<Vec<i64>> =
                 (case % 5 == 1).then(|| (0..30).map(|_| 1000 + rng.below(N) as i64 * 7).collect());
             let exclude: Option<Vec<i64>> =
@@ -2007,8 +2009,9 @@ fn score_same_bits_as_python_on_views_json_and_grpc() {
             let ids: Vec<i64> = (0..len)
                 .map(|_| 1000 + rng.below(N + 5) as i64 * 7)
                 .collect();
+            // signed: a negative weight is a dislike (docs: Dislikes)
             let weights: Option<Vec<f32>> =
-                (case % 2 == 0).then(|| (0..len).map(|_| rng.unit() * 3.0).collect());
+                (case % 2 == 0).then(|| (0..len).map(|_| rng.unit() * 4.0 - 1.0).collect());
             let items: Vec<i64> = (0..rng.below(40))
                 .map(|_| 1000 + rng.below(N + 5) as i64 * 7)
                 .collect();

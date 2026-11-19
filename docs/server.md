@@ -54,7 +54,8 @@ score: here 2).
 
 **Release archive.** Linux x86_64 and arm64 (glibc ≥ 2.28: Debian 10+,
 Ubuntu 18.10+, RHEL 8+) and macOS arm64. Each archive holds the binary, the
-license, `recommender.proto` (gRPC) and `openapi.json` (JSON).
+license, `recommender.proto` (gRPC), `openapi.json` (JSON) and
+`server.example.toml` (every config key with its default and meaning).
 
 ```bash
 V=1.0.0
@@ -125,6 +126,9 @@ include_file = "views/in_stock.txt"
 similaripy-server --config server.toml --server.threads 4
 ```
 
+The release archive's `server.example.toml` lists every key with its default
+and meaning: copy it and edit.
+
 - An unknown key (a typo) stops the server at start, naming the key.
 - `--print-config` prints the resolved config (TOML) and exits: a dry run
   for CI or a new deployment.
@@ -176,7 +180,7 @@ server's defaults):
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `history` | (required) | The user's history, oldest first; ids the model doesn't have are ignored. |
-| `weights` | all 1.0 | One per id. |
+| `weights` | all 1.0 | One per id; a negative weight is a dislike ([Dislikes](#dislikes)). |
 | `k` | `defaults.k` (`10`) | Items to return (at most `limits.k_max`); `null` = the default. |
 | `exclude_seen` | `true` | Never return the history's items. |
 | `include` | every item | Only these items can be returned. |
@@ -207,7 +211,7 @@ included.
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `history` | (required) | As `/v1/recommend`'s (cut past `limits.max_history` the same way). |
-| `weights` | all 1.0 | One per id. |
+| `weights` | all 1.0 | One per id; a negative weight is a dislike ([Dislikes](#dislikes)). |
 | `items` | (required) | The items to score, at most `limits.max_items`; duplicates are scored again. |
 | `view` | `defaults.view` | A named view: its excluded items score 0. |
 | `views` | none | More named views, as `/v1/recommend`'s: an item any of them excludes scores 0. |
@@ -311,6 +315,21 @@ given model and server config, but can change with `server.block_size` or
 `server.threads`. To use the answer's first N items as a top N, send
 `"sorted": true` (or set `defaults.sorted = true`); the answer's `sorted`
 says which order it has.
+
+### Dislikes
+
+A negative weight pushes away what is similar to that item: each item's
+score is the weighted sum of its similarities to the history, so a dislike
+subtracts. Items whose score ends up at 0 or below are not returned.
+
+```bash
+# likes 10, dislikes 20: items close to 20 rank lower or drop out
+curl -s 127.0.0.1:8080/v1/recommend -d '{"history": [10, 20], "weights": [1, -1], "k": 3}'
+```
+
+A disliked item is still in the history, so `exclude_seen` keeps it out of
+the answer. Same in Python's `recommend` (`weights=[1, -1]`) and in
+`/v1/score` (scores can then be negative).
 
 ### History
 
