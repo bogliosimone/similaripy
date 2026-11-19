@@ -6,7 +6,7 @@
 //! the floor, one store), and a full buffer is cut back to the k best by
 //! `select_nth_unstable`, which raises the floor to the k-th best score. Per
 //! accepted candidate that is O(1) amortized, against a heap's log k
-//! unpredictable branches (4c D89: kernel −5..−18%, serving latency at cap 50
+//! unpredictable branches (kernel −5..−18%, serving latency at cap 50
 //! −11..−20% vs the heap on the M2; same results bit for bit). Between cuts the
 //! floor lags (more pushes than a heap would take).
 //!
@@ -21,8 +21,8 @@
 /// An entry as one integer in the top-K's order, better = smaller: the score
 /// in `total_cmp` order, inverted (higher first), above the column (lower
 /// first). One integer compare per step of the cut and the sorts, where the
-/// (score, col) pair took a `total_cmp` and a column tie-break (D2: the cut and
-/// the final sort are 25-35% of a cap-10 serving request).
+/// (score, col) pair took a `total_cmp` and a column tie-break (the cut and
+/// the final sort were 25-35% of a cap-10 serving request).
 #[inline(always)]
 fn key(score: f32, col: i32) -> u64 {
     let t = score.to_bits() as i32;
@@ -53,8 +53,8 @@ pub struct TopK {
     cut: bool,
 }
 
-/// Cut when the buffer holds 2k entries (4c tonight9: 1.5k cuts too often, 4k
-/// gains nothing); 1 for k = 0, which never pushes.
+/// Cut when the buffer holds 2k entries (1.5k cuts too often, 4k gains
+/// nothing); 1 for k = 0, which never pushes.
 fn cap_for(k: usize) -> usize {
     k.saturating_mul(2).max(1)
 }

@@ -1,6 +1,6 @@
 //! `block_size='auto'`: a size estimated from the accumulator width, the L2
-//! cache and the threads sharing it (4c, `4c/estimator-design.md`; M2 Pro vs
-//! the fixed `DEFAULT_BLOCK_SIZE`: kernel −6..−10%, serving 'auto' −5..−27%).
+//! cache and the threads sharing it (M2 Pro vs the fixed `DEFAULT_BLOCK_SIZE`:
+//! kernel −6..−10%, serving 'auto' −5..−27%).
 //! Block size never changes results (same addition order), only speed.
 
 use std::sync::OnceLock;
@@ -20,9 +20,9 @@ pub fn auto_block_size(n_cols: usize, threads: usize, col_bytes: usize) -> usize
 /// fits, at least `DEFAULT_BLOCK_SIZE` (smaller blocks lost 11-41% in every M2
 /// sweep).
 /// Unknown cache: `DEFAULT_BLOCK_SIZE`.
-// ponytail: width × hot bytes, no data shape. Flat column work can be up to ~10% off the best size
-// (D87); `dot_product(URM, S)` +14..18% vs the fixed size on Y50M, accepted
-// (D88 rejected: a discouraged path, cause not understood).
+// ponytail: width × hot bytes, no data shape. Flat column work can be up to ~10% off the best size;
+// `dot_product(URM, S)` is +14..18% vs the fixed size on Yambda 50M, accepted (a discouraged
+// path, cause not understood).
 pub fn estimate(
     n_cols: usize,
     threads: usize,
@@ -152,13 +152,13 @@ mod tests {
 
     #[test]
     fn estimate_matches_the_m2_sweep() {
-        // tonight1 sweep winners (4c Deviations 2026-11-04), cosine kernel + serving
+        // best sizes of the M2 Pro sweep (2026-11-04), cosine kernel + serving
         assert_eq!(estimate(84_432, 6, M2_PRO, 4), 0); // ML-32M
         assert_eq!(estimate(934_057, 1, M2_PRO, 4), 0); // Y50M 1t: none
         assert_eq!(estimate(934_057, 6, M2_PRO, 4), 0); // Y50M 6t: none
         assert_eq!(estimate(3_004_578, 1, M2_PRO, 4), 0); // Y500M 1t: none
         assert_eq!(estimate(3_004_578, 6, M2_PRO, 4), 1 << 20); // Y500M 6t: 1M
-        // a single serving request assumes a loaded L2 (D65): all its cores
+        // a single serving request assumes a loaded L2: all its cores
         assert_eq!(estimate(3_004_578, usize::MAX, M2_PRO, 4), 1 << 20);
         assert_eq!(estimate(934_057, usize::MAX, M2_PRO, 4), 0); // Y50M fits a third of 16 MB
     }
