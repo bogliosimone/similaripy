@@ -220,7 +220,7 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
     let k = c.k;
     let res = compute(&inp, k, c.block_size, &|| {});
     let blocked = c.block_size > 0 && n > c.block_size;
-    // Unsorted m2 rows only reject when the blocked path would binary-search them.
+    // Unsorted m2 rows only reject on the blocked path, which walks each row by column.
     if blocked && c.unsorted_m2 && m2.indptr.windows(2).any(|w| w[1] - w[0] > 1) {
         prop_assert!(res.is_err(), "unsorted m2 accepted on the blocked path");
         return Ok(());
@@ -303,50 +303,7 @@ proptest! {
 }
 
 // Output column ids are i32: wider m2 is rejected before any allocation.
-#[test]
-fn rejects_more_than_i32_max_columns() {
-    let (indptr, indices, data) = ([0, 0], [], []);
-    let inp = Inputs {
-        m1: CsrView::new("m1", &indptr, &indices, &data, 1).unwrap(),
-        m2: CsrView::new("m2", &indptr, &indices, &data, i32::MAX as usize + 1).unwrap(),
-        targets: &[0],
-        norms: Norms::default(),
-        params: Params {
-            a1: 1.0,
-            l1: 0.0,
-            l2: 0.0,
-            l3: 0.0,
-            t1: 1.0,
-            t2: 1.0,
-            stabilized_shrink: 0.0,
-            bayesian_shrink: 0.0,
-            threshold: 0.0,
-        },
-        filter: None,
-        target_cols: None,
-        col_map: None,
-    };
-    assert!(compute(&inp, 1, 0, &|| {}).is_err());
-}
-
 // The selection bitsets are m2.n_cols wide: a wider selection would index past them.
-#[test]
-fn rejects_selection_wider_than_m2() {
-    let (indptr, indices, data) = ([0, 1], [0], [1.0]);
-    let (sel_indptr, sel_indices) = ([0, 1], [4]);
-    let inp = Inputs {
-        m1: CsrView::new("m1", &indptr, &indices, &data, 1).unwrap(),
-        m2: CsrView::new("m2", &indptr, &indices, &data, 2).unwrap(),
-        targets: &[0],
-        norms: Norms::default(),
-        params: Params::default(),
-        filter: Some(CsrPattern::new("filter", &sel_indptr, &sel_indices, 5).unwrap()),
-        target_cols: None,
-        col_map: None,
-    };
-    assert!(compute(&inp, 1, 0, &|| {}).is_err());
-}
-
 // Every `validate` error but the slot-count overflow: these guard the unchecked
 // row accesses for direct core callers (the Python layer never builds such
 // inputs). The overflow can't happen on 64-bit: `compute` clamps k to n_cols
@@ -360,7 +317,10 @@ fn rejects_each_invalid_input() {
     let m1 = CsrView::new("m1", &i1, &c1, &d1, 2).unwrap();
     let m1_wide = CsrView::new("m1", &i1, &c1, &d1, 3).unwrap();
     let m2 = CsrView::new("m2", &i2, &c2, &d2, 3).unwrap();
+    let m2_too_wide = CsrView::new("m2", &i2, &c2, &d2, i32::MAX as usize + 1).unwrap();
     let short_sel = CsrPattern::new("filter", &one_row.0, &one_row.1, 3).unwrap();
+    let wide_sel_rows = ([0, 1, 1], [4]);
+    let wide_sel = CsrPattern::new("filter", &wide_sel_rows.0, &wide_sel_rows.1, 5).unwrap();
     let base = Inputs {
         m1,
         m2,
@@ -373,7 +333,7 @@ fn rejects_each_invalid_input() {
     };
     let err = |inp: Inputs, k: usize| compute(&inp, k, 0, &|| {}).err().unwrap().to_string();
     assert!(compute(&base, 2, 0, &|| {}).is_ok());
-    let cases: [(Inputs, usize, &str); 8] = [
+    let cases: [(Inputs, usize, &str); 10] = [
         (
             Inputs {
                 m1: m1_wide,
@@ -456,6 +416,22 @@ fn rejects_each_invalid_input() {
             2,
             "fewer rows than targets need",
         ),
+        (
+            Inputs {
+                filter: Some(wide_sel),
+                ..base
+            },
+            2,
+            "column selection columns != m2 columns",
+        ),
+        (
+            Inputs {
+                m2: m2_too_wide,
+                ..base
+            },
+            2,
+            "more than i32::MAX output columns",
+        ),
     ];
     for (inp, k, msg) in cases {
         let e = err(inp, k);
@@ -463,8 +439,8 @@ fn rejects_each_invalid_input() {
     }
 }
 
-// Blocking finds each block's end by binary search in an m2 row: unsorted rows
-// are rejected when blocked, accepted when not.
+// The blocked path walks each m2 row front to back, block by block, so it needs
+// sorted rows: unsorted rows are rejected when blocked, accepted when not.
 #[test]
 fn rejects_unsorted_m2_only_when_blocked() {
     let (i1, c1, d1) = ([0, 2], [0, 1], [1.0, 2.0]);
