@@ -252,6 +252,59 @@ def test_view_include_exclude_and_per_call():
     assert set(trimmed.view().recommend(hist, k=60, exclude_history=False)[0]) <= set(a)
 
 
+def test_views_per_call():
+    # views= ANDs more views of the same base: the same items as a view of a view
+    S = _S(60, False, seed=13)
+    rec = SparseKNN(S)
+    hists = [[5, 6, 7, 8], [1, 2], []]
+    country, package, stock = rec.view(include=range(40)), rec.view(include=range(0, 60, 2)), rec.view(exclude=[10])
+    for served, views, same in (
+        (rec, [country], country),  # 1 mask
+        (country, [package], country.view(include=range(0, 60, 2))),  # 2 masks
+        (rec, [country, package, stock], country.view(include=range(0, 60, 2), exclude=[10])),  # 3: one test per mask
+    ):
+        for h in hists:
+            got = served.recommend(h, k=60, include=range(30), views=views)
+            want = same.recommend(h, k=60, include=range(30))
+            np.testing.assert_array_equal(got[0], want[0])
+            np.testing.assert_array_equal(got[1], want[1])
+        ids, scores = served.recommend_batch(hists, k=60, views=views)
+        for u, h in enumerate(hists):
+            want = same.recommend(h, k=60)
+            np.testing.assert_array_equal(ids[u], want[0])
+            np.testing.assert_array_equal(scores[u], want[1])
+        items = list(range(60))
+        np.testing.assert_array_equal(served.score(hists[0], items, views=views), same.score(hists[0], items))
+        for got, want in zip(served.score_batch(hists, [items] * 3, views=views), same.score_batch(hists, [items] * 3)):
+            np.testing.assert_array_equal(got, want)
+
+
+def test_views_validation():
+    rec = SparseKNN(_S(10, False, seed=2))
+    v = rec.view(exclude=[1])
+    for bad in (v, [1], [v, None]):
+        with pytest.raises(TypeError, match="views"):
+            rec.recommend([1], views=bad)
+    other = SparseKNN(_S(10, False, seed=2)).view()  # same S, another model
+    calls = (
+        lambda vs: rec.recommend([1], views=vs),
+        lambda vs: rec.recommend_batch([[1]], views=vs),
+        lambda vs: rec.score([1], [2], views=vs),
+        lambda vs: rec.score_batch([[1]], [[2]], views=vs),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match="views"):
+            call([v] * 9)
+        with pytest.raises(ValueError, match="views"):
+            call([other])
+        call([v] * 8)
+        call([])
+    # any iterable, read once (a generator isn't consumed by the type check)
+    full = rec.recommend([1, 2], k=10, exclude_history=False)[0]
+    got = rec.recommend([1, 2], k=10, exclude_history=False, views=(x for x in [v]))[0]
+    assert 1 not in got and list(got) == [i for i in full if i != 1]
+
+
 def test_block_size_validation():
     S = _S(10, False, seed=1)
     for ok in ("auto", None, 1, 1000):
