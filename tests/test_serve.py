@@ -30,7 +30,7 @@ def _S(n, signed, seed, density=0.3):
     return S
 
 
-def _reference(S, ext, history, weights, k, exclude_seen, include=None, exclude=None):
+def _reference(S, ext, history, weights, k, exclude_history, include=None, exclude=None):
     """Top-k of score = h @ S (> 0), ties: more column entries, then lower column."""
     n = S.shape[0]
     D = S.toarray()
@@ -42,7 +42,7 @@ def _reference(S, ext, history, weights, k, exclude_seen, include=None, exclude=
             h[pos[e]] += 1.0 if weights is None else weights[j]
     scores = h @ D
     keep = scores > 0
-    if exclude_seen:
+    if exclude_history:
         keep[[pos[e] for e in history if e in pos]] = False
     if include is not None:
         keep &= np.isin(ext, include)
@@ -92,10 +92,10 @@ def test_matches_dense_reference(signed, external, n):
         include = np.r_[rng.choice(ext, size=n // 2, replace=False), unknown] if trial % 3 == 0 else None
         exclude = np.r_[rng.choice(ext, size=n // 5, replace=False), unknown] if trial % 4 == 0 else None
         k = int(rng.integers(0, n + 3))
-        for exclude_seen in (True, False):
-            opts = {"k": k, "exclude_seen": exclude_seen, "exclude": exclude}
+        for exclude_history in (True, False):
+            opts = {"k": k, "exclude_history": exclude_history, "exclude": exclude}
             got = rec.recommend(hist, weights=weights, include=include, **opts)
-            want = _reference(S, ext, hist, weights, k, exclude_seen, include, exclude)
+            want = _reference(S, ext, hist, weights, k, exclude_history, include, exclude)
             np.testing.assert_array_equal(got[0], want[0])
             np.testing.assert_allclose(got[1], want[1], rtol=1e-6)
             unsorted = rec.recommend(hist, weights=weights, include=include, sorted=False, **opts)
@@ -130,11 +130,11 @@ def test_keyword_only_options():
 
 
 def test_defaults_match_the_core():
-    # k, exclude_seen, sorted: the signatures' literals == the Rust core's
+    # k, exclude_history, sorted: the signatures' literals == the Rust core's
     # Request::default() (the server reads the same: config.rs test, D-A2-3).
     for f in (SparseKNN.recommend, SparseKNN.recommend_batch):
         p = inspect.signature(f).parameters
-        got = (p["k"].default, p["exclude_seen"].default, p["sorted"].default)
+        got = (p["k"].default, p["exclude_history"].default, p["sorted"].default)
         assert got == _core.REQUEST_DEFAULTS, f.__name__
 
 
@@ -190,7 +190,7 @@ def test_batch_matches_single_bits(block):
         {},
         {"weights": weights},
         {"include": include, "exclude": exclude, "weights": weights},
-        {"sorted": False, "exclude_seen": False},
+        {"sorted": False, "exclude_history": False},
     ):
         got_ids, got_scores = rec.recommend_batch(hists, k=10, num_threads=2, **opts)
         assert len(got_ids) == len(got_scores) == users
@@ -225,29 +225,31 @@ def test_view_include_exclude_and_per_call():
     S = _S(60, False, seed=12)
     rec = SparseKNN(S)
     hist = [5, 6, 7, 8]
-    full = list(rec.recommend(hist, k=60, exclude_seen=False)[0])
+    full = list(rec.recommend(hist, k=60, exclude_history=False)[0])
     a, b = list(range(0, 60, 2)), list(range(0, 60, 3))
     va = rec.view(include=a)
     # view include AND per-call include, minus per-call exclude
-    got = va.recommend(hist, k=60, exclude_seen=False, include=b, exclude=[12])[0]
+    got = va.recommend(hist, k=60, exclude_history=False, include=b, exclude=[12])[0]
     assert list(got) == [i for i in full if i % 6 == 0 and i != 12]
     # a view's exclude
-    assert list(rec.view(exclude=b).recommend(hist, k=60, exclude_seen=False)[0]) == [i for i in full if i % 3]
+    assert list(rec.view(exclude=b).recommend(hist, k=60, exclude_history=False)[0]) == [i for i in full if i % 3]
     # a view of a view narrows (the parent's rules AND the new ones), view() keeps them
     country = rec.view(include=range(30), exclude=[4])
     package = country.view(include=range(10, 60, 2))
-    assert list(package.recommend(hist, k=60, exclude_seen=False)[0]) == [
+    assert list(package.recommend(hist, k=60, exclude_history=False)[0]) == [
         i for i in full if 10 <= i < 30 and i % 2 == 0
     ]
-    assert list(package.view(exclude=[12]).recommend(hist, k=60, exclude_seen=False)[0]) == [
+    assert list(package.view(exclude=[12]).recommend(hist, k=60, exclude_history=False)[0]) == [
         i for i in full if 10 <= i < 30 and i % 2 == 0 and i != 12
     ]
-    assert list(country.view().recommend(hist, k=60, exclude_seen=False)[0]) == [i for i in full if i < 30 and i != 4]
+    assert list(country.view().recommend(hist, k=60, exclude_history=False)[0]) == [
+        i for i in full if i < 30 and i != 4
+    ]
     # to widen, start from the base model
-    assert list(rec.view().recommend(hist, k=60, exclude_seen=False)[0]) == full
+    assert list(rec.view().recommend(hist, k=60, exclude_history=False)[0]) == full
     # candidate_items trims for good: a view can't widen past it
     trimmed = SparseKNN(S, candidate_items=a)
-    assert set(trimmed.view().recommend(hist, k=60, exclude_seen=False)[0]) <= set(a)
+    assert set(trimmed.view().recommend(hist, k=60, exclude_history=False)[0]) <= set(a)
 
 
 def test_block_size_validation():
@@ -408,7 +410,7 @@ def test_score_dense_reference_recommend_bits_and_masks(external, block):
         got = rec.score(hist, items, weights=w)
         assert got.dtype == np.float32 and got.shape == items.shape
         np.testing.assert_array_equal(got, want)  # small integers: exact, negatives and zeros kept
-        top = rec.recommend(hist, weights=w, k=n, exclude_seen=False)
+        top = rec.recommend(hist, weights=w, k=n, exclude_history=False)
         assert np.array_equal(rec.score(hist, top[0], weights=w).view(np.int32), top[1].view(np.int32))
         # model-level availability holds (a view, a trimmed build): 0.0 outside it
         a = rng.choice(ext, size=n // 2, replace=False)

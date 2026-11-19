@@ -34,7 +34,7 @@ pub const MAX_VIEWS: usize = 8;
 
 /// One history. Ids are the caller's (the model's external ids, or S's column
 /// indices without them); ids the model doesn't have are ignored everywhere.
-/// `Default`: the library's defaults (k 10, exclude_seen, sorted), no history,
+/// `Default`: the library's defaults (k 10, exclude_history, sorted), no history,
 /// no rules: set what differs, `..Default::default()` for the rest.
 pub struct Request<'a> {
     pub ids: &'a [i64],
@@ -42,7 +42,7 @@ pub struct Request<'a> {
     pub weights: Option<&'a [f32]>,
     pub k: usize,
     /// Never recommend a history item.
-    pub exclude_seen: bool,
+    pub exclude_history: bool,
     /// Only these items can be recommended (ANDed with the view's mask);
     /// None = all.
     pub include: Option<&'a [i64]>,
@@ -65,7 +65,7 @@ impl Default for Request<'_> {
             ids: &[],
             weights: None,
             k: 10,
-            exclude_seen: true,
+            exclude_history: true,
             include: None,
             exclude: None,
             sorted: true,
@@ -421,7 +421,7 @@ pub struct BatchRequest<'a> {
     pub histories: Lists<'a>,
     pub weights: Option<&'a [f32]>,
     pub k: usize,
-    pub exclude_seen: bool,
+    pub exclude_history: bool,
     pub include: Option<Lists<'a>>,
     pub no_include: Option<&'a [bool]>,
     pub exclude: Option<Lists<'a>>,
@@ -439,7 +439,7 @@ impl Default for BatchRequest<'_> {
             },
             weights: None,
             k: r.k,
-            exclude_seen: r.exclude_seen,
+            exclude_history: r.exclude_history,
             include: None,
             no_include: None,
             exclude: None,
@@ -483,7 +483,7 @@ pub fn recommend_batch(
                 ids: &b.histories.ids[r.clone()],
                 weights: b.weights.map(|w| &w[r]),
                 k: b.k,
-                exclude_seen: b.exclude_seen,
+                exclude_history: b.exclude_history,
                 include: b
                     .include
                     .filter(|_| !b.no_include.is_some_and(|n| n[u]))
@@ -521,7 +521,7 @@ impl Scratch {
         let known = self.hist.len();
         canonicalize::<false>(&mut self.hist);
         self.blocked.clear();
-        if req.exclude_seen {
+        if req.exclude_history {
             self.blocked.extend(self.hist.iter().map(|&(id, _)| id));
         }
         self.blocked.extend(

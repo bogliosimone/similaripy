@@ -304,7 +304,7 @@ class SparseKNN:
         *,
         weights: list[float] | np.ndarray | None = None,
         k: int = 10,
-        exclude_seen: bool = True,
+        exclude_history: bool = True,
         include: list[int] | np.ndarray | None = None,
         exclude: list[int] | np.ndarray | None = None,
         sorted: bool = True,
@@ -317,7 +317,7 @@ class SparseKNN:
                 weight.
             weights: one finite weight per id (None = all 1.0).
             k: results wanted; fewer when fewer items score > 0.
-            exclude_seen: never recommend a history item.
+            exclude_history: never recommend a history item.
             include: only these items can be recommended (None = all).
             exclude: never recommend these items.
             sorted: best first; False returns the same items in an
@@ -339,7 +339,7 @@ class SparseKNN:
             _ids("history", history),
             _weights(weights),
             k=k,
-            exclude_seen=exclude_seen,
+            exclude_history=exclude_history,
             include=_opt_ids("include", include),
             exclude=_opt_ids("exclude", exclude),
             sorted=sorted,
@@ -351,7 +351,7 @@ class SparseKNN:
         *,
         weights: list[list[float] | np.ndarray | None] | None = None,
         k: int = 10,
-        exclude_seen: bool = True,
+        exclude_history: bool = True,
         include: list[list[int] | np.ndarray | None] | None = None,
         exclude: list[list[int] | np.ndarray | None] | None = None,
         sorted: bool = True,
@@ -371,7 +371,7 @@ class SparseKNN:
                 None). A rule for every user goes in `view()`.
             exclude: as `include`.
             k: as `recommend`, for every user.
-            exclude_seen: as `recommend`, for every user.
+            exclude_history: as `recommend`, for every user.
             sorted: as `recommend`, for every user.
             num_threads: 0 = all cores (one shared pool), n = n threads.
 
@@ -400,7 +400,7 @@ class SparseKNN:
             exc[0],
             exc[1],
             k=k,
-            exclude_seen=exclude_seen,
+            exclude_history=exclude_history,
             sorted=sorted,
             num_threads=num_threads,
         )

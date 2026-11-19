@@ -6,7 +6,8 @@ Checked by feature, never by version string: v1 builds report
 release, PyPI wheel) lacks: `similaripy._s_plus` (phase timer, column order
 switch), `similaripy.serving`, `similaripy.preprocessing`; v1 builds before D115
 lack `SparseKNN(item_order=)`, builds before W1 `SparseKNN.load(block_size=)`
-(they saved it with the model), builds before the rename call it `ItemKNN`. Its similarity
+(they saved it with the model), builds before the rename call it `ItemKNN`, builds before D129
+spell `exclude_history` as `exclude_seen`. Its similarity
 signatures match v1 by name; it defaults to verbose=True and
 format_output='coo' (the harness always passes both) and spells the library's
 block size 0 (v1: 'auto'), so 'auto' is left out of the call.
@@ -38,8 +39,12 @@ if HAS_SERVING:
     HAS_ITEM_ORDER = "item_order" in inspect.signature(SparseKNN).parameters
     # W1: the block size is a runtime setting that `load` takes; older builds saved it with the model.
     HAS_LOAD_BLOCK_SIZE = "block_size" in inspect.signature(SparseKNN.load).parameters
+    # D129: `exclude_history`, `exclude_seen` before the rename.
+    EXCLUDE_HISTORY = (
+        "exclude_history" if "exclude_history" in inspect.signature(SparseKNN.recommend).parameters else "exclude_seen"
+    )
 else:
-    SparseKNN = None
+    SparseKNN = EXCLUDE_HISTORY = None
     HAS_ITEM_ORDER = HAS_LOAD_BLOCK_SIZE = False
 
 
@@ -135,7 +140,7 @@ def serving_batch(rec, inputs, k, num_threads):
         None,
         None,
         k=k,
-        exclude_seen=True,
+        **{EXCLUDE_HISTORY: True},
         sorted=True,
         num_threads=num_threads,
     )

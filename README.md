@@ -102,11 +102,11 @@ similarity_matrix = sim.cosine(urm.T, k=50)
 model = SparseKNN(similarity_matrix.T, item_ids=item_ids)
 
 # Online: one user, from the items in their history
-ids, scores = model.recommend([101, 104], k=3, exclude_seen=True)
+ids, scores = model.recommend([101, 104], k=3, exclude_history=True)
 print(ids)  # [102 103 105]
 
 # Offline: many users at once, in parallel
-ids_per_user, scores_per_user = model.recommend_batch([[101, 104], [102]], k=3, exclude_seen=True)
+ids_per_user, scores_per_user = model.recommend_batch([[101, 104], [102]], k=3, exclude_history=True)
 print(ids_per_user)  # [array([102, 103, 105]), array([101, 105, 104])]: user 0, user 1
 ```
 

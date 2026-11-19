@@ -246,7 +246,7 @@ fn same_ids_and_bits_as_python_recommend() {
                     ids: &ids[cut..],
                     weights: weights.as_deref().map(|w| &w[cut..]),
                     k,
-                    exclude_seen,
+                    exclude_history: exclude_seen,
                     include: include.as_deref(),
                     exclude: excluded.as_deref(),
                     ..Default::default()

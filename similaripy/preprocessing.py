@@ -238,7 +238,7 @@ def urm_to_histories(URM, *, item_ids: ArrayLike | None = None) -> tuple[list[np
     """
     URM = sp.csr_array(URM, dtype=np.float32, copy=True)  # sum_duplicates must not touch the caller's
     URM.sum_duplicates()
-    URM.eliminate_zeros()  # a stored 0 is no event (exclude_seen would hide it)
+    URM.eliminate_zeros()  # a stored 0 is no event (exclude_history would hide it)
     if item_ids is None:
         ids = URM.indices.astype(np.int64)
     else:
