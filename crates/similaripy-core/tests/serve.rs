@@ -1075,17 +1075,41 @@ fn save_load_round_trip_and_versions() {
         Owned::of(&Model::load(&other, false).unwrap()),
         Owned::of(&m)
     );
-    // a newer format is a clear error, an unknown value dtype too
+    // Forward compatibility (spec: docs/saved-format.md): keys and files a
+    // reader doesn't know are ignored, `written_by` is optional; a newer
+    // format is a clear error.
     let meta = std::fs::read_to_string(dir.join("meta.json")).unwrap();
-    // The block size is the server's, not the model's (W1); a leftover key
-    // (files saved before) is ignored.
-    assert!(!meta.contains("block_size"), "{meta}");
-    let old = meta.replace("\"nnz\"", "\"block_size\": 7,\n  \"nnz\"");
-    std::fs::write(dir.join("meta.json"), &old).unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&meta).unwrap();
+    let keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        keys,
+        [
+            "format",
+            "item_ids",
+            "kind",
+            "n_cols",
+            "n_items",
+            "nnz",
+            "written_by"
+        ]
+    );
+    let o = v.as_object_mut().unwrap();
+    o.remove("written_by");
+    for (k, x) in [
+        ("future", serde_json::json!({"a": [1, "x"], "b": null})),
+        ("saved_at", serde_json::json!("2030-01-01T00:00:00Z")),
+        ("a_number", serde_json::json!(1.5)),
+        ("a_null", serde_json::Value::Null),
+        ("block_size", serde_json::json!(7)), // written by pre-1.0 builds
+    ] {
+        o.insert(k.into(), x);
+    }
+    std::fs::write(dir.join("meta.json"), v.to_string()).unwrap();
+    std::fs::write(dir.join("README.txt"), "notes").unwrap();
+    std::fs::write(dir.join("extra.npy"), "not even numpy").unwrap();
     assert_eq!(Owned::of(&Model::load(&dir, false).unwrap()), Owned::of(&m));
     for (from, to, says) in [
         ("\"format\": 1", "\"format\": 2", "newer"),
-        ("\"float32\"", "\"bfloat16\"", "value dtype"),
         ("\"nnz\": 5", "\"nnz\": 4", "match"),
     ] {
         assert!(meta.contains(from), "{from}");
@@ -1125,4 +1149,24 @@ fn concurrent_saves_to_one_path_keep_the_winners_model() {
         assert_eq!(Owned::of(&back), Owned::of(&m));
     }
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// 1.x loads every older 1.x format: these files were written by format 1 and
+/// stay as they are (tests/test_serve.py loads them too). Changing what the
+/// files mean bumps the format instead.
+#[test]
+fn loads_the_committed_format_1_model() {
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/sparseknn-format1");
+    for mmap in [false, true].into_iter().filter(|&m| !(cfg!(miri) && m)) {
+        let m = Model::load(&dir, mmap).unwrap();
+        let mut out = (vec![], vec![]);
+        let r = Request {
+            ids: &[20, 40],
+            k: 3,
+            ..Default::default()
+        };
+        recommend(&m, 2, &r, &mut out.0, &mut out.1).unwrap();
+        assert_eq!(out, (vec![30, 10, 50], vec![1.75, 0.75, 0.5]));
+    }
 }

@@ -601,7 +601,13 @@ def test_save_load_round_trip(tmp_path, mmap, block_size):
     assert np.array_equal(back.item_ids, ext)
     # plain .npy + JSON: inspectable without similaripy
     meta = json.loads((tmp_path / "m" / "meta.json").read_text())
-    assert meta["format"] == 1 and meta["n_cols"] == 80 and "block_size" not in meta
+    assert meta["format"] == 1 and meta["n_cols"] == 80
+    # what save writes = the committed format-1 files: same keys, same files, same dtypes
+    fixture = Path(__file__).parent / "data" / "sparseknn-format1"
+    assert meta.keys() == json.loads((fixture / "meta.json").read_text()).keys()
+    assert sorted(p.name for p in (tmp_path / "m").iterdir()) == sorted(p.name for p in fixture.iterdir())
+    for f in fixture.glob("*.npy"):
+        assert np.load(tmp_path / "m" / f.name).dtype == np.load(f).dtype, f.name
     assert np.array_equal(np.load(tmp_path / "m" / "item_ids.npy"), ext)
     assert np.load(tmp_path / "m" / "indptr.npy").dtype == np.int64  # one dtype, whatever S's nnz
     pairs = np.load(tmp_path / "m" / "pairs.npy")  # S's entries: a record array, (col, val) side by side
@@ -707,15 +713,14 @@ def _swap_first_row(a):
         (lambda d: _corrupt(d, "pairs", _swap_first_row), "sorted"),
         (lambda d: _corrupt(d, "pairs", _field("col", lambda c: np.r_[c[1], c[1:]])), "sorted"),
         (lambda d: _corrupt(d, "pairs", _field("val", lambda v: np.r_[np.float32(np.nan), v[1:]])), "finite"),
-        (lambda d: _corrupt(d, "new_to_old", lambda a: np.r_[a[1], a[1:]].astype(np.int32)), "distinct"),
-        (lambda d: _corrupt(d, "new_to_old", lambda a: np.r_[-1, a[1:]].astype(np.int32)), "distinct"),
+        (lambda d: _corrupt(d, "item_columns", lambda a: np.r_[a[1], a[1:]].astype(np.int32)), "distinct"),
+        (lambda d: _corrupt(d, "item_columns", lambda a: np.r_[-1, a[1:]].astype(np.int32)), "distinct"),
         (lambda d: _corrupt(d, "item_ids", lambda a: np.r_[a[1], a[1:]]), "unique"),
         (lambda d: _corrupt(d, "item_ids", lambda a: a[:-1]), "one id per item"),
         (lambda d: (d / "meta.json").write_text("{not json"), "meta.json"),
         (lambda d: _meta(d, format=2), "newer"),
         (lambda d: _meta(d, format="1"), "integer"),
         (lambda d: _meta(d, kind="UserKNN"), "not a saved"),
-        (lambda d: _meta(d, value_dtype="bfloat16"), "value dtype"),
         (lambda d: _meta(d, n_items=3), "match"),
         (lambda d: _meta(d, n_cols=10), "one id per item"),
         (lambda d: _meta(d, n_cols=10**12), "one id per item"),  # checked before allocating
@@ -737,6 +742,22 @@ def test_load_rejects_corrupted_files(tmp_path, corrupt, error):
                 SparseKNN.load(d, mmap=mmap)
 
 
+def test_load_ignores_unknown_keys_and_files(tmp_path):
+    """Forward compatibility: a later 1.x may add keys and files that don't
+    change results; this version loads such a model and ignores them."""
+    rec = SparseKNN(_S(40, False, seed=13), item_ids=np.arange(40) * 3 + 1)
+    d = tmp_path / "m"
+    rec.save(d)
+    _meta(d, metadata={"git": "abc", "k": [1, 2]}, saved_at="2030-01-01T00:00:00Z", block_size=None)
+    meta = json.loads((d / "meta.json").read_text())
+    del meta["written_by"]  # free text for people, never required
+    (d / "meta.json").write_text(json.dumps(meta))
+    (d / "README.txt").write_text("notes")
+    np.save(d / "extra.npy", np.arange(3))
+    back = SparseKNN.load(d)
+    assert _same(back.recommend([4, 7, 10], k=5), rec.recommend([4, 7, 10], k=5))
+
+
 @pytest.mark.parametrize("mmap", [True, False])
 def test_loads_a_committed_format_1_model(mmap):
     # 1.x loads every older 1.x format: these files were written by format 1 and
@@ -747,7 +768,6 @@ def test_loads_a_committed_format_1_model(mmap):
     assert _same(model.recommend([20, 40], k=3), ([30, 10, 50], f32([1.75, 0.75, 0.5])))
     got = model.recommend([10, 50, 70], weights=[1.0, 0.5, 3.0], k=3)
     assert _same(got, ([60, 40, 20], f32([1.0, 0.5, 0.5])))
-    assert model._model.parts()[-1] == "auto"  # its saved block_size (null) ignored: a runtime setting
 
 
 def test_strided_and_float64_coo_input():

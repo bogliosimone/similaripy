@@ -13,8 +13,12 @@ use crate::store::{self, Buf};
 use crate::{DEFAULT_BLOCK_SIZE, Error};
 use rayon::prelude::*;
 
-/// Saved model format (`meta.json`): a version reads every format up to its
-/// own; bump it when the files change meaning (Q1).
+/// Saved model format (`meta.json`; spec: docs/saved-format.md). A reader
+/// loads every format up to its own, refuses a newer one, and ignores keys
+/// and files it doesn't know. So a writer may add a key or file without a
+/// bump only if a reader that ignores it serves the same results (a label,
+/// a timestamp); anything else (a new dtype, layout or file that changes
+/// scores) bumps the format.
 pub const FORMAT: u64 = 1;
 const KIND: &str = "SparseKNN";
 /// One entry of S: column and value side by side, so a row start costs one
@@ -391,11 +395,12 @@ impl Model {
     }
 
     /// Saves the model in `dir`: one `.npy` per array (S in internal ids,
-    /// `new_to_old`, `item_ids` = the external id per original column) plus
-    /// `meta.json`, written last. A view is an error: availability changes
-    /// faster than a model version, so views are built after `load`. `dir`
-    /// must be missing or empty: a saved model is never replaced (a new
-    /// version goes to a new directory). `written_by` goes into `meta.json`.
+    /// `item_columns` = `new_to_old`, `item_ids` = the external id per
+    /// original column) plus `meta.json`, written last. A view is an error:
+    /// availability changes faster than a model version, so views are built
+    /// after `load`. `dir` must be missing or empty: a saved model is never
+    /// replaced (a new version goes to a new directory). `written_by` goes
+    /// into `meta.json`.
     pub fn save(&self, dir: &Path, written_by: &str) -> Result<(), Error> {
         if self.allowed.is_some() {
             return invalid("a view can't be saved: save the base model, build views after load");
@@ -404,7 +409,7 @@ impl Model {
         store::save_dir(dir, |d| {
             d.npy("indptr", p.indptr)?;
             d.npy("pairs", p.pairs)?;
-            d.npy("new_to_old", p.new_to_old)?;
+            d.npy("item_columns", p.new_to_old)?;
             if let Some(e) = p.ext {
                 d.npy("item_ids", e)?;
             }
@@ -412,7 +417,6 @@ impl Model {
                 "format": FORMAT,
                 "kind": KIND,
                 "written_by": written_by,
-                "value_dtype": "float32",
                 "n_items": p.new_to_old.len(),
                 "n_cols": p.n_cols,
                 "nnz": p.pairs.len(),
@@ -460,14 +464,6 @@ impl Model {
         if format == 0 {
             return Err(bad(format!("not a saved {KIND} model")));
         }
-        match field("value_dtype")?.as_str() {
-            Some("float32") => {}
-            v => {
-                return Err(bad(format!(
-                    "value dtype {v:?} not supported by this version: upgrade similaripy"
-                )));
-            }
-        }
         let n_cols =
             usize::try_from(uint("n_cols")?).map_err(|_| bad("n_cols too large".into()))?;
         let ext = flag("item_ids")?
@@ -476,7 +472,7 @@ impl Model {
         let core = Core::from_arrays(
             store::read(dir, "indptr", mmap)?,
             store::read(dir, "pairs", mmap)?,
-            store::read(dir, "new_to_old", mmap)?,
+            store::read(dir, "item_columns", mmap)?,
             n_cols,
             ext,
         )?;
