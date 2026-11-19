@@ -359,7 +359,10 @@ stock).
 `view` (or `defaults.view`) and by every one of them, so several rules
 combine per request without a view for each combination. `"view": ""` drops
 the default and keeps only `views`. At most 8 names (more: 400
-`too_many_views`); each must be configured (else `unknown_view`). The answer
+`too_many_views`), by design: every view past the second adds a test per
+candidate, so a combination that needs more is cheaper precomputed as one
+configured view (its include / exclude files), or sent as the request's
+`include`. Each name must be configured (else `unknown_view`). The answer
 echoes them, and `view_requests_total{view}` counts each name a request used.
 
 ### Updating a view
