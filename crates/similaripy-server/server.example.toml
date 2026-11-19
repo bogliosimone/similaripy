@@ -1,0 +1,70 @@
+# similaripy-server config: every key with its default.
+# Use: similaripy-server --config server.toml
+# Each key can also be an env var (SIMILARIPY_LIMITS__K_MAX=500) or a flag
+# (--limits.k_max 500); flag > env > file > default. An unknown key stops the
+# server at start. --print-config prints the resolved config and exits.
+# Docs: https://bogliosimone.github.io/similaripy/server/
+# Relative file paths are relative to the server's working directory.
+
+[model]
+# A SparseKNN.save directory (required).
+path = "models/v3"
+# Map the model's files (one copy shared by every process on the machine);
+# false = read them into memory.
+mmap = true
+# Returned in every answer, to tell model versions apart. Default: the
+# directory's name.
+# name = "itemknn-2026-11-16"
+
+[server]
+# host:port to listen on (JSON and gRPC on the same port).
+addr = "127.0.0.1:8080"
+# Server threads, one request at a time each. Default: P-cores (macOS),
+# available CPUs (Linux, container CPU limit included).
+# threads = 4
+# Column block size: "auto", "off" or entries per block.
+block_size = "auto"
+
+[limits]
+# A larger k is rejected (400 k_over_max).
+k_max = 2000
+# History ids a request uses.
+max_history = 1000
+# A longer history: "truncate" (keep the last max_history ids) or "reject"
+# (400 history_over_max).
+history_policy = "truncate"
+# A larger request body is rejected (JSON 413, gRPC OUT_OF_RANGE): about 100k
+# ids per MiB in JSON; raise it for a large include.
+max_body_bytes = 1048576
+# A score request with more items is rejected, never cut.
+max_items = 10000
+
+[defaults]
+# What a request gets for a field it doesn't send.
+# k (at most limits.k_max): e.g. 500 for candidate generation.
+k = 10
+# false = the same items in no order (retrieval: a ranker re-scores them),
+# cheaper at large k; true = best first (Python's order).
+sorted = false
+# A view name; "" = the whole model.
+view = ""
+
+[timeouts]
+# Seconds a connection has to send a request's headers (and a JSON body: else
+# 408); also the idle time before a keep-alive connection is closed.
+header_read = 30.0
+# After SIGTERM: seconds still accepting connections, /ready answering 503.
+drain_delay = 0.0
+# Then seconds for open requests to finish.
+shutdown_grace = 10.0
+
+[views]
+# Seconds between checks of the view files (0 = read at start only, else at
+# least 0.1): a changed file is served from the next request on.
+reload_interval = 10.0
+
+# A named view: a request picks it with "view": "in_stock". One id per line;
+# include_file, exclude_file or both.
+# [views.in_stock]
+# include_file = "views/in_stock.txt"
+# exclude_file = "views/adult.txt"
