@@ -25,7 +25,7 @@ pub(crate) fn check_indptr(name: &str, indptr: &[i64], nnz: usize) -> Result<(),
     Ok(())
 }
 
-fn check_structure(
+pub(crate) fn check_structure(
     name: &'static str,
     indptr: &[i64],
     indices: &[i32],
