@@ -82,8 +82,9 @@ pub enum HistoryPolicy {
 pub struct Defaults {
     /// Python's `recommend` default; at most `limits.k_max`.
     pub k: usize,
-    /// Python's `recommend` sorts; candidate generation re-scored by a ranker
-    /// can set false (U1).
+    /// false: the server's main use is candidate generation, re-scored by a
+    /// ranker (saves the final sort: JSON +8..+13% req/s at k 1000-2000); true
+    /// = Python's `recommend` order, best first.
     pub sorted: bool,
     /// The view of a request that doesn't name one; "" = the whole model.
     pub view: String,
@@ -171,7 +172,7 @@ impl Default for Defaults {
         let r = similaripy_core::serve::Request::default();
         Self {
             k: r.k,
-            sorted: r.sorted,
+            sorted: false,
             view: String::new(),
         }
     }
@@ -579,7 +580,7 @@ mod tests {
             },
             defaults: Defaults {
                 k: 5,
-                sorted: false,
+                sorted: true,
                 view: "instock".into(),
             },
             timeouts: Timeouts {
@@ -612,7 +613,7 @@ mod tests {
             ("limits.max_body_bytes", "4096"),
             ("limits.max_items", "9"),
             ("defaults.k", "5"),
-            ("defaults.sorted", "false"),
+            ("defaults.sorted", "true"),
             ("defaults.view", "instock"),
             ("timeouts.header_read", "2.5"),
             // an integer for a float key
@@ -836,15 +837,13 @@ mod tests {
             parse(["--version".into()], none),
             Ok(Cli::Version)
         ));
-        // `--print-config` prints the core's request defaults (D-A2-3; the
-        // Python signatures are checked against the same in test_serve.py).
+        // `--print-config` prints the core's k (D-A2-3; the Python signatures
+        // are checked against the same in test_serve.py) and the server's own
+        // sorted default: false (retrieval), Python's is true.
         let d = similaripy_core::serve::Request::default();
         let toml = cfg(&["--model", "/m"], &[]).unwrap().to_toml();
         assert!(toml.contains(&format!("\nk = {}\n", d.k)), "{toml}");
-        assert!(
-            toml.contains(&format!("\nsorted = {}\n", d.sorted)),
-            "{toml}"
-        );
+        assert!(toml.contains("\nsorted = false\n"), "{toml}");
         let args = ["--print-config", "--model", "/m"].map(String::from);
         assert!(matches!(
             parse(args, std::iter::empty()),

@@ -27,8 +27,8 @@ First release, beside similaripy 1.0.0. Reads models saved by similaripy 1.x
   start-up error.
 - Limits: `k_max`, `max_history` with `history_policy` truncate or reject,
   `max_body_bytes` (default 1 MiB, JSON and gRPC).
-- `defaults.k`, `defaults.sorted` (`false` for candidate generation) and
-  `defaults.view`.
+- `defaults.k`, `defaults.sorted` (default `false`: candidate generation,
+  unlike Python's `recommend`; `true` = best first) and `defaults.view`.
 - Errors as JSON `{"error": {"code", "message", "request_id"}}` (413 and 408
   included), `code` a fixed string (`bad_json`, `k_over_max`,
   `items_over_max`, `history_over_max`, `unknown_view`, `bad_weights`,

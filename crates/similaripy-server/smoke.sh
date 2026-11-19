@@ -9,5 +9,5 @@ for _ in $(seq 50); do
     sleep 0.2
 done
 curl -fsS -X POST "$url/v1/recommend" -H 'content-type: application/json' \
-    -d '{"history": [20, 40], "k": 3}' | tee /dev/stderr | jq -e '[.items[].id] == [30, 10, 50]' >/dev/null
+    -d '{"history": [20, 40], "k": 3, "sorted": true}' | tee /dev/stderr | jq -e '[.items[].id] == [30, 10, 50]' >/dev/null
 echo "smoke ok: $url"
