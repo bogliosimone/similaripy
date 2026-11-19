@@ -298,7 +298,7 @@ def serve_cases(URM, opts):
         for cap in opts["caps"]:
             hists = _histories(URM, users, None if cap == "none" else int(cap), rng)
             for regime in ("warm", "cold"):
-                kwargs = {"k": k, "exclude_seen": True}
+                kwargs = {"k": k, compat.EXCLUDE_HISTORY: True}
                 run = _latency_run(rec, hists, kwargs, evict if regime == "cold" else None)
                 cases.append(Case(f"latency_cap{cap}_{regime}", {**kwargs, "cap": cap, "regime": regime}, run))
 
@@ -320,7 +320,7 @@ def serve_cases(URM, opts):
         callers = list(dict.fromkeys(opts["callers"]))
         info["callers"] = callers
         one = _loaded(SparseKNN(S, **io, **trim, block_size=None), opts["load"], None)
-        kwargs = {"k": k, "exclude_seen": True}
+        kwargs = {"k": k, compat.EXCLUDE_HISTORY: True}
         for cap in dict.fromkeys(opts["concurrent_caps"]):
             hists = _histories(URM, users, None if cap == "none" else int(cap), rng)
             sfx = "" if cap == "none" else f"_cap{cap}"

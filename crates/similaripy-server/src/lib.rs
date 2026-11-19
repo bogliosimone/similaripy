@@ -468,7 +468,7 @@ impl App {
         let limits = &self.cfg.limits;
         let cut = q.ids.len().saturating_sub(limits.max_history);
         let truncate = limits.history_policy == HistoryPolicy::Truncate;
-        let exclude = match (cut, q.exclude_seen && truncate) {
+        let exclude = match (cut, q.exclude_history && truncate) {
             (0, _) | (_, false) => None,
             (_, true) => Some([&q.ids[..cut], q.exclude.unwrap_or_default()].concat()),
         };
@@ -531,7 +531,7 @@ impl App {
             ids: &q.history,
             weights: weights.as_deref(),
             k: q.k.unwrap_or(self.cfg.defaults.k),
-            exclude_seen: q.exclude_seen,
+            exclude_history: q.exclude_seen,
             include: q.include.as_deref(),
             exclude: q.exclude.as_deref(),
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
@@ -595,7 +595,7 @@ impl App {
             // proto3: an empty list is not sent; unweighted (T17)
             weights: (!q.weights.is_empty()).then_some(&q.weights[..]),
             k: q.k.map_or(self.cfg.defaults.k, |k| k as usize),
-            exclude_seen: q.exclude_seen.unwrap_or(default_exclude_seen()),
+            exclude_history: q.exclude_seen.unwrap_or(default_exclude_seen()),
             include: q.include.as_ref().map(|l| &l.ids[..]),
             exclude: (!q.exclude.is_empty()).then_some(&q.exclude[..]),
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
@@ -780,7 +780,7 @@ struct Cut<'a> {
 
 /// `exclude_seen` when a JSON request leaves it out: the core's default.
 fn default_exclude_seen() -> bool {
-    Request::default().exclude_seen
+    Request::default().exclude_history
 }
 
 /// A served answer, borrowed from the worker's buffers.

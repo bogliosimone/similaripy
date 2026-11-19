@@ -62,7 +62,7 @@ Everything is on the `SparseKNN` class: build a `model`, then call its methods.
 | `history` | Item ids. Order doesn't matter; a duplicate adds its weight; ids the model doesn't have are ignored. In batch: a list with one array per user. |
 | `weights` | One finite weight per history id. In batch: one entry per user (an entry may be `None`). *(default: `None` = all 1.0)* |
 | `k` | Number of items wanted; fewer when fewer items score > 0. *(default: `10`)* |
-| `exclude_seen` | Never recommend a history item. *(default: `True`)* |
+| `exclude_history` | Never recommend a history item. *(default: `True`)* |
 | `include` | Only these items can be recommended. In batch: one entry per user. *(default: `None` = all)* |
 | `exclude` | Never recommend these items. In batch: one entry per user. *(default: `None`)* |
 | `sorted` | Best first; `False` skips the final sort (a few % faster at k in the thousands); the order is then unspecified and can differ between calls. *(default: `True`)* |

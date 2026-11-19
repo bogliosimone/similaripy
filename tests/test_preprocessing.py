@@ -153,7 +153,7 @@ def test_to_histories_feeds_recommend_batch():
 
 
 def test_urm_to_histories_drops_zeros():
-    # a stored 0 (and 0 in float32) is no event: with exclude_seen it would hide the item
+    # a stored 0 (and 0 in float32) is no event: with exclude_history it would hide the item
     X = sp.csr_array((np.array([1.0, 0.0, 1e-50]), np.array([0, 1, 2]), np.array([0, 3])), shape=(1, 3))
     histories, weights = urm_to_histories(X)
     assert histories[0].tolist() == [0] and weights[0].tolist() == [1.0]

@@ -373,10 +373,10 @@ fn auto_block_size(n_cols: usize, num_threads: usize, col_bytes: usize) -> usize
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DEFAULT_BLOCK_SIZE", similaripy_core::DEFAULT_BLOCK_SIZE)?;
-    // The serving defaults (k, exclude_seen, sorted): the Python signatures'
+    // The serving defaults (k, exclude_history, sorted): the Python signatures'
     // literals are checked against them (tests/test_serve.py).
     let d = similaripy_core::serve::Request::default();
-    m.add("REQUEST_DEFAULTS", (d.k, d.exclude_seen, d.sorted))?;
+    m.add("REQUEST_DEFAULTS", (d.k, d.exclude_history, d.sorted))?;
     m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
     m.add_function(wrap_pyfunction!(auto_block_size, m)?)?;
     m.add_class::<serve::PyModel>()?;

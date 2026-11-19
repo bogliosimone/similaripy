@@ -216,7 +216,7 @@ impl PyModel {
         })
     }
 
-    #[pyo3(signature = (ids, weights, *, k, exclude_seen, include, exclude, sorted))]
+    #[pyo3(signature = (ids, weights, *, k, exclude_history, include, exclude, sorted))]
     #[allow(clippy::too_many_arguments)]
     fn recommend<'py>(
         &self,
@@ -224,7 +224,7 @@ impl PyModel {
         ids: PyReadonlyArray1<'_, i64>,
         weights: Option<PyReadonlyArray1<'_, f32>>,
         k: usize,
-        exclude_seen: bool,
+        exclude_history: bool,
         include: Ids<'_>,
         exclude: Ids<'_>,
         sorted: bool,
@@ -233,7 +233,7 @@ impl PyModel {
             ids: ids.as_slice()?,
             weights: slice(&weights)?,
             k,
-            exclude_seen,
+            exclude_history,
             include: slice(&include)?,
             exclude: slice(&exclude)?,
             sorted,
@@ -254,7 +254,7 @@ impl PyModel {
     /// (offsets, ids, scores), one list per user.
     #[pyo3(signature = (
         offsets, ids, weights, include_offsets, include_ids, no_include, exclude_offsets, exclude_ids,
-        *, k, exclude_seen, sorted, num_threads
+        *, k, exclude_history, sorted, num_threads
     ))]
     #[allow(clippy::too_many_arguments)]
     fn batch<'py>(
@@ -269,7 +269,7 @@ impl PyModel {
         exclude_offsets: Ids<'_>,
         exclude_ids: Ids<'_>,
         k: usize,
-        exclude_seen: bool,
+        exclude_history: bool,
         sorted: bool,
         num_threads: usize,
     ) -> PyResult<(Arr<'py, i64>, Arr<'py, i64>, Arr<'py, f32>)> {
@@ -280,7 +280,7 @@ impl PyModel {
             },
             weights: slice(&weights)?,
             k,
-            exclude_seen,
+            exclude_history,
             include: lists(slice(&include_offsets)?, slice(&include_ids)?),
             no_include: slice(&no_include)?,
             exclude: lists(slice(&exclude_offsets)?, slice(&exclude_ids)?),

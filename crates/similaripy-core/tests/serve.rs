@@ -23,7 +23,7 @@ struct Case {
     hist: Vec<Option<usize>>,
     weights: Option<Vec<f32>>,
     k: usize,
-    exclude_seen: bool,
+    exclude_history: bool,
     /// Include flag per original id (None = no include rule).
     allowed: Option<Vec<bool>>,
     /// Exclude flag per original id.
@@ -224,7 +224,7 @@ fn case(float: bool) -> impl Strategy<Value = Case> {
                     hist,
                     w,
                     k,
-                    exclude_seen,
+                    exclude_history,
                     allowed,
                     excluded,
                     sorted,
@@ -268,7 +268,7 @@ fn case(float: bool) -> impl Strategy<Value = Case> {
                         hist,
                         weights,
                         k,
-                        exclude_seen,
+                        exclude_history,
                         allowed,
                         excluded,
                         sorted,
@@ -288,7 +288,7 @@ fn req<'a>(
         ids,
         weights: c.weights.as_deref(),
         k: c.k,
-        exclude_seen: c.exclude_seen,
+        exclude_history: c.exclude_history,
         include,
         exclude,
         sorted: c.sorted,
@@ -353,7 +353,7 @@ fn reference(c: &Case) -> (Vec<i64>, Vec<f32>) {
         .map(|j| (j, hs(c, j)))
         .filter(|&(j, s)| {
             s > 0.0
-                && !(c.exclude_seen && seen(j))
+                && !(c.exclude_history && seen(j))
                 && c.allowed.as_ref().is_none_or(|a| a[j])
                 && !c.excluded.as_ref().is_some_and(|x| x[j])
         })
@@ -458,7 +458,7 @@ proptest! {
             histories: Lists { offsets: &[0, n, n, 2 * n], ids: &both },
             weights: w2.as_deref(),
             k: c.k,
-            exclude_seen: c.exclude_seen,
+            exclude_history: c.exclude_history,
             include: pi.as_ref().map(|(o, i)| Lists { offsets: o, ids: i }),
             no_include: inc.as_ref().map(|_| &[false, true, false][..]),
             exclude: pe.as_ref().map(|(o, i)| Lists { offsets: o, ids: i }),
@@ -530,7 +530,7 @@ proptest! {
         let m = model(&c);
         let ids = ids(&c);
         let mut rec = (vec![], vec![]);
-        let all = Request { k: c.s.len(), exclude_seen: false, include: None, exclude: None, ..req(&c, &ids, None, None) };
+        let all = Request { k: c.s.len(), exclude_history: false, include: None, exclude: None, ..req(&c, &ids, None, None) };
         recommend(&m, block, &all, &mut rec.0, &mut rec.1).unwrap();
         let got = score(&m, block, &sreq(&c, &ids, &rec.0)).unwrap();
         prop_assert_eq!(bits(&got), bits(&rec.1));
@@ -631,7 +631,7 @@ proptest! {
             histories: Lists { offsets: &offsets, ids: &both },
             weights: w2.as_deref(),
             k: c.k,
-            exclude_seen: c.exclude_seen,
+            exclude_history: c.exclude_history,
             sorted: c.sorted,
             views,
             ..Default::default()
@@ -745,7 +745,7 @@ fn past_the_drain_head() {
             hist: vec![Some(3), Some(250), Some(17)],
             weights: None,
             k,
-            exclude_seen: true,
+            exclude_history: true,
             allowed: None,
             excluded: None,
             sorted: true,
@@ -834,7 +834,7 @@ fn worker_block_and_stats() {
         ids,
         weights,
         k: 5,
-        exclude_seen: false,
+        exclude_history: false,
         ..Default::default()
     };
     let mut out = (vec![], vec![]);
