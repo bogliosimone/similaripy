@@ -200,8 +200,26 @@ def test_rejects_non_finite(name, bad):
         (lambda X: norm.normalize(X, norm="l3"), ValueError, "norm must be one of"),
         (lambda X: norm.tfidf(X, tf_mode="x"), ValueError, "tf_mode must be one of"),
         (lambda X: norm.bm25(X, idf_mode="x"), ValueError, "idf_mode must be one of"),
+        # weighting parameters that would give negative or inf weights silently
+        (lambda X: norm.tfidf(X, logbase=1), ValueError, "logbase must be finite and > 1"),
+        (lambda X: norm.bm25(X, logbase=0.5), ValueError, "logbase must be finite and > 1"),
+        (lambda X: norm.bm25plus(X, logbase=np.nan), ValueError, "logbase must be finite and > 1"),
+        (lambda X: norm.bm25(X, k1=-2), ValueError, "k1 must be finite and >= 0"),
+        (lambda X: norm.bm25plus(X, k1=np.inf), ValueError, "k1 must be finite and >= 0"),
+        (lambda X: norm.bm25(X, b=5), ValueError, r"b must be in \[0, 1\]"),
+        (lambda X: norm.bm25plus(X, b=np.nan), ValueError, r"b must be in \[0, 1\]"),
+        (lambda X: norm.bm25plus(X, delta=-1), ValueError, "delta must be finite and >= 0"),
     ],
 )
 def test_rejects_bad_arguments(call, error, match):
     with pytest.raises(error, match=match):
         call(random_csr())
+
+
+def test_weighting_parameter_bounds_accepted():
+    # the edges of the accepted ranges: k1 = 0 (TF part 1 for any count), b = 0 and 1, delta = 0
+    X = random_csr()
+    for kw in ({"k1": 0.0}, {"b": 0.0}, {"b": 1.0}, {"logbase": 1.0001}):
+        out = norm.bm25(X, **kw)
+        assert np.isfinite(out.data).all() and (out.data > 0).all()
+    np.testing.assert_array_equal(norm.bm25plus(X, delta=0.0).toarray(), norm.bm25(X).toarray())

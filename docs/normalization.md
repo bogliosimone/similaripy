@@ -23,7 +23,7 @@ All normalization functions in SimilariPy share the following parameters:
 | Parameter     | Description |
 |---------------|-------------|
 | `axis`        | `1` for row-wise (default), `0` for column-wise normalization. |
-| `logbase`     | Base of the logarithm (e.g. `e`, `2`) for TF-IDF and BM25. |
+| `logbase`     | Base of the logarithm (e.g. `e`, `2`) for TF-IDF and BM25, > 1. |
 | `tf_mode`     | Term frequency transformation mode for TF-IDF and BM25 (see TF table). |
 | `idf_mode`    | Inverse document frequency mode for TF-IDF and BM25 (see IDF table). |
 

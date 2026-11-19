@@ -1,7 +1,7 @@
 """Normalizations and weightings of sparse matrices (row/column norms,
 TF-IDF, BM25, binarize)."""
 
-from math import e
+from math import e, isfinite
 from typing import Literal
 
 import numpy as np
@@ -93,6 +93,25 @@ def _validate_modes(tf_mode: str, idf_mode: str) -> None:
         raise ValueError(f"idf_mode must be one of {_IDF_MODES}, got '{idf_mode}'")
 
 
+def _validate_weighting(logbase: float, k1: float = 0.0, b: float = 0.0, delta: float = 0.0) -> None:
+    """
+    The values that give silently wrong weights: logbase <= 1 flips every log's
+    sign (1 divides by 0), k1 < 0 or b outside [0, 1] can make the BM25
+    denominator <= 0, delta < 0 can make a weight negative.
+
+    Raises:
+        ValueError: on any of them, or a NaN / inf.
+    """
+    if not (isfinite(logbase) and logbase > 1):
+        raise ValueError(f"logbase must be finite and > 1, got {logbase}")
+    if not (isfinite(k1) and k1 >= 0):
+        raise ValueError(f"k1 must be finite and >= 0, got {k1}")
+    if not 0 <= b <= 1:
+        raise ValueError(f"b must be in [0, 1], got {b}")
+    if not (isfinite(delta) and delta >= 0):
+        raise ValueError(f"delta must be finite and >= 0, got {delta}")
+
+
 # ---- Public API ----
 
 
@@ -176,9 +195,9 @@ def bm25(
         X: sparse matrix of term frequencies (e.g. the URM): values >= 0,
             checked after summing duplicates.
         axis: 1 = rows are the documents (default), 0 = columns.
-        k1: term-frequency saturation: higher saturates later.
+        k1: term-frequency saturation, >= 0: higher saturates later.
         b: document-length normalization, in [0, 1] (0 = none).
-        logbase: base of the IDF logarithm.
+        logbase: base of the IDF logarithm, > 1.
         tf_mode: term-frequency transform: "binary", "raw", "sqrt", "freq" or
             "log" (see the TF modes in the Normalizations guide).
         idf_mode: inverse document frequency: "unary", "base", "smooth", "prob",
@@ -191,10 +210,12 @@ def bm25(
 
     Raises:
         TypeError: on a non-sparse X.
-        ValueError: on a negative, NaN or inf value, or an invalid `axis`,
-            `tf_mode` or `idf_mode`.
+        ValueError: on a negative, NaN or inf value, an invalid `axis`,
+            `tf_mode` or `idf_mode`, or a `logbase` <= 1, `k1` < 0 or `b`
+            outside [0, 1].
     """
     _validate_modes(tf_mode, idf_mode)
+    _validate_weighting(logbase, k1, b)
     return _transformed(
         X, axis, _core.bm25plus, "bm25", k1=k1, b=b, delta=0.0, tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase
     )
@@ -222,11 +243,11 @@ def bm25plus(
         X: sparse matrix of term frequencies (e.g. the URM): values >= 0,
             checked after summing duplicates.
         axis: 1 = rows are the documents (default), 0 = columns.
-        k1: term-frequency saturation: higher saturates later.
+        k1: term-frequency saturation, >= 0: higher saturates later.
         b: document-length normalization, in [0, 1] (0 = none).
-        delta: BM25+ lower bound added to every term weight (> 0 keeps rare
+        delta: BM25+ lower bound added to every term weight, >= 0 (> 0 keeps rare
             terms in long documents from vanishing).
-        logbase: base of the IDF logarithm.
+        logbase: base of the IDF logarithm, > 1.
         tf_mode: term-frequency transform: "binary", "raw", "sqrt", "freq" or
             "log" (see the TF modes in the Normalizations guide).
         idf_mode: inverse document frequency: "unary", "base", "smooth", "prob",
@@ -239,10 +260,12 @@ def bm25plus(
 
     Raises:
         TypeError: on a non-sparse X.
-        ValueError: on a negative, NaN or inf value, or an invalid `axis`,
-            `tf_mode` or `idf_mode`.
+        ValueError: on a negative, NaN or inf value, an invalid `axis`,
+            `tf_mode` or `idf_mode`, or a `logbase` <= 1, `k1` < 0, `b`
+            outside [0, 1] or `delta` < 0.
     """
     _validate_modes(tf_mode, idf_mode)
+    _validate_weighting(logbase, k1, b, delta)
     return _transformed(
         X,
         axis,
@@ -272,7 +295,7 @@ def tfidf(
         X: sparse matrix of term frequencies (e.g. the URM): values >= 0,
             checked after summing duplicates.
         axis: 1 = rows are the documents (default), 0 = columns.
-        logbase: base of the IDF logarithm.
+        logbase: base of the IDF logarithm, > 1.
         tf_mode: term-frequency transform: "binary", "raw", "sqrt", "freq" or
             "log" (see the TF modes in the Normalizations guide).
         idf_mode: inverse document frequency: "unary", "base", "smooth", "prob",
@@ -285,8 +308,9 @@ def tfidf(
 
     Raises:
         TypeError: on a non-sparse X.
-        ValueError: on a negative, NaN or inf value, or an invalid `axis`,
-            `tf_mode` or `idf_mode`.
+        ValueError: on a negative, NaN or inf value, an invalid `axis`,
+            `tf_mode` or `idf_mode`, or a `logbase` <= 1.
     """
     _validate_modes(tf_mode, idf_mode)
+    _validate_weighting(logbase)
     return _transformed(X, axis, _core.tfidf, "tfidf", tf_mode=tf_mode, idf_mode=idf_mode, logbase=logbase)
