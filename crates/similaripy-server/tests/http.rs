@@ -238,19 +238,19 @@ fn same_ids_and_bits_as_python_recommend() {
                 (case % 5 == 1).then(|| (0..30).map(|_| 1000 + rng.below(N) as i64 * 7).collect());
             let exclude: Option<Vec<i64>> =
                 (case % 7 == 2).then(|| (0..5).map(|_| 1000 + rng.below(N) as i64 * 7).collect());
-            let (k, exclude_seen) = (1 + rng.below(50), case % 3 != 0);
+            let (k, exclude_history) = (1 + rng.below(50), case % 3 != 0);
             let body = serde_json::json!({
-                "history": ids, "weights": weights, "k": k, "exclude_seen": exclude_seen,
+                "history": ids, "weights": weights, "k": k, "exclude_history": exclude_history,
                 "include": include, "exclude": exclude,
             });
             let (status, text) = post(addr, &body.to_string()).await;
             assert_eq!(status, StatusCode::OK, "{text}");
             let got: Reply = serde_json::from_str(&text).unwrap();
             // The server keeps the last max_history ids (and their weights).
-            // Cut ids are still seen: excluded under exclude_seen.
+            // Cut ids are still seen: excluded under exclude_history.
             let cut = len.saturating_sub(20);
             let mut excluded = exclude.clone();
-            if exclude_seen && cut > 0 {
+            if exclude_history && cut > 0 {
                 excluded.get_or_insert_default().extend(&ids[..cut]);
             }
             let want = python(
@@ -259,7 +259,7 @@ fn same_ids_and_bits_as_python_recommend() {
                     ids: &ids[cut..],
                     weights: weights.as_deref().map(|w| &w[cut..]),
                     k,
-                    exclude_history: exclude_seen,
+                    exclude_history,
                     include: include.as_deref(),
                     exclude: excluded.as_deref(),
                     ..Default::default()
@@ -272,7 +272,7 @@ fn same_ids_and_bits_as_python_recommend() {
 
 #[test]
 fn defaults_when_not_sent() {
-    // k = 10, exclude_seen = true when not sent; sorted is the server's
+    // k = 10, exclude_history = true when not sent; sorted is the server's
     // default (false): same items and scores as Python's sorted answer.
     let addr = start(config_shipped_defaults(1), false);
     let reference = model();
@@ -362,6 +362,13 @@ fn edge_rejections() {
             ),
             // The pre-1.0 name: a clear error, never an empty history.
             (r#"{"ids": [1000]}"#, 400, "bad_json", "unknown field `ids`"),
+            // D129, no alias: never a silent default.
+            (
+                r#"{"history": [1000], "exclude_seen": false}"#,
+                400,
+                "bad_json",
+                "unknown field `exclude_seen`",
+            ),
             // The worker's two checks, one code (Code::BadWeights).
             (
                 r#"{"history": [1000, 1007], "weights": [1.0]}"#,
@@ -391,9 +398,9 @@ fn edge_rejections() {
             "{text}"
         );
         let m = get_text(addr, "/metrics").await;
-        // JSON x 5 + k + 413: the edge; weights x 2: the worker.
+        // JSON x 6 + k + 413: the edge; weights x 2: the worker.
         assert!(
-            m.contains("similaripy_server_bad_requests_total 7\n"),
+            m.contains("similaripy_server_bad_requests_total 8\n"),
             "{m}"
         );
         assert!(m.contains("similaripy_server_errors_total 2\n"), "{m}");
@@ -516,7 +523,7 @@ fn grpc_answers_equal_json() {
             let k = 1 + rng.below(50);
             let body = serde_json::json!({
                 "history": ids, "weights": weights, "k": k,
-                "exclude_seen": case % 3 != 0, "include": include, "exclude": exclude,
+                "exclude_history": case % 3 != 0, "include": include, "exclude": exclude,
                 "sorted": case % 4 != 3,
             })
             .to_string();
@@ -537,7 +544,7 @@ fn grpc_presence_rules() {
     let ids = vec![1000, 1007, 1014, 1070];
     block_on(async {
         let mut c = grpc(addr).await;
-        // Nothing but ids: JSON's defaults (k 10, exclude_seen, sorted).
+        // Nothing but ids: JSON's defaults (k 10, exclude_history, sorted).
         let only_ids = RecommendRequest {
             history: ids.clone(),
             ..Default::default()
@@ -2065,7 +2072,7 @@ fn score_equals_recommend_scores() {
     let addr = start(config(1), false);
     block_on(async {
         let body = r#"{"history": [1000, 1007, 1014, 1070], "weights": [1, 0.5, 2, 0.25],
-            "k": 50, "exclude_seen": false}"#;
+            "k": 50, "exclude_history": false}"#;
         let (ids, want) = ask_json(addr, body).await;
         assert!(ids.len() > 10);
         let body = serde_json::json!({
@@ -2335,7 +2342,7 @@ fn openapi_spec_matches_the_server() {
         }
         // Answers: every key in the spec and every required one answered.
         let full = r#"{"history": [1000, 1007, 5], "weights": [1, 2, 3], "k": 3,
-            "exclude_seen": true, "include": null, "exclude": [1014], "sorted": true,
+            "exclude_history": true, "include": null, "exclude": [1014], "sorted": true,
             "view": "both", "views": ["even"]}"#;
         let answers = [
             (

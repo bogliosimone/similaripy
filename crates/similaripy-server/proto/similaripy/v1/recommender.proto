@@ -29,7 +29,7 @@ message RecommendRequest {
   // Default 10.
   optional uint32 k = 3;
   // Default true.
-  optional bool exclude_seen = 4;
+  optional bool exclude_history = 4;
   // Absent = every item; an empty list = no item.
   IdList include = 5;
   repeated int64 exclude = 6;

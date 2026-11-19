@@ -405,7 +405,7 @@
             "minimum": 0,
             "description": "Items to return, at most `limits.k_max`; absent or null = `defaults.k`."
           },
-          "exclude_seen": {
+          "exclude_history": {
             "type": "boolean",
             "default": true,
             "description": "Never return the history's items."

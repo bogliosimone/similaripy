@@ -182,7 +182,7 @@ server's defaults):
 | `history` | (required) | The user's history, oldest first; ids the model doesn't have are ignored. |
 | `weights` | all 1.0 | One per id; a negative weight is a dislike ([Dislikes](#dislikes)). |
 | `k` | `defaults.k` (`10`) | Items to return (at most `limits.k_max`); `null` = the default. |
-| `exclude_seen` | `true` | Never return the history's items. |
+| `exclude_history` | `true` | Never return the history's items. |
 | `include` | every item | Only these items can be returned. |
 | `exclude` | none | Never these items. |
 | `sorted` | `defaults.sorted` | Best first (`true`) or in no particular order. |
@@ -327,7 +327,7 @@ subtracts. Items whose score ends up at 0 or below are not returned.
 curl -s 127.0.0.1:8080/v1/recommend -d '{"history": [10, 20], "weights": [1, -1], "k": 3}'
 ```
 
-A disliked item is still in the history, so `exclude_seen` keeps it out of
+A disliked item is still in the history, so `exclude_history` keeps it out of
 the answer. Same in Python's `recommend` (`weights=[1, -1]`) and in
 `/v1/score` (scores can then be negative).
 
@@ -336,7 +336,7 @@ the answer. Same in Python's `recommend` (`weights=[1, -1]`) and in
 The history is used oldest → newest, at most `limits.max_history` ids:
 
 - `truncate` (default): the oldest ids are cut, the last `max_history` kept;
-  cut ids are still excluded from the answer when `exclude_seen` is on.
+  cut ids are still excluded from the answer when `exclude_history` is on.
 - `reject`: a longer history is a 400 / `INVALID_ARGUMENT`.
 
 An empty history (a new user) is not an error: the answer has no items
