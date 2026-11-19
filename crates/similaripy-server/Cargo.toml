@@ -21,6 +21,10 @@ hyper = { version = "1.12", features = ["client", "http1", "http2", "server"] }
 # server-graceful: drain connections on SIGTERM / SIGINT
 hyper-util = { version = "0.1.21", features = ["service", "tokio", "server-auto", "server-graceful", "http1", "http2"] }
 prost = "0.14.6"
+# `Reply::body` writes the JSON items directly (H3) with the number formatters
+# serde_json itself uses (same bytes)
+itoa = "1.0.18"
+zmij = "1.0.23"
 serde = { version = "1.0.228", features = ["derive"] }
 # float_roundtrip: correctly rounded f64 parsing (the default fast path can be
 # 1 ULP off), so a weight parses to the same f32 as numpy's float32(json float)
