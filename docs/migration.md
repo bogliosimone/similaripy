@@ -81,6 +81,8 @@ accepts them with a few rules per function: see [Signed Input](signed-input.md).
       0/1 data.
     - NaN or inf values in the normalizations (they used to spread NaN through
       the row's or column's norm).
+    - `tfidf` / `bm25` / `bm25plus` parameters that gave negative or inf
+      weights: `logbase <= 1`, `k1 < 0`, `b` outside `[0, 1]`, `delta < 0`.
     - Norms out of float32 range in `cosine` and `asymmetric_cosine` without a
       shrink (e.g. data scaled by `1e-25` or `1e19`), in `rp3beta` when its
       `pop^beta` leaves float32 range, and in `s_plus` with a single cosine or
