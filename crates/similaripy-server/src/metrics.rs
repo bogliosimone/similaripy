@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use similaripy_core::serve::Stats;
 
-/// Bucket upper bounds in µs: dense around the 10 ms budget (R1), so the
+/// Bucket upper bounds in µs: dense around a 10 ms budget, so the
 /// share under budget reads straight off `le="0.01"`.
 const BUCKETS_US: [u64; 15] = [
     10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 7_500, 10_000, 15_000, 25_000, 50_000, 100_000,
@@ -84,8 +84,8 @@ pub struct Thread {
     errors: AtomicU64,
     ids: AtomicU64,
     known_ids: AtomicU64,
-    /// Rejected at the edge (bad JSON, k > k_max, history over max_history
-    /// under `reject`): never reached the worker.
+    /// Rejected at the edge, never reached the worker (the causes: the
+    /// `bad_requests_total` HELP in `render`).
     pub bad_requests: AtomicU64,
     /// Histories cut to their last `max_history` ids.
     pub truncated: AtomicU64,
@@ -136,7 +136,7 @@ pub struct Info<'a> {
     /// (name, requests over every thread, failed reloads); names need no
     /// escaping (`Config::check_views`).
     pub views: Vec<(&'a str, u64, u64)>,
-    /// View reloads that rebuilt a view (V21 C) and the last one (Unix
+    /// View reloads that rebuilt a view and the last one (Unix
     /// seconds, 0 = none).
     pub view_reloads: u64,
     pub last_view_reload: f64,

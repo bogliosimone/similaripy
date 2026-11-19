@@ -1,18 +1,18 @@
 //! The server (experimental; released as its own artifact, `server-v*` tags):
 //! `POST /v1/recommend` and `POST /v1/score` (JSON), gRPC
-//! `similaripy.v1.Recommender/Recommend` and `/Score` (proto/, S4 P1; the
-//! JSON endpoints' OpenAPI spec: openapi.json), `GET /metrics`, `GET /health` (liveness: always ok),
-//! `GET /ready` (readiness: 503 once draining), `GET /config` (the
-//! resolved [`Config`]), all on one port and N
+//! `similaripy.v1.Recommender/Recommend` and `/Score` (proto/; the JSON
+//! endpoints' OpenAPI spec: openapi.json), `GET /v1/views`, `GET /metrics`,
+//! `GET /health` (liveness: always ok), `GET /ready` (readiness: 503 once
+//! draining), `GET /config` (the resolved [`Config`]), all on one port and N
 //! threads, each a single-threaded tokio runtime with its own `Worker`. An
 //! acceptor hands connections round-robin to the threads (with keep-alive a
 //! connection stays on its thread for life; HTTP/1.1 or h2c by the client's
-//! preface); a request runs to completion on the thread that read it (E3),
-//! its `Worker` used synchronously from a `thread_local`. JSON and gRPC run
-//! the same `App::run`: same limits, cut and answers (score: V21 B). Named views (S5c):
-//! `GET /v1/views`, a request's `view`; the model and its views are one
-//! serving state behind one swappable pointer (V15). Hardening (S5d):
-//! header-read timeouts, graceful shutdown (`serve`'s `shutdown`).
+//! preface); a request runs to completion on the thread that read it, its
+//! `Worker` used synchronously from a `thread_local`. JSON and gRPC run the
+//! same `App::run`: same limits, cut and answers. Named views: a request's
+//! `view` ANDed with its `views`; the model and its views are one serving
+//! state behind one swappable pointer. Hardening: header-read timeouts,
+//! graceful shutdown (`serve`'s `shutdown`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -68,7 +68,7 @@ const X_REQUEST_ID: &str = "x-request-id";
 const X_ERROR_CODE: &str = "x-error-code";
 
 /// Why a request has no answer: JSON `error.code`, gRPC `x-error-code`
-/// (V21). The strings are a contract: new ones may come, none change.
+/// The strings are a contract: new ones may come, none change.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Code {
     /// Not valid JSON, an unknown or missing field, a wrong type.
@@ -153,7 +153,7 @@ impl Fail {
         s
     }
 
-    /// One stderr line per server error (F13); client errors only count.
+    /// One stderr line per server error; client errors only count.
     fn log(&self, request_id: &str) {
         if self.0 == Code::Internal {
             eprintln!("similaripy-server: error: request {request_id}: {}", self.1);
@@ -175,7 +175,7 @@ pub struct App {
     /// The model's `n_active` at start: `block` was resolved from it.
     n_active: usize,
     metrics: Box<[metrics::Thread]>,
-    /// The serving state (V15). Each thread keeps an `Arc` of it and loads
+    /// The serving state. Each thread keeps an `Arc` of it and loads
     /// `version` once per request (one atomic load, no lock); after a
     /// `swap` its next request takes the new one, in-flight requests keep
     /// theirs.
@@ -188,11 +188,11 @@ pub struct App {
     served: BTreeMap<String, Arc<[Counter]>>,
     /// Held through a whole swap or view reload, never by a serving thread:
     /// one writer at a time, so a reload rebuilds over the model it then
-    /// installs, never an older one (V22); the state lock is only taken to
+    /// installs, never an older one; the state lock is only taken to
     /// read and to install (a scrape never waits on file reads). Holds the
     /// stamps of the files the served views were read from.
     writer: Mutex<views::Stamps>,
-    /// View reloads (V21 C, written under `writer`) that rebuilt a view,
+    /// View reloads (written under `writer`) that rebuilt a view,
     /// the last one (Unix seconds as f64 bits, 0 = none), failed reads per
     /// view.
     reloads: AtomicU64,
@@ -273,7 +273,7 @@ impl App {
         Ok(())
     }
 
-    /// Rebuilds the views whose files changed since they were read (V21 C)
+    /// Rebuilds the views whose files changed since they were read
     /// over the served model, from each thread's next request on; one whose
     /// files fail keeps what it served (logged and counted once per change,
     /// its `error` in `GET /v1/views`). True if a file changed.
@@ -341,7 +341,7 @@ impl App {
     /// history cap and this thread's worker (`call`, given the kept ids and
     /// weights, the request's `views` and the reused outputs), over the model
     /// of `view` (None: `defaults.view`; "": the whole model) ANDed with the
-    /// named `views` (at most `MAX_VIEWS`, V16); `encode` turns the answer
+    /// named `views` (at most `MAX_VIEWS`); `encode` turns the answer
     /// into the response while the worker's buffers are borrowed.
     #[allow(clippy::too_many_arguments)]
     fn run<T>(
@@ -372,7 +372,7 @@ impl App {
         let limits = &self.cfg.limits;
         LOCAL.with_borrow_mut(|l| {
             let l = l.as_mut().expect("a request on a server thread");
-            // V15: the version first, then the state (as new or newer)
+            // The version first, then the state (as new or newer)
             let v = self.version.load(Acquire);
             if v != l.version {
                 l.state = self.state();
@@ -636,7 +636,7 @@ impl App {
     ) -> Result<pb::RecommendResponse, Fail> {
         let req = Request {
             ids: &q.history,
-            // proto3: an empty list is not sent; unweighted (T17)
+            // proto3: an empty list is not sent; unweighted
             weights: (!q.weights.is_empty()).then_some(&q.weights[..]),
             k: q.k.map_or(self.cfg.defaults.k, |k| k as usize),
             exclude_history: q.exclude_history.unwrap_or(default_exclude_history()),
@@ -645,7 +645,7 @@ impl App {
             sorted: q.sorted.unwrap_or(self.cfg.defaults.sorted),
             ..Default::default()
         };
-        // T18: one copy of the answer, prost's default codec encodes it
+        // One copy of the answer; prost's default codec encodes it
         let view = (q.view.as_deref(), &q.views[..]);
         self.recommend(m, Proto::Grpc, &req, view, |a| pb::RecommendResponse {
             ids: a.ids.to_vec(),
@@ -688,13 +688,16 @@ impl App {
 
     /// One request per path a worker takes, sized to the limits (k_max,
     /// max_history ids, include bits, max_items): buffers made before the first accept,
-    /// no first-request spike (W2).
+    /// no first-request spike.
     fn warm(&self, model: &Model, w: &mut Worker) -> Result<(), Error> {
-        let n = self.cfg.limits.max_history.min(model.n_items());
-        let ids: Vec<i64> = match model.item_ids() {
-            Some(e) => e.iter().take(n).copied().collect(),
-            None => (0..n as i64).collect(),
+        // The model's ids, repeated up to `n`.
+        let ext = |n: usize| -> Vec<i64> {
+            match model.item_ids() {
+                Some(e) => e.iter().copied().cycle().take(n).collect(),
+                None => (0..model.n_items() as i64).cycle().take(n).collect(),
+            }
         };
+        let ids = ext(self.cfg.limits.max_history.min(model.n_items()));
         let (mut out_ids, mut out_scores) = (Vec::new(), Vec::new());
         for include in [None, Some(&ids[..])] {
             let req = Request {
@@ -705,19 +708,8 @@ impl App {
             };
             w.recommend(model, &req, &mut out_ids, &mut out_scores)?;
         }
-        let items: Vec<i64> = match model.item_ids() {
-            // Repeated up to max_items: the candidate buffer at full size.
-            Some(e) => e
-                .iter()
-                .cycle()
-                .take(self.cfg.limits.max_items)
-                .copied()
-                .collect(),
-            None => (0..model.n_items() as i64)
-                .cycle()
-                .take(self.cfg.limits.max_items)
-                .collect(),
-        };
+        // max_items of them: the candidate buffer at full size.
+        let items = ext(self.cfg.limits.max_items);
         let req = ScoreRequest {
             ids: &ids,
             items: &items,
@@ -868,7 +860,7 @@ impl From<History> for pb::History {
     }
 }
 
-/// `POST /v1/recommend`'s answer (U4): the items, then the request's context.
+/// `POST /v1/recommend`'s answer: the items, then the request's context.
 #[derive(Serialize)]
 struct Reply<'a> {
     items: Items<'a>,
@@ -952,11 +944,11 @@ impl Reply<'_> {
             .into_response()
     }
 
-    /// The same bytes as `serde_json::to_vec(self)` (H3, V23): the items written
+    /// The same bytes as `serde_json::to_vec(self)`: the items written
     /// straight into one reserved buffer, the context through serde. serde's
     /// writer checks the Vec and calls `memmove` per token: 46.5 ns per item
-    /// vs 21.5 here (M2, `hotpath2/encbench2`); saturated JSON server +14% req/s
-    /// at k 100, +37% at k 2000 (`hotpath2/findings.md`). Checked against serde
+    /// vs 21.5 here (microbenchmark); saturated JSON server +14%
+    /// req/s at k 100, +37% at k 2000. Checked against serde
     /// on every answer in debug builds and by `reply_body_is_serde_json_bytes`.
     fn body(&self) -> Vec<u8> {
         const HEAD: &[u8] = b"{\"items\":[";
@@ -1434,8 +1426,8 @@ pub fn serve(
                             // h2 connection may idle like any gRPC channel
                             // (pings find dead peers; shutdown sends GOAWAY).
                             // ponytail: so h2 headers dribbled after the
-                            // preface have no deadline (private network,
-                            // R-S3); a per-stream header timer if exposed.
+                            // preface have no deadline (private network
+                            // only); a per-stream header timer if exposed.
                             let first = tokio::time::timeout(header_read, conn.as_mut()).await;
                             if first.is_err() && decided.load(Relaxed) {
                                 let _ = conn.await;
@@ -1504,8 +1496,8 @@ pub fn serve(
     result
 }
 
-/// Checks the view files every `every` and reloads them on a change (V21
-/// C), on the acceptor's runtime (never a serving thread); the stat and
+/// Checks the view files every `every` and reloads them on a change, on
+/// the acceptor's runtime (never a serving thread); the stat and
 /// reads in a blocking task. Ends with the runtime.
 async fn reload_views(app: Arc<App>, every: Duration) {
     let mut tick = tokio::time::interval(every);
@@ -1520,7 +1512,7 @@ async fn reload_views(app: Arc<App>, every: Duration) {
 /// Hands `listener`'s connections round-robin to `threads` until `until`
 /// completes.
 // ponytail: round-robin per connection; SO_REUSEPORT per thread (Linux)
-// is the S4 probe.
+// if connections pile up unevenly.
 async fn accept(
     listener: &tokio::net::TcpListener,
     threads: &[tokio::sync::mpsc::UnboundedSender<std::net::TcpStream>],
@@ -1649,7 +1641,7 @@ pub fn set_qos(interactive: bool) {
 mod body_tests {
     use super::*;
 
-    // H3: the direct writer == serde_json, byte for byte, on edge values and random bit patterns.
+    // The direct writer == serde_json, byte for byte, on edge values and random bit patterns.
     #[test]
     fn reply_body_is_serde_json_bytes() {
         let mut ids = vec![i64::MIN, i64::MAX, -1, 0, 7];

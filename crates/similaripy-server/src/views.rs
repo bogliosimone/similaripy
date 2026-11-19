@@ -1,4 +1,4 @@
-//! Named views (V2, S5c): each a core `Model::view` of the served model
+//! Named views: each a core `Model::view` of the served model
 //! (S shared, one bit per item), built at start from the config's id files.
 
 use std::collections::BTreeMap;
@@ -54,7 +54,7 @@ pub struct FileInfo {
     pub modified: Option<f64>,
 }
 
-/// What tells a file's change (V21 C): the file it resolves to (a swapped
+/// What tells a file's change: the file it resolves to (a swapped
 /// symlink, as Kubernetes' ConfigMap updates), its mtime, size and inode
 /// (an atomic rename). None: unreadable (a change too, when it comes back).
 #[derive(PartialEq, Debug)]

@@ -1,4 +1,4 @@
-//! gRPC code from proto/ (server plan S4 P1): protox compiles the .proto in
+//! gRPC code from proto/: protox compiles the .proto in
 //! Rust, so no protoc is needed on dev machines or CI.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
