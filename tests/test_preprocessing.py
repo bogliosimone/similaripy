@@ -54,7 +54,7 @@ def test_matches_reference(duplicates, with_t):
         assert got[pair] == pytest.approx(v, rel=1e-6)
 
 
-def test_small_example():
+def test_urm_small_example_feeds_sparseknn():
     users = [7, 3, 7, 7, 3, 9]
     items = [100, 5, 100, 42, 100, 5]
     URM, user_ids, item_ids = interactions_to_urm(users, items)
@@ -139,15 +139,14 @@ def test_to_histories_feeds_recommend_batch():
     users, items = rng.integers(0, 40, 800), rng.choice(np.arange(100, 160) * 7, 800)
     t = rng.integers(0, 99, 800)
     URM, _, item_ids = interactions_to_urm(users, items, rng.random(800) * time_decay(t, reference=99, scale=20))
-    H = URM
     model = sim.serving.SparseKNN(sim.cosine(URM.T, k=20), item_ids=item_ids)
-    histories, weights = urm_to_histories(H, item_ids=item_ids)
+    histories, weights = urm_to_histories(URM, item_ids=item_ids)
     assert len(histories) == URM.shape[0]
-    ids, scores = model.recommend_batch(histories, weights=weights, k=10)
-    for u in range(URM.shape[0]):
-        row = H[[u]]
-        one = model.recommend(item_ids[row.indices], weights=row.data, k=10)
-        assert np.array_equal(ids[u], one[0]) and np.array_equal(scores[u], one[1])  # bit for bit
+    for u in range(URM.shape[0]):  # each user's row, as ids (batch == single: test_serve)
+        row = URM[[u]]
+        assert np.array_equal(histories[u], item_ids[row.indices]) and np.array_equal(weights[u], row.data)
+    ids, _ = model.recommend_batch(histories, weights=weights, k=10)
+    assert len(ids) == URM.shape[0]
     # without item_ids: column indices, for SparseKNN(S) without ids
     histories, _ = urm_to_histories(URM)
     assert histories[0].tolist() == URM[[0]].indices.tolist() and histories[0].dtype == np.int64
