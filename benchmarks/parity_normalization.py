@@ -5,6 +5,8 @@ Normalization parity: this install vs a reference install's `--dump`
 Every output value must match with rtol=1e-5, atol=1e-7 (NaN/inf must match too);
 the data dtype and the sparsity structure must be identical (index dtypes may
 differ: v1 outputs int32 indices for any input, 0.7.0 kept the input's).
+BM25 changed on purpose in 1.0 (positive IDF, TF without (k1 + 1)): --compare runs
+0.7.0's form, idf_mode='bm25_robertson' times (k1 + 1) with delta / (k1 + 1).
 
 Usage (from the repo root; the same options on both steps):
     uv run --isolated --no-project --python 3.14 --with similaripy==0.7.0 --with pandas --with datasets \
@@ -46,6 +48,18 @@ def cases(full):
             (f"bm25plus_{tf}_{idf}", sim.normalization.bm25plus, kw | {"delta": 0.5, "k1": 1.5, "b": 0.6}),
         ]
     return out
+
+
+def as_v070(func, kw):
+    """This install's call for the 0.7.0 output of `func(X, **kw)` (see the module doc)."""
+    if kw.get("idf_mode") == "bm25":
+        kw = kw | {"idf_mode": "bm25_robertson"}
+    if func not in (sim.normalization.bm25, sim.normalization.bm25plus):
+        return lambda X, axis: func(X, axis=axis, **kw)
+    k1 = kw.get("k1", 1.2)
+    if func is sim.normalization.bm25plus:
+        kw = kw | {"delta": kw.get("delta", 1.0) / (k1 + 1)}
+    return lambda X, axis: func(X, axis=axis, **kw) * (k1 + 1)
 
 
 def with_dtypes(X, data_dtype, index_dtype):
@@ -99,7 +113,7 @@ def main():
         group_ok = True
         for name, func, kw in cases(full):
             key = f"{name} [{tag}]"
-            out = func(X, **kw | {"axis": axis})
+            out = func(X, **kw | {"axis": axis}) if ref is None else as_v070(func, kw)(X, axis)
             if rows is not None:
                 out = out.tocsr()[rows]
             if ref is None:
