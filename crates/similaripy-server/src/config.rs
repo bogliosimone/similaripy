@@ -1,9 +1,9 @@
-//! The server's config (V1): built-in defaults < the `--config` TOML file <
+//! The server's config: built-in defaults < the `--config` TOML file <
 //! `SIMILARIPY_<SECTION>__<KEY>` env vars < `--section.key value` flags.
 //! One mechanism: the defaults as a TOML table, the file merged in, each
 //! override set as a dotted key, then one deserialize into [`Config`] with
 //! `deny_unknown_fields` at every level (a typo is a start-up error naming
-//! the key). Keys are a contract (R-S2: additive within 1.x); `GET /config`
+//! the key). Keys are a contract (additive within 1.x); `GET /config`
 //! serves the resolved config, so no key may hold a secret.
 
 use std::collections::BTreeMap;
@@ -32,7 +32,7 @@ pub struct ModelConfig {
     pub path: PathBuf,
     /// Map the model's files instead of reading them into memory.
     pub mmap: bool,
-    /// The `model.name` of every response (V6); "" = the directory's
+    /// The `model.name` of every response; "" = the directory's
     /// basename (a saved model is never replaced: the directory is a version).
     pub name: String,
 }
@@ -65,11 +65,11 @@ pub struct Limits {
     pub max_items: usize,
 }
 
-/// A history longer than `limits.max_history` (V7).
+/// A history longer than `limits.max_history`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum HistoryPolicy {
-    /// Keep the last `max_history` ids (client order = oldest → newest, Q4);
+    /// Keep the last `max_history` ids (client order = oldest → newest);
     /// the cut ids stay excluded under `exclude_history`.
     Truncate,
     /// 400 / INVALID_ARGUMENT.
@@ -108,11 +108,11 @@ pub struct Timeouts {
     pub shutdown_grace: f64,
 }
 
-/// `[views]`: the named views (V2) and how often their files are checked.
+/// `[views]`: the named views and how often their files are checked.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Views {
-    /// Seconds between checks of the view files (V21 C): a changed file
+    /// Seconds between checks of the view files: a changed file
     /// (contents, or a renamed / symlinked new file in its place) rebuilds
     /// the views, served from the next request on; 0 = read at start only.
     pub reload_interval: f64,
@@ -166,7 +166,7 @@ impl Default for Limits {
     }
 }
 
-/// The core's request defaults (D-A0-4: one source).
+/// `k` from the core's `Request::default` (one source); `sorted` and `view` are the server's own.
 impl Default for Defaults {
     fn default() -> Self {
         let r = similaripy_core::serve::Request::default();
@@ -225,10 +225,6 @@ impl Config {
         toml::to_string(self).expect("plain keys and values")
     }
 
-    /// The view rules a config alone can break: names of 1-64 of
-    /// `a-z 0-9 _ -` (settable as a flag or env var: no `.`, lowercase;
-    /// Prometheus labels and URLs without escaping), at least one file each,
-    /// `defaults.view` "" or a view.
     /// The timeouts and `views.reload_interval`: seconds from 0 to a year
     /// (more is a typo in ms), header_read > 0;
     /// `parse` and `App::new` both call it (`secs` relies on it).
@@ -269,6 +265,10 @@ impl Config {
         Ok(())
     }
 
+    /// The view rules a config alone can break: names of 1-64 of
+    /// `a-z 0-9 _ -` (settable as a flag or env var: no `.`, lowercase;
+    /// Prometheus labels and URLs without escaping), at least one file each,
+    /// `defaults.view` "" or a view.
     pub fn check_views(&self) -> Result<(), String> {
         for (name, v) in &self.views.named {
             let ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b);
@@ -306,7 +306,7 @@ pub fn version() -> String {
     )
 }
 
-/// The flags before V1, kept for scripts (bench-runner gates run both CLIs).
+/// Short flags from before the config file, kept for scripts.
 const ALIASES: [(&str, &str); 6] = [
     ("--model", "model.path"),
     ("--addr", "server.addr"),
@@ -431,7 +431,7 @@ fn merge(dst: &mut Table, src: Table) {
 /// "64" whatever an earlier source set); a `*_file` key (views: no default)
 /// is a string; another key without a default takes `raw` as a TOML literal,
 /// else a string. An unknown key is set too: the deserialize names it.
-// ponytail: no list keys yet; S5e's `compression.algorithms` adds "a,b".
+// ponytail: no list keys yet; one would take "a,b" from a flag or env var.
 fn set(table: &mut Table, defaults: &Table, key: &str, raw: String) -> Result<(), String> {
     if key.split('.').any(str::is_empty) {
         return Err(format!("{key:?}: an empty name part"));
@@ -854,7 +854,7 @@ mod tests {
             parse(["--version".into()], none),
             Ok(Cli::Version)
         ));
-        // `--print-config` prints the core's k (D-A2-3; the Python signatures
+        // `--print-config` prints the core's k (the Python signatures
         // are checked against the same in test_serve.py) and the server's own
         // sorted default: false (retrieval), Python's is true.
         let d = similaripy_core::serve::Request::default();

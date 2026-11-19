@@ -5,7 +5,7 @@
 //! metrics; gRPC on the same port: the same answers (ids and f32 bits) as
 //! JSON, proto3 presence rules, errors as status codes; the answer's context
 //! (model, request id, k, sorted, history counts) and same request -> same
-//! bytes (U5); hardening (S5d): graceful shutdown (in-flight requests
+//! bytes; hardening: graceful shutdown (in-flight requests
 //! finish, new connections refused, grace), header-read / first-request /
 //! keep-alive timeouts, and the binary's exit 0 on SIGTERM. `/v1/score`
 //! (JSON and gRPC): the same bits as core `serve::score` (Python's
@@ -157,7 +157,7 @@ struct History {
     unknown: u64,
 }
 
-/// An error's body, every field (V21: the shape is the contract).
+/// An error's body, every field (the shape is the contract).
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 struct ErrorBody {
@@ -362,7 +362,7 @@ fn edge_rejections() {
             ),
             // The pre-1.0 name: a clear error, never an empty history.
             (r#"{"ids": [1000]}"#, 400, "bad_json", "unknown field `ids`"),
-            // D129, no alias: never a silent default.
+            // Renamed before 1.0, no alias: never a silent default.
             (
                 r#"{"history": [1000], "exclude_seen": false}"#,
                 400,
@@ -888,7 +888,7 @@ fn request_id_kept_if_printable_else_generated() {
 
 #[test]
 fn same_request_same_bytes() {
-    // U5: ties go to the lower internal id, fixed per model: the same request
+    // Ties go to the lower internal id, fixed per model: the same request
     // (and request id) gets the same bytes, on either thread, sorted or not.
     let addr = start(config(2), false);
     block_on(async {
@@ -1036,7 +1036,7 @@ fn view_answers_equal_core_view_and_and_with_include_exclude() {
     });
 }
 
-/// `views` (A3, V16): the masks are (`view` ?? `defaults.view`) AND every
+/// `views`: the masks are (`view` ?? `defaults.view`) AND every
 /// named view, `"view": ""` drops the default; names echoed in both formats;
 /// each served name counted; > MAX_VIEWS = too_many_views, an unknown name =
 /// unknown_view (neither counted as served).
@@ -1101,17 +1101,16 @@ fn views_and_with_view_and_default_view() {
             assert_eq!(status, StatusCode::OK, "{text}");
             let got: ScoreReply = serde_json::from_str(&text).unwrap();
             let base = core_view(&reference, view.unwrap_or("head"), &files);
-            let block = BlockSize::Auto
-                .resolve(base.n_active(), usize::MAX)
-                .unwrap();
-            let sreq = similaripy_core::serve::ScoreRequest {
-                ids: &ids,
-                items: &items,
-                views: &extra,
-                ..Default::default()
-            };
-            let swant = score(&base, block, &sreq).unwrap();
-            assert_eq!(bits(&got.scores), bits(&swant), "score case {case}");
+            let swant = python_score(
+                &base,
+                &similaripy_core::serve::ScoreRequest {
+                    ids: &ids,
+                    items: &items,
+                    views: &extra,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(bits(&got.scores), swant, "score case {case}");
             assert_eq!(got.views, views);
             // served: the view used + each listed name, per request (3 here)
             for n in used
@@ -1341,7 +1340,7 @@ fn swap_serves_new_views_from_the_next_request() {
     });
 }
 
-// ---- V21 C view reload ----
+// ---- view reload ----
 
 /// `app` served on a free loopback port (threads live until the test ends).
 fn start_app(app: &Arc<App>) -> SocketAddr {
@@ -1452,8 +1451,8 @@ fn view_reload_only_on_a_change_and_a_broken_file_keeps_its_view() {
         let m = get_text(addr, "/metrics").await;
         assert_eq!(metric(&m, reloads), Some(3.0), "{m}");
         assert_eq!(metric(&m, &errors("even")), Some(2.0), "{m}");
-        // Ids the model doesn't have (another id space): allows 0 (V22
-        // warns in the log), served as such.
+        // Ids the model doesn't have (another id space): allows 0, served
+        // as such.
         std::fs::write(&files[0].0, lines([5, 6])).unwrap();
         assert!(app.reload_views());
         let v = views_listing(addr).await;
@@ -1518,7 +1517,7 @@ fn view_reload_follows_a_configmap_symlink_swap() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// V22: a view reload racing a model swap never reinstalls the older model.
+/// A view reload racing a model swap never reinstalls the older model.
 #[test]
 fn view_reload_never_rolls_back_a_swapped_model() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
@@ -1624,7 +1623,7 @@ fn view_errors_at_start_name_view_file_and_line() {
     );
 }
 
-// ---- S5d hardening ----
+// ---- hardening ----
 
 /// A server with test routes `/slow` (400 ms) and `/hang` (30 s), stopped
 /// by sending on the returned channel; the handle gives `serve`'s result.
@@ -1919,7 +1918,7 @@ fn binary_exits_0_on_sigterm() {
     let dir = std::env::temp_dir().join(format!("similaripy-server-bin-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     model().save(&dir.join("v1"), "test").unwrap();
-    // Served through a symlink: loaded from the directory it names (V22).
+    // Served through a symlink: loaded from the directory it names.
     std::os::unix::fs::symlink("v1", dir.join("current")).unwrap();
     /// Killed and its model removed however the test ends.
     struct Child(std::process::Child, std::path::PathBuf);
@@ -1986,16 +1985,9 @@ async fn post_score(addr: SocketAddr, body: &str) -> (StatusCode, axum::http::He
 }
 
 /// Python's `SparseKNN.score` (on the view's model): score bits.
-fn python_score(m: &Model, ids: &[i64], weights: Option<&[f32]>, items: &[i64]) -> Vec<u32> {
+fn python_score(m: &Model, req: &similaripy_core::serve::ScoreRequest) -> Vec<u32> {
     let block = BlockSize::Auto.resolve(m.n_active(), usize::MAX).unwrap();
-    let req = similaripy_core::serve::ScoreRequest {
-        ids,
-        weights,
-        items,
-        ..Default::default()
-    };
-    let s = score(m, block, &req).unwrap();
-    s.iter().map(|x| x.to_bits()).collect()
+    bits(&score(m, block, req).unwrap())
 }
 
 fn bits(s: &[f32]) -> Vec<u32> {
@@ -2026,7 +2018,13 @@ fn score_same_bits_as_python_on_views_json_and_grpc() {
             let cut = len.saturating_sub(20);
             let used = &ids[cut..];
             let m = core_view(&reference, name, &files);
-            let want = python_score(&m, used, weights.as_deref().map(|w| &w[cut..]), &items);
+            let req = similaripy_core::serve::ScoreRequest {
+                ids: used,
+                weights: weights.as_deref().map(|w| &w[cut..]),
+                items: &items,
+                ..Default::default()
+            };
+            let want = python_score(&m, &req);
             let known = reference.item_ids().unwrap();
             let unknown = used.iter().filter(|i| !known.contains(i)).count() as u64;
             let history = History {
@@ -2094,7 +2092,7 @@ fn score_presence_rules_errors_and_metrics() {
         let ok = |text: &str| serde_json::from_str::<ScoreReply>(text).unwrap();
         // view absent / null = defaults.view (none); weights null = unweighted;
         // no item = no score; unknown items 0; history.unknown exact with no
-        // scorable item (core D6).
+        // scorable item.
         let (s, _, t) = post_score(addr, r#"{"history": [1000, 5], "items": []}"#).await;
         assert_eq!(s, StatusCode::OK, "{t}");
         let r = ok(&t);

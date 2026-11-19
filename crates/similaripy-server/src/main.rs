@@ -79,7 +79,7 @@ fn run() -> Result<(), String> {
     eprint!("{}\nconfig:\n{}", version(), cfg.to_toml());
     let addr = cfg.server.addr.clone();
     // Resolved once: each file is opened through `dir`, so a symlink flipped
-    // to another version mid-load would mix two models' files (V22).
+    // to another version mid-load would mix two models' files.
     let path = &cfg.model.path;
     let dir = path
         .canonicalize()
@@ -87,7 +87,7 @@ fn run() -> Result<(), String> {
     let t = std::time::Instant::now();
     let model = Model::load(&dir, cfg.model.mmap).map_err(|e| e.to_string())?;
     let loaded = t.elapsed();
-    // Which similaripy saved it: the start-up log only (V6 revised)
+    // Which similaripy saved it: the start-up log only
     let written_by = std::fs::read_to_string(dir.join("meta.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
@@ -167,5 +167,23 @@ impl Signals {
     async fn next(&mut self) -> &'static str {
         let _ = tokio::signal::ctrl_c().await;
         "Ctrl-C"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `--help` lists every key `--print-config` prints, as `--section.key`.
+    #[test]
+    fn usage_lists_every_key() {
+        let cfg = similaripy_server::Config::default().to_toml();
+        let mut section = "";
+        for line in cfg.lines() {
+            if let Some(s) = line.strip_prefix('[') {
+                section = s.trim_end_matches(']');
+            } else if let Some((key, _)) = line.split_once(" = ") {
+                let flag = format!("--{section}.{key} ");
+                assert!(super::USAGE.contains(&flag), "{flag:?} not in USAGE");
+            }
+        }
     }
 }
