@@ -37,7 +37,7 @@ similaripy-server --model models/v3
 Ask for recommendations:
 
 ```bash
-curl -s 127.0.0.1:8080/v1/recommend -d '{"history": [10, 20], "k": 3}'
+curl -s 127.0.0.1:8080/v1/recommend -d '{"history": [10, 20], "k": 3, "sorted": true}'
 ```
 
 ```json
@@ -146,7 +146,7 @@ similaripy-server --config server.toml --server.threads 4
 | `limits.max_body_bytes` | `1048576` (1 MiB) | A larger request body is rejected (JSON 413, gRPC `OUT_OF_RANGE`). Raise it for a large `include` (about 100k ids per MiB in JSON). |
 | `limits.max_items` | `10000` | A score request with more items is rejected, never cut ([`POST /v1/score`](#post-v1score-json)). |
 | `defaults.k` | `10` | `k` of a request that doesn't send it (at most `limits.k_max`): e.g. `500` for candidate generation. |
-| `defaults.sorted` | `true` | `sorted` of a request that doesn't send it ([Sorted or not](#sorted-or-not)). |
+| `defaults.sorted` | `false` | `sorted` of a request that doesn't send it ([Sorted or not](#sorted-or-not)); `true` = Python's order. |
 | `defaults.view` | `""` (the whole model) | `view` of a request that doesn't send it ([Views](#views)). |
 | `timeouts.header_read` | `30` | Seconds a connection has to send a request's headers (and a JSON body: else 408). Also the idle time after which an HTTP/1.1 keep-alive connection is closed. |
 | `timeouts.drain_delay` | `0` | After SIGTERM: seconds still accepting connections with `/ready` answering 503 ([Shutdown](#shutdown)). |
@@ -299,11 +299,15 @@ differently.
 
 ### Sorted or not
 
-`sorted: false` returns the same items and scores in no particular order.
-For candidate generation, where a ranker re-scores the candidates anyway,
-it saves the final sort: 19-50% of the compute at `k` ≥ 1000. A retrieval
-deployment sets `defaults.sorted = false` once; a request can still ask for
-either.
+The server's default is unsorted (`defaults.sorted = false`), unlike Python's
+`recommend`: its main use is candidate generation, where a ranker re-scores
+the candidates anyway. `sorted: false` returns the same items and scores in
+no particular order and saves the final sort: 19-50% of the compute at `k` ≥
+1000 (JSON +8..+13% requests/s at `k` 1000-2000). The order is fixed for a
+given model and server config, but can change with `server.block_size` or
+`server.threads`. To use the answer's first N items as a top N, send
+`"sorted": true` (or set `defaults.sorted = true`); the answer's `sorted`
+says which order it has.
 
 ### History
 

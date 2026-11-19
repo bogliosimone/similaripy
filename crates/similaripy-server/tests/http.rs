@@ -85,7 +85,18 @@ fn config(threads: usize) -> Config {
     c.limits.max_history = 20;
     c.limits.k_max = 50;
     c.model.name = "knn-test".into();
+    // Answers compared in Python's order; the shipped default (false) is
+    // checked by `defaults_when_not_sent` and `context_and_history_counts`.
+    c.defaults.sorted = true;
     c
+}
+
+/// `config` with the shipped request defaults.
+fn config_shipped_defaults(threads: usize) -> Config {
+    Config {
+        defaults: Config::default().defaults,
+        ..config(threads)
+    }
 }
 
 /// A server on a free loopback port (its threads live until the test
@@ -258,20 +269,28 @@ fn same_ids_and_bits_as_python_recommend() {
 }
 
 #[test]
-fn defaults_are_pythons() {
-    // k = 10, exclude_seen = true, sorted = true when not sent.
-    let addr = start(config(1), false);
+fn defaults_when_not_sent() {
+    // k = 10, exclude_seen = true when not sent; sorted is the server's
+    // default (false): same items and scores as Python's sorted answer.
+    let addr = start(config_shipped_defaults(1), false);
     let reference = model();
     let ids = [1000, 1007, 1014, 1070];
     block_on(async {
         let (status, text) = post(addr, r#"{"history": [1000, 1007, 1014, 1070]}"#).await;
         assert_eq!(status, StatusCode::OK, "{text}");
         let got: Reply = serde_json::from_str(&text).unwrap();
+        assert!(!got.sorted);
+        // unsorted order depends on the block size: compare as sets
+        let set = |(ids, bits): (Vec<i64>, Vec<u32>)| {
+            let mut v: Vec<_> = ids.into_iter().zip(bits).collect();
+            v.sort_unstable();
+            v
+        };
         let req = Request {
             ids: &ids,
             ..Default::default()
         };
-        assert_eq!(got.answer(), python(&reference, &req));
+        assert_eq!(set(got.answer()), set(python(&reference, &req)));
     });
 }
 
@@ -737,7 +756,7 @@ async fn post_to_with(
 fn context_and_history_counts() {
     // max_history 20: 25 ids sent, the oldest 5 cut (an unknown id among
     // them not counted); among the 20 used, 1420 (twice) and 5 are unknown.
-    let addr = start(config(1), false);
+    let addr = start(config_shipped_defaults(1), false);
     let mut ids: Vec<i64> = (0..17).map(|i| 1000 + 7 * i).collect();
     ids.splice(0..0, [1427, 1000, 1007, 1014, 1021]);
     ids.extend([1420, 5, 1420]);
@@ -782,10 +801,10 @@ fn context_and_history_counts() {
             (got.history.sent, got.history.truncated, got.history.unknown),
             (20, 0, 3)
         );
-        // Defaults applied: k 10, sorted true; nothing cut, nothing unknown.
+        // Defaults applied: k 10, sorted false; nothing cut, nothing unknown.
         let (_, _, text) = post_with(addr, r#"{"history": [1000, 1007]}"#, &[]).await;
         let got: Reply = serde_json::from_str(&text).unwrap();
-        assert_eq!((got.k, got.sorted), (10, true));
+        assert_eq!((got.k, got.sorted), (10, false));
         assert_eq!(
             (got.history.sent, got.history.truncated, got.history.unknown),
             (2, 0, 0)

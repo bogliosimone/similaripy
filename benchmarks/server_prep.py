@@ -12,7 +12,7 @@ Writes, in OUT:
   model/          SparseKNN(S).save: S = the serve workload's model (cosine, k=100), from the bench cache (--model-cache)
   requests-c{CAP}-k{K}.jsonl  per --caps x --ks: one /v1/recommend body per line: a random user's URM row, capped like
                   the serve workload (CAP random items; keep it <= the server's --max-history, or the server cuts it),
-                  k, exclude_seen; every other request with float64 weights (the same users and weights for every k)
+                  k, exclude_seen, sorted (the server's default is unsorted); every other request with float64 weights (the same users and weights for every k)
   expected-c{CAP}-k{K}.jsonl  SparseKNN.load(OUT/model).recommend of the first --check requests: ids + score bits
 """
 
@@ -58,7 +58,7 @@ def main():
         for k in args.ks:
             with open(args.out / f"requests-c{cap}-k{k}.jsonl", "w") as f:
                 for h, w in zip(hists, weights, strict=True):
-                    body = {"history": h.tolist(), "k": k, "exclude_seen": True}
+                    body = {"history": h.tolist(), "k": k, "exclude_seen": True, "sorted": True}
                     if w is not None:
                         body["weights"] = w.tolist()
                     f.write(json.dumps(body) + "\n")
