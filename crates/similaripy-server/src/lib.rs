@@ -549,7 +549,7 @@ impl App {
                 view: a.view,
                 history: a.history,
             };
-            timed(json(StatusCode::OK, &reply), a.compute)
+            timed(reply.response(), a.compute)
         })
     }
 
@@ -833,6 +833,127 @@ struct ScoreReply<'a> {
     request_id: &'a str,
     view: Option<&'a str>,
     history: History,
+}
+
+/// `Reply` without its items: the context `Reply::body` writes through serde.
+#[derive(Serialize)]
+struct ReplyTail<'a> {
+    model: &'a ModelInfo<'a>,
+    request_id: &'a str,
+    k: usize,
+    sorted: bool,
+    view: Option<&'a str>,
+    history: History,
+}
+
+/// Copies `src` (at most 24 bytes) with fixed-size moves, no `memmove` call; returns its length.
+///
+/// # Safety
+/// `dst` has `src.len()` writable bytes.
+#[inline(always)]
+unsafe fn put(dst: *mut u8, src: &[u8]) -> usize {
+    let (n, p) = (src.len(), src.as_ptr());
+    debug_assert!(n <= 24);
+    // SAFETY: every read is inside `src`, every write inside `dst[..n]` (overlapping 8 / 4-byte moves).
+    unsafe {
+        if n >= 8 {
+            dst.cast::<u64>()
+                .write_unaligned(p.cast::<u64>().read_unaligned());
+            if n > 16 {
+                dst.add(8)
+                    .cast::<u64>()
+                    .write_unaligned(p.add(8).cast::<u64>().read_unaligned());
+            }
+            dst.add(n - 8)
+                .cast::<u64>()
+                .write_unaligned(p.add(n - 8).cast::<u64>().read_unaligned());
+        } else if n >= 4 {
+            dst.cast::<u32>()
+                .write_unaligned(p.cast::<u32>().read_unaligned());
+            dst.add(n - 4)
+                .cast::<u32>()
+                .write_unaligned(p.add(n - 4).cast::<u32>().read_unaligned());
+        } else {
+            for i in 0..n {
+                dst.add(i).write(*p.add(i));
+            }
+        }
+    }
+    n
+}
+
+impl Reply<'_> {
+    /// The JSON answer: `body`'s bytes.
+    fn response(&self) -> Response {
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            self.body(),
+        )
+            .into_response()
+    }
+
+    /// The same bytes as `serde_json::to_vec(self)` (H3, V23): the items written
+    /// straight into one reserved buffer, the context through serde. serde's
+    /// writer checks the Vec and calls `memmove` per token: 46.5 ns per item
+    /// vs 21.5 here (M2, `hotpath2/encbench2`); saturated JSON server +14% req/s
+    /// at k 100, +37% at k 2000 (`hotpath2/findings.md`). Checked against serde
+    /// on every answer in debug builds and by `reply_body_is_serde_json_bytes`.
+    fn body(&self) -> Vec<u8> {
+        const HEAD: &[u8] = b"{\"items\":[";
+        // Per item: {"id": (6) + <= 20 digits + ,"score": (9) + <= 24 (zmij's whole buffer) + }, (2)
+        const ITEM: usize = 6 + 20 + 9 + 24 + 2;
+        // Every field by name: a new one is a compile error here, not a silent drop.
+        let Reply {
+            items,
+            model,
+            request_id,
+            k,
+            sorted,
+            view,
+            history,
+        } = self;
+        let (ids, scores) = (items.0, items.1);
+        let mut v: Vec<u8> = Vec::with_capacity(HEAD.len() + ids.len() * ITEM + 256);
+        v.extend_from_slice(HEAD);
+        let (mut ib, mut fb) = (itoa::Buffer::new(), zmij::Buffer::new());
+        // SAFETY: capacity covers HEAD + ITEM per item; each item writes at most ITEM bytes.
+        unsafe {
+            let mut p = v.as_mut_ptr().add(v.len());
+            let start = p;
+            for (&id, &score) in ids.iter().zip(scores) {
+                p.cast::<[u8; 6]>().write(*b"{\"id\":");
+                p = p.add(6);
+                p = p.add(put(p, ib.format(id).as_bytes()));
+                p.cast::<[u8; 9]>().write(*b",\"score\":");
+                p = p.add(9);
+                let text = if score.is_finite() {
+                    fb.format_finite(score)
+                } else {
+                    "null"
+                };
+                p = p.add(put(p, text.as_bytes()));
+                p.cast::<[u8; 2]>().write(*b"},");
+                p = p.add(2);
+            }
+            let n = p.offset_from(start) as usize - usize::from(p != start); // the last comma
+            v.set_len(HEAD.len() + n);
+        }
+        v.push(b']');
+        let tail = ReplyTail {
+            model,
+            request_id,
+            k: *k,
+            sorted: *sorted,
+            view: *view,
+            history: *history,
+        };
+        let at = v.len();
+        serde_json::to_writer(&mut v, &tail).expect("plain numbers and strings serialize");
+        v[at] = b','; // over the tail's own `{`
+        debug_assert_eq!(v, serde_json::to_vec(self).unwrap());
+        v
+    }
 }
 
 #[derive(Serialize)]
@@ -1461,4 +1582,78 @@ pub fn set_qos(interactive: bool) {
     }
     #[cfg(not(target_os = "macos"))]
     let _ = interactive;
+}
+
+#[cfg(test)]
+mod body_tests {
+    use super::*;
+
+    // H3: the direct writer == serde_json, byte for byte, on edge values and random bit patterns.
+    #[test]
+    fn reply_body_is_serde_json_bytes() {
+        let mut ids = vec![i64::MIN, i64::MAX, -1, 0, 7];
+        let mut scores = vec![
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.0,
+            1e-45,
+            f32::MIN_POSITIVE,
+            f32::MAX,
+            f32::MIN,
+            -1e12,
+            -1.234_567_8e-6,
+            9.999_999e-7,
+            1e13,
+            0.1,
+            1.0,
+            123_456.79,
+        ];
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..20_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            ids.push(x as i64 >> (x % 64));
+            scores.push(f32::from_bits((x >> 17) as u32));
+        }
+        while ids.len() < scores.len() {
+            ids.push(ids.len() as i64);
+        }
+        for (n, view, name) in [
+            (0, None, "m"),
+            (1, Some("v"), "a\"b\n"),
+            (ids.len(), None, "model"),
+        ] {
+            let r = Reply {
+                items: Items(&ids[..n], &scores[..n.min(scores.len())]),
+                model: ModelInfo { name },
+                request_id: "id-1",
+                k: n,
+                sorted: true,
+                view,
+                history: History {
+                    sent: 3,
+                    truncated: 1,
+                    unknown: 2,
+                },
+            };
+            assert_eq!(r.body(), serde_json::to_vec(&r).unwrap(), "n = {n}");
+        }
+        // ids longer than scores: as serde's zip
+        let r = Reply {
+            items: Items(&[1], &[]),
+            model: ModelInfo { name: "m" },
+            request_id: "x",
+            k: 1,
+            sorted: false,
+            view: None,
+            history: History {
+                sent: 0,
+                truncated: 0,
+                unknown: 0,
+            },
+        };
+        assert_eq!(r.body(), serde_json::to_vec(&r).unwrap());
+    }
 }

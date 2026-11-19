@@ -1147,6 +1147,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "itoa",
  "libc",
  "prost",
  "protox",
@@ -1158,6 +1159,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "zmij",
 ]
 
 [[package]]
