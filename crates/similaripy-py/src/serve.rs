@@ -62,6 +62,14 @@ fn block_size_py(py: Python<'_>, b: BlockSize) -> PyResult<Py<PyAny>> {
 
 type Ids<'py> = Option<PyReadonlyArray1<'py, i64>>;
 
+/// Other `ServeModel`s: views of the served model (the core checks it).
+type Views<'py> = Option<Vec<Bound<'py, PyModel>>>;
+
+/// The core models of `views`, borrowed for one call (None: no allocation).
+fn models<'a>(views: &'a Views<'_>) -> Vec<&'a Model> {
+    views.iter().flatten().map(|v| &v.get().model).collect()
+}
+
 fn lists<'a>(offsets: Option<&'a [i64]>, ids: Option<&'a [i64]>) -> Option<Lists<'a>> {
     offsets
         .zip(ids)
@@ -216,7 +224,7 @@ impl PyModel {
         })
     }
 
-    #[pyo3(signature = (ids, weights, *, k, exclude_history, include, exclude, sorted))]
+    #[pyo3(signature = (ids, weights, *, k, exclude_history, include, exclude, views=None, sorted))]
     #[allow(clippy::too_many_arguments)]
     fn recommend<'py>(
         &self,
@@ -227,8 +235,10 @@ impl PyModel {
         exclude_history: bool,
         include: Ids<'_>,
         exclude: Ids<'_>,
+        views: Views<'_>,
         sorted: bool,
     ) -> PyResult<(Arr<'py, i64>, Arr<'py, f32>)> {
+        let views = models(&views);
         let req = Request {
             ids: ids.as_slice()?,
             weights: slice(&weights)?,
@@ -237,7 +247,7 @@ impl PyModel {
             include: slice(&include)?,
             exclude: slice(&exclude)?,
             sorted,
-            ..Default::default()
+            views: &views,
         };
         let (model, block) = (&self.model, self.block);
         let (out_ids, out_scores) = py
@@ -254,7 +264,7 @@ impl PyModel {
     /// (offsets, ids, scores), one list per user.
     #[pyo3(signature = (
         offsets, ids, weights, include_offsets, include_ids, no_include, exclude_offsets, exclude_ids,
-        *, k, exclude_history, sorted, num_threads
+        *, k, exclude_history, views=None, sorted, num_threads
     ))]
     #[allow(clippy::too_many_arguments)]
     fn batch<'py>(
@@ -270,9 +280,11 @@ impl PyModel {
         exclude_ids: Ids<'_>,
         k: usize,
         exclude_history: bool,
+        views: Views<'_>,
         sorted: bool,
         num_threads: usize,
     ) -> PyResult<(Arr<'py, i64>, Arr<'py, i64>, Arr<'py, f32>)> {
+        let views = models(&views);
         let b = BatchRequest {
             histories: Lists {
                 offsets: offsets.as_slice()?,
@@ -285,7 +297,7 @@ impl PyModel {
             no_include: slice(&no_include)?,
             exclude: lists(slice(&exclude_offsets)?, slice(&exclude_ids)?),
             sorted,
-            ..Default::default()
+            views: &views,
         };
         let (model, block_size) = (&self.model, self.block_size);
         let (o, i, s) = py
@@ -295,19 +307,21 @@ impl PyModel {
     }
 
     /// The scores of `items` for one history, aligned with `items`.
-    #[pyo3(signature = (ids, weights, items))]
+    #[pyo3(signature = (ids, weights, items, *, views=None))]
     fn score<'py>(
         &self,
         py: Python<'py>,
         ids: PyReadonlyArray1<'_, i64>,
         weights: Option<PyReadonlyArray1<'_, f32>>,
         items: PyReadonlyArray1<'_, i64>,
+        views: Views<'_>,
     ) -> PyResult<Arr<'py, f32>> {
+        let views = models(&views);
         let req = ScoreRequest {
             ids: ids.as_slice()?,
             weights: slice(&weights)?,
             items: items.as_slice()?,
-            ..Default::default()
+            views: &views,
         };
         let (model, block) = (&self.model, self.block);
         let out = py.detach(|| score(model, block, &req)).map_err(to_py)?;
@@ -316,7 +330,7 @@ impl PyModel {
 
     /// One history and one item list per user, flat as `batch`'s; the scores
     /// flat, aligned with `item_ids`.
-    #[pyo3(signature = (offsets, ids, weights, item_offsets, item_ids, *, num_threads))]
+    #[pyo3(signature = (offsets, ids, weights, item_offsets, item_ids, *, views=None, num_threads))]
     #[allow(clippy::too_many_arguments)]
     fn score_batch<'py>(
         &self,
@@ -326,8 +340,10 @@ impl PyModel {
         weights: Option<PyReadonlyArray1<'_, f32>>,
         item_offsets: PyReadonlyArray1<'_, i64>,
         item_ids: PyReadonlyArray1<'_, i64>,
+        views: Views<'_>,
         num_threads: usize,
     ) -> PyResult<Arr<'py, f32>> {
+        let views = models(&views);
         let histories = Lists {
             offsets: offsets.as_slice()?,
             ids: ids.as_slice()?,
@@ -341,7 +357,7 @@ impl PyModel {
         let out = py
             .detach(|| {
                 with_pool(num_threads, || {
-                    score_batch(model, block_size, histories, weights, items, &[])
+                    score_batch(model, block_size, histories, weights, items, &views)
                 })
             })
             .map_err(to_py)?;

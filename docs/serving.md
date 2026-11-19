@@ -65,6 +65,7 @@ Everything is on the `SparseKNN` class: build a `model`, then call its methods.
 | `exclude_history` | Never recommend a history item. *(default: `True`)* |
 | `include` | Only these items can be recommended. In batch: one entry per user. *(default: `None` = all)* |
 | `exclude` | Never recommend these items. In batch: one entry per user. *(default: `None`)* |
+| `views` | More views of the same base model (`model.view(...)`), at most 8: an item must be allowed by every one too (AND). In batch: for every user. See [Availability](#availability). *(default: `None`)* |
 | `sorted` | Best first; `False` skips the final sort (a few % faster at k in the thousands); the order is then unspecified and can differ between calls. *(default: `True`)* |
 | `num_threads` | Batch only. `0` = all cores (one shared pool), `n` = `n` threads. *(default: `0`)* |
 
@@ -72,7 +73,7 @@ Everything is on the `SparseKNN` class: build a `model`, then call its methods.
 
 | Parameter | Description |
 |-----------|-------------|
-| `history`, `weights`, `num_threads` | As in `recommend` / `recommend_batch`. |
+| `history`, `weights`, `views`, `num_threads` | As in `recommend` / `recommend_batch`; an item a view excludes scores 0.0. |
 | `items` | The item ids to score; duplicates are scored again. In batch: a list with one array per user. |
 
 ## Single and batch recommendation
@@ -154,10 +155,18 @@ def view_for(country, package):
 
 # Call, per user: e.g. items shown many times and never clicked (impressions)
 ids, scores = view_for(country, package).recommend(history, k=20, exclude=ignored_impressions)
+
+# Or combine views per call, with no view per combination: the same items
+by_package = {p: model.view(include=packages[p]) for p in packages}
+ids, scores = by_country[country].recommend(history, k=20, views=[by_package[package]])
 ```
 
 - A view of a view narrows: it keeps its parent's rules and adds its own.
   To widen, start from the base model.
+- `views=` combines views per call (at most 8, all of the same base model).
+  Two masks in all (the served view's and one in `views`, or two in `views`
+  on the base model) cost what one view costs; three or more cost +15..+50%
+  per request. For a combination served often, build it once as a view of a view.
 - To update availability in a running service, build the new views and swap
   the references. Requests in flight finish on the model they started with.
 - Each view holds one bit per item (e.g. 117 KB for 934k items): cheap, you can

@@ -81,6 +81,17 @@ def _weights(weights, name="weights"):
     return np.array(w)
 
 
+def _views(views):
+    """`views=` as the core models; None stays None (the core checks the rest)."""
+    if views is None:
+        return None
+    if not isinstance(views, SparseKNN):
+        views = list(views)  # any iterable, read once
+        if all(isinstance(v, SparseKNN) for v in views):
+            return [v._model for v in views]
+    raise TypeError("views must be a list of SparseKNN views, e.g. [model.view(include=ids)]")
+
+
 def _check_k(k):
     if not isinstance(k, (int, np.integer)) or isinstance(k, bool) or k < 0:
         raise ValueError(f"k must be a non-negative integer, got {k!r}")
@@ -307,6 +318,7 @@ class SparseKNN:
         exclude_history: bool = True,
         include: list[int] | np.ndarray | None = None,
         exclude: list[int] | np.ndarray | None = None,
+        views: list["SparseKNN"] | None = None,
         sorted: bool = True,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -320,6 +332,12 @@ class SparseKNN:
             exclude_history: never recommend a history item.
             include: only these items can be recommended (None = all).
             exclude: never recommend these items.
+            views: more views of this model's base model (`view()`), at most
+                8: an item must be allowed by every one too (AND). Two
+                masks in all (this model's, if it is a view, and the
+                `views`) cost what one costs; three or more cost +15..+50%
+                per request: for a combination served often, build it once
+                (a view of a view).
             sorted: best first; False returns the same items in an
                 unspecified order, which can differ between calls (e.g. this
                 and `recommend_batch`: 'auto' picks the block size per call).
@@ -331,8 +349,10 @@ class SparseKNN:
             scores: float32, one per id.
 
         Raises:
-            TypeError: on non-integer ids.
-            ValueError: on a negative `k` or weights without one per id.
+            TypeError: on non-integer ids, or `views` that aren't a list of
+                `SparseKNN`.
+            ValueError: on a negative `k`, weights without one per id, more
+                than 8 `views` or a view of another model.
         """
         k = _check_k(k)
         return self._model.recommend(
@@ -342,6 +362,7 @@ class SparseKNN:
             exclude_history=exclude_history,
             include=_opt_ids("include", include),
             exclude=_opt_ids("exclude", exclude),
+            views=_views(views),
             sorted=sorted,
         )
 
@@ -354,6 +375,7 @@ class SparseKNN:
         exclude_history: bool = True,
         include: list[list[int] | np.ndarray | None] | None = None,
         exclude: list[list[int] | np.ndarray | None] | None = None,
+        views: list["SparseKNN"] | None = None,
         sorted: bool = True,
         num_threads: int = 0,
     ) -> tuple[list[np.ndarray], list[np.ndarray]]:
@@ -372,6 +394,7 @@ class SparseKNN:
             exclude: as `include`.
             k: as `recommend`, for every user.
             exclude_history: as `recommend`, for every user.
+            views: as `recommend`, for every user.
             sorted: as `recommend`, for every user.
             num_threads: 0 = all cores (one shared pool), n = n threads.
 
@@ -381,9 +404,11 @@ class SparseKNN:
 
         Raises:
             TypeError: on non-integer ids, a None history (pass [] for no
-                items), or rules that aren't a list with one entry per user.
+                items), rules that aren't a list with one entry per user, or
+                `views` that aren't a list of `SparseKNN`.
             ValueError: on a negative `k`, lists without one entry per
-                user, or weights without one per history id.
+                user, weights without one per history id, more than 8
+                `views` or a view of another model.
         """
         k = _check_k(k)
         offsets, ids, w = _histories(histories, weights)
@@ -401,6 +426,7 @@ class SparseKNN:
             exc[1],
             k=k,
             exclude_history=exclude_history,
+            views=_views(views),
             sorted=sorted,
             num_threads=num_threads,
         )
@@ -415,6 +441,7 @@ class SparseKNN:
         items: list[int] | np.ndarray,
         *,
         weights: list[float] | np.ndarray | None = None,
+        views: list["SparseKNN"] | None = None,
     ) -> np.ndarray:
         """
         The scores of the given items for one history, e.g. as a ranking
@@ -432,15 +459,18 @@ class SparseKNN:
             history: item ids, as `recommend`'s.
             items: the item ids to score; duplicates are scored again.
             weights: one finite weight per history id (None = all 1.0).
+            views: as `recommend`'s: an item one of them excludes scores 0.0.
 
         Returns:
             scores: float32, one per item.
 
         Raises:
-            TypeError: on non-integer ids.
-            ValueError: on weights without one per history id.
+            TypeError: on non-integer ids, or `views` that aren't a list of
+                `SparseKNN`.
+            ValueError: on weights without one per history id, more than 8
+                `views` or a view of another model.
         """
-        return self._model.score(_ids("history", history), _weights(weights), _ids("items", items))
+        return self._model.score(_ids("history", history), _weights(weights), _ids("items", items), views=_views(views))
 
     def score_batch(
         self,
@@ -448,6 +478,7 @@ class SparseKNN:
         items: list[list[int] | np.ndarray],
         *,
         weights: list[list[float] | np.ndarray | None] | None = None,
+        views: list["SparseKNN"] | None = None,
         num_threads: int = 0,
     ) -> list[np.ndarray]:
         """
@@ -459,21 +490,26 @@ class SparseKNN:
             items: a list with one array of item ids to score per user.
             weights: None, or a list with one array of weights per user (an
                 entry may be None: all 1.0).
+            views: as `score`, for every user.
             num_threads: 0 = all cores (one shared pool), n = n threads.
 
         Returns:
             scores: one float32 array per user, aligned with its items.
 
         Raises:
-            TypeError: on non-integer ids, or a None history or item list
-                (pass [] for no items).
-            ValueError: on lists without one entry per user, or weights
-                without one per history id.
+            TypeError: on non-integer ids, a None history or item list
+                (pass [] for no items), or `views` that aren't a list of
+                `SparseKNN`.
+            ValueError: on lists without one entry per user, weights
+                without one per history id, more than 8 `views` or a view of
+                another model.
         """
         offsets, ids, w = _histories(histories, weights)
         n = len(offsets) - 1
         item_offsets, item_ids, _ = _per_user("items", items, n, allow_none=False)
-        scores = self._model.score_batch(offsets, ids, w, item_offsets, item_ids, num_threads=num_threads)
+        scores = self._model.score_batch(
+            offsets, ids, w, item_offsets, item_ids, views=_views(views), num_threads=num_threads
+        )
         if n == 0:  # np.split would give one empty piece
             return []
         return np.split(scores, item_offsets[1:-1])
