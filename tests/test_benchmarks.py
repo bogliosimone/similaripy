@@ -384,7 +384,7 @@ def test_gate_dry(monkeypatch, tmp_path):
     gate.SAMPLE_S, gate.BURST_SHARE = 1, 2.0  # no reruns: background load on a test machine is not the point
     py = sys.executable
     args = ["quick", "--base", py, "--cand", py, "--tag", "g", "--pairs", "1", "--dry", "--output-dir", "out"]
-    gate.main([*args, "--extra", "y50m-recommend"])
+    gate.main([*args, "--threads", "6", "--extra", "y50m-recommend"])  # c6 below: not the machine's count
     steps = (tmp_path / "out" / "steps.tsv").read_text().splitlines()[1:]
     assert [s.split("\t")[3] for s in steps] == ["0"] * (len(gate.steps("quick")) + 1)
     verdict = (tmp_path / "out" / "verdict.md").read_text()
@@ -403,6 +403,7 @@ def test_gate_dry(monkeypatch, tmp_path):
     for metric in ("total", "p99_us", "cpu_us_per_request"):
         assert f"| y50m-conc | concurrent_default_c6 | {metric} |" in verdict
     assert len((tmp_path / "out" / "timeline.tsv").read_text().splitlines()) > 1
+    assert gate.p_cores() >= 1  # the --threads default: P-cores on macOS, every core elsewhere
     # Extras run after the tier in table order, once; the full tier holds them all
     names = [name for _, name, _ in gate.steps("quick", extra=["y50m-recommend", "ml32m-kernel", "y500m-lat"])]
     assert names[len(gate.steps("quick")) :] == ["ml32m-kernel", "y50m-recommend"]
