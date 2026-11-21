@@ -46,10 +46,22 @@ BLOCK = ["--mode", "block", "--rounds", "1", "--model-cache"]
 CAPS = ["--caps", "10", "50", "200", "none"]
 
 
-def steps(tier, dry=False, threads=6, extra=()):
+def p_cores():
+    """The performance cores: `hw.perflevel0.physicalcpu` on macOS (E-cores add noise), else every core (as the server)."""
+    try:
+        return int(
+            subprocess.run(
+                ["sysctl", "-n", "hw.perflevel0.physicalcpu"], check=False, capture_output=True, text=True
+            ).stdout
+        )
+    except (OSError, ValueError):
+        return os.cpu_count()
+
+
+def steps(tier, dry=False, threads=None, extra=()):
     """(estimate in minutes, name, run.py arguments) in run order; threads = the performance cores;
     extra = names of full-tier steps to add to a quick run (each step runs once)."""
-    t = str(threads)
+    t = str(threads or p_cores())
     ml, y50, y500 = ([["--dataset", "synthetic"]] * 3) if dry else (ML, Y50, Y500)
     n = "100" if dry else "5000"  # serving requests per round (dry: the plumbing only)
     quick = [
@@ -203,7 +215,7 @@ def main(argv=None):
     p.add_argument("--pairs", type=int, default=2, help="ABBA pairs per step, >= 2 (default: 2)")
     p.add_argument("--until", type=until, default=None, help="HH:MM: a step starts only if its estimate ends before")
     p.add_argument("--output-dir", default=None, help="default: bench_results/gate-{tag}")
-    p.add_argument("--threads", type=int, default=6, help="the performance cores (default: 6, the M2 Pro's)")
+    p.add_argument("--threads", type=int, default=p_cores(), help="default: the performance cores (4 on the M5)")
     p.add_argument("--dry", action="store_true", help="every step on the synthetic dataset (plumbing check)")
     p.add_argument(
         "--extra",
