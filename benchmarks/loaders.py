@@ -13,9 +13,11 @@ sys.path, and that name would shadow Hugging Face's `datasets`.
 """
 
 import os
+import shutil
+import ssl
 import zipfile
 from pathlib import Path
-from urllib.request import urlretrieve
+from urllib.request import urlopen
 
 import numpy as np
 import scipy.sparse as sp
@@ -120,6 +122,18 @@ def make_urm(n_users=10_000, n_items=10_000, nnz=1_000_000, zipf_a=0.8, seed=42)
     return urm
 
 
+def _download(url, path):
+    """`url` to `path` with certifi's CA bundle (uv's standalone Python has no
+    system CA store on macOS); via a .part file, so an interrupted download
+    never leaves a broken zip that looks cached."""
+    import certifi
+
+    part = path.with_suffix(path.suffix + ".part")
+    with urlopen(url, context=ssl.create_default_context(cafile=certifi.where())) as r, open(part, "wb") as f:
+        shutil.copyfileobj(r, f)
+    part.replace(path)
+
+
 def _movielens(version, verbose):
     import pandas as pd
 
@@ -131,7 +145,7 @@ def _movielens(version, verbose):
         if not zip_path.exists():
             if verbose:
                 print(f"downloading {MOVIELENS_URLS[version]}")
-            urlretrieve(MOVIELENS_URLS[version], zip_path)
+            _download(MOVIELENS_URLS[version], zip_path)
         with zipfile.ZipFile(zip_path) as z:
             z.extractall(CACHE)
     df = pd.read_csv(ratings, usecols=["userId", "movieId", "rating"])

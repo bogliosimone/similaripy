@@ -124,6 +124,7 @@ docs = [
 # datasets (Hugging Face, pulls pyarrow) is not here: only the first Yambda build needs it (`--with datasets`)
 bench = [
   "pandas",
+  "certifi",  # loaders.py downloads: uv's Python has no system CA store on macOS
 ]
 notebook = [
   "jupyterlab",
