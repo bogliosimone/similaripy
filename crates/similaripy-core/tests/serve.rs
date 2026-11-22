@@ -723,7 +723,13 @@ fn views_checked_and_counted() {
 // the items (below `MASKED_HEAD_DIV`'s share: the gated loop only).
 #[test]
 fn past_the_drain_head() {
-    let n = 300;
+    // Miri: 100 items (the history touches 30 columns, > 8 x 3; 6 items in the
+    // ~5% mask, < 100 / 10) and k 1, 3; everything here is O(n^2) per k.
+    let (n, ks) = if cfg!(miri) {
+        (100, [1, 3].as_slice())
+    } else {
+        (300, [1, 2, 3, 4].as_slice())
+    };
     let s: Vec<Vec<f32>> = (0..n)
         .map(|i| {
             (0..n)
@@ -737,12 +743,12 @@ fn past_the_drain_head() {
                 .collect()
         })
         .collect();
-    for k in 1..5 {
+    for &k in ks {
         let c = Case {
             s: s.clone(),
             new_to_old: (0..n).rev().collect(),
             ext: None,
-            hist: vec![Some(3), Some(250), Some(17)],
+            hist: vec![Some(3), Some(n as usize - 50), Some(17)],
             weights: None,
             k,
             exclude_history: true,
