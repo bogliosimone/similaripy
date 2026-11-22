@@ -167,8 +167,8 @@ def test_output_dtypes():
 
 @pytest.mark.parametrize("name", ["normalize", "binarize", "tfidf", "bm25", "bm25plus"])
 def test_int64_indptr_path_same_values(name, monkeypatch):
-    # past 2^31 - 1 entries the canonical copy's indptr is int64 (and the output's
-    # indices, scipy's rule); forced with a limit of 0
+    # past 2^31 - 1 entries the output's indptr is int64 (and its indices, scipy's
+    # rule; the canonical copy is int64 always); forced with a limit of 0
     from similaripy import _s_plus
 
     X = random_csr()

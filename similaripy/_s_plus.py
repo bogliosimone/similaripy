@@ -51,7 +51,7 @@ def _indptr_dtype(nnz: int) -> type[np.signedinteger]:
 
 class Csr(NamedTuple):
     """A canonical CSR matrix's arrays (float32 or float64 data, int32
-    indices, int32 or int64 indptr: `_indptr_dtype`)."""
+    indices, int64 indptr: the core's offsets; outputs follow `_indptr_dtype`)."""
 
     data: np.ndarray
     indices: np.ndarray
@@ -309,8 +309,8 @@ def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> Csr:
     """
     The call's own canonical copy of `matrix`: CSR arrays, `dtype` values (float32
     or float64), int32 indices, rows sorted, duplicates summed, no explicit zeros.
-    Arrays, not a scipy matrix: past 2^31 - 1 entries the indptr is int64
-    (`_indptr_dtype`) and scipy would copy the indices to int64 too.
+    Arrays, not a scipy matrix: the indptr is int64 (as the core reads it), and
+    scipy would copy the indices to int64 too.
     Always a copy: the caller's matrix never changes, and every later prep step
     assumes this form and may change the arrays in place. One cleaner for the
     similarities (float32) and the normalizations (the input's float type).
@@ -324,26 +324,25 @@ def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> Csr:
     through the Rust canonicalization, which replaces scipy's single-threaded
     COO -> CSR.
     """
-    index = _indptr_dtype(matrix.nnz)
     if matrix.format == "coo":
         rows, cols, data = matrix.row, matrix.col, matrix.data
         if np.any(rows[1:] < rows[:-1]):
             order = np.argsort(rows, kind="stable")
             rows, cols, data = rows[order], cols[order], data[order]
-        indptr = np.zeros(matrix.shape[0] + 1, dtype=index)
+        indptr = np.zeros(matrix.shape[0] + 1, dtype=np.int64)
         np.cumsum(np.bincount(rows, minlength=matrix.shape[0]), out=indptr[1:])
     else:
         csr = matrix.tocsr()
         nnz = csr.indptr[-1]  # scipy allows longer arrays past the last row
-        indptr, cols, data = csr.indptr.astype(index), csr.indices[:nnz], csr.data[:nnz]
+        indptr, cols, data = csr.indptr.astype(np.int64), csr.indices[:nnz], csr.data[:nnz]
     canonical = (matrix if matrix.format == "coo" else csr).has_canonical_format
     indices = cols.astype(np.int32)
     with np.errstate(over="ignore"):  # inf: reported by the similarities' finite check (`_check_data`)
         data = data.astype(dtype)
-    if not canonical or (data == 0).any():  # zeros: the same Rust pass drops them
+    if not canonical or not data.all():  # zeros (-0.0 too; buffered, no nnz temp): the same Rust pass drops them
         new_indptr = _core.canonicalize_rows(indptr=indptr, indices=indices, data=data, num_threads=num_threads)
         nnz = int(new_indptr[-1])
-        indptr, indices, data = new_indptr.astype(_indptr_dtype(nnz), copy=False), indices[:nnz], data[:nnz]
+        indptr, indices, data = new_indptr, indices[:nnz], data[:nnz]
     return Csr(data, indices, indptr, matrix.shape[1])
 
 
@@ -352,12 +351,14 @@ def _row_sums(values: np.ndarray, indptr: np.ndarray, dtype=None) -> np.ndarray:
     Per-row sums of a CSR value array, in the values' dtype unless `dtype` is
     given; summed sequentially per row (reduceat).
 
-    The trailing 0 lets `reduceat` take start == nnz (trailing empty rows);
-    reduceat returns values[start] for empty rows, hence the reset.
+    reduceat over the non-empty rows' starts only: each one's slice ends at the
+    next non-empty start (= its own end), the last at nnz; empty rows stay 0.
     """
     starts = indptr[:-1]
-    out = np.add.reduceat(np.append(values, values.dtype.type(0)), starts, dtype=dtype)
-    out[starts == indptr[1:]] = 0
+    nonempty = starts != indptr[1:]
+    out = np.zeros(len(starts), dtype=dtype or values.dtype)
+    if nonempty.any():
+        out[nonempty] = np.add.reduceat(values, starts[nonempty], dtype=dtype)
     return out
 
 

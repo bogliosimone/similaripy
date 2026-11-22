@@ -29,7 +29,7 @@ import numpy as np
 from scipy.sparse import issparse, sparray, spmatrix
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
-from ._s_plus import SparseInput, _canonical_csr, _indptr_dtype
+from ._s_plus import SparseInput, _canonical_csr
 
 __all__ = ["SparseKNN"]
 
@@ -127,8 +127,8 @@ def _histories(histories, weights):
         return offsets, ids, None
     w_offsets, w, none = _per_user("weights", weights, n, convert=lambda nm, x: _weights(x, nm))
     sizes, given = np.diff(offsets), ~none if none is not None else np.ones(n, bool)
-    if not np.array_equal(np.diff(w_offsets)[given], sizes[given]):
-        raise ValueError("weights: one weight per history id expected")
+    if (bad := np.flatnonzero(given & (np.diff(w_offsets) != sizes))).size:
+        raise ValueError(f"len(weights) != len(history) for user {bad[0]}")
     if not given.all():  # None entries: weight 1.0
         full = np.ones(ids.size, dtype=np.float32)
         full[np.repeat(given, sizes)] = w
@@ -137,7 +137,7 @@ def _histories(histories, weights):
 
 
 def _csr_arrays(S: SparseInput, num_threads):
-    """S's size and CSR arrays as contiguous indptr (`_indptr_dtype`) / int32 /
+    """S's size and CSR arrays as contiguous indptr int64 / int32 /
     float32, copied only when the
     dtype or layout differs (the build reads them in place and never changes
     them). Other formats take the similarity functions' route
@@ -155,7 +155,7 @@ def _csr_arrays(S: SparseInput, num_threads):
         data = np.ascontiguousarray(S.data[:nnz], dtype=np.float32)
     return (
         n,
-        np.ascontiguousarray(S.indptr, dtype=_indptr_dtype(nnz)),
+        np.ascontiguousarray(S.indptr, dtype=np.int64),
         np.ascontiguousarray(S.indices[:nnz], dtype=np.int32),
         data,
     )

@@ -160,8 +160,23 @@ def test_urm_to_histories_drops_zeros():
     assert X.nnz == 3  # the caller's matrix untouched
 
 
+@pytest.mark.parametrize("fmt", ["csr", "csc", "coo"])
+def test_urm_to_histories_any_format(fmt):
+    # duplicates summed (cast to float32 first), rows sorted, any format; caller untouched
+    rows, cols, vals = np.array([1, 0, 1, 1, 0]), np.array([4, 2, 0, 4, 3]), np.array([1.0, 2.0, 0.5, 0.25, -2.0])
+    X = sp.coo_array((vals, (rows, cols)), shape=(3, 5)).asformat(fmt)
+    before = X.copy()
+    histories, weights = urm_to_histories(X)
+    assert [h.tolist() for h in histories] == [[2, 3], [0, 4], []]
+    assert [w.tolist() for w in weights] == [[2.0, -2.0], [0.5, 1.25], []]
+    assert weights[0].dtype == np.float32
+    assert (X != before).nnz == 0 and X.nnz == before.nnz
+
+
 def test_to_histories_rejects():
     URM, _, _ = interactions_to_urm([0, 1], [0, 1])
+    with pytest.raises(TypeError, match="sparse"):
+        urm_to_histories(URM.toarray())
     with pytest.raises(TypeError, match="integer ids"):
         urm_to_histories(URM, item_ids=np.array(["a", "b"]))
     with pytest.raises(ValueError, match="one id per column"):

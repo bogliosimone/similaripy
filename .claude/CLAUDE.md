@@ -61,7 +61,7 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
 - **Normal use cases first:** extreme values (e.g. data ×1e-30 or ×1e19, past float32 range) are best effort; a cheap check on a realistic failure is fine, dedicated code paths are not.
 
 ### Index widths
-- Column ids are **int32** (output column ids too). Offsets: the Rust core reads `indptr` as i64 only; Python keeps int32 while nnz ≤ int32 max and int64 past it (`_indptr_dtype`, scipy's rule, which makes a scipy matrix's indices int64 too).
+- Column ids are **int32** (output column ids too). Offsets: the Rust core reads `indptr` as i64 only, so the prep's `Csr` copy is always int64; outputs keep int32 while nnz ≤ int32 max and int64 past it (`_indptr_dtype`, scipy's rule, which makes a scipy matrix's indices int64 too).
 
 ---
 
@@ -137,7 +137,7 @@ Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend,
 ### Sparse Matrices
 - All functions expect **CSR format** (converted automatically)
 - Inputs are canonicalized before use (summed duplicates, no explicit zeros: `_canonical_csr` in `_s_plus.py`, also used by `normalization.py`); never mutate the caller's matrices
-- **Prep owns its data:** `_canonical_csr` always copies each input once into `Csr` arrays (float32 for similarities / the input's float type for normalizations, int32 indices, indptr by `_indptr_dtype`, sorted, summed, no zeros); every later prep step assumes that form and may change the arrays in place. Prefer one copy over aliasing tricks in prep (cold code: clarity first)
+- **Prep owns its data:** `_canonical_csr` always copies each input once into `Csr` arrays (float32 for similarities / the input's float type for normalizations, int32 indices, int64 indptr, sorted, summed, no zeros); every later prep step assumes that form and may change the arrays in place. Prefer one copy over aliasing tricks in prep (cold code: clarity first)
 
 ### Saved models
 - **Format 1 is frozen at 1.0:** 1.x loads every older 1.x format. Changing what a saved file means bumps `FORMAT` (`serve/model.rs`) and keeps a reader for the old one; `tests/data/sparseknn-format1` is never regenerated after 1.0.

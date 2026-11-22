@@ -19,7 +19,7 @@ import scipy.sparse as sp
 from numpy.typing import ArrayLike
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
-from ._s_plus import _indptr_dtype
+from ._s_plus import _canonical_csr, _indptr_dtype
 from .serving import _check_ids, _ids
 
 __all__ = ["interactions_to_histories", "interactions_to_urm", "rank_decay", "time_decay", "urm_to_histories"]
@@ -233,17 +233,17 @@ def urm_to_histories(URM, *, item_ids: ArrayLike | None = None) -> tuple[list[np
         weights: one float32 array of the row's values per row.
 
     Raises:
-        TypeError: on non-integer `item_ids`.
+        TypeError: on a non-sparse URM or non-integer `item_ids`.
         ValueError: on `item_ids` without one id per column.
     """
-    URM = sp.csr_array(URM, dtype=np.float32, copy=True)  # sum_duplicates must not touch the caller's
-    URM.sum_duplicates()
-    URM.eliminate_zeros()  # a stored 0 is no event (exclude_history would hide it)
+    if not sp.issparse(URM):
+        raise TypeError("URM must be a sparse matrix")
+    URM = _canonical_csr(URM, np.float32, 0)  # summed, no stored 0 (no event: exclude_history would hide it)
     if item_ids is None:
         ids = URM.indices.astype(np.int64)
     else:
         item_ids = _ids("item_ids", item_ids)
-        n_cols = URM.shape[1]  # ty: ignore[index-out-of-bounds]  (scipy-stubs: csr_array(URM) as 1-d)
+        n_cols = URM.shape[1]
         if item_ids.shape != (n_cols,):
             raise ValueError(f"item_ids must have one id per column ({n_cols}), got shape {item_ids.shape}")
         ids = item_ids[URM.indices]

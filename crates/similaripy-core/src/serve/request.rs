@@ -214,7 +214,7 @@ impl Worker {
         if let Some(w) = req.weights {
             if w.len() != req.ids.len() {
                 self.stats.errors += 1;
-                return invalid("len(weights) != len(ids)");
+                return invalid("len(weights) != len(history)");
             }
             if !w.iter().all(|x| x.is_finite()) {
                 self.stats.errors += 1;
@@ -288,7 +288,7 @@ fn with_worker<R>(block: usize, f: impl FnOnce(&mut Worker) -> R) -> R {
 fn check_weights(ids: &[i64], weights: Option<&[f32]>) -> Result<(), Error> {
     if let Some(w) = weights {
         if w.len() != ids.len() {
-            return invalid("len(weights) != len(ids)");
+            return invalid("len(weights) != len(history)");
         }
         if !w.iter().all(|x| x.is_finite()) {
             return invalid("weights must be finite");
