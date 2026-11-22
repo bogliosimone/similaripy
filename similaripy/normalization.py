@@ -8,7 +8,7 @@ import numpy as np
 import scipy.sparse as sps
 
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
-from ._s_plus import Csr, SparseInput, _canonical_csr
+from ._s_plus import Csr, SparseInput, _canonical_csr, _indptr_dtype
 
 __all__ = ["binarize", "bm25", "bm25plus", "normalize", "tfidf"]
 
@@ -56,9 +56,10 @@ def _transformed(X: SparseInput, axis: int, op, name: str | None = None, **kwarg
 
 
 def _to_scipy(X: Csr) -> sps.csr_array:
-    """The canonical arrays as a scipy CSR (past 2^31 - 1 entries scipy makes
-    the indices int64 too)."""
-    out = sps.csr_array((X.data, X.indices, X.indptr), shape=X.shape)
+    """The canonical arrays as a scipy CSR, indptr by `_indptr_dtype` (past
+    2^31 - 1 entries scipy makes the indices int64 too)."""
+    indptr = X.indptr.astype(_indptr_dtype(len(X.data)), copy=False)
+    out = sps.csr_array((X.data, X.indices, indptr), shape=X.shape)
     out.has_canonical_format = True  # sorted, summed: skips scipy's re-checks
     return out
 

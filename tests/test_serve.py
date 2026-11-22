@@ -411,8 +411,9 @@ def test_rejects_bad_input():
         rec.recommend([1], include=[1.5])
     with pytest.raises(ValueError, match="finite"):
         rec.recommend([5, 6], weights=[1.0, np.nan])
-    with pytest.raises(ValueError, match="len"):
-        rec.recommend([5, 6], weights=[1.0])
+    for call in (rec.recommend, lambda h, **kw: rec.score(h, [1], **kw)):  # single: no user index
+        with pytest.raises(ValueError, match=r"len\(weights\) != len\(history\)$"):
+            call([5, 6], weights=[1.0])
     with pytest.raises(ValueError, match="k must"):
         rec.recommend([5], k=-1)
     # batch: lists with one entry per user, weights aligned with each history
@@ -422,8 +423,8 @@ def test_rejects_bad_input():
         rec.recommend_batch([[5], [6]], include=np.array([1, 2]))
     with pytest.raises(ValueError, match="one entry per user"):
         rec.recommend_batch([[5], [6]], exclude=[[1]])
-    with pytest.raises(ValueError, match="one weight per history id"):
-        rec.recommend_batch([[5, 6], [6]], weights=[[1.0], None])
+    with pytest.raises(ValueError, match=r"len\(weights\) != len\(history\) for user 1"):
+        rec.recommend_batch([[5, 6], [6]], weights=[[1.0, 2.0], [1.0, 2.0]])
     with pytest.raises(ValueError, match="finite"):
         rec.recommend_batch([[5]], weights=[[np.inf]])
     # common mistakes get a message naming the argument
@@ -509,7 +510,7 @@ def test_score_rejects_bad_input():
         rec.score_batch([[5], [6]], [[1]])
     with pytest.raises(TypeError, match=r"items\[1\] is None"):
         rec.score_batch([[5], [6]], [[1], None])
-    with pytest.raises(ValueError, match="one weight per history id"):
+    with pytest.raises(ValueError, match=r"len\(weights\) != len\(history\) for user 0"):
         rec.score_batch([[5, 6]], [[1]], weights=[[1.0]])
 
 

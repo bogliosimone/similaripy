@@ -16,7 +16,7 @@ use similaripy_core::serve::{
     recommend_batch, score, score_batch,
 };
 
-use crate::{Indptr, to_py, with_pool};
+use crate::{to_py, with_pool};
 
 type Arr<'py, T> = Bound<'py, PyArray1<T>>;
 
@@ -115,7 +115,7 @@ impl PyModel {
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
-        indptr: Indptr<'_>,
+        indptr: PyReadonlyArray1<'_, i64>,
         indices: PyReadonlyArray1<'_, i32>,
         data: PyReadonlyArray1<'_, f32>,
         n: usize,
@@ -144,7 +144,7 @@ impl PyModel {
     #[allow(clippy::too_many_arguments)]
     fn from_parts(
         py: Python<'_>,
-        indptr: Indptr<'_>,
+        indptr: PyReadonlyArray1<'_, i64>,
         indices: PyReadonlyArray1<'_, i32>,
         data: PyReadonlyArray1<'_, f32>,
         new_to_old: PyReadonlyArray1<'_, i32>,

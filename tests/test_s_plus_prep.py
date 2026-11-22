@@ -1,6 +1,8 @@
 """s_plus prep: input canonicalization, layout, selectors, output build, and the
 regressions they fixed."""
 
+from itertools import pairwise
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -693,11 +695,36 @@ def test_csr_arrays_longer_than_indptr():
         _same(sim.normalization.bm25(long), sim.normalization.bm25(m))
 
 
+@pytest.mark.parametrize("indptr", [[0, 0, 2, 2, 5, 5], [0, 3], [0, 0, 0], [0]])
+def test_row_sums_empty_rows(indptr):
+    # empty rows first, between and last are 0; the others summed in order (float32, and bool counted as int32)
+    from similaripy._s_plus import _row_sums
+
+    indptr = np.array(indptr, dtype=np.int64)
+    vals = np.arange(1, indptr[-1] + 1, dtype=np.float32)
+    want = [vals[a:b].sum() for a, b in pairwise(indptr)]
+    out = _row_sums(vals, indptr)
+    assert out.dtype == np.float32 and out.tolist() == want
+    sel = vals % 2 == 1
+    counts = _row_sums(sel, indptr, dtype=np.int32)
+    assert counts.dtype == np.int32 and counts.tolist() == [sel[a:b].sum() for a, b in pairwise(indptr)]
+
+
+@pytest.mark.parametrize("fmt", ["csr", "csc", "coo", "lil"])
+def test_canonical_csr_indptr_int64(fmt):
+    # the prep's own copy always has the core's int64 offsets (no widening in the bindings); outputs keep int32
+    from similaripy._s_plus import _canonical_csr
+
+    m = _m(20, 30).asformat(fmt)
+    assert _canonical_csr(m, np.float32, 0).indptr.dtype == np.int64
+    assert sim.cosine(m, k=5, verbose=False).indptr.dtype == np.int32
+
+
 @pytest.mark.parametrize("case", ["blocked", "rp3beta", "selectors", "matrix_target", "coo_duplicates"])
 def test_int64_indptr_path_same_values(case, monkeypatch):
-    # Past 2^31 - 1 entries every indptr is int64 (canonical copies, selectors,
-    # the core reads it unwidened, output); forced with a limit of 0 (a real
-    # run needs ~26 GB). Same values as the int32 path.
+    # Past 2^31 - 1 entries the output's indptr (and indices) are int64; the
+    # canonical copies and selectors are int64 always. Forced with a limit of 0
+    # (a real run needs ~26 GB). Same values as the int32 output.
     from similaripy import _s_plus
 
     m = _m(60, 40)
