@@ -149,7 +149,7 @@ def _csr_arrays(S: SparseInput, num_threads):
     if S.ndim != 2 or S.shape[1] != n:
         raise ValueError(f"S must be square (item x item), got shape {S.shape}")
     if S.format != "csr":
-        S = _canonical_csr(S, np.float32, num_threads)
+        S = _canonical_csr(S, num_threads)
     nnz = int(S.indptr[-1])
     with np.errstate(over="ignore"):  # inf: rejected by the build's finite check
         data = np.ascontiguousarray(S.data[:nnz], dtype=np.float32)

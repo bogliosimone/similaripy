@@ -57,14 +57,25 @@ def _tf_idf_reference(X, tf_mode, idf_mode, logbase):
     return tf, np.where(df == 0, 0.0, idf), doc_len
 
 
+def _docs(X, axis):
+    """X with the documents as rows: the dense references work on rows (axis 0: X.T,
+    their result transposed back by `_back`)."""
+    return X if axis == 1 else X.T
+
+
+def _back(A, axis):
+    return A if axis == 1 else A.T
+
+
+@pytest.mark.parametrize("axis", [1, 0])
 @pytest.mark.parametrize("tf_mode", ["binary", "raw", "sqrt", "freq", "log"])
 @pytest.mark.parametrize("idf_mode", ["unary", "base", "smooth", "prob", "bm25", "bm25_robertson"])
-def test_tfidf_matches_formulas(tf_mode, idf_mode):
+def test_tfidf_matches_formulas(tf_mode, idf_mode, axis):
     X = random_csr(n_rows=200, n_cols=100, density=0.05)
     X.data *= 5
-    tf, idf, _ = _tf_idf_reference(X, tf_mode, idf_mode, 2.0)
-    out = norm.tfidf(X, tf_mode=tf_mode, idf_mode=idf_mode, logbase=2.0)
-    np.testing.assert_allclose(out.toarray(), tf * idf, rtol=1e-5, atol=1e-7)
+    tf, idf, _ = _tf_idf_reference(_docs(X, axis), tf_mode, idf_mode, 2.0)
+    out = norm.tfidf(X, axis=axis, tf_mode=tf_mode, idf_mode=idf_mode, logbase=2.0)
+    np.testing.assert_allclose(out.toarray(), _back(tf * idf, axis), rtol=1e-6, atol=1e-7)
 
 
 def _bm25_tf(A, doc_len, k1, b):
@@ -72,17 +83,20 @@ def _bm25_tf(A, doc_len, k1, b):
     return A / (A + k1 * (1 - b + b * doc_len / doc_len.mean()))
 
 
+@pytest.mark.parametrize("axis", [1, 0])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 @pytest.mark.parametrize("delta", [0.0, 0.5])
 @pytest.mark.parametrize("k1, b", [(1.2, 0.75), (2.0, 0.3)])
-def test_bm25_matches_formula(k1, b, delta, dtype):
+def test_bm25_matches_formula(k1, b, delta, dtype, axis):
     X = random_csr(n_rows=200, n_cols=100, density=0.05).astype(dtype)
     X.data *= 5
-    A = X.toarray().astype(np.float64)
-    _, idf, doc_len = _tf_idf_reference(X, "raw", "bm25", np.e)
-    out = norm.bm25plus(X, k1=k1, b=b, delta=delta) if delta else norm.bm25(X, k1=k1, b=b)
+    D = _docs(X, axis)
+    A = D.toarray().astype(np.float64)
+    _, idf, doc_len = _tf_idf_reference(D, "raw", "bm25", np.e)
+    kw = {"axis": axis, "k1": k1, "b": b}
+    out = norm.bm25plus(X, delta=delta, **kw) if delta else norm.bm25(X, **kw)
     want = np.where(A > 0, (_bm25_tf(A, doc_len, k1, b) + delta) * idf, 0.0)
-    np.testing.assert_allclose(out.toarray(), want, rtol=1e-5, atol=1e-7)
+    np.testing.assert_allclose(out.toarray(), _back(want, axis), rtol=1e-6, atol=1e-7)
 
 
 @pytest.mark.parametrize("delta", [0.0, 1.0])
@@ -116,26 +130,31 @@ def test_bm25plus_delta_adds_delta_idf():
     np.testing.assert_allclose(plus.data - plain.data, 0.5 * idf[plus.indices], rtol=1e-4, atol=1e-6)
 
 
-@pytest.mark.parametrize("name", ["tfidf", "bm25", "bm25plus"])
-def test_axis_0_is_the_transpose(name):
-    X = random_csr(n_rows=200, n_cols=100, density=0.05)
-    f = getattr(norm, name)
-    np.testing.assert_allclose(f(X, axis=0).toarray(), f(X.T).T.toarray(), rtol=1e-6)
-
-
 # ---- Signed input ----
 
 
+@pytest.mark.parametrize("axis", [1, 0])
 @pytest.mark.parametrize("signed", [False, True])
-def test_normalize(signed):
+def test_normalize(signed, axis):
     X = _signed() if signed else random_csr()
-    A = X.toarray().astype(np.float64)
+    A = _docs(X, axis).toarray().astype(np.float64)
     for name, d in (("l1", np.abs(A).sum(axis=1)), ("l2", np.sqrt((A**2).sum(axis=1))), ("max", np.abs(A).max(axis=1))):
         expected = np.divide(A, d[:, None], out=np.zeros_like(A), where=d[:, None] != 0)
-        np.testing.assert_allclose(norm.normalize(X, norm=name).toarray(), expected, rtol=1e-6, err_msg=name)
+        out = norm.normalize(X, norm=name, axis=axis).toarray()
+        np.testing.assert_allclose(out, _back(expected, axis), rtol=1e-6, err_msg=name)
     # all-negative row: max divides by its largest |x| (before: left unchanged)
     neg = sp.csr_array(np.array([[-2.0, -4.0]], dtype=np.float32))
     np.testing.assert_array_equal(norm.normalize(neg, norm="max").toarray(), [[-0.5, -1.0]])
+
+
+@pytest.mark.parametrize("axis", [1, 0])
+def test_sums_in_float64(axis):
+    # one 1e8 and 1000 ones: a float32 sum stays 1e8 (its ulp there is 8), so the
+    # l1-normalized vector would sum to 1 + 1e-5; the float64 sum gives 1 to float32 rounding
+    v = np.r_[1e8, np.ones(1000)].astype(np.float32)
+    X = sp.csr_array(v[None, :]) if axis == 1 else sp.csr_array(v[:, None])
+    out = norm.normalize(X, norm="l1", axis=axis)
+    assert abs(out.data.astype(np.float64).sum() - 1) < 1e-6
 
 
 def test_term_weightings_reject_negatives():
@@ -151,18 +170,20 @@ def test_term_weightings_reject_negatives():
         assert f(dup).nnz == 1
 
 
-def test_output_dtypes():
-    # float32/float64 values kept, anything else float32; indices always int32,
-    # whatever the input's, as the similarities (one cleaner, `_canonical_csr`)
+@pytest.mark.parametrize("name", ["normalize", "binarize", "tfidf", "bm25", "bm25plus"])
+def test_output_dtypes(name):
+    # float32 values and int32 indices for any input, as the similarities (one
+    # cleaner, `_canonical_csr`); counts are exact in every dtype: same values
     X = random_csr()
-    X.data = np.ceil(X.data * 9)  # counts: exact in every dtype
+    X.data = np.ceil(X.data * 9)
     X.indices, X.indptr = X.indices.astype(np.int64), X.indptr.astype(np.int64)
-    for dtype, want in ((np.float32, np.float32), (np.float64, np.float64), (np.int64, np.float32)):
-        Xd = X.astype(dtype)
-        for axis in (0, 1):
-            out = norm.bm25(Xd, axis=axis)
-            assert out.data.dtype == want and out.indices.dtype == out.indptr.dtype == np.int32
-            np.testing.assert_allclose(out.toarray(), norm.bm25(X, axis=axis).toarray(), rtol=1e-6)
+    f = getattr(norm, name)
+    for kw in ({},) if name == "binarize" else ({"axis": 0}, {"axis": 1}):
+        want = f(X, **kw)
+        for dtype in (np.float32, np.float64, np.int64):
+            out = f(X.astype(dtype), **kw)
+            assert out.data.dtype == np.float32 and out.indices.dtype == out.indptr.dtype == np.int32
+            assert_same_csr(out, want)
 
 
 @pytest.mark.parametrize("name", ["normalize", "binarize", "tfidf", "bm25", "bm25plus"])

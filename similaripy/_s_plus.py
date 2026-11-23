@@ -61,8 +61,8 @@ class Sparse(NamedTuple):
 
 
 class Csr(NamedTuple):
-    """A canonical CSR matrix's arrays (float32 or float64 data, int32
-    indices, int64 indptr: the core's offsets; outputs follow `_indptr_dtype`)."""
+    """A canonical CSR matrix's arrays (float32 data, int32 indices, int64
+    indptr: the core's offsets; outputs follow `_indptr_dtype`)."""
 
     data: np.ndarray
     indices: np.ndarray
@@ -207,11 +207,11 @@ def _check_depop(name: str, weights, n: int) -> None:
         raise ValueError(f'{name} must be "none", "sum" or an array of length {n}, got shape {w.shape}')
 
 
-def _sparse(matrix: SparseInput, dtype=np.float32) -> Sparse:
+def _sparse(matrix: SparseInput) -> Sparse:
     """
     `matrix`'s arrays as the core's one door in (`prep::canonical`) reads them:
     CSR / CSC / COO as they are, other formats via `tocsr()`, other value
-    types (int, bool, float16, ...) one `astype(dtype)`.
+    types (int, bool, float16, ...) one `astype(float32)`.
     """
     if matrix.format not in ("csr", "csc", "coo"):
         matrix = matrix.tocsr()
@@ -221,7 +221,7 @@ def _sparse(matrix: SparseInput, dtype=np.float32) -> Sparse:
         nnz = matrix.indptr[-1]  # scipy allows longer arrays past the last row
         major, minor, data = matrix.indptr, matrix.indices[:nnz], matrix.data[:nnz]
     if data.dtype not in (np.float32, np.float64):
-        data = data.astype(dtype)
+        data = data.astype(np.float32)
     if major.dtype != minor.dtype or major.dtype not in (np.int32, np.int64):  # scipy never does this
         major, minor = major.astype(np.int64), minor.astype(np.int64)
     return Sparse(
@@ -234,27 +234,26 @@ def _sparse(matrix: SparseInput, dtype=np.float32) -> Sparse:
     )
 
 
-def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> Csr:
+def _canonical_csr(matrix: SparseInput, num_threads: int) -> Csr:
     """
-    The call's own canonical copy of `matrix`: CSR arrays, `dtype` values (float32
-    or float64), int32 indices, rows sorted, duplicates summed, no explicit zeros.
+    The call's own canonical copy of `matrix`: CSR arrays, float32 values, int32
+    indices, rows sorted, duplicates summed, no explicit zeros.
     Arrays, not a scipy matrix: the indptr is int64 (as the core reads it), and
     scipy would copy the indices to int64 too.
     Always a copy: the caller's matrix never changes, and every later step may
-    change the arrays in place. Used by the normalizations (the input's float
-    type) and serving; the similarities copy inside `_core.similarity`.
+    change the arrays in place. Used by the normalizations and serving; the
+    similarities copy inside `_core.similarity`.
 
     Explicit zeros are wrong in binary mode (they would become 1.0), and
     unsummed duplicates give wrong norms and binary counts. The Rust core
     (`_core.canonical`) reads CSR / CSC / COO arrays as they are and copies them
     once: values cast before duplicates are summed (zeros are dropped after the
-    cast, so a float64 value below float32's range goes too when `dtype` is
-    float32), CSC and COO through one counting sort by row (no scipy `tocsr`
+    cast, so a float64 value below float32's range goes too), CSC and COO through one counting sort by row (no scipy `tocsr`
     temp). Canonical input (scipy's `has_canonical_format`, e.g. our own output
     fed back) only drops zeros.
     """
-    s = _sparse(matrix, dtype)
-    indptr, indices, data = _core.canonical(**s._asdict(), dtype=np.dtype(dtype).name, num_threads=num_threads)
+    s = _sparse(matrix)
+    indptr, indices, data = _core.canonical(**s._asdict(), num_threads=num_threads)
     return Csr(data, indices, indptr, matrix.shape[1])
 
 
