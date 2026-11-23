@@ -281,6 +281,8 @@ fn idf(df: f64, n_docs: f64, mode: IdfMode, lb: f64) -> f64 {
         IdfMode::Unary => 1.0,
         IdfMode::Base => (n_docs / df).ln() / lb,
         IdfMode::Smooth => (n_docs / (1.0 + df)).ln() / lb,
+        // A term in every document (df == N) weighs 0, as `Base` does: ln(0) would be -inf.
+        IdfMode::Prob if df >= n_docs => 0.0,
         IdfMode::Prob => ((n_docs - df) / df).ln() / lb,
         IdfMode::Bm25 => ((n_docs - df + 0.5) / (df + 0.5)).ln_1p() / lb,
         IdfMode::Bm25Robertson => ((n_docs - df + 0.5) / (df + 0.5)).ln() / lb,

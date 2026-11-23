@@ -18,20 +18,21 @@ SimilariPy is a high-performance KNN similarity library for Python, optimized fo
 ### Design Principles
 - **Public APIs**: Python interface with validation, calls the Rust extension `similaripy._core`
   - [similarity.py](similaripy/similarity.py) - Similarity functions (cosine, jaccard, s_plus, etc.)
-  - [_s_plus.py](similaripy/_s_plus.py) - numpy prep (copies, sorting, column filters), kernel call, output build
-  - [normalization.py](similaripy/normalization.py) - Normalization functions (BM25, TF-IDF, etc.)
+  - [_s_plus.py](similaripy/_s_plus.py) - glue, no numpy prep: argument checks, `Sparse` / `Params` for the one `_core.similarity` call (canonical copies + the whole pipeline), output wrap; `_canonical_csr` (the door the normalizations and serving use)
+  - [normalization.py](similaripy/normalization.py) - Normalization functions (BM25, TF-IDF, etc.): canonical copy + one core op (`axis` 1 or 0, no transposes) + wrap
   - [preprocessing.py](similaripy/preprocessing.py) - Interaction logs → URM + id maps (`interactions_to_urm`), histories for `recommend_batch` from a log or a URM (`interactions_to_histories`, `urm_to_histories`), event-level `time_decay` / `rank_decay` (one weight per event, offline and online); one import path
   - [serving.py](similaripy/serving.py) - `SparseKNN` (one import path: `similaripy.serving`): thin wrapper (the Rust core builds the model), `view` masks, `recommend` / `recommend_batch`, `save` / `load`
 
 - **Rust core** ([crates/similaripy-core](crates/similaripy-core)): pure Rust, no Python
   - [kernel.rs](crates/similaripy-core/src/kernel.rs) - S-Plus kernel (single-block and blocked paths, rayon)
-  - [normalize.rs](crates/similaripy-core/src/normalize.rs) - Normalizations, in place over CSR data; `Decay` (the one decay formula, for a future server too) + `user_ages`
-  - [prep.rs](crates/similaripy-core/src/prep.rs) - Canonical rows (`canonical_row`, shared by the Python prep and the serving build), renumber + sort, `group_interactions` (logs → CSR: counting sort by user, rows in parallel)
+  - [similarity.rs](crates/similaripy-core/src/similarity.rs) - The S-Plus driver (in [similarity/](crates/similaripy-core/src/similarity)): `Options`, data rules, norms / depop / walk (p3alpha, rp3beta) / prescale, selectors, popularity layout, auto block ([block.rs](crates/similaripy-core/src/block.rs)), `compute`; canonical `Csr<f32>` in, top-K out
+  - [normalize.rs](crates/similaripy-core/src/normalize.rs) - Normalizations over canonical float32 CSR data, in place, `Axis` rows / cols (column stats: one serial pass in row order; sums, IDF, logs in float64); `Decay` (the one decay formula, for a future server too) + `user_ages`
+  - [prep.rs](crates/similaripy-core/src/prep.rs) - `canonical` (CSR / CSC / COO, f32 or f64 values, i32 or i64 indices → one owned canonical float32 CSR), canonical rows (`canonical_row`, shared with the serving build), renumber + sort, `group_interactions` (logs → CSR: counting sort by user, rows in parallel)
   - [csr.rs](crates/similaripy-core/src/csr.rs), [topk.rs](crates/similaripy-core/src/topk.rs) - CSR views, top-K buffer (cut by select)
   - [serve.rs](crates/similaripy-core/src/serve.rs) - Serving engine, in [serve/](crates/similaripy-core/src/serve): `model.rs` (build: trim to `candidate_items`, then `ItemOrder` (clustered by default, D115/D116), the one check `Core::from_arrays`, save/load, views), `ids.rs` (id maps, masks), `request.rs` (`Worker`: one serving thread's scratch, block size resolved once, stats, reused buffers; the free functions = a thread-local worker; batch = rayon over the same function). Block size = a runtime setting, never saved (W1)
   - [store.rs](crates/similaripy-core/src/store.rs) - Saved models: `.npy` reader/writer, mapped (`memmap2`) or owned arrays, saves into a new or empty directory only
 - **Bindings** ([crates/similaripy-py](crates/similaripy-py)): PyO3 module `similaripy._core`
-  - [lib.rs](crates/similaripy-py/src/lib.rs) - kernel + prep bindings, thread pools; [normalize.rs](crates/similaripy-py/src/normalize.rs) - dtype dispatch; [progress.rs](crates/similaripy-py/src/progress.rs) - progress bar; [serve.rs](crates/similaripy-py/src/serve.rs) - `ServeModel` (model + its block size: resolved once for single calls, per call for batches)
+  - [lib.rs](crates/similaripy-py/src/lib.rs) - `similarity`, `canonical` and prep bindings, thread pools; [normalize.rs](crates/similaripy-py/src/normalize.rs) - dtype dispatch; [progress.rs](crates/similaripy-py/src/progress.rs) - progress bar; [serve.rs](crates/similaripy-py/src/serve.rs) - `ServeModel` (model + its block size: resolved once for single calls, per call for batches)
 - **Server** ([crates/similaripy-server](crates/similaripy-server), `publish = false`, not in the wheel): experimental, released as its own artifact (`server-v*` tags: binaries + GHCR image, [server-release.yml](.github/workflows/server-release.yml)); user docs [docs/server.md](docs/server.md), [CHANGELOG](crates/similaripy-server/CHANGELOG.md)
   - [lib.rs](crates/similaripy-server/src/lib.rs) - axum router (`POST /v1/recommend`: items + context (model name, request id from `x-request-id`, k, sorted, view, history counts), `Server-Timing`; `GET /metrics`, `GET /health`, `GET /config`), N threads (current-thread tokio runtime + its own warmed `Worker` each), round-robin acceptor; JSON weights parsed as f64 then f32 (numpy's rounding); [metrics.rs](crates/similaripy-server/src/metrics.rs) - per-thread single-writer atomics, Prometheus text; [config.rs](crates/similaripy-server/src/config.rs) - `Config` (defaults < TOML file < `SIMILARIPY_<SECTION>__<KEY>` env < `--section.key` flags, one deserialize with `deny_unknown_fields`; V1), old flags as aliases; [main.rs](crates/similaripy-server/src/main.rs) - CLI; [bin/loadgen.rs](crates/similaripy-server/src/bin/loadgen.rs) - open-loop load generator (rps at p99 <= budget, `--check` vs Python's answers)
 
@@ -136,8 +137,8 @@ Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend,
 
 ### Sparse Matrices
 - All functions expect **CSR format** (converted automatically)
-- Inputs are canonicalized before use (summed duplicates, no explicit zeros: `_canonical_csr` in `_s_plus.py`, also used by `normalization.py`); never mutate the caller's matrices
-- **Prep owns its data:** `_canonical_csr` always copies each input once into `Csr` arrays (float32 for similarities / the input's float type for normalizations, int32 indices, int64 indptr, sorted, summed, no zeros); every later prep step assumes that form and may change the arrays in place. Prefer one copy over aliasing tricks in prep (cold code: clarity first)
+- Inputs are canonicalized before use (summed duplicates, no explicit zeros: `_core.canonical`, one copy; the similarities do it inside `_core.similarity`, the normalizations and serving through `_canonical_csr`); never mutate the caller's matrices
+- **Prep owns its data:** the core copies each input once into canonical arrays (float32 for every caller, int32 indices, int64 indptr, sorted, summed, no zeros; values cast before duplicates are summed); every later step assumes that form and may change the arrays in place. Prefer one copy over aliasing tricks in prep (cold code: clarity first)
 
 ### Saved models
 - **Format 1 is frozen at 1.0:** 1.x loads every older 1.x format. Changing what a saved file means bumps `FORMAT` (`serve/model.rs`) and keeps a reader for the old one; `tests/data/sparseknn-format1` is never regenerated after 1.0.

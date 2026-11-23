@@ -97,7 +97,7 @@ One JSON format for every workload (`schema_version` 1), in `benchmarks/bench_re
 - `config`: every option of the run; `dataset`: key, shape, nnz; `info`: facts about the setup (S nnz, active items, ...);
 - `cases.<name>`: `params` (**exactly the kwargs passed**; arrays and matrices described), `median` per phase, `spread` ((max − min) / median of the total), extras (output nnz, latency percentiles, `rss_base_mb` / `rss_peak_mb`), and every round's raw numbers.
 
-Phases: **total** wall time of the public call; **kernel** (scoring, top-K, per-row un-permute + sort, compaction) and **output** (matrix wrap) from `similaripy._s_plus._last_timings`; **prep** = the rest (wrapper normalization + numpy prep). 0.7.0 has no phase timer: only total.
+Phases: **total** wall time of the public call; **kernel** (scoring, top-K, per-row un-permute + sort, compaction; timed by the Rust core) and **output** (matrix wrap, Python) from `similaripy._s_plus._last_timings`; **prep** = the rest (the wrappers' normalization, the canonical copy and the driver's norms / layout steps, all Rust since D130; so a base before and a head after D130 time the kernel on different sides: judge on total). 0.7.0 has no phase timer: only total.
 
 Reports from before the rebuild (`tests/benchmarks/`, no `schema_version`) aren't read; the old harness is in git history.
 

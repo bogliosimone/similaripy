@@ -44,9 +44,11 @@ All normalization functions in SimilariPy share the following parameters:
 | `'unary'`  | No IDF applied |
 | `'base'`   | log(N / df) |
 | `'smooth'` | log(N / (1 + df)) |
-| `'prob'`   | log((N - df) / df) |
+| `'prob'`   | log((N - df) / df), see the note below |
 | `'bm25'`   | log(1 + (N - df + 0.5) / (df + 0.5)), always > 0 (Lucene, Elasticsearch, bm25s) |
 | `'bm25_robertson'` | log((N - df + 0.5) / (df + 0.5)), Robertson's original: negative for terms in more than half the documents |
+
+`'prob'` is negative for terms in more than half the documents, and 0 for a term in every document (df = N), where the log would be -inf.
 
 ## Notes
 
