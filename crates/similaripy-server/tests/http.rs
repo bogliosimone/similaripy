@@ -376,6 +376,13 @@ fn edge_rejections() {
                 "bad_weights",
                 "len(weights)",
             ),
+            // Finite, but over MAX_WEIGHT: the edge (sums would overflow)
+            (
+                r#"{"history": [1000], "weights": [-1e31]}"#,
+                400,
+                "bad_weights",
+                "|weight| over 1e30",
+            ),
             (r#"{"history": "x"}"#, 400, "bad_json", "invalid type"),
             (r#"{"k": 3}"#, 400, "bad_json", "missing field"),
             (r#"{"history": [1"#, 400, "bad_json", "EOF"),
@@ -398,9 +405,9 @@ fn edge_rejections() {
             "{text}"
         );
         let m = get_text(addr, "/metrics").await;
-        // JSON x 6 + k + 413: the edge; weights x 2: the worker.
+        // JSON x 6 + k + |weight| + 413: the edge; weights x 2: the worker.
         assert!(
-            m.contains("similaripy_server_bad_requests_total 8\n"),
+            m.contains("similaripy_server_bad_requests_total 9\n"),
             "{m}"
         );
         assert!(m.contains("similaripy_server_errors_total 2\n"), "{m}");
@@ -2412,5 +2419,165 @@ fn oversized_bodies_get_their_413_and_the_connection_keeps_serving() {
                 "round {i}: same connection after a 413"
             );
         }
+    });
+}
+
+#[test]
+fn error_messages_are_cut_to_256_bytes_json_and_grpc() {
+    let addr = start(config(1), false);
+    let name = "v".repeat(100_000);
+    block_on(async {
+        let body = format!(r#"{{"history": [1000], "view": "{name}"}}"#);
+        let (status, h, text) = post_with(addr, &body, &[]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let e = error_of(&h, &text);
+        assert_eq!(e.code, "unknown_view");
+        assert!(
+            e.message.len() <= 256 && e.message.ends_with("..."),
+            "{}",
+            e.message.len()
+        );
+        // gRPC: the message is a header; uncut, it would pass the client's
+        // 16 KB limit and read as a protocol error, not INVALID_ARGUMENT.
+        let q = RecommendRequest {
+            history: vec![1000],
+            view: Some(name),
+            ..Default::default()
+        };
+        let e = grpc(addr).await.recommend(q).await.unwrap_err();
+        assert_eq!(e.code(), Code::InvalidArgument, "{e:?}");
+        assert_eq!(grpc_code(&e), "unknown_view");
+        assert!(e.message().len() <= 256, "{}", e.message().len());
+    });
+}
+
+/// A response's head (to its blank line), or what came before a close.
+fn read_until_blank_line(s: &mut std::net::TcpStream) -> String {
+    use std::io::Read;
+    let mut buf = vec![];
+    let mut b = [0u8; 1024];
+    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+        let n = s.read(&mut b).unwrap();
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&b[..n]);
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+#[test]
+fn grpc_body_not_sent_in_time_is_cancelled_body_timeout() {
+    use std::io::Write;
+    let (addr, _stop, _h) = start_stoppable(timeouts(1, 0.3, 0.0, 5.0));
+    // Over HTTP/1.1: the gRPC routes answer any protocol, so the deadline
+    // must cover it too (h2 goes through the same route layer).
+    let mut s = raw(addr);
+    let head = "POST /similaripy.v1.Recommender/Recommend HTTP/1.1\r\nHost: t\r\n\
+                content-type: application/grpc\r\nte: trailers\r\nx-request-id: slow-1\r\n\
+                Content-Length: 100\r\n\r\n";
+    write!(s, "{head}\0\0\0").unwrap();
+    let t = std::time::Instant::now();
+    let text = read_until_blank_line(&mut s).to_lowercase();
+    let took = t.elapsed().as_secs_f64();
+    assert!(text.starts_with("http/1.1 200"), "{text}");
+    assert!(text.contains("grpc-status: 1\r\n"), "CANCELLED: {text}");
+    assert!(text.contains("x-error-code: body_timeout"), "{text}");
+    assert!(text.contains("x-request-id: slow-1"), "{text}");
+    assert!((0.25..2.5).contains(&took), "{took}");
+    let m = read_head(&mut get_raw(addr, "/metrics"));
+    assert_eq!(
+        metric(&m, "similaripy_server_bad_requests_total"),
+        Some(1.0),
+        "{m}"
+    );
+}
+
+#[test]
+fn h2_settings_are_the_pinned_limits() {
+    use std::io::{Read, Write};
+    let addr = start(config(1), false);
+    let mut s = raw(addr);
+    // The client preface and an empty SETTINGS frame
+    s.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\0\0\0\x04\0\0\0\0\0")
+        .unwrap();
+    // The server's first frame is its SETTINGS
+    let mut head = [0u8; 9];
+    s.read_exact(&mut head).unwrap();
+    assert_eq!(head[3], 0x4, "not SETTINGS: {head:?}");
+    let len = u32::from_be_bytes([0, head[0], head[1], head[2]]) as usize;
+    let mut body = vec![0u8; len];
+    s.read_exact(&mut body).unwrap();
+    let settings: std::collections::BTreeMap<u16, u32> = body
+        .chunks(6)
+        .map(|c| {
+            let id = u16::from_be_bytes([c[0], c[1]]);
+            (id, u32::from_be_bytes([c[2], c[3], c[4], c[5]]))
+        })
+        .collect();
+    assert_eq!(
+        settings.get(&0x3),
+        Some(&64),
+        "MAX_CONCURRENT_STREAMS: {settings:?}"
+    );
+    assert_eq!(
+        settings.get(&0x6),
+        Some(&16384),
+        "MAX_HEADER_LIST_SIZE: {settings:?}"
+    );
+}
+
+#[test]
+fn at_max_connections_a_new_one_waits_until_one_closes() {
+    use std::io::Read;
+    let mut cfg = timeouts(1, 10.0, 0.0, 5.0);
+    cfg.limits.max_connections = 2;
+    let (addr, _stop, _h) = start_stoppable(cfg);
+    let first = raw(addr);
+    let _second = raw(addr);
+    let mut third = get_raw(addr, "/health");
+    third
+        .set_read_timeout(Some(std::time::Duration::from_millis(300)))
+        .unwrap();
+    let mut b = [0u8; 64];
+    let e = third.read(&mut b).unwrap_err();
+    assert!(
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        "answered at the cap: {e}"
+    );
+    drop(first);
+    third
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    assert!(read_head(&mut third).starts_with("HTTP/1.1 200"));
+}
+
+#[test]
+fn a_panicking_h2_stream_leaves_its_connection_serving() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    let addr = start(config(1), true);
+    block_on(async {
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mut send, conn) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tcp))
+                .await
+                .unwrap();
+        tokio::spawn(conn);
+        let get = |path: &str| Request::get(path).body(Body::empty()).unwrap();
+        // The stream is reset; the connection lives
+        assert!(send.send_request(get("/panic")).await.is_err());
+        let r = send.send_request(get("/health")).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        // gRPC on the same thread still answers
+        let q = RecommendRequest {
+            history: vec![1000, 1007],
+            ..Default::default()
+        };
+        assert!(!ask(&mut grpc(addr).await, q).await.0.is_empty());
     });
 }

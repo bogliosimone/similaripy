@@ -63,6 +63,9 @@ pub struct Limits {
     /// A score request with more items is rejected (400 / INVALID_ARGUMENT),
     /// never cut: a ranker would get features for some candidates only.
     pub max_items: usize,
+    /// Open connections; at the cap new ones wait in the OS backlog until one
+    /// closes (keeps fds for the open ones: no EMFILE at the accept).
+    pub max_connections: usize,
 }
 
 /// A history longer than `limits.max_history`.
@@ -162,6 +165,7 @@ impl Default for Limits {
             history_policy: HistoryPolicy::Truncate,
             max_body_bytes: crate::BODY_LIMIT,
             max_items: 10_000,
+            max_connections: 1024,
         }
     }
 }
@@ -249,7 +253,8 @@ impl Config {
         Ok(())
     }
 
-    /// `defaults.k` <= `limits.k_max`, `max_body_bytes` and `max_items` > 0; `parse` and
+    /// `defaults.k` <= `limits.k_max`, `max_body_bytes` and `max_items` > 0,
+    /// `max_connections` 1 to 1e6 (tokio's semaphore panics past 2^61); `parse` and
     /// `App::new` both call it.
     pub fn check_limits(&self) -> Result<(), String> {
         let (k, k_max) = (self.defaults.k, self.limits.k_max);
@@ -261,6 +266,9 @@ impl Config {
         }
         if self.limits.max_items == 0 {
             return Err("limits.max_items must be >= 1".into());
+        }
+        if !(1..=1_000_000).contains(&self.limits.max_connections) {
+            return Err("limits.max_connections must be 1 to 1000000".into());
         }
         Ok(())
     }
@@ -594,6 +602,7 @@ mod tests {
                 history_policy: HistoryPolicy::Reject,
                 max_body_bytes: 4096,
                 max_items: 9,
+                max_connections: 11,
             },
             defaults: Defaults {
                 k: 5,
@@ -629,6 +638,7 @@ mod tests {
             ("limits.history_policy", "reject"),
             ("limits.max_body_bytes", "4096"),
             ("limits.max_items", "9"),
+            ("limits.max_connections", "11"),
             ("defaults.k", "5"),
             ("defaults.sorted", "true"),
             ("defaults.view", "instock"),
@@ -709,6 +719,10 @@ mod tests {
         assert!(e.contains("defaults.k = 6 > limits.k_max = 5"), "{e}");
         let e = cfg(&["--model", "/m", "--limits.max_body_bytes", "0"], &[]).unwrap_err();
         assert!(e.contains("max_body_bytes"), "{e}");
+        for v in ["0", "1000001"] {
+            let e = cfg(&["--model", "/m", "--limits.max_connections", v], &[]).unwrap_err();
+            assert!(e.contains("max_connections"), "{e}");
+        }
         let e = cfg(&["--model", "/m", "--limits.max_items", "0"], &[]).unwrap_err();
         assert!(e.contains("max_items"), "{e}");
         // views.reload_interval: seconds; a typo in [views] reads as a view

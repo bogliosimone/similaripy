@@ -149,10 +149,11 @@ and meaning: copy it and edit.
 | `limits.history_policy` | `truncate` | A longer history: `truncate` (keep the last `max_history` ids) or `reject` ([History](#history)). |
 | `limits.max_body_bytes` | `1048576` (1 MiB) | A larger request body is rejected (JSON 413, gRPC `OUT_OF_RANGE`). Raise it for a large `include` (about 100k ids per MiB in JSON). |
 | `limits.max_items` | `10000` | A score request with more items is rejected, never cut ([`POST /v1/score`](#post-v1score-json)). |
+| `limits.max_connections` | `1024` | Open connections (1 to 1000000). At the cap, new ones wait in the OS backlog until one closes (the open ones keep their file descriptors). An idle gRPC channel keeps its slot: size it for your clients' channels plus probes. |
 | `defaults.k` | `10` | `k` of a request that doesn't send it (at most `limits.k_max`): e.g. `500` for candidate generation. |
 | `defaults.sorted` | `false` | `sorted` of a request that doesn't send it ([Sorted or not](#sorted-or-not)); `true` = Python's order. |
 | `defaults.view` | `""` (the whole model) | `view` of a request that doesn't send it ([Views](#views)). |
-| `timeouts.header_read` | `30` | Seconds a connection has to send a request's headers (and a JSON body: else 408). Also the idle time after which an HTTP/1.1 keep-alive connection is closed. |
+| `timeouts.header_read` | `30` | Seconds a connection has to send a request's headers, and a request its body (JSON: 408; gRPC: `CANCELLED`, `x-error-code` `body_timeout`). Also the idle time after which an HTTP/1.1 keep-alive connection is closed. |
 | `timeouts.drain_delay` | `0` | After SIGTERM: seconds still accepting connections with `/ready` answering 503 ([Shutdown](#shutdown)). |
 | `timeouts.shutdown_grace` | `10` | Then seconds for open requests to finish. |
 | `views.reload_interval` | `10` | Seconds between checks of the view files (`0` or at least `0.1`): a changed file is served from the next request on; `0` = read at start only ([Updating a view](#updating-a-view)). |
@@ -246,7 +247,7 @@ Branch on `code` (fixed strings: new ones may be added, none change), show
 | 400 | `history_over_max` | A history over `max_history` with `history_policy = reject` |
 | 400 | `unknown_view` | A `view` (or a name in `views`) not in the config |
 | 400 | `too_many_views` | More than 8 names in `views` |
-| 400 | `bad_weights` | Weights of the wrong length, or not finite |
+| 400 | `bad_weights` | Weights of the wrong length, not finite, or over 1e30 in magnitude |
 | 400 | `bad_body` | The body couldn't be read (e.g. malformed chunked encoding) |
 | 408 | `body_timeout` | The body didn't arrive within `timeouts.header_read` |
 | 413 | `body_too_large` | Body over `limits.max_body_bytes` (a declared `Content-Length` over it: at once) |
@@ -274,8 +275,9 @@ Differences from JSON (protobuf's rules):
   every item, an empty list = no item (as JSON's absent vs `[]`).
 - Unknown fields are ignored, not rejected.
 - Errors are status codes: `INVALID_ARGUMENT` (JSON's 400), `OUT_OF_RANGE`
-  (a message over `limits.max_body_bytes`), `INTERNAL` (a server error or a
-  malformed message). The metadata carries `x-request-id` and, for the
+  (a message over `limits.max_body_bytes`), `CANCELLED` (JSON's 408: the
+  message didn't arrive within `timeouts.header_read`), `INTERNAL` (a server
+  error or a malformed message). Messages are cut to 256 bytes (JSON too). The metadata carries `x-request-id` and, for the
   server's own errors, `x-error-code` with JSON's `code` (e.g.
   `k_over_max`). An oversized or malformed message is rejected by the gRPC
   library before the server sees it: no `x-error-code`, no
@@ -497,6 +499,13 @@ with one command:
   query it, and `Server-Timing` tells them the compute time. Put an ingress
   or a service mesh with TLS and auth in front of it if it must be reached
   from outside.
+- **Resource limits.** A connection holds at most 64 HTTP/2 streams (64
+  bodies of up to `limits.max_body_bytes` in memory), 16 KB of headers, and
+  `limits.max_connections` connections are open at once: with the defaults,
+  about 64 GiB in the worst case (`max_connections` x 64 x
+  `max_body_bytes`). Lower `max_connections` (or the body limit) to fit the
+  container's memory if untrusted clients can reach it. There is no global
+  in-flight request cap (load shedding) yet: a later version may add one.
 - **Threads.** Each thread answers one request at a time, start to finish
   (a request takes tens of µs to about a ms). A connection stays on one
   thread: send concurrent requests over several connections.

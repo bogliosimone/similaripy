@@ -27,7 +27,12 @@ First release, beside similaripy 1.0.0. Reads models saved by similaripy 1.x
   `--section.key` flags; `--print-config`, `GET /config`; an unknown key is a
   start-up error.
 - Limits: `k_max`, `max_history` with `history_policy` truncate or reject,
-  `max_body_bytes` (default 1 MiB, JSON and gRPC).
+  `max_body_bytes` (default 1 MiB, JSON and gRPC), `max_connections`
+  (default 1024; more wait in the OS backlog); at most 64 HTTP/2 streams per
+  connection and 16 KB of headers; a request body not received within
+  `timeouts.header_read` is a 408 (JSON) or `CANCELLED` (gRPC), `body_timeout`;
+  weights over 1e30 in magnitude are `bad_weights`; error messages cut to 256
+  bytes.
 - `defaults.k`, `defaults.sorted` (default `false`: candidate generation,
   unlike Python's `recommend`; `true` = best first) and `defaults.view`.
 - Errors as JSON `{"error": {"code", "message", "request_id"}}` (413 and 408

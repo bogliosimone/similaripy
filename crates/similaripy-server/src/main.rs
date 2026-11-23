@@ -27,6 +27,7 @@ Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flag
   --limits.history_policy P   truncate (keep the last max_history ids) | reject; default truncate
   --limits.max_body_bytes N   reject a larger request body (JSON 413, gRPC OUT_OF_RANGE); default 1048576
   --limits.max_items N        reject a score request with more items; default 10000
+  --limits.max_connections N  open connections; more wait in the OS backlog; default 1024
   --defaults.k N              a request's k when it doesn't send one (<= k_max); default 10
   --defaults.sorted BOOL      a request's sorted when it doesn't send one; default false
   --defaults.view NAME        a request's view when it doesn't send one; default empty (the whole model)
