@@ -38,6 +38,8 @@ history_policy = "truncate"
 max_body_bytes = 1048576
 # A score request with more items is rejected, never cut.
 max_items = 10000
+# Open connections; at the cap new ones wait (OS backlog) until one closes.
+max_connections = 1024
 
 [defaults]
 # What a request gets for a field it doesn't send.

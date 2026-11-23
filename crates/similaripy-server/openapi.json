@@ -867,7 +867,8 @@
               "max_history",
               "history_policy",
               "max_body_bytes",
-              "max_items"
+              "max_items",
+              "max_connections"
             ],
             "properties": {
               "k_max": {
@@ -887,6 +888,9 @@
                 "type": "integer"
               },
               "max_items": {
+                "type": "integer"
+              },
+              "max_connections": {
                 "type": "integer"
               }
             }

@@ -39,6 +39,7 @@ use hyper_util::service::TowerToHyperService;
 use serde::{Deserialize, Serialize};
 use similaripy_core::Error;
 use similaripy_core::serve::{MAX_VIEWS, Model, Request, ScoreRequest, Stats, Worker};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub use config::Config;
 use config::{HistoryPolicy, secs};
@@ -60,6 +61,22 @@ pub mod pb {
 /// `limits.max_body_bytes`' default: request bodies over it are rejected
 /// (JSON 413, gRPC OUT_OF_RANGE).
 pub const BODY_LIMIT: usize = 1 << 20;
+
+/// HTTP/2 streams per connection (hyper's default: 200). Each may hold a
+/// body of up to `limits.max_body_bytes`, so 64 MB per connection by
+/// default; 64 = loadgen's default callers sharing one channel.
+const H2_MAX_STREAMS: u32 = 64;
+
+/// Error messages are cut to this many bytes: they may echo client input (a
+/// view name, a JSON field), and gRPC's travels in a header (clients'
+/// default header limit: 16 KB).
+const MAX_MESSAGE: usize = 256;
+
+/// A weight over this in magnitude is rejected (`bad_weights`): finite, but
+/// a few of them overflow f32 sums to inf / NaN scores.
+// ponytail: a sanity bound, not a proof: 1000 weights of 1e30 times
+// similarities over ~3e5 still overflow; nobody weights an event 1e30.
+const MAX_WEIGHT: f32 = 1e30;
 
 /// The request id's header (HTTP) and metadata key (gRPC).
 const X_REQUEST_ID: &str = "x-request-id";
@@ -85,7 +102,8 @@ enum Code {
     TooManyViews,
     /// Rejected by the worker: its only request checks are the weights'
     /// (length, finite; test `edge_rejections`; recommend and score); a cut
-    /// history's weights of the wrong length are rejected at the edge.
+    /// history's weights of the wrong length and weights over `MAX_WEIGHT`
+    /// are rejected at the edge.
     BadWeights,
     BodyTimeout,
     BodyTooLarge,
@@ -121,6 +139,8 @@ impl Code {
     fn grpc(self) -> tonic::Code {
         match self {
             Code::BodyTooLarge => tonic::Code::OutOfRange,
+            // As tonic's own server timeout
+            Code::BodyTimeout => tonic::Code::Cancelled,
             Code::Internal => tonic::Code::Internal,
             _ => tonic::Code::InvalidArgument,
         }
@@ -130,11 +150,25 @@ impl Code {
 /// A request with no answer: its `Code` and a message for people.
 struct Fail(Code, String);
 
+/// `message` cut to `MAX_MESSAGE` bytes (at a char boundary), "..." marking a cut.
+fn short(mut message: String) -> String {
+    if message.len() > MAX_MESSAGE {
+        let mut end = MAX_MESSAGE - 3;
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        message.truncate(end);
+        message.push_str("...");
+    }
+    message
+}
+
 impl Fail {
     /// `{"error": {"code", "message", "request_id"}}` with the code's status.
     fn json(self, request_id: &str) -> Response {
         self.log(request_id);
         let Fail(code, message) = self;
+        let message = short(message);
         let body = serde_json::json!({
             "error": {"code": code.as_str(), "message": message, "request_id": request_id}
         });
@@ -145,7 +179,7 @@ impl Fail {
     fn grpc(self, request_id: &str) -> tonic::Status {
         self.log(request_id);
         let Fail(code, message) = self;
-        let mut s = tonic::Status::new(code.grpc(), message);
+        let mut s = tonic::Status::new(code.grpc(), short(message));
         s.metadata_mut().insert(
             X_ERROR_CODE,
             tonic::metadata::AsciiMetadataValue::from_static(code.as_str()),
@@ -431,6 +465,13 @@ impl App {
             {
                 m.bad_request();
                 let e = format!("len(weights) = {} != len(history) = {n}", w.len());
+                return Err(Fail(Code::BadWeights, e));
+            }
+            // Finite only: the worker rejects inf / NaN with its own message
+            let huge = |w: &&f32| w.is_finite() && w.abs() > MAX_WEIGHT;
+            if let Some(w) = weights.and_then(|w| w.iter().find(huge)) {
+                m.bad_request();
+                let e = format!("weight {w:e}: |weight| over {MAX_WEIGHT:e}");
                 return Err(Fail(Code::BadWeights, e));
             }
             let weights = weights.map(|w| &w[cut..]);
@@ -1095,11 +1136,17 @@ thread_local! {
 }
 
 /// The routes, over `app`: JSON (bodies limited by `read_body`) and gRPC
-/// (tonic's decode limit).
+/// (tonic's decode limit, `grpc_deadline`).
 pub fn router(app: Arc<App>) -> Router {
     let limit = app.cfg.limits.max_body_bytes;
     let grpc = pb::recommender_server::RecommenderServer::new(Grpc(app.clone()))
         .max_decoding_message_size(limit);
+    let grpc = tonic::service::Routes::new(grpc)
+        .into_axum_router()
+        .route_layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            grpc_deadline,
+        ));
     Router::new()
         .route("/v1/recommend", post(recommend))
         .route("/v1/score", post(score))
@@ -1109,7 +1156,33 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/config", get(config))
         .route("/v1/views", get(views))
         .with_state(app)
-        .merge(tonic::service::Routes::new(grpc).into_axum_router())
+        .merge(grpc)
+}
+
+/// A gRPC call not answered within `timeouts.header_read` of its headers:
+/// CANCELLED, `body_timeout` (a dribbled body; tonic reads it with no
+/// deadline; the JSON routes' is in `read_body`). Any protocol: the gRPC
+/// routes answer HTTP/1.1 too. The deadline covers the handler as well
+/// (microseconds).
+async fn grpc_deadline(
+    State(app): State<Arc<App>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let sent = req.headers().get(X_REQUEST_ID).cloned();
+    let deadline = secs(app.cfg.timeouts.header_read);
+    match tokio::time::timeout(deadline, next.run(req)).await {
+        Ok(r) => r,
+        Err(_) => {
+            app.metrics[THREAD.get()].bad_request();
+            let id = request_id(sent.as_ref().map(|v| v.as_bytes()));
+            let e = "request body not received within timeouts.header_read";
+            let mut s = Fail(Code::BodyTimeout, e.into()).grpc(&id);
+            let v = id.parse().expect("checked or generated: printable ASCII");
+            s.metadata_mut().insert(X_REQUEST_ID, v);
+            s.into_http()
+        }
+    }
 }
 
 async fn recommend(State(app): State<Arc<App>>, req: axum::extract::Request) -> Response {
@@ -1148,7 +1221,6 @@ async fn post_json(app: &App, req: axum::extract::Request, e: Endpoint) -> Respo
 /// header_read of its headers 408 (a dribbled body would hold the
 /// connection; hyper's timer covers headers only), unreadable 400. The rest
 /// of an oversized body is read and dropped after the 413 (`drain`).
-// ponytail: JSON only; a gRPC body is read inside tonic (no timeout).
 async fn read_body(app: &App, req: axum::extract::Request) -> Result<Bytes, Fail> {
     let limit = app.cfg.limits.max_body_bytes;
     let deadline = secs(app.cfg.timeouts.header_read);
@@ -1349,7 +1421,7 @@ pub fn serve(
     let mut threads = Vec::with_capacity(n);
     let mut handles = Vec::with_capacity(n);
     for i in 0..n {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<std::net::TcpStream>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Conn>();
         let (app, router, ready_tx) = (app.clone(), router.clone(), ready_tx.clone());
         let handle = std::thread::Builder::new()
             .name(format!("server-{i}"))
@@ -1390,19 +1462,29 @@ pub fn serve(
                 let mut http = auto::Builder::new(TokioExecutor::new());
                 // The timer also restarts while an HTTP/1.1 connection waits
                 // for its next request: idle keep-alive closes after it.
+                // Headers: hyper 1.12's defaults, set (as h2's below)
                 http.http1()
                     .timer(TokioTimer::new())
-                    .header_read_timeout(header_read);
+                    .header_read_timeout(header_read)
+                    .max_headers(100)
+                    .max_buf_size(8192 + 4096 * 100);
                 // Pings: a dead peer's h2 connection (no ack) is closed.
                 // ponytail: fixed, a key if a network needs other values
+                // The limits set, not left to hyper's defaults (a bump can't
+                // move them): streams (`H2_MAX_STREAMS`), 16 KB of headers,
+                // and hyper 1.12's reset-flood caps (CVE-2023-44487).
                 http.http2()
                     .timer(TokioTimer::new())
                     .keep_alive_interval(Duration::from_secs(60))
-                    .keep_alive_timeout(Duration::from_secs(20));
+                    .keep_alive_timeout(Duration::from_secs(20))
+                    .max_concurrent_streams(H2_MAX_STREAMS)
+                    .max_header_list_size(16 << 10)
+                    .max_pending_accept_reset_streams(20)
+                    .max_local_error_reset_streams(1024);
                 let graceful = GracefulShutdown::new();
                 rt.block_on(async {
                     // Until the acceptor closes the channel (shutdown)
-                    while let Some(s) = rx.recv().await {
+                    while let Some((s, permit)) = rx.recv().await {
                         let Ok(s) = s
                             .set_nonblocking(true)
                             .and_then(|()| tokio::net::TcpStream::from_std(s))
@@ -1419,6 +1501,8 @@ pub fn serve(
                         let conn = http.serve_connection(TokioIo::new(io), svc).into_owned();
                         let conn = graceful.watch(conn);
                         tokio::spawn(async move {
+                            // Released when the connection ends
+                            let _permit = permit;
                             let mut conn = std::pin::pin!(conn);
                             // The protocol not decided within header_read of
                             // the accept (silent, a dribbled preface): closed.
@@ -1468,14 +1552,22 @@ pub fn serve(
         listener.set_nonblocking(true)?;
         let listener = tokio::net::TcpListener::from_std(listener)?;
         let mut next = 0;
-        accept(&listener, &threads, &mut next, shutdown).await?;
+        let open = Arc::new(Semaphore::new(app.cfg.limits.max_connections));
+        accept(&listener, &threads, &open, &mut next, shutdown).await?;
         app.draining.store(true, Relaxed);
         let drain = secs(app.cfg.timeouts.drain_delay);
         eprintln!(
             "similaripy-server: draining: /ready 503, accepting for {drain:?} more, then \
              up to {grace:?} for open connections"
         );
-        accept(&listener, &threads, &mut next, tokio::time::sleep(drain)).await?;
+        accept(
+            &listener,
+            &threads,
+            &open,
+            &mut next,
+            tokio::time::sleep(drain),
+        )
+        .await?;
         drop(listener);
         // Each thread sees its channel closed: graceful shutdown
         drop(threads);
@@ -1509,20 +1601,30 @@ async fn reload_views(app: Arc<App>, every: Duration) {
     }
 }
 
+/// A connection for a server thread, with its slot of `limits.max_connections`.
+type Conn = (std::net::TcpStream, OwnedSemaphorePermit);
+
 /// Hands `listener`'s connections round-robin to `threads` until `until`
-/// completes.
+/// completes; at `limits.max_connections` open (`open`'s permits) it stops
+/// accepting until one closes: new ones wait in the OS backlog, the open
+/// ones keep their fd headroom (no EMFILE loop).
 // ponytail: round-robin per connection; SO_REUSEPORT per thread (Linux)
 // if connections pile up unevenly.
 async fn accept(
     listener: &tokio::net::TcpListener,
-    threads: &[tokio::sync::mpsc::UnboundedSender<std::net::TcpStream>],
+    threads: &[tokio::sync::mpsc::UnboundedSender<Conn>],
+    open: &Arc<Semaphore>,
     next: &mut usize,
     until: impl Future<Output = ()>,
 ) -> io::Result<()> {
     let mut until = std::pin::pin!(until);
     loop {
-        let s = tokio::select! {
-            s = listener.accept() => s,
+        let slot = async {
+            let p = open.clone().acquire_owned().await.expect("never closed");
+            (p, listener.accept().await)
+        };
+        let (permit, s) = tokio::select! {
+            s = slot => s,
             () = &mut until => return Ok(()),
         };
         let s = match s.and_then(|(s, _)| s.into_std()) {
@@ -1536,7 +1638,7 @@ async fn accept(
         };
         let _ = s.set_nodelay(true);
         let i = *next % threads.len();
-        if threads[i].send(s).is_err() {
+        if threads[i].send((s, permit)).is_err() {
             return Err(io::Error::other(format!("server thread {i} died")));
         }
         *next += 1;
