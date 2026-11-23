@@ -290,6 +290,125 @@ fn group_interactions<'py>(
     ))
 }
 
+/// `canonical`'s arguments, passed down the dtype dispatch.
+struct CanonicalArgs<'a, 'py> {
+    format: &'a str,
+    shape: (usize, usize),
+    major: &'a Bound<'py, PyAny>,
+    minor: &'a Bound<'py, PyAny>,
+    data: &'a Bound<'py, PyAny>,
+    canonical: bool,
+    num_threads: usize,
+}
+
+/// `prep::canonical`: a caller's matrix copied once into an owned canonical
+/// CSR. `format` 'csr' | 'csc' | 'coo'; `major` = indptr (COO: rows), `minor`
+/// = indices (COO: cols), both int32 or both int64; data float32 | float64;
+/// `canonical` = scipy's `has_canonical_format`; `dtype` = the output values,
+/// 'float32' | 'float64'. Returns (indptr int64, indices int32, data).
+#[pyfunction]
+#[pyo3(signature = (*, format, shape, major, minor, data, canonical, dtype, num_threads))]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn canonical<'py>(
+    py: Python<'py>,
+    format: &str,
+    shape: (usize, usize),
+    major: &Bound<'py, PyAny>,
+    minor: &Bound<'py, PyAny>,
+    data: &Bound<'py, PyAny>,
+    canonical: bool,
+    dtype: &str,
+    num_threads: usize,
+) -> PyResult<(
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyAny>,
+)> {
+    let a = CanonicalArgs {
+        format,
+        shape,
+        major,
+        minor,
+        data,
+        canonical,
+        num_threads,
+    };
+    let i32_index = major.extract::<PyReadonlyArray1<i32>>().is_ok();
+    let f32_data = data.extract::<PyReadonlyArray1<f32>>().is_ok();
+    // the 8 instantiations: index x data x output types
+    match (i32_index, f32_data, dtype) {
+        (true, true, "float32") => canonical_as::<i32, f32, f32>(py, &a),
+        (true, true, "float64") => canonical_as::<i32, f32, f64>(py, &a),
+        (true, false, "float32") => canonical_as::<i32, f64, f32>(py, &a),
+        (true, false, "float64") => canonical_as::<i32, f64, f64>(py, &a),
+        (false, true, "float32") => canonical_as::<i64, f32, f32>(py, &a),
+        (false, true, "float64") => canonical_as::<i64, f32, f64>(py, &a),
+        (false, false, "float32") => canonical_as::<i64, f64, f32>(py, &a),
+        (false, false, "float64") => canonical_as::<i64, f64, f64>(py, &a),
+        _ => Err(PyValueError::new_err(format!(
+            "canonical: dtype {dtype:?} is not 'float32' or 'float64'"
+        ))),
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn canonical_as<'py, I, V, T>(
+    py: Python<'py>,
+    a: &CanonicalArgs<'_, 'py>,
+) -> PyResult<(
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyAny>,
+)>
+where
+    I: Element + Copy + Into<i64> + Sync,
+    V: Value + Element,
+    T: Value + Element,
+{
+    use similaripy_core::prep::Sparse;
+    let (major, minor, data): (
+        PyReadonlyArray1<I>,
+        PyReadonlyArray1<I>,
+        PyReadonlyArray1<V>,
+    ) = (a.major.extract()?, a.minor.extract()?, a.data.extract()?);
+    let (major, minor, data) = (major.as_slice()?, minor.as_slice()?, data.as_slice()?);
+    let m = match a.format {
+        "csr" => Sparse::Csr {
+            indptr: major,
+            indices: minor,
+            data,
+        },
+        "csc" => Sparse::Csc {
+            indptr: major,
+            indices: minor,
+            data,
+        },
+        "coo" => Sparse::Coo {
+            rows: major,
+            cols: minor,
+            data,
+        },
+        f => {
+            return Err(PyValueError::new_err(format!(
+                "canonical: format {f:?} is not 'csr', 'csc' or 'coo'"
+            )));
+        }
+    };
+    let (shape, hint, num_threads) = (a.shape, a.canonical, a.num_threads);
+    let out = py
+        .detach(|| {
+            with_pool(num_threads, || {
+                similaripy_core::prep::canonical::<I, V, T>(m, shape, hint)
+            })
+        })
+        .map_err(to_py)?;
+    Ok((
+        out.indptr.into_pyarray(py),
+        out.indices.into_pyarray(py),
+        out.data.into_pyarray(py).into_any(),
+    ))
+}
+
 /// In place: canonical rows (sorted, duplicates summed, zeros dropped),
 /// compacted to the front; returns the new indptr. Data float32 or float64.
 #[pyfunction]
@@ -352,6 +471,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<serve::PyModel>()?;
     m.add_function(wrap_pyfunction!(remap_sort_rows, m)?)?;
     m.add_function(wrap_pyfunction!(canonicalize_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_class::<ProgressBar>()?;
     m.add_function(wrap_pyfunction!(group_interactions, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::normalize, m)?)?;

@@ -316,33 +316,36 @@ def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> Csr:
     similarities (float32) and the normalizations (the input's float type).
 
     Explicit zeros are wrong in binary mode (they would become 1.0), and
-    unsummed duplicates give wrong norms and binary counts. One route: the
-    arrays are copied once into `dtype`/int32 (zeros are dropped after the
+    unsummed duplicates give wrong norms and binary counts. The Rust core
+    (`_core.canonical`) reads CSR / CSC / COO arrays as they are and copies them
+    once: values cast before duplicates are summed (zeros are dropped after the
     cast, so a float64 value below float32's range goes too when `dtype` is
-    float32); canonical input
-    (e.g. our own COO output, fed back) then only drops zeros, the rest goes
-    through the Rust canonicalization, which replaces scipy's single-threaded
-    COO -> CSR.
+    float32), CSC and COO through one counting sort by row (no scipy `tocsr`
+    temp). Canonical input (scipy's `has_canonical_format`, e.g. our own output
+    fed back) only drops zeros. Here: other formats via `tocsr()`, other value
+    types one `astype(dtype)`.
     """
+    if matrix.format not in ("csr", "csc", "coo"):
+        matrix = matrix.tocsr()
     if matrix.format == "coo":
-        rows, cols, data = matrix.row, matrix.col, matrix.data
-        if np.any(rows[1:] < rows[:-1]):
-            order = np.argsort(rows, kind="stable")
-            rows, cols, data = rows[order], cols[order], data[order]
-        indptr = np.zeros(matrix.shape[0] + 1, dtype=np.int64)
-        np.cumsum(np.bincount(rows, minlength=matrix.shape[0]), out=indptr[1:])
+        major, minor, data = matrix.row, matrix.col, matrix.data
     else:
-        csr = matrix.tocsr()
-        nnz = csr.indptr[-1]  # scipy allows longer arrays past the last row
-        indptr, cols, data = csr.indptr.astype(np.int64), csr.indices[:nnz], csr.data[:nnz]
-    canonical = (matrix if matrix.format == "coo" else csr).has_canonical_format
-    indices = cols.astype(np.int32)
-    with np.errstate(over="ignore"):  # inf: reported by the similarities' finite check (`_check_data`)
+        nnz = matrix.indptr[-1]  # scipy allows longer arrays past the last row
+        major, minor, data = matrix.indptr, matrix.indices[:nnz], matrix.data[:nnz]
+    if data.dtype not in (np.float32, np.float64):  # int, bool, float16, ...
         data = data.astype(dtype)
-    if not canonical or not data.all():  # zeros (-0.0 too; buffered, no nnz temp): the same Rust pass drops them
-        new_indptr = _core.canonicalize_rows(indptr=indptr, indices=indices, data=data, num_threads=num_threads)
-        nnz = int(new_indptr[-1])
-        indptr, indices, data = new_indptr, indices[:nnz], data[:nnz]
+    if major.dtype != minor.dtype or major.dtype not in (np.int32, np.int64):  # scipy never does this
+        major, minor = major.astype(np.int64), minor.astype(np.int64)
+    indptr, indices, data = _core.canonical(
+        format=matrix.format,
+        shape=matrix.shape,
+        major=np.ascontiguousarray(major),  # COO coords may be strided views
+        minor=np.ascontiguousarray(minor),
+        data=np.ascontiguousarray(data),
+        canonical=matrix.has_canonical_format,
+        dtype=np.dtype(dtype).name,
+        num_threads=num_threads,
+    )
     return Csr(data, indices, indptr, matrix.shape[1])
 
 

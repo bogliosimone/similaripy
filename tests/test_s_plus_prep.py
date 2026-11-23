@@ -437,19 +437,13 @@ def _with_duplicates(m, seed=0):
     return rows[order], cols[order], vals[order]
 
 
-def test_coo_output_fed_back(monkeypatch):
-    # Feeding an output back (chained calls) must equal feeding its CSR form,
-    # and skip the canonicalization: the output is canonical already.
-    from similaripy import _core
-
+def test_coo_output_fed_back():
+    # Feeding an output back (chained calls) must equal feeding its CSR form
+    # (canonical already: the core skips its pass, prep.rs `canonical_hint_skips_the_pass`).
     m = sp.random_array((200, 60), density=0.01, format="csr", dtype=np.float32, rng=0)
     s = sim.cosine(m.T, k=20, format_output="coo", verbose=False)  # rows shorter than k
+    assert s.has_canonical_format
     ref = sim.dot_product(m, s.tocsr(), k=10, verbose=False)
-
-    def fail(*args, **kwargs):
-        raise AssertionError("canonicalize_rows called on a canonical input")
-
-    monkeypatch.setattr(_core, "canonicalize_rows", fail)
     _same(sim.dot_product(m, s, k=10, verbose=False), ref)
     _same(sim.dot_product(m, s.tocsr(), k=10, verbose=False), ref)
 
@@ -749,7 +743,8 @@ def test_int64_indptr_path_same_values(case, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "name", ["compute_similarities", "remap_sort_rows", "canonicalize_rows", "normalize", "tfidf", "bm25plus"]
+    "name",
+    ["compute_similarities", "remap_sort_rows", "canonicalize_rows", "canonical", "normalize", "tfidf", "bm25plus"],
 )
 def test_core_bindings_keyword_only(name):
     # a swapped positional argument of the same type would pass silently
@@ -785,3 +780,165 @@ def test_empty_filter_and_partly_empty_target_rows_accepted():
     out = sim.cosine(m, m.T, k=5, target_cols=target, verbose=False)
     assert out[[0]].nnz == 0
     np.testing.assert_array_equal(out.toarray()[1:], ref.toarray()[1:])
+
+
+# ---- `_canonical_csr`: the core's one copy of CSR / CSC / COO (`_core.canonical`) ----
+
+
+def _entries(n_rows=30, n_cols=20, nnz=400, seed=0):
+    """(rows, cols, vals) with duplicates, cancelling pairs and explicit zeros;
+    values exact in float32 whatever the summation order."""
+    rng = np.random.default_rng(seed)
+    rows, cols = rng.integers(0, n_rows, nnz), rng.integers(0, n_cols, nnz)
+    vals = rng.choice([0.0, 1.0, -1.0, 2.5, -2.5], nnz)
+    return rows, cols, vals, (n_rows, n_cols)
+
+
+def _compressed(major, minor, vals, n_major, cls, shape):
+    """A CSR/CSC with every entry kept (scipy's own conversions sum duplicates), stable by `major`."""
+    order = np.argsort(major, kind="stable")
+    indptr = np.r_[0, np.cumsum(np.bincount(major, minlength=n_major))].astype(major.dtype)
+    return cls((vals[order], minor[order], indptr), shape=shape)
+
+
+def _forms(rows, cols, vals, shape):
+    """The same entries in every form `_canonical_csr` reads, duplicates kept (lil: summed by scipy)."""
+    shuffled = np.random.default_rng(1).permutation(len(vals))
+    csr = _compressed(rows, cols, vals, shape[0], sp.csr_array, shape)
+    return {
+        "coo": sp.coo_array((vals, (rows, cols)), shape=shape),
+        "coo_shuffled": sp.coo_array((vals[shuffled], (rows[shuffled], cols[shuffled])), shape=shape),
+        "csr": csr,
+        "csc": _compressed(cols, rows, vals, shape[1], sp.csc_array, shape),
+        "csc_view": _compressed(
+            cols, rows, vals, shape[1], sp.csr_array, shape[::-1]
+        ).T,  # matrix2 of a self-similarity
+        "lil": csr.copy().tolil(),  # tolil sums the duplicates of its source in place
+    }
+
+
+def _dense_canonical(rows, cols, vals, shape):
+    dense = np.zeros(shape)
+    np.add.at(dense, (rows, cols), vals)
+    return sp.csr_array(dense)
+
+
+@pytest.mark.parametrize("form", list(_forms(*_entries())))
+@pytest.mark.parametrize("index_dtype", [np.int32, np.int64])
+@pytest.mark.parametrize("data_dtype", [np.float32, np.float64, np.int64])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_canonical_csr_every_form(form, index_dtype, data_dtype, dtype):
+    from similaripy._s_plus import _canonical_csr
+
+    rows, cols, vals, shape = _entries()
+    vals = vals.astype(data_dtype)
+    m = _forms(rows.astype(index_dtype), cols.astype(index_dtype), vals, shape)[form]
+    before = [a.copy() for a in _arrays(m)] if form != "lil" else None
+    c = _canonical_csr(m, dtype, 2)
+    want = _dense_canonical(rows, cols, vals.astype(dtype), shape)
+    assert (c.data.dtype, c.indices.dtype, c.indptr.dtype) == (np.dtype(dtype), np.int32, np.int64)
+    assert c.shape == shape and len(c.data) == len(c.indices) == c.indptr[-1]
+    np.testing.assert_array_equal(c.indptr, want.indptr)
+    np.testing.assert_array_equal(c.indices, want.indices)
+    np.testing.assert_array_equal(c.data, want.data)
+    if before is not None:  # the caller's arrays never change
+        assert all(a.tobytes() == b.tobytes() for a, b in zip(_arrays(m), before))
+
+
+def test_canonical_csr_passes_scipy_hint():
+    # scipy's has_canonical_format reaches the core: a (wrongly) flagged CSR is copied as is,
+    # unflagged it is sorted
+    from similaripy._s_plus import _canonical_csr
+
+    m = sp.csr_array((np.array([1.0, 2.0]), np.array([1, 0]), np.array([0, 2])), shape=(1, 2))
+    assert _canonical_csr(m, np.float32, 0).indices.tolist() == [0, 1]
+    m.has_canonical_format = True
+    assert _canonical_csr(m, np.float32, 0).indices.tolist() == [1, 0]
+
+
+def test_canonical_csr_csc_sums_in_stored_order():
+    # float32 sums that depend on the order: a column holding row 0 three times
+    # sums in stored order (as scipy's tocsr + a per-row sum), after the cast
+    from similaripy._s_plus import _canonical_csr
+
+    data = np.array([-1e8, 1e8, 1.0, 1e8, 1.0, -1e8])
+    m = sp.csc_array((data, np.zeros(6, np.int32), np.array([0, 3, 6])), shape=(1, 2))
+    c = _canonical_csr(m, np.float32, 0)
+    assert c.indices.tolist() == [0] and c.data.tolist() == [1.0]  # column 1: 1e8 + 1 - 1e8 = 0 in float32
+
+
+def test_canonical_csr_float64_overflow_and_underflow():
+    # cast before summing: past float32's range -> inf (the similarities' finite check reports it),
+    # below it -> 0 (dropped); float64 output keeps both
+    from similaripy._s_plus import _canonical_csr
+
+    m = sp.coo_array((np.array([1e300, 1e-50, 1.0]), ([0, 0, 1], [0, 1, 1])), shape=(2, 2))
+    for form in (m, m.tocsr(), m.tocsc()):
+        c = _canonical_csr(form, np.float32, 0)
+        assert c.indptr.tolist() == [0, 1, 2] and c.data.tolist() == [np.inf, 1.0]
+        assert _canonical_csr(form, np.float64, 0).data.tolist() == [1e300, 1e-50, 1.0]
+    with pytest.raises(ValueError, match="must be finite"):
+        sim.cosine(m.tocsr(), k=5, verbose=False)
+
+
+@pytest.mark.parametrize("shape", [(0, 0), (0, 4), (4, 0), (5, 3)])
+@pytest.mark.parametrize("fmt", ["csr", "csc", "coo"])
+def test_canonical_csr_empty(shape, fmt):
+    from similaripy._s_plus import _canonical_csr
+
+    c = _canonical_csr(sp.csr_array(shape, dtype=np.float32).asformat(fmt), np.float32, 0)
+    assert c.shape == shape and c.indptr.tolist() == [0] * (shape[0] + 1) and len(c.data) == 0
+    # entries that all cancel or are zero: nnz 0 after the copy
+    zero = sp.coo_array((np.array([1.0, -1.0, 0.0]), ([0, 0, 1], [1, 1, 2])), shape=(5, 3)).asformat(fmt)
+    assert _canonical_csr(zero, np.float32, 0).indptr.tolist() == [0] * 6
+
+
+def test_canonical_csr_unusual_arrays():
+    # strided COO coords, int16 coords set by hand, arrays longer than nnz: as plain arrays
+    from similaripy._s_plus import _canonical_csr
+
+    rows, cols, vals, shape = _entries()
+    want = _dense_canonical(rows, cols, vals, shape)
+    strided = sp.coo_array((vals, (np.repeat(rows, 2)[::2], cols)), shape=shape)
+    assert not strided.row.flags.c_contiguous
+    small = sp.coo_array((vals, (rows, cols)), shape=shape)
+    small.row, small.col = small.row.astype(np.int16), small.col.astype(np.int16)
+    long = sp.csr_array((np.r_[want.data, 7.0], np.r_[want.indices, 0], want.indptr), shape=shape)
+    for m in (strided, small, long):
+        c = _canonical_csr(m, np.float32, 0)
+        np.testing.assert_array_equal(c.indices, want.indices)
+        np.testing.assert_array_equal(c.data, want.data.astype(np.float32))
+
+
+def test_core_canonical_rejects_bad_inputs():
+    # the core's checks on arrays scipy would not build (the Python side passes scipy's)
+    from similaripy import _core
+
+    def run(**kw):
+        args = {
+            "format": "csr",
+            "shape": (1, 2),
+            "major": np.array([0, 2]),
+            "minor": np.array([0, 1]),
+            "data": np.ones(2, np.float32),
+            "canonical": False,
+            "dtype": "float32",
+            "num_threads": 0,
+        }
+        return _core.canonical(**args | kw)
+
+    assert run()[1].tolist() == [0, 1]
+    with pytest.raises(ValueError, match="column index out of range"):
+        run(minor=np.array([0, 2]))
+    with pytest.raises(ValueError, match="indptr"):
+        run(major=np.array([0, 1]))
+    with pytest.raises(ValueError, match="row index out of range"):
+        run(format="csc", shape=(1, 1), major=np.array([0, 2]))
+    with pytest.raises(ValueError, match="same length"):
+        run(format="coo", major=np.array([0]))
+    with pytest.raises(ValueError, match="format"):
+        run(format="bsr")
+    with pytest.raises(ValueError, match="dtype"):
+        run(dtype="float16")
+    with pytest.raises(TypeError):
+        run(minor=np.array([0, 1], np.int32))  # index types mixed
