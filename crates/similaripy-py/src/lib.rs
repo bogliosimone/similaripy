@@ -1,22 +1,23 @@
 //! Python bindings of the Rust core (`similaripy._core`). `similaripy/_s_plus.py`
-//! does the prep and calls `compute`; `similaripy/serving.py` builds the serving
+//! checks the arguments and calls `similarity` (`similarity.rs`: canonical
+//! copies + the S-Plus driver); `similaripy/serving.py` builds the serving
 //! model (`serve.rs`).
 
 mod normalize;
 mod progress;
 mod serve;
+mod similarity;
 
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use numpy::{Element, IntoPyArray, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
 use progress::ProgressBar;
-use similaripy_core::normalize::Value;
-use similaripy_core::{CsrPattern, CsrView, Error, Inputs, Norms, Params, compute};
+use similaripy_core::{Error, Params};
 
 pub(crate) fn to_py(e: Error) -> PyErr {
     match e {
@@ -47,77 +48,10 @@ fn cached_pool(n: usize) -> Result<Arc<ThreadPool>, Error> {
     })
 }
 
-/// A matrix column selector as `(indptr, indices)`; None = no selector (list
-/// selectors are applied in Python). Empty `Some` selects nothing.
-type Selection<'py> = Option<(PyReadonlyArray1<'py, i64>, PyReadonlyArray1<'py, i32>)>;
-
-fn selection<'a>(
-    name: &'static str,
-    sel: &'a Selection<'_>,
-    n_cols: usize,
-) -> PyResult<Option<CsrPattern<'a>>> {
-    let Some((indptr, indices)) = sel else {
-        return Ok(None);
-    };
-    CsrPattern::new(name, indptr.as_slice()?, indices.as_slice()?, n_cols)
-        .map(Some)
-        .map_err(to_py)
-}
-
-/// A CSR matrix, read by attribute from `similaripy._s_plus.Csr`.
-#[derive(FromPyObject)]
-struct CsrArg<'py> {
-    data: PyReadonlyArray1<'py, f32>,
-    indices: PyReadonlyArray1<'py, i32>,
-    indptr: PyReadonlyArray1<'py, i64>,
-    n_cols: usize,
-}
-
-impl CsrArg<'_> {
-    fn view(&self, name: &'static str) -> PyResult<CsrView<'_>> {
-        CsrView::new(
-            name,
-            self.indptr.as_slice()?,
-            self.indices.as_slice()?,
-            self.data.as_slice()?,
-            self.n_cols,
-        )
-        .map_err(to_py)
-    }
-}
-
-/// The normalization terms, read by attribute from `similaripy._s_plus.Norms`
-/// (None = unused).
-#[derive(FromPyObject)]
-struct NormsArg<'py> {
-    x_tversky: Option<PyReadonlyArray1<'py, f32>>,
-    y_tversky: Option<PyReadonlyArray1<'py, f32>>,
-    x_cosine: Option<PyReadonlyArray1<'py, f32>>,
-    y_cosine: Option<PyReadonlyArray1<'py, f32>>,
-    x_depop: Option<PyReadonlyArray1<'py, f32>>,
-    y_depop: Option<PyReadonlyArray1<'py, f32>>,
-}
-
-impl NormsArg<'_> {
-    fn norms(&self) -> PyResult<Norms<'_>> {
-        fn s<'a>(a: &'a Option<PyReadonlyArray1<'_, f32>>) -> PyResult<Option<&'a [f32]>> {
-            Ok(a.as_ref().map(|a| a.as_slice()).transpose()?)
-        }
-        Ok(Norms {
-            x_tversky: s(&self.x_tversky)?,
-            y_tversky: s(&self.y_tversky)?,
-            x_cosine: s(&self.x_cosine)?,
-            y_cosine: s(&self.y_cosine)?,
-            x_depop: s(&self.x_depop)?,
-            y_depop: s(&self.y_depop)?,
-        })
-    }
-}
-
 /// The scoring weights, read by attribute from `similaripy._s_plus.Params`
 /// (the core's `Params` stays free of Python).
 #[derive(FromPyObject)]
-struct ParamsArg {
+pub(crate) struct ParamsArg {
     a1: f32,
     l1: f32,
     l2: f32,
@@ -145,65 +79,6 @@ impl From<ParamsArg> for Params {
     }
 }
 
-/// The kernel inputs (`m2.n_cols` = output columns), plus `col_map` (output id
-/// of each m2 column) and `block_size` (None = no column blocking). Returns
-/// `(cols, values, counts)`: row `i` of `targets` has `counts[i]` results,
-/// sorted by column, packed in `cols`/`values` (numpy arrays over the Rust
-/// buffers, no copy). Releases the GIL. `num_threads = 0` runs on the global
-/// rayon pool (concurrent callers queue on it).
-#[pyfunction]
-#[pyo3(signature = (*, targets, m1, m2, norms, params, k, filter, target, col_map, num_threads, block_size, progress))]
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn compute_similarities<'py>(
-    py: Python<'py>,
-    targets: PyReadonlyArray1<i32>,
-    m1: CsrArg<'py>,
-    m2: CsrArg<'py>,
-    norms: NormsArg<'py>,
-    params: ParamsArg,
-    k: usize,
-    filter: Selection<'py>,
-    target: Selection<'py>,
-    col_map: PyReadonlyArray1<i32>,
-    num_threads: usize,
-    block_size: Option<usize>,
-    progress: Option<Bound<'_, ProgressBar>>,
-) -> PyResult<(
-    Bound<'py, PyArray1<i32>>,
-    Bound<'py, PyArray1<f32>>,
-    Bound<'py, PyArray1<u32>>,
-)> {
-    let n_cols = m2.n_cols;
-    let inp = Inputs {
-        m1: m1.view("m1")?,
-        m2: m2.view("m2")?,
-        targets: targets.as_slice()?,
-        norms: norms.norms()?,
-        params: params.into(),
-        filter: selection("filter_cols", &filter, n_cols)?,
-        target_cols: selection("target_cols", &target, n_cols)?,
-        col_map: Some(col_map.as_slice()?),
-    };
-
-    let block_size = block_size.unwrap_or(0); // the core's 0 = no blocking
-    let bar = progress.as_ref().map(|b| b.get());
-    let out = py
-        .detach(|| {
-            // Separate instantiations: without a bar the kernel has no per-row branch.
-            let run = || match bar {
-                Some(b) => compute(&inp, k, block_size, &|| b.tick()),
-                None => compute(&inp, k, block_size, &|| {}),
-            };
-            with_pool(num_threads, run)
-        })
-        .map_err(to_py)?;
-    Ok((
-        out.cols.into_pyarray(py),
-        out.values.into_pyarray(py),
-        out.counts.into_pyarray(py),
-    ))
-}
-
 /// Runs `f` on the global rayon pool (`num_threads = 0`) or on the calling
 /// thread's cached pool of `num_threads` workers.
 pub(crate) fn with_pool<R>(
@@ -218,29 +93,6 @@ where
     } else {
         cached_pool(num_threads)?.install(f)
     }
-}
-
-/// In place: renumbers columns by `forward` and sorts every row, carrying
-/// `data` (None: the pattern only; prep for the blocked kernel).
-#[pyfunction]
-#[pyo3(signature = (*, indptr, indices, data, forward, num_threads))]
-fn remap_sort_rows(
-    py: Python<'_>,
-    indptr: PyReadonlyArray1<'_, i64>,
-    mut indices: PyReadwriteArray1<'_, i32>,
-    mut data: Option<PyReadwriteArray1<'_, f32>>,
-    forward: PyReadonlyArray1<'_, i32>,
-    num_threads: usize,
-) -> PyResult<()> {
-    let (indptr, forward) = (indptr.as_slice()?, forward.as_slice()?);
-    let indices = indices.as_slice_mut()?;
-    let data = data.as_mut().map(|d| d.as_slice_mut()).transpose()?;
-    py.detach(|| {
-        with_pool(num_threads, || {
-            similaripy_core::prep::remap_sort_rows(indptr, indices, data, forward)
-        })
-    })
-    .map_err(to_py)
 }
 
 /// Interaction logs grouped into a canonical CSR (`prep::group_interactions`):
@@ -290,161 +142,6 @@ fn group_interactions<'py>(
     ))
 }
 
-/// `canonical`'s arguments, passed down the dtype dispatch.
-struct CanonicalArgs<'a, 'py> {
-    format: &'a str,
-    shape: (usize, usize),
-    major: &'a Bound<'py, PyAny>,
-    minor: &'a Bound<'py, PyAny>,
-    data: &'a Bound<'py, PyAny>,
-    canonical: bool,
-    num_threads: usize,
-}
-
-/// `prep::canonical`: a caller's matrix copied once into an owned canonical
-/// CSR. `format` 'csr' | 'csc' | 'coo'; `major` = indptr (COO: rows), `minor`
-/// = indices (COO: cols), both int32 or both int64; data float32 | float64;
-/// `canonical` = scipy's `has_canonical_format`; `dtype` = the output values,
-/// 'float32' | 'float64'. Returns (indptr int64, indices int32, data).
-#[pyfunction]
-#[pyo3(signature = (*, format, shape, major, minor, data, canonical, dtype, num_threads))]
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn canonical<'py>(
-    py: Python<'py>,
-    format: &str,
-    shape: (usize, usize),
-    major: &Bound<'py, PyAny>,
-    minor: &Bound<'py, PyAny>,
-    data: &Bound<'py, PyAny>,
-    canonical: bool,
-    dtype: &str,
-    num_threads: usize,
-) -> PyResult<(
-    Bound<'py, PyArray1<i64>>,
-    Bound<'py, PyArray1<i32>>,
-    Bound<'py, PyAny>,
-)> {
-    let a = CanonicalArgs {
-        format,
-        shape,
-        major,
-        minor,
-        data,
-        canonical,
-        num_threads,
-    };
-    let i32_index = major.extract::<PyReadonlyArray1<i32>>().is_ok();
-    let f32_data = data.extract::<PyReadonlyArray1<f32>>().is_ok();
-    // the 8 instantiations: index x data x output types
-    match (i32_index, f32_data, dtype) {
-        (true, true, "float32") => canonical_as::<i32, f32, f32>(py, &a),
-        (true, true, "float64") => canonical_as::<i32, f32, f64>(py, &a),
-        (true, false, "float32") => canonical_as::<i32, f64, f32>(py, &a),
-        (true, false, "float64") => canonical_as::<i32, f64, f64>(py, &a),
-        (false, true, "float32") => canonical_as::<i64, f32, f32>(py, &a),
-        (false, true, "float64") => canonical_as::<i64, f32, f64>(py, &a),
-        (false, false, "float32") => canonical_as::<i64, f64, f32>(py, &a),
-        (false, false, "float64") => canonical_as::<i64, f64, f64>(py, &a),
-        _ => Err(PyValueError::new_err(format!(
-            "canonical: dtype {dtype:?} is not 'float32' or 'float64'"
-        ))),
-    }
-}
-
-#[allow(clippy::type_complexity)]
-fn canonical_as<'py, I, V, T>(
-    py: Python<'py>,
-    a: &CanonicalArgs<'_, 'py>,
-) -> PyResult<(
-    Bound<'py, PyArray1<i64>>,
-    Bound<'py, PyArray1<i32>>,
-    Bound<'py, PyAny>,
-)>
-where
-    I: Element + Copy + Into<i64> + Sync,
-    V: Value + Element,
-    T: Value + Element,
-{
-    use similaripy_core::prep::Sparse;
-    let (major, minor, data): (
-        PyReadonlyArray1<I>,
-        PyReadonlyArray1<I>,
-        PyReadonlyArray1<V>,
-    ) = (a.major.extract()?, a.minor.extract()?, a.data.extract()?);
-    let (major, minor, data) = (major.as_slice()?, minor.as_slice()?, data.as_slice()?);
-    let m = match a.format {
-        "csr" => Sparse::Csr {
-            indptr: major,
-            indices: minor,
-            data,
-        },
-        "csc" => Sparse::Csc {
-            indptr: major,
-            indices: minor,
-            data,
-        },
-        "coo" => Sparse::Coo {
-            rows: major,
-            cols: minor,
-            data,
-        },
-        f => {
-            return Err(PyValueError::new_err(format!(
-                "canonical: format {f:?} is not 'csr', 'csc' or 'coo'"
-            )));
-        }
-    };
-    let (shape, hint, num_threads) = (a.shape, a.canonical, a.num_threads);
-    let out = py
-        .detach(|| {
-            with_pool(num_threads, || {
-                similaripy_core::prep::canonical::<I, V, T>(m, shape, hint)
-            })
-        })
-        .map_err(to_py)?;
-    Ok((
-        out.indptr.into_pyarray(py),
-        out.indices.into_pyarray(py),
-        out.data.into_pyarray(py).into_any(),
-    ))
-}
-
-/// In place: canonical rows (sorted, duplicates summed, zeros dropped),
-/// compacted to the front; returns the new indptr. Data float32 or float64.
-#[pyfunction]
-#[pyo3(signature = (*, indptr, indices, data, num_threads))]
-fn canonicalize_rows<'py>(
-    py: Python<'py>,
-    indptr: PyReadonlyArray1<'py, i64>,
-    indices: PyReadwriteArray1<'py, i32>,
-    data: &Bound<'py, PyAny>,
-    num_threads: usize,
-) -> PyResult<Bound<'py, PyArray1<i64>>> {
-    match data.extract::<PyReadwriteArray1<'py, f32>>() {
-        Ok(d) => canonicalize(py, indptr, indices, d, num_threads),
-        Err(_) => canonicalize::<f64>(py, indptr, indices, data.extract()?, num_threads),
-    }
-}
-
-fn canonicalize<'py, V: Value + Element>(
-    py: Python<'py>,
-    indptr: PyReadonlyArray1<'py, i64>,
-    mut indices: PyReadwriteArray1<'py, i32>,
-    mut data: PyReadwriteArray1<'py, V>,
-    num_threads: usize,
-) -> PyResult<Bound<'py, PyArray1<i64>>> {
-    let indptr = indptr.as_slice()?;
-    let (indices, data) = (indices.as_slice_mut()?, data.as_slice_mut()?);
-    let new_indptr = py
-        .detach(|| {
-            with_pool(num_threads, || {
-                similaripy_core::prep::canonicalize_rows(indptr, indices, data)
-            })
-        })
-        .map_err(to_py)?;
-    Ok(new_indptr.into_pyarray(py))
-}
-
 /// `block_size='auto'` of the similarity functions over `n_cols` output
 /// columns on `num_threads` threads (0 = the rayon global pool), `col_bytes`
 /// hot bytes per column; 0 = no blocking. See `similaripy_core::block`.
@@ -466,12 +163,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // literals are checked against them (tests/test_serve.py).
     let d = similaripy_core::serve::Request::default();
     m.add("REQUEST_DEFAULTS", (d.k, d.exclude_history, d.sorted))?;
-    m.add_function(wrap_pyfunction!(compute_similarities, m)?)?;
+    m.add_function(wrap_pyfunction!(similarity::similarity, m)?)?;
     m.add_function(wrap_pyfunction!(auto_block_size, m)?)?;
     m.add_class::<serve::PyModel>()?;
-    m.add_function(wrap_pyfunction!(remap_sort_rows, m)?)?;
-    m.add_function(wrap_pyfunction!(canonicalize_rows, m)?)?;
-    m.add_function(wrap_pyfunction!(canonical, m)?)?;
+    m.add_function(wrap_pyfunction!(similarity::canonical, m)?)?;
     m.add_class::<ProgressBar>()?;
     m.add_function(wrap_pyfunction!(group_interactions, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::normalize, m)?)?;

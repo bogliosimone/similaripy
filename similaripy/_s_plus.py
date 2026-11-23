@@ -1,5 +1,6 @@
 """
-s_plus on the Rust kernel: numpy prep, kernel call, output build.
+s_plus on the Rust core: argument checks, one `_core.similarity` call
+(canonical copies + the S-Plus pipeline), output wrap.
 """
 
 import time
@@ -45,8 +46,18 @@ def _indptr_dtype(nnz: int) -> type[np.signedinteger]:
     return np.int32 if nnz <= _MAX_INT32_NNZ else np.int64
 
 
-# ---- The kernel's argument groups (`_core.compute_similarities` reads them by
-# attribute: kernel.rs `CsrView`, `Norms`, `Params`) ----
+class Sparse(NamedTuple):
+    """A caller's matrix as scipy stores it, for `_core.canonical` /
+    `_core.similarity` (read by attribute): `major` = indptr (COO: rows),
+    `minor` = indices (COO: cols), both int32 or both int64; float32 or
+    float64 data; `canonical` = scipy's `has_canonical_format` (a hint)."""
+
+    format: str
+    shape: tuple[int, int]
+    major: np.ndarray
+    minor: np.ndarray
+    data: np.ndarray
+    canonical: bool
 
 
 class Csr(NamedTuple):
@@ -64,7 +75,8 @@ class Csr(NamedTuple):
 
 
 class Params(NamedTuple):
-    """The scoring weights (`s_plus` arguments of the same names)."""
+    """The scoring weights (`s_plus` arguments of the same names), read by
+    attribute by `_core.similarity`."""
 
     a1: float
     l1: float
@@ -75,32 +87,6 @@ class Params(NamedTuple):
     stabilized_shrink: float
     bayesian_shrink: float
     threshold: float
-
-
-class NormParams(NamedTuple):
-    """The prep-only `s_plus` arguments: norms (`_norms`) and data rules
-    (`_check_data`); depop1/depop2 = weight_depop_matrix1/2."""
-
-    c1: float
-    c2: float
-    p1: float
-    p2: float
-    additive_shrink: float
-    depop1: str | np.ndarray
-    depop2: str | np.ndarray
-    binary: bool
-
-
-class Norms(NamedTuple):
-    """The kernel's normalization terms (kernel.rs `Norms`): x per m1 row, y
-    per m2 column, float32; None when the weights don't use them."""
-
-    x_tversky: np.ndarray | None = None
-    y_tversky: np.ndarray | None = None
-    x_cosine: np.ndarray | None = None
-    y_cosine: np.ndarray | None = None
-    x_depop: np.ndarray | None = None
-    y_depop: np.ndarray | None = None
 
 
 def _check_args(
@@ -119,7 +105,8 @@ def _check_args(
 ) -> None:
     """
     Check the `s_plus` arguments that don't need the values, before the copy
-    (fail fast); the rules on the canonical values are in `_check_data`.
+    (fail fast): types, shapes and scalars. The rules on the values (id
+    ranges, depop weights, finite data, signed input, tversky) are the core's.
 
     `weights`: name -> value of every scalar that must be finite and >= 0.
 
@@ -147,13 +134,14 @@ def _check_args(
     _check_depop("pop2", weight_depop_matrix2, matrix2.shape[1])
 
     # Column selectors: a list/array is one set of column ids for every row, a
-    # sparse matrix one row of columns per output row.
+    # sparse matrix one row of columns per output row (the core's `Csr` has no
+    # width: the shape is checked here).
     expected_shape = (matrix1.shape[0], matrix2.shape[1])
     for name, cols in (("filter_cols", filter_cols), ("target_cols", target_cols)):
         if cols is None:
             continue
         if isinstance(cols, (list, np.ndarray)):
-            _ids(name, cols, matrix2.shape[1])
+            _ids(name, cols)
         elif not sp.issparse(cols):
             raise TypeError(f"{name} must be a sparse matrix, list, numpy array, or None")
         elif cols.nnz != 0 and cols.shape != expected_shape:
@@ -172,10 +160,9 @@ def _check_args(
 
     # Every weight >= 0: the norms (sums of x^2), popularities (sums of |x|) and
     # cosine and depop terms are then >= 0 on any finite input, and tversky's
-    # denominator is kept > 0 by its rule in `_check_score_rules` (with the
-    # rules for signed input). Negative weights would flip signs or
-    # make NaN (a negative base to a fractional power); alpha <= 0 would flatten
-    # or invert the ranking.
+    # denominator is kept > 0 by its rule in the core (with the rules for
+    # signed input). Negative weights would flip signs or make NaN (a negative
+    # base to a fractional power); alpha <= 0 would flatten or invert the ranking.
     for name, value in weights.items():
         _check_scalar(name, value)
     _check_scalar("a1 (alpha)", a1, strict=True)
@@ -200,21 +187,17 @@ def _check_scalar(name: str, value, strict: bool = False) -> None:
         raise ValueError(f"{name} must be finite and {'>' if strict else '>='} 0, got {value}")
 
 
-def _ids(name: str, ids, n: int) -> np.ndarray:
-    """`ids` as an integer array, every id in [0, n)."""
+def _ids(name: str, ids) -> np.ndarray:
+    """`ids` as a flat int64 array (the core checks the range)."""
     ids = np.asarray(ids)
-    if ids.size == 0:
-        return ids.astype(np.int64)
-    if not np.issubdtype(ids.dtype, np.integer):
+    if ids.size != 0 and not np.issubdtype(ids.dtype, np.integer):
         raise TypeError(f"{name} must hold integer ids, got dtype {ids.dtype}")
-    if ids.min() < 0 or ids.max() >= n:
-        raise ValueError(f"{name} ids must be in [0, {n}), got min {ids.min()} and max {ids.max()}")
-    return ids
+    return np.ascontiguousarray(ids.ravel(), dtype=np.int64)
 
 
 def _check_depop(name: str, weights, n: int) -> None:
-    """'none', 'sum' or n finite weights >= 0 (a negative one would flip signs); > 0 where
-    it is used is checked in `_check_data` (`_check_used_weights`)."""
+    """'none', 'sum' or n weights (the core checks the values: finite, >= 0,
+    > 0 where used)."""
     if isinstance(weights, str):
         if weights not in ("none", "sum"):
             raise ValueError(f'{name} must be "none", "sum" or an array of length {n}, got {weights!r}')
@@ -222,108 +205,13 @@ def _check_depop(name: str, weights, n: int) -> None:
     w = np.asarray(weights)
     if w.shape != (n,):
         raise ValueError(f'{name} must be "none", "sum" or an array of length {n}, got shape {w.shape}')
-    if not np.all((w >= 0) & (w < np.inf)):
-        raise ValueError(f"{name} weights must be finite and >= 0")
 
 
-def _check_used_weights(name: str, weights, used: np.ndarray) -> None:
+def _sparse(matrix: SparseInput, dtype=np.float32) -> Sparse:
     """
-    Custom weights > 0 on the rows/columns with entries: only those reach a
-    denominator, where a 0 weight would score 0.0. Empty ones (e.g. items with
-    no interactions, pop 0 when computed as counts) are never read.
-    """
-    if not isinstance(weights, str) and not np.all(np.asarray(weights)[used] > 0):
-        raise ValueError(f"{name} weights must be > 0 on every row/column with entries")
-
-
-def _check_data(m1, m2, params: Params, norm_params: NormParams) -> None:
-    """
-    The rules on the canonical values (`_canonical_csr`): finite in float32 in
-    both modes (1e39 is inf there, and binary must not turn NaN/inf into 1.0),
-    the score rules (`_check_score_rules`), custom depop weights > 0 where used.
-    Signed input is fine: negative and cancelled (0.0) scores are never results.
-    `signed` is read from the values the kernel sees, so binary input is never
-    signed.
-    """
-    binary = norm_params.binary
-    for name, m in (("matrix1", m1), ("matrix2", m2)):
-        if not np.isfinite(m.data).all():
-            raise ValueError(f"{name} values must be finite (in float32)")
-    signed = not binary and bool((m1.data < 0).any() or (m2.data < 0).any())
-    _check_score_rules(signed, binary, params, m1.data, m2.data)
-    if params.l3 != 0:
-        _check_used_weights("pop1", norm_params.depop1, np.diff(m1.indptr) > 0)
-        _check_used_weights("pop2", norm_params.depop2, np.bincount(m2.indices, minlength=m2.shape[1]) > 0)
-
-
-def _check_score_rules(signed: bool, binary: bool, params: Params, m1_data, m2_data) -> None:
-    """
-    Parameters that would be wrong on signed input (docs/guide.md, "Signed
-    Input"), plus the tversky denominator rule, which also binds on
-    non-negative weighted input.
-    """
-    a1, l1, t1, t2, bayesian_shrink = params.a1, params.l1, params.t1, params.t2, params.bayesian_shrink
-    if signed and bayesian_shrink != 0:
-        raise ValueError(
-            "bayesian shrink (shrink_type='bayesian', s_plus bayesian_shrink) is not "
-            "supported on signed input (values < 0): xy / (xy + shrink) flips the sign "
-            "of negative scores"
-        )
-    if signed and a1 != 1:
-        raise ValueError(
-            f"a1 (alpha) must be 1 on signed input (values < 0), got {a1}: "
-            "a power of a negative score is NaN or turns it positive"
-        )
-    # den = t1 |x|^2 + t2 |y|^2 + c xy (c = 1 - t1 - t2), |xy| <= |x| |y|: > 0 on
-    # every pair iff c = 0 or 4 t1 t2 > c^2. The worst pair has xy = |x||y| for
-    # c < 0 (any weighted input) and xy = -|x||y| for c > 0 (signed input only).
-    # Binary, or every value in both matrices the same (0/1 data passed without
-    # binary=True): den >= v^2 |X & Y| > 0 always. Only the tversky term is checked:
-    # l2/l3/stabilized shrink terms may keep den > 0, but not on every pair.
-    c = 1 - t1 - t2
-    if (
-        l1 != 0
-        and not binary
-        and c != 0
-        and (c < 0 or signed)
-        and not 4 * t1 * t2 > c * c
-        and not _one_value(m1_data, m2_data)
-    ):
-        raise ValueError(
-            f"t1, t2 (tversky alpha, beta) = ({t1}, {t2}) give a denominator <= 0 on some pairs"
-            f"{' of signed input (values < 0)' if c > 0 else ''}: need t1 + t2 = 1 or "
-            f"4 t1 t2 > (1 - t1 - t2)^2"
-        )
-
-
-def _one_value(*arrays) -> bool:
-    """Every entry of the (non-empty) arrays equal to the same value."""
-    vals = {v for a in arrays if a.size for v in (a.min(), a.max())}
-    return len(vals) == 1
-
-
-# ---- Prep helpers (numpy) ----
-
-
-def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> Csr:
-    """
-    The call's own canonical copy of `matrix`: CSR arrays, `dtype` values (float32
-    or float64), int32 indices, rows sorted, duplicates summed, no explicit zeros.
-    Arrays, not a scipy matrix: the indptr is int64 (as the core reads it), and
-    scipy would copy the indices to int64 too.
-    Always a copy: the caller's matrix never changes, and every later prep step
-    assumes this form and may change the arrays in place. One cleaner for the
-    similarities (float32) and the normalizations (the input's float type).
-
-    Explicit zeros are wrong in binary mode (they would become 1.0), and
-    unsummed duplicates give wrong norms and binary counts. The Rust core
-    (`_core.canonical`) reads CSR / CSC / COO arrays as they are and copies them
-    once: values cast before duplicates are summed (zeros are dropped after the
-    cast, so a float64 value below float32's range goes too when `dtype` is
-    float32), CSC and COO through one counting sort by row (no scipy `tocsr`
-    temp). Canonical input (scipy's `has_canonical_format`, e.g. our own output
-    fed back) only drops zeros. Here: other formats via `tocsr()`, other value
-    types one `astype(dtype)`.
+    `matrix`'s arrays as the core's one door in (`prep::canonical`) reads them:
+    CSR / CSC / COO as they are, other formats via `tocsr()`, other value
+    types (int, bool, float16, ...) one `astype(dtype)`.
     """
     if matrix.format not in ("csr", "csc", "coo"):
         matrix = matrix.tocsr()
@@ -332,84 +220,50 @@ def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> Csr:
     else:
         nnz = matrix.indptr[-1]  # scipy allows longer arrays past the last row
         major, minor, data = matrix.indptr, matrix.indices[:nnz], matrix.data[:nnz]
-    if data.dtype not in (np.float32, np.float64):  # int, bool, float16, ...
+    if data.dtype not in (np.float32, np.float64):
         data = data.astype(dtype)
     if major.dtype != minor.dtype or major.dtype not in (np.int32, np.int64):  # scipy never does this
         major, minor = major.astype(np.int64), minor.astype(np.int64)
-    indptr, indices, data = _core.canonical(
-        format=matrix.format,
-        shape=matrix.shape,
-        major=np.ascontiguousarray(major),  # COO coords may be strided views
-        minor=np.ascontiguousarray(minor),
-        data=np.ascontiguousarray(data),
-        canonical=matrix.has_canonical_format,
-        dtype=np.dtype(dtype).name,
-        num_threads=num_threads,
+    return Sparse(
+        matrix.format,
+        matrix.shape,
+        np.ascontiguousarray(major),  # COO coords may be strided views
+        np.ascontiguousarray(minor),
+        np.ascontiguousarray(data),
+        bool(matrix.has_canonical_format),
     )
+
+
+def _canonical_csr(matrix: SparseInput, dtype, num_threads: int) -> Csr:
+    """
+    The call's own canonical copy of `matrix`: CSR arrays, `dtype` values (float32
+    or float64), int32 indices, rows sorted, duplicates summed, no explicit zeros.
+    Arrays, not a scipy matrix: the indptr is int64 (as the core reads it), and
+    scipy would copy the indices to int64 too.
+    Always a copy: the caller's matrix never changes, and every later step may
+    change the arrays in place. Used by the normalizations (the input's float
+    type) and serving; the similarities copy inside `_core.similarity`.
+
+    Explicit zeros are wrong in binary mode (they would become 1.0), and
+    unsummed duplicates give wrong norms and binary counts. The Rust core
+    (`_core.canonical`) reads CSR / CSC / COO arrays as they are and copies them
+    once: values cast before duplicates are summed (zeros are dropped after the
+    cast, so a float64 value below float32's range goes too when `dtype` is
+    float32), CSC and COO through one counting sort by row (no scipy `tocsr`
+    temp). Canonical input (scipy's `has_canonical_format`, e.g. our own output
+    fed back) only drops zeros.
+    """
+    s = _sparse(matrix, dtype)
+    indptr, indices, data = _core.canonical(**s._asdict(), dtype=np.dtype(dtype).name, num_threads=num_threads)
     return Csr(data, indices, indptr, matrix.shape[1])
 
 
-def _row_sums(values: np.ndarray, indptr: np.ndarray, dtype=None) -> np.ndarray:
-    """
-    Per-row sums of a CSR value array, in the values' dtype unless `dtype` is
-    given; summed sequentially per row (reduceat).
-
-    reduceat over the non-empty rows' starts only: each one's slice ends at the
-    next non-empty start (= its own end), the last at nnz; empty rows stay 0.
-    """
-    starts = indptr[:-1]
-    nonempty = starts != indptr[1:]
-    out = np.zeros(len(starts), dtype=dtype or values.dtype)
-    if nonempty.any():
-        out[nonempty] = np.add.reduceat(values, starts[nonempty], dtype=dtype)
-    return out
-
-
-def _col_sums(values: np.ndarray, indices: np.ndarray, n_cols: int) -> np.ndarray:
-    """Per-column sums of a CSR value array (bincount in float64, cast once to float32)."""
-    return np.bincount(indices, weights=values, minlength=n_cols).astype(np.float32)
-
-
-def _depop_weights(weight_spec, sums, p: np.float32, n: int) -> np.ndarray:
-    """Depopularization weights (float32): custom array ** p, 'none' (ones) or row/col sums ** p."""
-    if not isinstance(weight_spec, str):
-        return np.power(np.asarray(weight_spec, dtype=np.float32), p, dtype=np.float32)
-    if weight_spec == "none":
-        return np.ones(n, dtype=np.float32)  # 1 ** p == 1
-    return np.power(sums(), p, dtype=np.float32)
-
-
-def _matrix_selector(cols, num_threads: int):
-    """
-    (indptr, indices) of a sparse-matrix filter_cols/target_cols, checked per
-    row in the kernel; None for anything else (no selector, or a list, applied
-    in `_selectors`).
-
-    The canonical pattern only (`_canonical_csr`; the values are needed to
-    canonicalize, then dropped), so an entry is selected iff its summed value is non-zero,
-    the same rule as the inputs: COO and non-canonical CSR agree on cancelling
-    duplicates (signed input). A matrix whose entries all cancel selects
-    nothing (as explicit zeros only); an empty one is no selector.
-    """
-    if sp.issparse(cols) and cols.nnz != 0:
-        cols = _canonical_csr(cols, np.float32, num_threads)
-        return cols.indptr, cols.indices
-    return None
-
-
-def _is_list(cols) -> bool:
-    """A non-empty list/array selector (an empty one is no selector)."""
-    return isinstance(cols, (list, np.ndarray)) and len(cols) != 0
-
-
-def _keep_columns(m: Csr, keep_mask) -> Csr:
-    """Drops the entries whose column is not in `keep_mask`; column ids and order unchanged."""
-    # ponytail: two boolean gathers over nnz; a Rust pass is the upgrade if a
-    # profile shows it
-    sel = keep_mask[m.indices]
-    new_indptr = np.zeros(len(m.indptr), dtype=m.indptr.dtype)
-    np.cumsum(_row_sums(sel, m.indptr, dtype=np.int32), out=new_indptr[1:])
-    return m._replace(data=m.data[sel], indices=m.indices[sel], indptr=new_indptr)
+def _selector(name: str, cols) -> np.ndarray | Sparse | None:
+    """A column selector for the core: int64 ids, a matrix's arrays, or None
+    (no selector, or an empty matrix: an empty filter excludes nothing)."""
+    if cols is None or (sp.issparse(cols) and cols.nnz == 0):
+        return None
+    return _sparse(cols) if sp.issparse(cols) else _ids(name, cols)
 
 
 # ---- Entry point ----
@@ -443,7 +297,7 @@ def s_plus(
     format_output: str = "csr",
     num_threads: int = 0,
     block_size: int | Literal["auto"] | None = "auto",
-    prepare=None,
+    walk: tuple[float, bool] | None = None,
 ) -> sp.csr_array | sp.coo_array:
     """
     Compute top-K similarity between rows of two sparse matrices using the S_Plus algorithm.
@@ -489,9 +343,10 @@ def s_plus(
             threads; may change in future versions (results are the same at any size).
             None = disabled (no blocking).
             int > 0 = explicit size in number of float32 entries.
-        prepare: Private (p3alpha, rp3beta): `prepare(m1, m2)` gets the call's
-            canonical copies before the data checks, changes their values in
-            place, and returns custom m2 depop weights (or None).
+        walk: Private (p3alpha, rp3beta): (alpha, popularity). Both inputs'
+            rows l1-normalized (after `binary`), then raised to alpha keeping
+            signs; `popularity` replaces m2's depop weights by its column
+            sums of |x| before the walk.
 
     Returns:
         A sparse matrix of shape (n_rows, n_cols) in the specified format,
@@ -503,9 +358,9 @@ def s_plus(
             a block_size other than 'auto', None or an int > 0, input values
             not finite in float32, a1 != 1 or bayesian_shrink on signed input
             (values < 0, not binary), or l1 != 0 with t1, t2 whose tversky
-            term can be <= 0 on weighted input (see `_check_score_rules`), values
-            out of float32 range for a score computed from pre-scaled inputs
-            (see `_prescale`).
+            term can be <= 0 on weighted input, values out of float32 range
+            for a score computed from pre-scaled inputs (the core's
+            `similarity` rules), ids out of range.
     """
     if matrix2 is None:
         matrix2 = matrix1.T
@@ -539,279 +394,66 @@ def s_plus(
         block_size=block_size,
     )
 
-    # Sorted, unique: output rows come out in row order (CSR straight from the
-    # counts), and a duplicate target would duplicate its row's entries.
-    if target_rows is not None:
-        target_rows = np.unique(_ids("target_rows", target_rows, matrix1.shape[0])).astype(np.int32)
-
-    targets = np.arange(matrix1.shape[0], dtype=np.int32) if target_rows is None else target_rows
-    n_targets = len(targets)
+    if target_rows is not None:  # any order, duplicates ignored (the core sorts)
+        target_rows = _ids("target_rows", target_rows)
 
     bar = None
     if verbose:
+        n_targets = matrix1.shape[0] if target_rows is None else len(np.unique(target_rows))
         bar = _core.ProgressBar(n_targets, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
         bar.set_description("Preprocessing")
     try:
-        res = _s_plus(
-            bar,
-            matrix1,
-            matrix2,
-            targets,
-            k,
-            Params(a1, l1, l2, l3, t1, t2, stabilized_shrink, bayesian_shrink, threshold),
-            NormParams(c1, c2, p1, p2, additive_shrink, weight_depop_matrix1, weight_depop_matrix2, binary),
-            filter_cols,
-            target_cols,
-            format_output,
-            num_threads,
-            block_size,
-            prepare,
+        indptr, cols, vals, kernel_seconds = _core.similarity(
+            m1=_sparse(matrix1),
+            m2=_sparse(matrix2),
+            k=k,
+            params=Params(a1, l1, l2, l3, t1, t2, stabilized_shrink, bayesian_shrink, threshold),
+            c1=c1,
+            c2=c2,
+            p1=p1,
+            p2=p2,
+            additive_shrink=additive_shrink,
+            pop1=_pop(weight_depop_matrix1),
+            pop2=_pop(weight_depop_matrix2),
+            binary=binary,
+            walk=walk,
+            target_rows=target_rows,
+            filter_cols=_selector("filter_cols", filter_cols),
+            target_cols=_selector("target_cols", target_cols),
+            block_size=block_size,
+            column_order=_COLUMN_ORDER,
+            num_threads=num_threads,
+            progress=bar,
         )
+        if bar is not None:
+            bar.set_description(f"Building {format_output} matrix")
+        output_start = time.perf_counter()
+        out = _build_output(indptr, cols, vals, (matrix1.shape[0], matrix2.shape[1]), format_output)
+        _last_timings.update(kernel=kernel_seconds, output=time.perf_counter() - output_start)
     except BaseException:
         if bar is not None:
             bar.close("Failed")
         raise
     if bar is not None:
         bar.close("Done")
-    return res
-
-
-def _s_plus(
-    bar,
-    matrix1,
-    matrix2,
-    targets,
-    k,
-    params: Params,
-    norm_params: NormParams,
-    filter_cols,
-    target_cols,
-    format_output,
-    num_threads,
-    block_size,
-    prepare,
-):
-    m1 = _canonical_csr(matrix1, np.float32, num_threads)
-    m2 = _canonical_csr(matrix2, np.float32, num_threads)
-    if prepare is not None and (w := prepare(m1, m2)) is not None:
-        norm_params = norm_params._replace(depop2=w)
-    n_output_rows, n_output_cols = m1.shape[0], m2.shape[1]
-    _check_data(m1, m2, params, norm_params)
-    if norm_params.binary:  # in place: the raw values were only needed by `_check_data`
-        m1.data[:] = 1
-        m2.data[:] = 1
-
-    norms = _norms(m1, m2, n_output_cols, params, norm_params)
-    params, norms = _depop_as_cosine(params, norms)
-    if _product_form(params):
-        _prescale(m1, m2, params.l2, norms)
-        params, norms = params._replace(l2=0), Norms()  # plain dot of the scaled inputs: DOT mode
-    filt, targ, m2 = _selectors(filter_cols, target_cols, m2, n_output_cols, num_threads)
-    m2, norms, filt, targ, new_to_old = _popularity_layout(m2, norms, filt, targ, n_output_cols, num_threads)
-    if isinstance(block_size, str):  # 'auto'; None (no blocking) and int > 0 go as they are
-        # hot bytes per column: the f32 accumulator + each y-norm array the drain reads (none in DOT mode)
-        n_arrays = sum(y is not None for y in (norms.y_tversky, norms.y_cosine, norms.y_depop))
-        block_size = _core.auto_block_size(n_output_cols, num_threads, 4 * (1 + n_arrays)) or None
-
-    if bar is not None:
-        bar.set_description("Computing")
-    kernel_start = time.perf_counter()
-    cols, vals, counts = _core.compute_similarities(
-        targets=targets,
-        m1=m1,
-        m2=m2,
-        norms=norms,
-        params=params,
-        k=k,
-        filter=filt,
-        target=targ,
-        col_map=new_to_old,
-        num_threads=num_threads,
-        block_size=block_size,
-        progress=bar,
-    )
-    kernel_end = time.perf_counter()
-
-    if bar is not None:
-        bar.set_description(f"Building {format_output} matrix")
-    out = _build_output(cols, vals, counts, targets, (n_output_rows, n_output_cols), format_output)
-    _last_timings.update(kernel=kernel_end - kernel_start, output=time.perf_counter() - kernel_end)
     return out
 
 
-# ---- `_s_plus` steps. CSR arrays travel as `Csr`, matrix selectors as
-# (indptr, indices) or None, norms as `Norms`. ----
+def _pop(weights):
+    """'none' / 'sum' as they are, custom weights as float32."""
+    return weights if isinstance(weights, str) else np.ascontiguousarray(weights, dtype=np.float32)
 
 
-def _norms(m1_arrays, m2_arrays, n_cols, params: Params, norm_params: NormParams):
+def _build_output(indptr, cols, vals, shape, format_output):
     """
-    The normalization terms the weights use (x per m1 row, y per m2 column); the
-    others stay None. float32, for the kernel and `_prescale` alike.
-    """
-    l1, l2, l3 = params.l1, params.l2, params.l3
-    c1, c2, p1, p2 = norm_params.c1, norm_params.c2, norm_params.p1, norm_params.p2
-    additive_shrink = norm_params.additive_shrink
-    weight_depop_matrix1, weight_depop_matrix2 = norm_params.depop1, norm_params.depop2
-    m1_data, m1_indptr, m2_data, m2_indices = m1_arrays.data, m1_arrays.indptr, m2_arrays.data, m2_arrays.indices
-    norms = Norms()
-    if l1 != 0 or l2 != 0:
-        m1_sq = _row_sums(np.square(m1_data), m1_indptr)
-        m2_sq = _col_sums(np.square(m2_data), m2_indices, n_cols)
-    if l1 != 0:
-        norms = norms._replace(x_tversky=m1_sq, y_tversky=m2_sq)
-    if l2 != 0:
-        f32 = np.float32
-        norms = norms._replace(
-            x_cosine=np.power(m1_sq + f32(additive_shrink), f32(c1), dtype=f32),
-            y_cosine=np.power(m2_sq + f32(additive_shrink), f32(c2), dtype=f32),
-        )
-    if l3 != 0:
-        # 'sum' popularity = sum of |x| (identical on non-negative input)
-        norms = norms._replace(
-            x_depop=_depop_weights(
-                weight_depop_matrix1, lambda: _row_sums(np.abs(m1_data), m1_indptr), np.float32(p1), len(m1_indptr) - 1
-            ),
-            y_depop=_depop_weights(
-                weight_depop_matrix2, lambda: _col_sums(np.abs(m2_data), m2_indices, n_cols), np.float32(p2), n_cols
-            ),
-        )
-    return norms
-
-
-def _product_form(p: Params) -> bool:
-    """
-    The score is xy / (l X[row] Y[col]): one cosine or one depop term (an
-    additive shrink sits inside the norms), no power, no other shrink. Then it
-    is the plain dot product of m1 rows scaled by 1 / (l X) and m2 columns by
-    1 / Y (`_prescale`).
-    """
-    return (
-        p.a1 == 1 and p.l1 == 0 and (p.l2 != 0) != (p.l3 != 0) and p.stabilized_shrink == 0 and p.bayesian_shrink == 0
-    )
-
-
-def _prescale(m1_arrays, m2_arrays, l2, norms) -> None:
-    """
-    For `_product_form` (after `_depop_as_cosine`, so the cosine slots): scales
-    m1 rows by 1 / (l2 X) and m2 columns by 1 / Y, in place (the call's own
-    copies), so the kernel can run DOT; 0 where a norm is 0 (an empty
-    row/column: the kernel scores 0 there too). A scaled value may underflow
-    to 0.0: the kernel scores it 0, never a result.
-
-    Raises ValueError on values out of float32 range for the score: a scale 0
-    or inf on a row/column with entries (its sum of squares or popularity
-    underflows or overflows, e.g. data x 1e-25 or x 1e19), or a scaled value
-    that overflows; every m1 row is checked, `target_rows` or not (scaled
-    whole). The kernel paths keep float32 norms too, without the check.
-    """
-    m1_data, m1_indptr, m2_data, m2_indices = m1_arrays.data, m1_arrays.indptr, m2_arrays.data, m2_arrays.indices
-    X, Y = norms.x_cosine, norms.y_cosine
-    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
-        sx = np.divide(1, np.float32(l2) * X, out=np.zeros_like(X), where=X != 0)
-        sy = np.divide(1, Y, out=np.zeros_like(Y), where=Y != 0)
-        m1_data *= np.repeat(sx, np.diff(m1_indptr))
-        m2_data *= sy[m2_indices]
-    used_x, used_y = np.diff(m1_indptr) > 0, np.bincount(m2_indices, minlength=len(Y)) > 0
-    ok = (
-        all(np.isfinite(a).all() and a.all() for a in (sx[used_x], sy[used_y]))
-        and np.isfinite(m1_data).all()
-        and np.isfinite(m2_data).all()
-    )
-    if not ok:
-        raise ValueError(
-            "input values out of float32 range for this similarity (a norm or a "
-            "scaled value underflows or overflows): rescale the input"
-        )
-
-
-def _depop_as_cosine(params: Params, norms):
-    """
-    Depop-only weights (rp3beta) through the cosine slots: the kernel's COSINE
-    mode instead of FULL, same bits. Both compute the term as `l * (x * y)`,
-    and FULL's den `0 + 0 + dp + shrink` adds only zeros to it (`score` in
-    kernel.rs); den == 0 gives 0 in both. A bayesian shrink stays FULL.
-    """
-    if params.l1 == 0 and params.l2 == 0 and params.l3 != 0:
-        return params._replace(l2=params.l3, l3=0), norms._replace(
-            x_cosine=norms.x_depop, y_cosine=norms.y_depop, x_depop=None, y_depop=None
-        )
-    return params, norms
-
-
-def _selectors(filter_cols, target_cols, m2_arrays, n_cols, num_threads):
-    """
-    (filter, target) matrix selectors for the kernel (`_matrix_selector`).
-    List selectors drop their columns from m2 here (returned m2): the target
-    list (or all columns) minus the filter list (ids validated in range).
-    """
-    filt = _matrix_selector(filter_cols, num_threads)
-    targ = _matrix_selector(target_cols, num_threads)
-    if _is_list(filter_cols) or _is_list(target_cols):
-        keep = np.ones(n_cols, dtype=bool)
-        if _is_list(target_cols):
-            keep = np.zeros(n_cols, dtype=bool)
-            keep[np.asarray(target_cols)] = True
-        if _is_list(filter_cols):
-            keep[np.asarray(filter_cols)] = False
-        m2_arrays = _keep_columns(m2_arrays, keep)
-    return filt, targ, m2_arrays
-
-
-def _popularity_layout(m2_arrays, norms, filt, targ, n_cols, num_threads):
-    """
-    Popularity order (default, `_COLUMN_ORDER`): renumber m2 columns by
-    descending count, on every call, blocked or not. Popular columns share the
-    first, cache-hot blocks, and the kernel's tie rule (lower column wins) means
-    the same thing on every path: ties go to the more popular column, then to
-    the lower original id (stable sort); 'original' keeps the ids (one path:
-    an identity remap). The kernel writes original ids (`new_to_old`).
-    Blocking needs sorted m2 rows (binary search): canonical m2 is, and a
-    renumbering re-sorts.
-    """
-    if _COLUMN_ORDER == "popularity":
-        new_to_old = np.argsort(-np.bincount(m2_arrays.indices, minlength=n_cols), kind="stable").astype(np.int32)
-    else:
-        new_to_old = np.arange(n_cols, dtype=np.int32)
-    old_to_new = np.empty(n_cols, dtype=np.int32)
-    old_to_new[new_to_old] = np.arange(n_cols, dtype=np.int32)
-    norms = norms._replace(
-        y_tversky=_permuted(norms.y_tversky, new_to_old),
-        y_cosine=_permuted(norms.y_cosine, new_to_old),
-        y_depop=_permuted(norms.y_depop, new_to_old),
-    )
-    for sel in (filt, targ):  # matrix selectors: the pattern only
-        if sel is not None:
-            _core.remap_sort_rows(indptr=sel[0], indices=sel[1], data=None, forward=old_to_new, num_threads=num_threads)
-    # ponytail: unblocked calls re-sort too (one Rust pass does both); a
-    # remap-only pass would skip the sort if it ever shows in a profile
-    _core.remap_sort_rows(
-        indptr=m2_arrays.indptr,
-        indices=m2_arrays.indices,
-        data=m2_arrays.data,
-        forward=old_to_new,
-        num_threads=num_threads,
-    )
-    return m2_arrays, norms, filt, targ, new_to_old
-
-
-def _permuted(y, new_to_old):
-    """A per-column norm in the new column order (None: unused)."""
-    return None if y is None else y[new_to_old]
-
-
-def _build_output(cols, vals, counts, targets, shape, format_output):
-    """
-    Rows come back exact (no padding), sorted by column, in target order
-    (ascending, unique), so both formats wrap the kernel's arrays without a
-    copy. Canonical as well: no duplicates and no zeros (the kernel drops 0.0
-    scores: cancelled sums on signed input, or an f32 underflow).
+    The core's CSR (int64 indptr, exact rows sorted by column, canonical: no
+    duplicates, no zeros) wrapped without a copy: indptr narrowed to int32
+    while it fits; COO rows from the indptr.
     """
     if format_output == "coo":
-        out = sp.coo_array((vals, (np.repeat(targets, counts), cols)), shape=shape)
+        rows = np.repeat(np.arange(shape[0], dtype=np.int32), np.diff(indptr))
+        out = sp.coo_array((vals, (rows, cols)), shape=shape)
     else:
-        indptr = np.zeros(shape[0] + 1, dtype=np.int64)
-        indptr[targets + 1] = counts
-        np.cumsum(indptr, out=indptr)
         indptr = indptr.astype(_indptr_dtype(indptr[-1]), copy=False)
         if indptr.dtype == np.int64:  # scipy wants one index dtype: it would upcast cols anyway
             cols = cols.astype(np.int64)

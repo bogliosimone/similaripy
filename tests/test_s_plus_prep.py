@@ -1,8 +1,6 @@
 """s_plus prep: input canonicalization, layout, selectors, output build, and the
 regressions they fixed."""
 
-from itertools import pairwise
-
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -135,24 +133,6 @@ def test_trailing_empty_rows():
 def _csr_bytes(m):
     m = m.tocsr()
     return [(a.dtype, a.tobytes()) for a in (m.data, m.indices, m.indptr)]
-
-
-# without shrink rp3beta takes `_product_form` instead
-@pytest.mark.parametrize(
-    "kwargs", [{"shrink": 3}, {"shrink": 3, "shrink_type": "bayesian"}, {"alpha": 0.7, "beta": 0.4, "shrink": 0.5}]
-)
-@pytest.mark.parametrize("block_size", [None, 8])
-def test_depop_as_cosine_same_bits(kwargs, block_size, monkeypatch):
-    # rp3beta (depop only) through the cosine slots: COSINE mode, FULL's bits
-    from similaripy import _s_plus
-
-    d = _m(80, 50, seed=3).toarray()
-    d[5], d[:, 7] = 0, 0  # an empty row and column
-    m = sp.csr_array(d)
-    kw = dict(k=20, verbose=False, block_size=block_size, **kwargs)
-    swapped = sim.rp3beta(m, **kw)
-    monkeypatch.setattr(_s_plus, "_depop_as_cosine", lambda params, norms: (params, norms))
-    assert _csr_bytes(swapped) == _csr_bytes(sim.rp3beta(m, **kw))
 
 
 @pytest.mark.parametrize("order", ["popularity", "original"])
@@ -323,7 +303,7 @@ def test_selector_matrix_uses_summed_values(fmt, selector):
 
 
 @pytest.mark.parametrize("fmt", ["csr", "coo"])
-def test_selector_matrix_all_cancelled_selects_nothing(fmt):
+def test_selector_matrix_all_cancelled(fmt):
     m = _m(60, 40)
     sel = _cancelling_selector(fmt)
     sel = sel.tocoo()
@@ -332,7 +312,8 @@ def test_selector_matrix_all_cancelled_selects_nothing(fmt):
     sel = sel if fmt == "coo" else sp.csr_array((sel.data, sel.col, [0, 2] + [2] * 59), shape=sel.shape)
     kw = {"k": 10, "verbose": False}
     _same(sim.cosine(m, filter_cols=sel, **kw), sim.cosine(m, **kw))
-    assert sim.cosine(m, target_cols=sel, **kw).nnz == 0
+    with pytest.raises(ValueError, match="target_cols is empty"):  # would score nothing, as an empty one
+        sim.cosine(m, target_cols=sel, **kw)
 
 
 _BAD_PARAMS = [
@@ -602,65 +583,13 @@ def test_normalization_canonicalizes_input(name, kw, axis):
 
 
 @pytest.mark.parametrize(
-    "args, expected",
-    [
-        ((1, 0, 1, 0, 0, 0), True),  # cosine, asymmetric cosine (additive shrink inside the norms)
-        ((1, 0, 0, 1, 0, 0), True),  # rp3beta
-        ((0.9, 0, 1, 0, 0, 0), False),  # s_plus alpha: (x s)^a1 != x^a1 s
-        ((1, 1, 1, 0, 0, 0), False),  # tversky term
-        ((1, 0, 1, 1, 0, 0), False),  # cosine + depop
-        ((1, 0, 0, 0, 0, 0), False),  # dot product: nothing to scale
-        ((1, 0, 1, 0, 2, 0), False),  # stabilized shrink
-        ((1, 0, 0, 1, 0, 2), False),  # bayesian shrink
-    ],
-)
-def test_product_form_selection(args, expected):
-    from similaripy import _s_plus
-
-    a1, l1, l2, l3, stabilized, bayesian = args
-    assert _s_plus._product_form(_s_plus.Params(a1, l1, l2, l3, 1, 1, stabilized, bayesian, 0)) is expected
-
-
-def test_prescale_in_place_zero_norm_gives_zero():
-    # a 0 norm only on an empty row/column: scale 0 there
-    from similaripy import _s_plus
-
-    m = sp.csr_array(np.array([[1, 0, 2], [0, 0, 0], [3, 0, 4], [0, 0, 5]], dtype=np.float32))
-    d1, d2 = m.data.copy(), m.data.copy()
-    X, Y = np.array([2, 0, 4, 1], dtype=np.float32), np.array([0.5, 0, 2], dtype=np.float32)
-    norms = _s_plus.Norms(x_cosine=X, y_cosine=Y)
-    _s_plus._prescale(_s_plus.Csr(d1, m.indices, m.indptr, 3), _s_plus.Csr(d2, m.indices, m.indptr, 3), 2, norms)
-    rows = np.repeat(np.arange(4), np.diff(m.indptr))
-    np.testing.assert_allclose(d1, m.data / (2 * X)[rows], rtol=1e-6)
-    np.testing.assert_allclose(d2, m.data / Y[m.indices], rtol=1e-6)
-
-
-def test_prescale_scaled_overflow_raises():
-    # 1 / Y = 1e10 times 1e30 overflows float32
-    from similaripy import _s_plus
-
-    m = _m(4, 3, seed=1)
-    m.data[0] = 1e30
-    norms = _s_plus.Norms(x_cosine=np.ones(4, dtype=np.float32), y_cosine=np.full(3, 1e-10, dtype=np.float32))
-    with pytest.raises(ValueError, match="out of float32 range"):
-        _s_plus._prescale(
-            _s_plus.Csr(m.data.copy(), m.indices, m.indptr, 3),
-            _s_plus.Csr(m.data.copy(), m.indices, m.indptr, 3),
-            1,
-            norms,
-        )
-
-
-@pytest.mark.parametrize(
     "name, scale, kw",
     [
-        ("cosine", 1e19, {}),  # sums of squares overflow
-        ("cosine", 1e-30, {}),  # sums of squares underflow
-        ("asymmetric_cosine", 1e-25, {}),
+        ("cosine", 1e-40, {}),  # the norm underflows float32: 1 / X is inf
+        ("cosine", 3e38, {}),  # the norm overflows float32
         ("rp3beta", 1e-30, {"beta": 2.0}),  # pop^2 underflows
     ],
 )
-@pytest.mark.filterwarnings("ignore:overflow")  # the norm sums, before the raise
 def test_product_form_out_of_range_raises(name, scale, kw):
     # float32 norms (as the kernel paths): out of range raises instead of empty rows
     m = _m(60, 40, seed=4)
@@ -668,12 +597,14 @@ def test_product_form_out_of_range_raises(name, scale, kw):
         getattr(sim, name)(m * np.float32(scale), k=10, verbose=False, **kw)
 
 
-def test_signed_power_alpha_one_same_bits():
-    # p3alpha / rp3beta skip the power at alpha == 1: same bits as computing it
-    from similaripy.similarity import _signed_power
-
-    x = np.array([0.3, -0.0, 0.0, -2.5, 1e-40, 3e38, -1e-45], dtype=np.float32)
-    assert _signed_power(x, 1).tobytes() == np.copysign(np.abs(x) ** 1.0, x).tobytes()
+@pytest.mark.parametrize("name, scale", [("cosine", 1e19), ("cosine", 1e-30), ("asymmetric_cosine", 1e-25)])
+def test_product_form_float64_sums_in_range(name, scale):
+    # sums of squares past float32's range (1e38 / 1e-60) fit the float64 sums:
+    # the norms (their roots) do, so the scores are the unscaled ones
+    m = _m(60, 40, seed=4)
+    ref = getattr(sim, name)(m, k=10, verbose=False)
+    out = getattr(sim, name)(m * np.float32(scale), k=10, verbose=False)
+    np.testing.assert_allclose(out.toarray(), ref.toarray(), atol=1e-6)
 
 
 def test_csr_arrays_longer_than_indptr():
@@ -687,21 +618,6 @@ def test_csr_arrays_longer_than_indptr():
         assert long.has_canonical_format
         _same(sim.cosine(long, k=10, verbose=False), ref)
         _same(sim.normalization.bm25(long), sim.normalization.bm25(m))
-
-
-@pytest.mark.parametrize("indptr", [[0, 0, 2, 2, 5, 5], [0, 3], [0, 0, 0], [0]])
-def test_row_sums_empty_rows(indptr):
-    # empty rows first, between and last are 0; the others summed in order (float32, and bool counted as int32)
-    from similaripy._s_plus import _row_sums
-
-    indptr = np.array(indptr, dtype=np.int64)
-    vals = np.arange(1, indptr[-1] + 1, dtype=np.float32)
-    want = [vals[a:b].sum() for a, b in pairwise(indptr)]
-    out = _row_sums(vals, indptr)
-    assert out.dtype == np.float32 and out.tolist() == want
-    sel = vals % 2 == 1
-    counts = _row_sums(sel, indptr, dtype=np.int32)
-    assert counts.dtype == np.int32 and counts.tolist() == [sel[a:b].sum() for a, b in pairwise(indptr)]
 
 
 @pytest.mark.parametrize("fmt", ["csr", "csc", "coo", "lil"])
@@ -744,7 +660,7 @@ def test_int64_indptr_path_same_values(case, monkeypatch):
 
 @pytest.mark.parametrize(
     "name",
-    ["compute_similarities", "remap_sort_rows", "canonicalize_rows", "canonical", "normalize", "tfidf", "bm25plus"],
+    ["similarity", "canonical", "normalize", "tfidf", "bm25plus"],
 )
 def test_core_bindings_keyword_only(name):
     # a swapped positional argument of the same type would pass silently
