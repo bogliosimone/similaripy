@@ -2,16 +2,25 @@
 Normalization parity: this install vs a reference install's `--dump`
 (two steps, as parity_kernel.py).
 
-Every output value must match with rtol=1e-5, atol=1e-7 (NaN/inf must match too);
-the data dtype and the sparsity structure must be identical (index dtypes may
-differ: v1 outputs int32 indices for any input, 0.7.0 kept the input's).
-BM25 changed on purpose in 1.0 (positive IDF, TF without (k1 + 1)): --compare runs
-0.7.0's form, idf_mode='bm25_robertson' times (k1 + 1) with delta / (k1 + 1).
+Every output value must match with rtol=1e-5 (`--rtol`), atol=1e-7 (NaN/inf must
+match too); the data dtype and the sparsity structure must be identical (index
+dtypes may differ: v1 outputs int32 indices for any input, 0.7.0 kept the input's).
+`--exact` makes any bit difference a failure (dtypes included): for changes that
+claim exactness, against a v1 dump.
+
+`--reference` says what made the dump. `v070` (default): BM25 changed on purpose
+in 1.0 (positive IDF, TF without (k1 + 1)), so --compare runs 0.7.0's form,
+idf_mode='bm25_robertson' times (k1 + 1) with delta / (k1 + 1). `v1`: another
+1.x install (e.g. the base commit of a change), called as is.
 
 Usage (from the repo root; the same options on both steps):
     uv run --isolated --no-project --python 3.14 --with similaripy==0.7.0 --with pandas --with datasets \
         python benchmarks/parity_normalization.py --dump ref_norm.npz
     python benchmarks/parity_normalization.py --compare ref_norm.npz
+
+    # two 1.x commits: dump under the base install, compare under the head
+    python benchmarks/parity_normalization.py --dump base_norm.npz
+    python benchmarks/parity_normalization.py --compare base_norm.npz --reference v1 --exact
 
     Synthetic: every mode x dtype x axis. --dataset movielens --version 32m:
     reduced set, outputs checked on a fixed 1% row sample (dump ~1 GB).
@@ -24,7 +33,7 @@ import sys
 import loaders
 import numpy as np
 import scipy.sparse as sp
-from parity_kernel import load_outputs, save_outputs
+from parity_kernel import identical, load_outputs, save_outputs
 
 import similaripy as sim
 
@@ -69,22 +78,26 @@ def with_dtypes(X, data_dtype, index_dtype):
     return X
 
 
-def check_case(name, ref, rs):
+def check_case(name, ref, rs, rtol=RTOL, exact=False):
     """ref: the dumped (data, indices, indptr, shape). Returns (ok, bit-identical)."""
     data, indices, indptr, shape = ref
+    rs = rs.tocsr()
+    same = tuple(shape) == rs.shape and identical((data, indices, indptr), rs)
     fail = None
-    if data.dtype != rs.data.dtype:
+    if exact and not same:
+        fail = "not bit-identical (--exact)"
+    elif data.dtype != rs.data.dtype:
         fail = f"dtype {data.dtype} vs {rs.data.dtype}"
     elif not (tuple(shape) == rs.shape and np.array_equal(indptr, rs.indptr) and np.array_equal(indices, rs.indices)):
         fail = "structure differs"
     else:
-        bad = ~np.isclose(rs.data, data, rtol=RTOL, atol=ATOL, equal_nan=True)
+        bad = ~np.isclose(rs.data, data, rtol=rtol, atol=ATOL, equal_nan=True)
         if bad.any():
             j = np.flatnonzero(bad)[0]
             fail = f"{bad.sum()} values differ, first at {j}: ref {data[j]!r} vs new {rs.data[j]!r}"
     if fail:
         print(f"{name:<40} FAIL  {fail}")
-    return fail is None, fail is None and np.array_equal(data, rs.data, equal_nan=True)
+    return fail is None, same
 
 
 def main():
@@ -94,6 +107,9 @@ def main():
     mode.add_argument("--compare", metavar="NPZ", help="check this install's outputs against a --dump file")
     p.add_argument("--dataset", default="synthetic", choices=["synthetic", "movielens", "yambda"])
     p.add_argument("--version", default=None)
+    p.add_argument("--reference", default="v070", choices=["v070", "v1"], help="--compare: what made the dump")
+    p.add_argument("--exact", action="store_true", help="--compare: fail on any bit difference")
+    p.add_argument("--rtol", type=float, default=RTOL, help=f"--compare: value tolerance (default {RTOL})")
     args = p.parse_args()
 
     if args.dataset == "synthetic":
@@ -103,7 +119,7 @@ def main():
     full = args.dataset == "synthetic"
     # Datasets: keep a fixed 1% of output rows, or 240 full outputs take ~90 GB
     rows = None if full else np.sort(np.random.default_rng(0).choice(X0.shape[0], X0.shape[0] // 100, replace=False))
-    meta = {k: v for k, v in vars(args).items() if k not in ("dump", "compare")}
+    meta = {k: v for k, v in vars(args).items() if k not in ("dump", "compare", "reference", "exact", "rtol")}
     ref = None if args.dump else load_outputs(args.compare, meta)
 
     ok, n_exact, outputs = True, 0, {}
@@ -113,13 +129,16 @@ def main():
         group_ok = True
         for name, func, kw in cases(full):
             key = f"{name} [{tag}]"
-            out = func(X, **kw | {"axis": axis}) if ref is None else as_v070(func, kw)(X, axis)
+            if ref is None or args.reference == "v1":
+                out = func(X, **kw | {"axis": axis})
+            else:
+                out = as_v070(func, kw)(X, axis)
             if rows is not None:
                 out = out.tocsr()[rows]
             if ref is None:
                 outputs[key] = out
             else:
-                case_ok, exact = check_case(key, ref(key), out)
+                case_ok, exact = check_case(key, ref(key), out, args.rtol, args.exact)
                 group_ok &= case_ok
                 n_exact += exact
         if ref is not None:
