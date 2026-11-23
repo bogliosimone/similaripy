@@ -353,11 +353,9 @@ pub(crate) fn similarity<'py>(
                 };
                 // Separate instantiations: without a bar the kernel has no per-row branch.
                 match bar {
-                    Some(bar) => core::similarity(a, b, n_cols, o, &|| bar.tick(), |p| {
-                        bar.set_description(match p {
-                            Phase::Prep => "Preprocessing",
-                            Phase::Compute => "Computing",
-                        })
+                    Some(bar) => core::similarity(a, b, n_cols, o, &|| bar.tick(), |p| match p {
+                        Phase::Prep => bar.phase("Preprocessing", "prep"),
+                        Phase::Compute { rows } => bar.rows_phase("Computing", "compute", rows),
                     }),
                     None => core::similarity(a, b, n_cols, o, &|| {}, |_| {}),
                 }

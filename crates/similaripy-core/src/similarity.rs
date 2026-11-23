@@ -66,7 +66,10 @@ pub enum ColumnOrder {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Prep,
-    Compute,
+    /// Scoring `rows` target rows (`on_row` runs once per row).
+    Compute {
+        rows: usize,
+    },
 }
 
 /// The `s_plus` arguments. Defaults: dot product, k = 100, every row.
@@ -214,7 +217,9 @@ pub fn similarity<F: Fn() + Sync>(
         target_cols: pattern("target_cols", &target, n_cols)?,
         col_map: col_map.as_deref(),
     };
-    on_phase(Phase::Compute);
+    on_phase(Phase::Compute {
+        rows: targets.len(),
+    });
     let start = Instant::now();
     let out = compute(&inp, o.k, block, on_row)?;
     let kernel_seconds = start.elapsed().as_secs_f64();

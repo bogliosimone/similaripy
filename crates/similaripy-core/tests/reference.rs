@@ -1143,7 +1143,10 @@ mod driver {
         )
         .unwrap();
         use similaripy_core::similarity::Phase;
-        assert_eq!(*phases.lock().unwrap(), [Phase::Prep, Phase::Compute]);
+        assert_eq!(
+            *phases.lock().unwrap(),
+            [Phase::Prep, Phase::Compute { rows: 1 }]
+        );
         assert_eq!(rows.into_inner(), 1, "duplicate target rows computed once");
         assert_eq!(out.csr.indptr, [0, 0, 1]);
         assert_eq!((out.csr.indices, out.csr.data), (vec![0], vec![6.0]));
