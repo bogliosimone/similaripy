@@ -62,9 +62,9 @@ fn remap_sort<V: Copy + Send>(
 /// to the front of `indices`/`data` in one sequential pass; returns the new
 /// indptr (the first `new_indptr[-1]` entries are the result).
 ///
-/// Replaces scipy's single-threaded COO -> CSR (2.2 s on a 93M-entry COO
-/// item model) and sums duplicate entries of CSR inputs, which would otherwise
-/// reach the kernel unsummed (wrong norms and binary counts).
+/// The canonical pass of `canonical` (parallel; scipy's `sum_duplicates` is
+/// single-threaded): duplicate entries would otherwise reach the kernel
+/// unsummed (wrong norms and binary counts).
 pub fn canonicalize_rows<V: Value>(
     indptr: &[i64],
     indices: &mut [i32],
@@ -353,6 +353,167 @@ pub fn group_interactions(
     Ok(out)
 }
 
+/// A caller's sparse matrix, borrowed (scipy's arrays): `indptr` + `indices`,
+/// or COO `rows` + `cols`, of one index type `I` (i32 | i64: scipy never mixes
+/// them), values `V` (f32 | f64).
+pub enum Sparse<'a, I, V> {
+    Csr {
+        indptr: &'a [I],
+        indices: &'a [I],
+        data: &'a [V],
+    },
+    Csc {
+        indptr: &'a [I],
+        indices: &'a [I],
+        data: &'a [V],
+    },
+    Coo {
+        rows: &'a [I],
+        cols: &'a [I],
+        data: &'a [V],
+    },
+}
+
+/// An owned canonical CSR: rows sorted by column, duplicates summed, no
+/// stored zeros. `indices`/`data` may have spare capacity past `indptr[-1]`.
+pub struct Csr<T> {
+    pub indptr: Vec<i64>,
+    pub indices: Vec<i32>,
+    pub data: Vec<T>,
+}
+
+/// The one door in: a caller's `n_rows x n_cols` matrix copied once into an
+/// owned canonical CSR of `T` values. The cast comes before duplicates are
+/// summed (a float64 value past float32's range becomes inf, a tiny one 0 and
+/// is dropped). `canonical`: the caller's hint that the input is sorted with
+/// no duplicates (scipy's `has_canonical_format`); zeros are dropped either way.
+///
+/// CSR: a cast copy. CSC and COO: one serial, stable counting sort by row (as
+/// scipy's `tocsr`): CSC rows come out sorted with duplicates in stored order,
+/// COO rows keep their stored order. Then `canonicalize_rows` (on the current
+/// rayon pool) unless the hint is true and no value is 0. Peak: the output +
+/// O(rows + cols). The bindings call it with the GIL released: under
+/// free-threading, a concurrent write to the input arrays races the copy.
+pub fn canonical<I, V, T>(
+    m: Sparse<'_, I, V>,
+    (n_rows, n_cols): (usize, usize),
+    canonical: bool,
+) -> Result<Csr<T>, Error>
+where
+    I: Copy + Into<i64>,
+    V: Value,
+    T: Value,
+{
+    let bad = |m: &str| Error::InvalidInput(format!("canonical: {m}"));
+    if n_cols > i32::MAX as usize + 1 {
+        return Err(bad("more than 2^31 columns (column ids are int32)"));
+    }
+    let in_range = |ids: &[I], n: usize| ids.iter().all(|&x| (0..n as i64).contains(&x.into()));
+    let cast = |v: &V| T::narrow(v.wide());
+    let (mut indptr, mut indices, mut data) = match m {
+        Sparse::Csr { indices, data, .. } | Sparse::Csc { indices, data, .. }
+            if data.len() != indices.len() =>
+        {
+            return Err(bad("len(data) != len(indices)"));
+        }
+        Sparse::Coo { rows, cols, data }
+            if rows.len() != cols.len() || data.len() != rows.len() =>
+        {
+            return Err(bad("rows, cols and data must have the same length"));
+        }
+        Sparse::Csr {
+            indptr,
+            indices,
+            data,
+        } => {
+            let indptr = offsets(indptr, n_rows, indices.len())?;
+            if !in_range(indices, n_cols) {
+                return Err(bad("column index out of range"));
+            }
+            let indices = indices.iter().map(|&c| c.into() as i32).collect();
+            (indptr, indices, data.iter().map(cast).collect())
+        }
+        Sparse::Csc {
+            indptr,
+            indices,
+            data,
+        } => {
+            let colptr = offsets(indptr, n_cols, indices.len())?;
+            if !in_range(indices, n_rows) {
+                return Err(bad("row index out of range"));
+            }
+            let cols = colptr
+                .windows(2)
+                .enumerate()
+                .flat_map(|(j, w)| std::iter::repeat_n(j as i32, (w[1] - w[0]) as usize));
+            scatter(indices, cols, data, n_rows, cast)
+        }
+        Sparse::Coo { rows, cols, data } => {
+            if !in_range(rows, n_rows) || !in_range(cols, n_cols) {
+                return Err(bad("row or column index out of range"));
+            }
+            scatter(
+                rows,
+                cols.iter().map(|&c| c.into() as i32),
+                data,
+                n_rows,
+                cast,
+            )
+        }
+    };
+    if !canonical || data.contains(&T::ZERO) {
+        indptr = canonicalize_rows(&indptr, &mut indices, &mut data)?;
+        let nnz = indptr[n_rows] as usize;
+        indices.truncate(nnz);
+        data.truncate(nnz);
+    }
+    Ok(Csr {
+        indptr,
+        indices,
+        data,
+    })
+}
+
+/// A caller's `n_major + 1` offsets widened to i64 and checked (`check_indptr`).
+fn offsets<I: Copy + Into<i64>>(ptr: &[I], n_major: usize, nnz: usize) -> Result<Vec<i64>, Error> {
+    if ptr.len() != n_major + 1 {
+        return Err(Error::InvalidInput(
+            "canonical: len(indptr) != n + 1".into(),
+        ));
+    }
+    let ptr: Vec<i64> = ptr.iter().map(|&p| p.into()).collect();
+    check_indptr("canonical", &ptr, nnz)?;
+    Ok(ptr)
+}
+
+/// Stable counting sort of entries by row (ids already checked): each row's
+/// entries in input order, values cast on the way.
+fn scatter<I: Copy + Into<i64>, V, T: Value>(
+    rows: &[I],
+    cols: impl Iterator<Item = i32>,
+    data: &[V],
+    n_rows: usize,
+    cast: impl Fn(&V) -> T,
+) -> (Vec<i64>, Vec<i32>, Vec<T>) {
+    let row = |r: I| r.into() as usize;
+    let mut indptr = vec![0i64; n_rows + 1];
+    for &r in rows {
+        indptr[row(r) + 1] += 1;
+    }
+    for i in 0..n_rows {
+        indptr[i + 1] += indptr[i];
+    }
+    let mut next = indptr.clone();
+    let (mut out_cols, mut out_vals) = (vec![0i32; rows.len()], vec![T::ZERO; rows.len()]);
+    for ((&r, c), v) in rows.iter().zip(cols).zip(data) {
+        let p = &mut next[row(r)];
+        out_cols[*p as usize] = c;
+        out_vals[*p as usize] = cast(v);
+        *p += 1;
+    }
+    (indptr, out_cols, out_vals)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,6 +650,378 @@ mod tests {
             }
         });
         assert!(seen.into_inner().unwrap().iter().all(|&s| s));
+    }
+
+    /// (indptr, indices) of `entries` (row, col, value) grouped by `major`
+    /// (rows for CSR, cols for CSC), stable: entries keep their order.
+    fn compressed(
+        entries: &[(i64, i64, f64)],
+        n_major: usize,
+        by_col: bool,
+    ) -> (Vec<i64>, Vec<i64>, Vec<f64>) {
+        let mut order: Vec<usize> = (0..entries.len()).collect();
+        let key = |e: &(i64, i64, f64)| if by_col { e.1 } else { e.0 };
+        order.sort_by_key(|&i| key(&entries[i]));
+        let mut indptr = vec![0i64; n_major + 1];
+        for e in entries {
+            indptr[key(e) as usize + 1] += 1;
+        }
+        for i in 0..n_major {
+            indptr[i + 1] += indptr[i];
+        }
+        let minor = order
+            .iter()
+            .map(|&i| if by_col { entries[i].0 } else { entries[i].1 })
+            .collect();
+        (indptr, minor, order.iter().map(|&i| entries[i].2).collect())
+    }
+
+    /// Every format and index type of `entries`, canonical with `hint`.
+    fn every_form<T: Value>(
+        entries: &[(i64, i64, f64)],
+        shape: (usize, usize),
+        hint: bool,
+    ) -> Vec<Csr<T>> {
+        let (rp, rc, rv) = compressed(entries, shape.0, false);
+        let (cp, cr, cv) = compressed(entries, shape.1, true);
+        let (rows, cols, vals): (Vec<i64>, Vec<i64>, Vec<f64>) = (
+            entries.iter().map(|e| e.0).collect(),
+            entries.iter().map(|e| e.1).collect(),
+            entries.iter().map(|e| e.2).collect(),
+        );
+        let n32 = |v: &[i64]| v.iter().map(|&x| x as i32).collect::<Vec<i32>>();
+        let (rp32, rc32, cp32, cr32, rows32, cols32) = (
+            n32(&rp),
+            n32(&rc),
+            n32(&cp),
+            n32(&cr),
+            n32(&rows),
+            n32(&cols),
+        );
+        let vals32: Vec<f32> = vals.iter().map(|&v| v as f32).collect();
+        vec![
+            canonical(
+                Sparse::Csr {
+                    indptr: &rp,
+                    indices: &rc,
+                    data: &rv,
+                },
+                shape,
+                hint,
+            )
+            .unwrap(),
+            canonical(
+                Sparse::Csc {
+                    indptr: &cp,
+                    indices: &cr,
+                    data: &cv,
+                },
+                shape,
+                hint,
+            )
+            .unwrap(),
+            canonical(
+                Sparse::Coo {
+                    rows: &rows,
+                    cols: &cols,
+                    data: &vals,
+                },
+                shape,
+                hint,
+            )
+            .unwrap(),
+            canonical(
+                Sparse::Csr {
+                    indptr: &rp32,
+                    indices: &rc32,
+                    data: &rv,
+                },
+                shape,
+                hint,
+            )
+            .unwrap(),
+            canonical(
+                Sparse::Csc {
+                    indptr: &cp32,
+                    indices: &cr32,
+                    data: &cv,
+                },
+                shape,
+                hint,
+            )
+            .unwrap(),
+            canonical(
+                Sparse::Coo {
+                    rows: &rows32,
+                    cols: &cols32,
+                    data: &vals32,
+                },
+                shape,
+                hint,
+            )
+            .unwrap(),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 256 }))]
+        // Every format, index type and output type: the dense per-cell sum (values exact in
+        // any order), sorted rows, no zeros, spare capacity cut.
+        #[test]
+        fn canonical_matches_dense_sum(
+            entries in proptest::collection::vec(
+                (0i64..7, 0i64..5, prop_oneof![Just(0.0f64), Just(1.0), Just(-1.0), Just(2.5)]),
+                0..if cfg!(miri) { 12 } else { 60 },
+            ),
+            empty_tail in 0usize..3,
+        ) {
+            let shape = (7 + empty_tail, 5 + empty_tail);
+            let mut dense = vec![vec![0.0f64; shape.1]; shape.0];
+            for &(r, c, v) in &entries {
+                dense[r as usize][c as usize] += v;
+            }
+            let mut want = (vec![0i64], vec![], vec![]);
+            for row in &dense {
+                for (c, &v) in row.iter().enumerate().filter(|(_, v)| **v != 0.0) {
+                    want.1.push(c as i32);
+                    want.2.push(v);
+                }
+                want.0.push(want.1.len() as i64);
+            }
+            for out in every_form::<f32>(&entries, shape, false) {
+                prop_assert_eq!(&out.indptr, &want.0);
+                prop_assert_eq!(&out.indices, &want.1);
+                prop_assert!(out.data.iter().zip(&want.2).all(|(&a, &b)| a as f64 == b));
+            }
+            for out in every_form::<f64>(&entries, shape, false) {
+                prop_assert_eq!((&out.indptr, &out.indices, &out.data), (&want.0, &want.1, &want.2));
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_csc_sums_in_stored_order() {
+        // f32 sums that depend on the order; each column holds row 2 three times, summed in stored
+        // order (as scipy's tocsr): column 0 -1e8 + 1e8 + 1 = 1, column 1 1e8 + 1 - 1e8 = 0 (dropped).
+        let (indptr, indices) = ([0i64, 3, 6], [2i64, 2, 2, 2, 2, 2]);
+        let data = [-1e8, 1e8, 1.0, 1e8, 1.0, -1e8];
+        let out: Csr<f32> = canonical(
+            Sparse::Csc {
+                indptr: &indptr,
+                indices: &indices,
+                data: &data,
+            },
+            (3, 2),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            (out.indptr, out.indices, out.data),
+            (vec![0, 0, 0, 1], vec![0], vec![1.0])
+        );
+    }
+
+    #[test]
+    fn canonical_casts_before_summing() {
+        // f64 past f32's range -> inf (kept, the similarities report it); 1e-50 -> 0 in f32 (dropped);
+        // 0.1 + 0.2 summed in f32 after the cast; f64 output keeps the values as given
+        let (rows, cols) = ([0i64, 0, 1, 1], [0i64, 1, 0, 0]);
+        let data = [1e300, 1e-50, 0.1, 0.2];
+        let coo = || Sparse::Coo {
+            rows: &rows,
+            cols: &cols,
+            data: &data,
+        };
+        let out: Csr<f32> = canonical(coo(), (2, 2), false).unwrap();
+        assert_eq!((out.indptr, out.indices), (vec![0, 1, 2], vec![0, 0]));
+        assert_eq!(out.data, [f32::INFINITY, 0.1f32 + 0.2f32]);
+        let out: Csr<f64> = canonical(coo(), (2, 2), false).unwrap();
+        assert_eq!(out.data, [1e300, 1e-50, 0.1 + 0.2]);
+    }
+
+    #[test]
+    fn canonical_hint_skips_the_pass() {
+        // A wrong hint isn't checked (scipy's flag is trusted, as before): rows stay as given.
+        // Zeros are dropped whatever the hint.
+        let (indptr, indices, data) = ([0i32, 2], [1i32, 0], [1.0f32, 2.0]);
+        let csr = || Sparse::Csr {
+            indptr: &indptr,
+            indices: &indices,
+            data: &data,
+        };
+        assert_eq!(
+            canonical::<_, _, f32>(csr(), (1, 2), true).unwrap().indices,
+            [1, 0]
+        );
+        assert_eq!(
+            canonical::<_, _, f32>(csr(), (1, 2), false)
+                .unwrap()
+                .indices,
+            [0, 1]
+        );
+        let zero = [1.0f32, 0.0];
+        let out: Csr<f32> = canonical(
+            Sparse::Csr {
+                indptr: &indptr,
+                indices: &indices,
+                data: &zero,
+            },
+            (1, 2),
+            true,
+        )
+        .unwrap();
+        assert_eq!((out.indptr, out.indices), (vec![0, 1], vec![1]));
+    }
+
+    #[test]
+    fn canonical_empty() {
+        for shape in [(0, 0), (0, 3), (3, 0), (4, 4)] {
+            let ptr = vec![0i64; shape.0 + 1];
+            let out: Csr<f32> = canonical(
+                Sparse::Csr {
+                    indptr: &ptr,
+                    indices: &[],
+                    data: &[0f32; 0],
+                },
+                shape,
+                false,
+            )
+            .unwrap();
+            assert_eq!(out.indptr, ptr);
+            let ptr = vec![0i64; shape.1 + 1];
+            let out: Csr<f32> = canonical(
+                Sparse::Csc {
+                    indptr: &ptr,
+                    indices: &[],
+                    data: &[0f32; 0],
+                },
+                shape,
+                false,
+            )
+            .unwrap();
+            assert_eq!((out.indptr.len(), out.indices.len()), (shape.0 + 1, 0));
+            let out: Csr<f32> = canonical(
+                Sparse::Coo {
+                    rows: &[0i32; 0],
+                    cols: &[],
+                    data: &[0f32; 0],
+                },
+                shape,
+                false,
+            )
+            .unwrap();
+            assert_eq!((out.indptr.len(), out.data.len()), (shape.0 + 1, 0));
+        }
+    }
+
+    #[test]
+    fn canonical_rejects_bad_inputs() {
+        let c = |m: Sparse<'_, i64, f32>, shape| canonical::<_, _, f32>(m, shape, false).is_err();
+        let d = [1.0f32, 2.0];
+        assert!(c(
+            Sparse::Csr {
+                indptr: &[0, 2],
+                indices: &[0, 2],
+                data: &d
+            },
+            (1, 2)
+        )); // col 2 >= 2
+        assert!(c(
+            Sparse::Csr {
+                indptr: &[0, 2],
+                indices: &[0, -1],
+                data: &d
+            },
+            (1, 2)
+        ));
+        assert!(c(
+            Sparse::Csr {
+                indptr: &[0, 2],
+                indices: &[0, 1],
+                data: &d[..1]
+            },
+            (1, 2)
+        ));
+        assert!(c(
+            Sparse::Csr {
+                indptr: &[0, 1],
+                indices: &[0, 1],
+                data: &d
+            },
+            (1, 2)
+        )); // indptr[-1] != nnz
+        assert!(c(
+            Sparse::Csr {
+                indptr: &[0, 2],
+                indices: &[0, 1],
+                data: &d
+            },
+            (2, 2)
+        )); // len(indptr)
+        assert!(c(
+            Sparse::Csr {
+                indptr: &[1, 2],
+                indices: &[0, 1],
+                data: &d
+            },
+            (1, 2)
+        ));
+        assert!(c(
+            Sparse::Csc {
+                indptr: &[0, 2, 1],
+                indices: &[0, 0],
+                data: &d
+            },
+            (1, 2)
+        )); // not monotone
+        assert!(c(
+            Sparse::Csc {
+                indptr: &[0, 1, 2],
+                indices: &[0, 1],
+                data: &d
+            },
+            (1, 2)
+        )); // row 1 >= 1
+        assert!(c(
+            Sparse::Coo {
+                rows: &[0, 1],
+                cols: &[0, 0],
+                data: &d
+            },
+            (1, 2)
+        ));
+        assert!(c(
+            Sparse::Coo {
+                rows: &[0, 0],
+                cols: &[0, 5],
+                data: &d
+            },
+            (1, 2)
+        ));
+        assert!(c(
+            Sparse::Coo {
+                rows: &[0],
+                cols: &[0, 0],
+                data: &d
+            },
+            (1, 2)
+        ));
+        assert!(c(
+            Sparse::Coo {
+                rows: &[],
+                cols: &[],
+                data: &[]
+            },
+            (1, (1 << 31) + 1)
+        )); // > 2^31 columns
+        assert!(!c(
+            Sparse::Coo {
+                rows: &[],
+                cols: &[],
+                data: &[]
+            },
+            (1, 1 << 31)
+        ));
     }
 
     #[test]
