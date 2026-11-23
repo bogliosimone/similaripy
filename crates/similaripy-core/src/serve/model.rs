@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use super::ids::{ExtIds, dense_in};
 use super::{EMPTY, invalid, words};
+pub use crate::block::BlockSize;
 use crate::csr::{CsrView, check_indptr};
 use crate::prep::{LEAF_NNZ, canonical_copy, par_leaves_one};
 use crate::store::{self, Buf};
@@ -80,34 +81,6 @@ impl std::ops::Deref for Model {
 
     fn deref(&self) -> &Core {
         &self.core
-    }
-}
-
-/// Column block size of a worker's requests, as the similarity functions'
-/// `block_size`: a runtime setting of whoever serves the model (never saved,
-/// W1), resolved once per worker (`resolve`, W3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BlockSize {
-    /// `block::auto_block_size` for the threads that serve the model at once
-    /// (D65: one block wins alone, loses 9-38% under concurrent requests).
-    Auto,
-    /// One block (no blocking): for a lone request on an idle machine.
-    Off,
-    /// Entries per block, > 0.
-    Size(usize),
-}
-
-impl BlockSize {
-    /// The block for a model with `n_active` columns served by `threads`
-    /// threads at once (`usize::MAX`: every core on the L2 busy, clamped to
-    /// its cores); 0 = one block.
-    pub fn resolve(self, n_active: usize, threads: usize) -> Result<usize, Error> {
-        match self {
-            BlockSize::Auto => Ok(crate::block::auto_block_size(n_active, threads, 4)),
-            BlockSize::Off => Ok(0),
-            BlockSize::Size(0) => invalid("block_size must be > 0"),
-            BlockSize::Size(n) => Ok(n),
-        }
     }
 }
 
