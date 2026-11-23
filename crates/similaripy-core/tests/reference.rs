@@ -1220,6 +1220,8 @@ proptest! {
         a1 in prop_oneof![Just(1.0f32), 0.3f32..2.0],
         (stabilized, bayesian) in prop_oneof![Just((0.0f32, 0.0f32)), (0.1f32..5.0).prop_map(|s| (s, 0.0)), (0.1f32..5.0).prop_map(|b| (0.0, b))],
     ) {
+        // Not under Miri: it adds random error to powf, so the two runs' powers differ there.
+        let a1 = if cfg!(miri) { 1.0 } else { a1 };
         let (a, b) = (to_csr(&m1), to_csr(&m2));
         let (m, n) = (m2.len(), y.len());
         let targets: Vec<i32> = (0..m1.len() as i32).collect();
