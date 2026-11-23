@@ -50,7 +50,7 @@ def _tf_idf_reference(X, tf_mode, idf_mode, logbase):
             "unary": np.ones(A.shape[1]),
             "base": np.log(n / df),
             "smooth": np.log(n / (1 + df)),
-            "prob": np.log((n - df) / df),
+            "prob": np.where(df == n, 0.0, np.log((n - df) / df)),  # a term in every document weighs 0
             "bm25": np.log1p((n - df + 0.5) / (df + 0.5)),
             "bm25_robertson": np.log((n - df + 0.5) / (df + 0.5)),
         }[idf_mode] / (1 if idf_mode == "unary" else np.log(logbase))
@@ -244,3 +244,15 @@ def test_weighting_parameter_bounds_accepted():
         out = norm.bm25(X, **kw)
         assert np.isfinite(out.data).all() and (out.data > 0).all()
     np.testing.assert_array_equal(norm.bm25plus(X, delta=0.0).toarray(), norm.bm25(X).toarray())
+
+
+@pytest.mark.parametrize("axis", [1, 0])
+@pytest.mark.parametrize("fn", [norm.tfidf, norm.bm25plus])
+def test_prob_idf_term_in_every_document_weighs_zero(fn, axis):
+    # 4 documents; column 0 in all (df = N: 0), column 1 in 3 (log(1/3) < 0), column 2 in 1 (log 3 > 0)
+    A = np.array([[1.0, 1, 1], [2, 1, 0], [1, 1, 0], [3, 0, 0]])
+    out = fn(sp.csr_array(A if axis == 1 else A.T), axis=axis, tf_mode="raw", idf_mode="prob").toarray()
+    out = out if axis == 1 else out.T
+    assert np.isfinite(out).all()
+    assert (out[:, 0] == 0).all()
+    assert (out[A[:, 1] > 0, 1] < 0).all() and (out[A[:, 2] > 0, 2] > 0).all()

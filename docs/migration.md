@@ -18,8 +18,8 @@ can break your code come first; the full lists are at the end.
 - The normalizations no longer take `inplace` (`TypeError`): use the return
   value, `X = bm25(X)`. They always return a new `csr_array`.
 - The normalizations return float32 values for any input (0.7.0 kept the
-  input's float type), as the similarities; their sums (norms, document
-  lengths) are float64. If a later step needs float64, `.astype(np.float64)`.
+  input's float type), as the similarities. If a later step needs float64,
+  `.astype(np.float64)`.
 - `block_size=0` (0.7.0's auto) raises `ValueError`; the default is `'auto'`.
 - Invalid parameters raise `ValueError` instead of a silent result: negative
   weights or `threshold`, out-of-range ids, an empty `target_cols`, a shrink
@@ -115,12 +115,14 @@ accepts them with a few rules per function: see [Signed Input](signed-input.md).
 ??? info "Other changes"
     - Exact ties on binary or integer data in `cosine`, `asymmetric_cosine` and
       `rp3beta` can differ in the last bit (they run as a dot product of
-      pre-scaled inputs); `p3alpha` / `rp3beta` normalize in float32, so
-      float64 input may move by float rounding.
+      pre-scaled inputs); float64 input is cast to float32 first, so it may
+      move by float rounding.
     - Norms, popularities and document lengths (sums of squares, of `|x|`,
-      of `x`; `p3alpha` / `rp3beta`'s row sums, the normalizations' norms
-      too) are summed in float64 and rounded once to float32 (0.7.0: float32
-      sums), so scores and normalized values can move by float rounding.
+      of `x`; `p3alpha` / `rp3beta`'s row sums) are summed in float64 and
+      rounded once to float32 (0.7.0: float32 sums), so scores can move by
+      float rounding. The same in the normalizations: their norms, document
+      lengths, IDF, logs and BM25 terms are computed in float64 and rounded
+      once per stored value.
     - The order within a COO row differs from 0.7.0.
     - Inputs and outputs past 2^31 - 1 entries are allowed: the CSR then has
       int64 `indptr` and `indices` (scipy keeps one index dtype); int32 up to
@@ -128,9 +130,10 @@ accepts them with a few rules per function: see [Signed Input](signed-input.md).
     - Duplicate `target_rows` are computed once.
     - The normalizations return a `csr_array` also for `spmatrix` input (use
       `@` for products), with float32 values and int32 indices up to
-      2^31 - 1 entries, int64 past it, as the similarities.
-    - `axis=0` normalizations work on the columns of the one copy, with no
-      transposed copies.
+      2^31 - 1 entries, int64 past it, as the similarities. `axis=0` works on
+      the columns of the one copy, with no transposed copies.
+    - `idf_mode="prob"` weighs a term in every document 0 (the log would be
+      -inf).
     - New: `similaripy.normalization.binarize(X)`, the `binary=True` of the similarities as a
       separate step.
     - New: `similaripy.serving.SparseKNN`, an online engine over a similarity
