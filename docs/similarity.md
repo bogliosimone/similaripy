@@ -36,7 +36,7 @@ All similarity functions in Similaripy share the following parameters (everythin
 | `target_rows`    | List or array of row indices to compute. If `None`, computes for all rows. *(default: `None`)* |
 | `target_cols`    | Subset of columns to consider **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). `None` = all columns; an empty selector raises `ValueError`. *(default: `None`)* |
 | `filter_cols`    | Subset of columns to filter **before** applying top-k. Can be an array (applied to all rows) or a sparse matrix (row-specific). *(default: `None`)* |
-| `verbose`        | If `True`, shows a progress bar. *(default: `False`)* |
+| `verbose`        | If `True`, shows a progress bar on `sys.stderr`: one redrawn line in a terminal or Jupyter, one line per phase and per 10% of the rows elsewhere (files, CI logs); the last line splits the time into prep, compute and build. *(default: `False`)* |
 | `format_output`  | Output format: `'csr'` or `'coo'`. *(default: `'csr'`)* |
 | `num_threads`    | Number of threads to use. `0` = all cores, on one shared thread pool (concurrent calls queue on it; `RAYON_NUM_THREADS` caps it). *(default: `0`)* |
 | `block_size`     | Block size for column-blocked accumulation. `'auto'` (recommended: the library's choice, from the output width, the L2 cache and the threads; may change in future versions), `None` = disabled, or an int > 0. Results are the same at any size. Set an int where the estimate misses: flat column work such as `dot_product(URM, S)` for recommendations (`262144`), or a container that reports the host's L2 or core count. *(default: `'auto'`)* |

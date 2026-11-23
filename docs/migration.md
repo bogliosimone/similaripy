@@ -14,7 +14,9 @@ can break your code come first; the full lists are at the end.
   `sim.normalization.bm25(X)`, as the 0.7.0 README did.
 - `format_output` defaults to `'csr'` (0.7.0: `'coo'`): pass
   `format_output='coo'` for the old format.
-- `verbose` defaults to `False`: pass `verbose=True` for the progress bar.
+- `verbose` defaults to `False`: pass `verbose=True` for the progress bar. It
+  writes to `sys.stderr` (0.7.0: the process's stderr) in a new format, and
+  prints plain lines when stderr is neither a terminal nor Jupyter.
 - The normalizations no longer take `inplace` (`TypeError`): use the return
   value, `X = bm25(X)`. They always return a new `csr_array`.
 - The normalizations return float32 values for any input (0.7.0 kept the

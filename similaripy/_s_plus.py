@@ -3,6 +3,9 @@ s_plus on the Rust core: argument checks, one `_core.similarity` call
 (canonical copies + the S-Plus pipeline), output wrap.
 """
 
+import contextlib
+import os
+import sys
 import time
 from typing import Any, Literal, NamedTuple
 
@@ -19,9 +22,6 @@ SparseInput = Any
 
 # Accumulator block in float32 entries (~1 MB), defined in the Rust core.
 DEFAULT_BLOCK_SIZE: int = _core.DEFAULT_BLOCK_SIZE
-
-PROGRESS_BAR_REFRESH_RATE = 3  # Hz
-PROGRESS_BAR_WIDTH = 25
 
 # Wall time (s) of the last call's kernel (scoring, top-K, per-row un-permute
 # + sort, compaction) and output build (matrix wrap). Read by the benchmark
@@ -396,12 +396,8 @@ def s_plus(
     if target_rows is not None:  # any order, duplicates ignored (the core sorts)
         target_rows = _ids("target_rows", target_rows)
 
-    bar = None
-    if verbose:
-        n_targets = matrix1.shape[0] if target_rows is None else len(np.unique(target_rows))
-        bar = _core.ProgressBar(n_targets, PROGRESS_BAR_REFRESH_RATE, PROGRESS_BAR_WIDTH)
-        bar.set_description("Preprocessing")
-    try:
+    bar = _core.ProgressBar(_live_bar(), _columns()) if verbose else None
+    with bar or contextlib.nullcontext():  # closes on "Done" or "Failed"
         indptr, cols, vals, kernel_seconds = _core.similarity(
             m1=_sparse(matrix1),
             m2=_sparse(matrix2),
@@ -425,17 +421,28 @@ def s_plus(
             progress=bar,
         )
         if bar is not None:
-            bar.set_description(f"Building {format_output} matrix")
+            bar.phase(f"Building {format_output} matrix", "build")
         output_start = time.perf_counter()
         out = _build_output(indptr, cols, vals, (matrix1.shape[0], matrix2.shape[1]), format_output)
         _last_timings.update(kernel=kernel_seconds, output=time.perf_counter() - output_start)
-    except BaseException:
-        if bar is not None:
-            bar.close("Failed")
-        raise
-    if bar is not None:
-        bar.close("Done")
     return out
+
+
+def _live_bar() -> bool:
+    """Redraw one line on a terminal or in Jupyter; log lines elsewhere (files, CI)."""
+    try:
+        tty = sys.stderr.isatty()
+    except (AttributeError, ValueError):  # no stderr, or closed
+        tty = False
+    return tty or "ipykernel" in sys.modules
+
+
+def _columns() -> int | None:
+    """stderr's terminal width; None for Jupyter, files and pipes."""
+    try:  # isatty first: ipykernel's stream can give the launching terminal's fd
+        return os.get_terminal_size(sys.stderr.fileno()).columns if sys.stderr.isatty() else None
+    except (AttributeError, ValueError, OSError):
+        return None
 
 
 def _pop(weights):
