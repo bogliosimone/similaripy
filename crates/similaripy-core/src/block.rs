@@ -5,7 +5,35 @@
 
 use std::sync::OnceLock;
 
-use crate::DEFAULT_BLOCK_SIZE;
+use crate::{DEFAULT_BLOCK_SIZE, Error};
+
+/// Column block size, as the similarity functions' `block_size`: shared by the
+/// similarity driver and serving (a runtime setting of whoever serves the
+/// model, never saved, W1; resolved once per worker, W3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockSize {
+    /// `block::auto_block_size` for the threads that serve the model at once
+    /// (D65: one block wins alone, loses 9-38% under concurrent requests).
+    Auto,
+    /// One block (no blocking): for a lone request on an idle machine.
+    Off,
+    /// Entries per block, > 0.
+    Size(usize),
+}
+
+impl BlockSize {
+    /// The block for a model with `n_active` columns served by `threads`
+    /// threads at once (`usize::MAX`: every core on the L2 busy, clamped to
+    /// its cores); 0 = one block.
+    pub fn resolve(self, n_active: usize, threads: usize) -> Result<usize, Error> {
+        match self {
+            BlockSize::Auto => Ok(auto_block_size(n_active, threads, 4)),
+            BlockSize::Off => Ok(0),
+            BlockSize::Size(0) => Err(Error::InvalidInput("block_size must be > 0".into())),
+            BlockSize::Size(n) => Ok(n),
+        }
+    }
+}
 
 /// Block size for `block_size='auto'` over `n_cols` columns on `threads`
 /// threads, `col_bytes` hot bytes per column (4: the f32 accumulator; the

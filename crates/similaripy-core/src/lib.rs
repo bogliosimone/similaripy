@@ -6,6 +6,7 @@ mod kernel;
 pub mod normalize;
 pub mod prep;
 pub mod serve;
+pub mod similarity;
 mod store;
 mod topk;
 
