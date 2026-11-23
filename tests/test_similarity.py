@@ -195,7 +195,7 @@ def test_binary_keeps_random_walk_normalization(name):
 def _drop_cancellation_noise(out, scores, eps=1e-6):
     """
     Exactly cancelled pairs (reference 0) may come back as float noise (~1e-8):
-    cosine and rp3beta run as a dot product of pre-scaled inputs (`_prescale`),
+    cosine and rp3beta run as a dot product of pre-scaled inputs (core `similarity/scale.rs`),
     whose rounding doesn't cancel exactly. Drop results below eps whose
     reference is ~0 too; any other result is left to `_check_scores`.
     """
@@ -243,7 +243,7 @@ def test_signed_input_matches_dense_reference(name, kw, block_size, k, threshold
     assert (scores < 0).any() and ((np.abs(A) @ np.abs(A).T > 0) & (A @ A.T == 0)).any()  # cancelled pairs
     out = getattr(sim, name)(m, k=k, threshold=threshold, block_size=block_size, verbose=False, **kw)
     if name in ("cosine", "asymmetric_cosine") and (not kw.get("shrink") or kw.get("shrink_type") == "additive"):
-        out = _drop_cancellation_noise(out, scores)  # product form only (`_product_form`)
+        out = _drop_cancellation_noise(out, scores)  # product form only (core `scale::product_form`)
     _check_scores(out, scores, k, threshold)
 
 

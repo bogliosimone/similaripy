@@ -6,8 +6,7 @@ from typing import Literal
 import numpy as np
 from scipy.sparse import coo_array, csr_array, sparray, spmatrix
 
-from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
-from ._s_plus import _check_scalar, _col_sums
+from ._s_plus import _check_scalar
 from ._s_plus import s_plus as _s_plus
 
 __all__ = [
@@ -577,7 +576,8 @@ def p3alpha(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
-        prepare=_random_walk(alpha, binary, popularity=False),
+        binary=binary,
+        walk=(alpha, False),
     )
 
 
@@ -662,7 +662,8 @@ def rp3beta(
         format_output=format_output,
         num_threads=num_threads,
         block_size=block_size,
-        prepare=_random_walk(alpha, binary, popularity=True),
+        binary=binary,
+        walk=(alpha, True),
     )
 
 
@@ -782,36 +783,6 @@ def s_plus(
         num_threads=num_threads,
         block_size=block_size,
     )
-
-
-def _random_walk(alpha: float, binary: bool, popularity: bool):
-    """
-    `prepare` for p3alpha / rp3beta, on the call's canonical copies (cleaned
-    once, no extra copy): binarize if asked, rp3beta's popularity (column sums
-    of |x| of m2, the item degree when binary), then the transition
-    probabilities (rows l1-normalized) raised to alpha, as in the papers.
-    """
-
-    def prepare(m1, m2):
-        if binary:  # before the normalization, which the kernel's binary mode would erase
-            m1.data[:] = 1
-            m2.data[:] = 1
-        pop = _col_sums(np.abs(m2.data), m2.indices, m2.shape[1]) if popularity else None
-        for m in (m1, m2):
-            _core.normalize(data=m.data, indices=m.indices, indptr=m.indptr, shape=m.shape, norm="l1")
-            m.data[:] = _signed_power(m.data, alpha)
-        return pop
-
-    return prepare
-
-
-def _signed_power(x: np.ndarray, alpha: float) -> np.ndarray:
-    """sign(x) |x|^alpha: x^alpha bit for bit on x > 0; on signed input a negative
-    transition weight keeps its sign (np.power would give NaN for a fractional alpha).
-    alpha == 1 returns x itself (the same bits, -0.0 included), saving the copies."""
-    if alpha == 1:
-        return x
-    return np.copysign(np.abs(x) ** alpha, x)
 
 
 def _shrink_values(

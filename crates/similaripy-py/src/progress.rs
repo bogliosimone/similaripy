@@ -61,7 +61,7 @@ impl ProgressBar {
         }
     }
 
-    fn set_description(&self, desc: &str) {
+    pub(crate) fn set_description(&self, desc: &str) {
         let mut line = self.lock();
         line.desc = desc.into();
         self.render(&mut line);

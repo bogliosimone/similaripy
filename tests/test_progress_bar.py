@@ -25,13 +25,11 @@ def test_progress_bar_silent(capfd, kw):
     assert capfd.readouterr() == ("", "")
 
 
-def test_progress_bar_closed_on_prep_error(capfd, monkeypatch):
-    from similaripy import _s_plus
-
-    def boom(cols, num_threads):
-        raise RuntimeError("prep failed")
-
-    monkeypatch.setattr(_s_plus, "_matrix_selector", boom)
-    with pytest.raises(RuntimeError, match="prep failed"):
-        sim.cosine(sp.random_array((60, 40), density=0.2, format="csr", rng=0), k=5, verbose=True)
-    assert capfd.readouterr().err.split("\r")[-1].startswith("Failed:")
+def test_progress_bar_closed_on_prep_error(capfd):
+    # the core's prep raises (a NaN value): the bar closes on "Failed"
+    m = sp.random_array((60, 40), density=0.2, format="csr", rng=0)
+    m.data[0] = np.nan
+    with pytest.raises(ValueError, match="must be finite"):
+        sim.cosine(m, k=5, verbose=True)
+    err = capfd.readouterr().err
+    assert "Preprocessing:" in err and err.split("\r")[-1].startswith("Failed:")

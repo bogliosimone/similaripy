@@ -68,9 +68,10 @@ accepts them with a few rules per function: see [Signed Input](signed-input.md).
       (`> 0` on rows/columns with entries).
     - Out-of-range ids in `target_rows`, and in `target_cols` / `filter_cols`
       lists (0.7.0 ignored them).
-    - An empty `target_cols` (list, array or sparse matrix with no entries),
-      which used to score every column: pass `None` for all columns. An empty
-      `filter_cols` is still accepted (it excludes nothing).
+    - An empty `target_cols` (list, array or sparse matrix with no entries,
+      or whose entries all sum to 0), which used to score every column: pass
+      `None` for all columns. An empty `filter_cols` is still accepted (it
+      excludes nothing).
     - A shrink that would do nothing: `additive` without a cosine term,
       `stabilized` on `dot_product` / `p3alpha` (it only rescaled the scores);
       see [Shrinkage Types](similarity.md#shrinkage-types).
@@ -79,15 +80,18 @@ accepts them with a few rules per function: see [Signed Input](signed-input.md).
       `(3, 0.05)`, for which 0.7.0 silently dropped pairs), and when
       `alpha + beta < 1` on signed input. No default is affected, nor binary or
       0/1 data.
-    - NaN or inf values in the normalizations (they used to spread NaN through
-      the row's or column's norm).
+    - NaN or inf values in the similarities' inputs (in float32; also with
+      `binary=True`, which would have turned them into 1) and in the
+      normalizations (they used to spread NaN through the row's or column's
+      norm).
     - `tfidf` / `bm25` / `bm25plus` parameters that gave negative or inf
       weights: `logbase <= 1`, `k1 < 0`, `b` outside `[0, 1]`, `delta < 0`.
     - Norms out of float32 range in `cosine` and `asymmetric_cosine` without a
-      shrink (e.g. data scaled by `1e-25` or `1e19`), in `rp3beta` when its
-      `pop^beta` leaves float32 range, and in `s_plus` with a single cosine or
-      depop term: rescale the input. With a shrink, such inputs still return
-      empty rows.
+      shrink (e.g. data scaled by `1e-40` or `3e38`; the sums of squares are
+      float64, so `1e-25` or `1e19` work), in `rp3beta` when its `pop^beta`
+      leaves float32 range, and in `s_plus` with a single cosine or depop
+      term: rescale the input. With a shrink, such inputs still return empty
+      rows.
 
 ??? info "Bug fixes that change results"
     - CSR inputs with duplicate entries are summed (scipy's canonical form) in
@@ -110,6 +114,9 @@ accepts them with a few rules per function: see [Signed Input](signed-input.md).
       `rp3beta` can differ in the last bit (they run as a dot product of
       pre-scaled inputs); `p3alpha` / `rp3beta` normalize in float32, so
       float64 input may move by float rounding.
+    - Norms and popularities (sums of squares, of `|x|`) are summed in
+      float64 and rounded once to float32 (0.7.0: float32 sums), so scores
+      can move by float rounding.
     - The order within a COO row differs from 0.7.0.
     - Inputs and outputs past 2^31 - 1 entries are allowed: the CSR then has
       int64 `indptr` and `indices` (scipy keeps one index dtype); int32 up to

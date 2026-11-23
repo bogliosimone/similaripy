@@ -21,7 +21,7 @@ use crate::{to_py, with_pool};
 type Arr<'py, T> = Bound<'py, PyArray1<T>>;
 
 /// 'auto', None (no blocking) or an int > 0, as the similarity functions'.
-fn block_size(v: &Bound<'_, PyAny>) -> PyResult<BlockSize> {
+pub(crate) fn block_size(v: &Bound<'_, PyAny>) -> PyResult<BlockSize> {
     if v.is_none() {
         return Ok(BlockSize::Off);
     }
