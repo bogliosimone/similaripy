@@ -1204,3 +1204,46 @@ mod driver {
         assert!(e.contains("m1"), "{e}");
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 500 }))]
+    // Depop-only weights (rp3beta) through the cosine slots (the driver's
+    // `depop_as_cosine`: COSINE mode instead of FULL) give the same bits, with
+    // a shrink, a power and zero weights (empty rows / columns), blocked or not.
+    #[test]
+    fn depop_in_cosine_slots_same_bits(
+        (m1, m2, x, y, block) in (1usize..6, 1usize..8, 2usize..30).prop_flat_map(|(r, m, n)| {
+            let w = |len| prop::collection::vec(prop_oneof![Just(0.0f32), 0.01f32..4.0], len);
+            (dense(r, m), dense(m, n), w(r), w(n), 0..n)
+        }),
+        l in 0.1f32..2.0,
+        a1 in prop_oneof![Just(1.0f32), 0.3f32..2.0],
+        (stabilized, bayesian) in prop_oneof![Just((0.0f32, 0.0f32)), (0.1f32..5.0).prop_map(|s| (s, 0.0)), (0.1f32..5.0).prop_map(|b| (0.0, b))],
+    ) {
+        let (a, b) = (to_csr(&m1), to_csr(&m2));
+        let (m, n) = (m2.len(), y.len());
+        let targets: Vec<i32> = (0..m1.len() as i32).collect();
+        let run = |depop: bool| {
+            let p = Params { a1, stabilized_shrink: stabilized, bayesian_shrink: bayesian, ..Params::default() };
+            let (params, norms) = if depop {
+                (Params { l3: l, ..p }, Norms { x_depop: Some(&x), y_depop: Some(&y), ..Norms::default() })
+            } else {
+                (Params { l2: l, ..p }, Norms { x_cosine: Some(&x), y_cosine: Some(&y), ..Norms::default() })
+            };
+            let inp = Inputs {
+                m1: CsrView::new("m1", &a.indptr, &a.indices, &a.data, m).unwrap(),
+                m2: CsrView::new("m2", &b.indptr, &b.indices, &b.data, n).unwrap(),
+                targets: &targets,
+                norms,
+                params,
+                filter: None,
+                target_cols: None,
+                col_map: None,
+            };
+            let out = compute(&inp, n, block, &|| {}).unwrap();
+            let bits: Vec<u32> = out.values.iter().map(|v| v.to_bits()).collect();
+            (out.counts, out.cols, bits)
+        };
+        prop_assert_eq!(run(true), run(false));
+    }
+}
