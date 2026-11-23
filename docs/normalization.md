@@ -51,5 +51,5 @@ All normalization functions in SimilariPy share the following parameters:
 ## Notes
 
 - **Output**: a new CSR matrix, duplicates summed and explicit zeros dropped; the input never changes: use the return value, `X = bm25(X)`.
-- **Precision**: values keep the input's float type (float32 or float64; other types become float32); inputs must be finite (NaN or inf raises a `ValueError`).
+- **Precision**: values are float32 for any input (as the similarities), sums (norms, document lengths) float64; inputs must be finite (NaN or inf raises a `ValueError`).
 - **Negative values**: accepted by `normalize` and `binarize`; `tfidf`, `bm25` and `bm25plus` raise a `ValueError`: see [Signed Input](signed-input.md#normalizations).

@@ -7,7 +7,6 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use similaripy_core::Error;
-use similaripy_core::normalize::Value;
 use similaripy_core::prep::{self, Csr, Sparse};
 use similaripy_core::similarity::{
     self as core, ColumnOrder, Options, Phase, Pop, Selector, Similarity, Walk,
@@ -128,8 +127,8 @@ struct Slices<'a> {
 }
 
 impl Slices<'_> {
-    /// `prep::canonical`: the owned canonical CSR of `T` values.
-    fn copy<T: Value>(&self) -> Result<Csr<T>, Error> {
+    /// `prep::canonical`: the owned canonical CSR (f32 values).
+    fn copy(&self) -> Result<Csr<f32>, Error> {
         match self.data {
             Data::I32F32(a, b, c) => self.copy_as(a, b, c),
             Data::I32F64(a, b, c) => self.copy_as(a, b, c),
@@ -138,12 +137,12 @@ impl Slices<'_> {
         }
     }
 
-    fn copy_as<I: Copy + Into<i64>, V: Value, T: Value>(
+    fn copy_as<I: Copy + Into<i64>, V: Copy + Into<f64>>(
         &self,
         major: &[I],
         minor: &[I],
         data: &[V],
-    ) -> Result<Csr<T>, Error> {
+    ) -> Result<Csr<f32>, Error> {
         let m = match self.format {
             Format::Csr => Sparse::Csr {
                 indptr: major,
@@ -166,10 +165,9 @@ impl Slices<'_> {
 }
 
 /// `prep::canonical`: a caller's matrix (see `Input`) copied once into an
-/// owned canonical CSR; `dtype` = the output values, 'float32' | 'float64'.
-/// Returns (indptr int64, indices int32, data).
+/// owned canonical CSR. Returns (indptr int64, indices int32, data float32).
 #[pyfunction]
-#[pyo3(signature = (*, format, shape, major, minor, data, canonical, dtype, num_threads))]
+#[pyo3(signature = (*, format, shape, major, minor, data, canonical, num_threads))]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn canonical<'py>(
     py: Python<'py>,
@@ -179,46 +177,22 @@ pub(crate) fn canonical<'py>(
     minor: &Bound<'py, PyAny>,
     data: &Bound<'py, PyAny>,
     canonical: bool,
-    dtype: &str,
     num_threads: usize,
 ) -> PyResult<(
     Bound<'py, PyArray1<i64>>,
     Bound<'py, PyArray1<i32>>,
-    Bound<'py, PyAny>,
+    Bound<'py, PyArray1<f32>>,
 )> {
     let input = Input::new(format, shape, major, minor, data, canonical)?;
     let s = input.slices()?;
-    fn wrap<'py, T: Value + numpy::Element>(
-        py: Python<'py>,
-        m: Csr<T>,
-    ) -> (
-        Bound<'py, PyArray1<i64>>,
-        Bound<'py, PyArray1<i32>>,
-        Bound<'py, PyAny>,
-    ) {
-        (
-            m.indptr.into_pyarray(py),
-            m.indices.into_pyarray(py),
-            m.data.into_pyarray(py).into_any(),
-        )
-    }
-    Ok(match dtype {
-        "float32" => wrap(
-            py,
-            py.detach(|| with_pool(num_threads, || s.copy::<f32>()))
-                .map_err(to_py)?,
-        ),
-        "float64" => wrap(
-            py,
-            py.detach(|| with_pool(num_threads, || s.copy::<f64>()))
-                .map_err(to_py)?,
-        ),
-        _ => {
-            return Err(PyValueError::new_err(format!(
-                "canonical: dtype {dtype:?} is not 'float32' or 'float64'"
-            )));
-        }
-    })
+    let m = py
+        .detach(|| with_pool(num_threads, || s.copy()))
+        .map_err(to_py)?;
+    Ok((
+        m.indptr.into_pyarray(py),
+        m.indices.into_pyarray(py),
+        m.data.into_pyarray(py),
+    ))
 }
 
 /// 'none', 'sum' or one float32 weight per row / column.

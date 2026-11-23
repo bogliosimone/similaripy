@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use super::{Pop, Walk};
 use crate::Error;
 use crate::kernel::{Norms, Params};
-use crate::normalize::{Norm, normalize_rows};
+use crate::normalize::{Axis, Norm, normalize_checked};
 use crate::prep::Csr;
 
 /// The terms the weights use; the others stay None.
@@ -160,8 +160,9 @@ pub(crate) fn walk(
     let pop = w
         .popularity
         .then(|| col_sums(m2, n_cols, |x| f64::from(x.abs())));
+    // Rows only: the column count is unused (the driver checked the structure)
     for m in [m1, m2] {
-        normalize_rows(Norm::L1, &mut m.data, &m.indptr)?;
+        normalize_checked(Norm::L1, Axis::Rows, &mut m.data, &m.indices, &m.indptr, 0);
         if w.alpha != 1.0 {
             m.data
                 .par_iter_mut()

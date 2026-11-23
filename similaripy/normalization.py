@@ -21,38 +21,36 @@ _IDF_MODES = ("unary", "base", "smooth", "prob", "bm25", "bm25_robertson")
 # ---- Private helpers ----
 
 
-def _canonical(X: SparseInput, axis: int = 1) -> Csr:
+def _canonical(X: SparseInput) -> Csr:
     """
-    The call's own canonical CSR copy of X (axis 1) or X.T (axis 0), see
-    `_canonical_csr`: float32/float64 values kept, other value types -> float32;
+    The call's own canonical CSR copy of X (`_canonical_csr`): float32 values,
     int32 indices.
 
     Raises:
-        ValueError: If axis is not 0 or 1.
         TypeError: If X is not a sparse matrix.
     """
-    if axis not in (0, 1):
-        raise ValueError(f"axis must be 0 or 1, got {axis}")
     if not sps.issparse(X):
         raise TypeError("X must be a sparse matrix")
-    dtype = X.dtype if X.dtype in (np.float32, np.float64) else np.float32
-    return _canonical_csr(X.T if axis == 0 else X, dtype, 0)
+    return _canonical_csr(X, 0)
 
 
 def _transformed(X: SparseInput, axis: int, op, name: str | None = None, **kwargs) -> sps.csr_array:
     """
     The canonical copy of X with `op` (an in-place `_core` normalization) applied
-    to its rows (axis 1) or columns (axis 0); `name`: a term weighting, whose
-    input must be non-negative.
+    to its rows (axis 1) or columns (axis 0, column statistics in the core: no
+    transposes); `name`: a term weighting, whose input must be non-negative.
+
+    Raises:
+        ValueError: If axis is not 0 or 1.
     """
-    X = _canonical(X, axis)
+    if axis not in (0, 1):
+        raise ValueError(f"axis must be 0 or 1, got {axis}")
+    X = _canonical(X)
     _check_finite(X)
     if name is not None:
         _check_non_negative(X, name)
-    op(data=X.data, indices=X.indices, indptr=X.indptr, shape=X.shape, **kwargs)
-    out = _to_scipy(X)
-    # ty 0.0.90 + scipy-stubs mis-resolve csr_array.T (shape-generic overloads)
-    return out.T.tocsr() if axis == 0 else out  # ty: ignore[invalid-attribute-access]
+    op(data=X.data, indices=X.indices, indptr=X.indptr, shape=X.shape, axis=axis, **kwargs)
+    return _to_scipy(X)
 
 
 def _to_scipy(X: Csr) -> sps.csr_array:
@@ -135,8 +133,8 @@ def normalize(
         axis: 1 = normalize each row (default), 0 = each column.
 
     Returns:
-        A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
-            float type kept); X never changes.
+        A new float32 CSR matrix (duplicates summed, explicit zeros dropped);
+            X never changes.
 
     Raises:
         TypeError: on a non-sparse X.
@@ -161,8 +159,8 @@ def binarize(X: sps.sparray | sps.spmatrix) -> sps.csr_array:
         X: sparse matrix; negative values count as interactions too.
 
     Returns:
-        A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
-            float type kept); X never changes.
+        A new float32 CSR matrix (duplicates summed, explicit zeros dropped);
+            X never changes.
 
     Raises:
         TypeError: on a non-sparse X.
@@ -206,8 +204,8 @@ def bm25(
             than half the documents); see the IDF modes in the Normalizations guide.
 
     Returns:
-        A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
-            float type kept); X never changes.
+        A new float32 CSR matrix (duplicates summed, explicit zeros dropped);
+            X never changes.
 
     Raises:
         TypeError: on a non-sparse X.
@@ -256,8 +254,8 @@ def bm25plus(
             than half the documents); see the IDF modes in the Normalizations guide.
 
     Returns:
-        A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
-            float type kept); X never changes.
+        A new float32 CSR matrix (duplicates summed, explicit zeros dropped);
+            X never changes.
 
     Raises:
         TypeError: on a non-sparse X.
@@ -304,8 +302,8 @@ def tfidf(
             than half the documents); see the IDF modes in the Normalizations guide.
 
     Returns:
-        A new CSR matrix (duplicates summed, explicit zeros dropped, the input's
-            float type kept); X never changes.
+        A new float32 CSR matrix (duplicates summed, explicit zeros dropped);
+            X never changes.
 
     Raises:
         TypeError: on a non-sparse X.

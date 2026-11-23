@@ -1,61 +1,28 @@
-//! In-place CSR normalizations (l1, l2, max, TF-IDF, BM25+), and the per-event
-//! decay of `time_decay` / `rank_decay` (`Decay`, `user_ages`). Generic over
-//! f32/f64 data, since `similaripy.normalization` keeps the input's float type
-//! (indices are i32, indptr i64).
+//! In-place CSR normalizations (l1, l2, max, TF-IDF, BM25+) of each row or
+//! each column, and the per-event decay of `time_decay` / `rank_decay`
+//! (`Decay`, `user_ages`). Values are f32 (the similarities' type; indices
+//! i32, indptr i64).
 //!
-//! Float math: per-row sums in the data type, `log` and the BM25 terms in f64,
-//! rounded back to the data type. Matches similaripy 0.7.0 within rtol 1e-5
-//! (`benchmarks/parity_normalization.py`), not bitwise; BM25 changed on purpose
-//! (always-positive IDF, TF without `(k1 + 1)`: see `bm25plus`).
-
-use std::ops::{Add, Div, Mul, Sub};
+//! Float math: sums (norms, document lengths, their average) in f64, in an
+//! order fixed by the data (row order, so a column's sum adds in the same
+//! order as the transpose's row would); `log`, IDF and the BM25 terms in f64;
+//! one rounding to f32 per stored value. Matches similaripy 0.7.0 within rtol
+//! 1e-5 (`benchmarks/parity_normalization.py`), not bitwise; BM25 changed on
+//! purpose (always-positive IDF, TF without `(k1 + 1)`: see `bm25plus`).
 
 use rayon::prelude::*;
 
 use crate::Error;
-use crate::csr::{check_indptr, check_structure};
+use crate::csr::check_structure;
 use crate::prep::{LEAF_NNZ, par_leaves_one};
 
-pub trait Value:
-    Copy
-    + Send
-    + Sync
-    + PartialOrd
-    + Add<Output = Self>
-    + Sub<Output = Self>
-    + Mul<Output = Self>
-    + Div<Output = Self>
-{
-    const ZERO: Self;
-    const ONE: Self;
-    fn wide(self) -> f64;
-    fn narrow(x: f64) -> Self;
-    fn sqrt(self) -> Self;
-    fn abs(self) -> Self;
+/// What a normalization treats as one vector (a document, for the term
+/// weightings): each row (Python's `axis=1`) or each column (`axis=0`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Axis {
+    Rows,
+    Cols,
 }
-
-macro_rules! impl_value {
-    ($t:ty) => {
-        impl Value for $t {
-            const ZERO: Self = 0.0;
-            const ONE: Self = 1.0;
-            fn wide(self) -> f64 {
-                self as f64
-            }
-            fn narrow(x: f64) -> Self {
-                x as $t
-            }
-            fn sqrt(self) -> Self {
-                <$t>::sqrt(self)
-            }
-            fn abs(self) -> Self {
-                <$t>::abs(self)
-            }
-        }
-    };
-}
-impl_value!(f32);
-impl_value!(f64);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Norm {
@@ -112,30 +79,69 @@ impl IdfMode {
     }
 }
 
-/// Divides each row by its l1 / l2 / max norm (sum of |x|, sqrt of the sum
-/// of x^2, largest |x|: signed rows keep their signs). Empty rows and zero
-/// norms are left unchanged.
-pub fn normalize_rows<T: Value>(norm: Norm, data: &mut [T], indptr: &[i64]) -> Result<(), Error> {
-    check_indptr("normalize", indptr, data.len())?;
-    par_rows(data, indptr, &|_, _, row: &mut [T]| {
-        let d = match norm {
-            Norm::L1 => row.iter().fold(T::ZERO, |s, &x| s + x.abs()),
-            Norm::L2 => row.iter().fold(T::ZERO, |s, &x| s + x * x).sqrt(),
-            // max(x) on non-negative rows, bit for bit
-            Norm::Max => row
-                .iter()
-                .fold(T::ZERO, |m, &x| if x.abs() > m { x.abs() } else { m }),
-        };
-        if d != T::ZERO {
-            row.iter_mut().for_each(|x| *x = *x / d);
-        }
-    });
+/// Divides each row or column by its l1 / l2 / max norm (sum of |x|, sqrt of
+/// the sum of x^2, largest |x|: signed values keep their signs). Empty
+/// vectors and zero norms are left unchanged.
+pub fn normalize(
+    norm: Norm,
+    axis: Axis,
+    data: &mut [f32],
+    indices: &[i32],
+    indptr: &[i64],
+    n_cols: usize,
+) -> Result<(), Error> {
+    check_csr(data, indices, indptr, n_cols)?;
+    normalize_checked(norm, axis, data, indices, indptr, n_cols);
     Ok(())
 }
 
-/// TF-IDF in place; rows are documents, columns are terms.
-pub fn tfidf<T: Value>(
-    data: &mut [T],
+/// `normalize` on a structure the caller has checked (the similarity driver's
+/// walk: `CsrView::new` ran first), without a second O(nnz) scan.
+pub(crate) fn normalize_checked(
+    norm: Norm,
+    axis: Axis,
+    data: &mut [f32],
+    indices: &[i32],
+    indptr: &[i64],
+    n_cols: usize,
+) {
+    let add = |s: f64, x: f32| {
+        let x = x.abs() as f64;
+        match norm {
+            Norm::L1 => s + x,
+            Norm::L2 => s + x * x,
+            Norm::Max => s.max(x),
+        }
+    };
+    let finish = |s: f64| if norm == Norm::L2 { s.sqrt() } else { s };
+    let scale = |x: &mut f32, d: f64| {
+        if d != 0.0 {
+            *x = (*x as f64 / d) as f32;
+        }
+    };
+    match axis {
+        Axis::Rows => par_rows(data, indptr, &|_, _, row| {
+            let d = finish(row.iter().fold(0.0, |s, &x| add(s, x)));
+            row.iter_mut().for_each(|x| scale(x, d));
+        }),
+        Axis::Cols => {
+            // Serial, in row order: O(nnz) adds into O(cols) sums
+            let mut d = vec![0f64; n_cols];
+            for (&x, &c) in data.iter().zip(indices) {
+                d[c as usize] = add(d[c as usize], x);
+            }
+            d.iter_mut().for_each(|s| *s = finish(*s));
+            par_entries(data, indices, indptr, &|_, c, x| scale(x, d[c]));
+        }
+    }
+}
+
+/// TF-IDF in place; the documents are the rows (`Axis::Rows`) or the columns,
+/// the terms the other side.
+#[allow(clippy::too_many_arguments)]
+pub fn tfidf(
+    axis: Axis,
+    data: &mut [f32],
     indices: &[i32],
     indptr: &[i64],
     n_cols: usize,
@@ -144,24 +150,24 @@ pub fn tfidf<T: Value>(
     logbase: f64,
 ) -> Result<(), Error> {
     check_csr(data, indices, indptr, n_cols)?;
-    let lb = log_logbase::<T>(logbase);
-    let (idf_, _) = idf_and_doc_len(data, indices, indptr, n_cols, idf_mode, lb, false);
-    par_rows(data, indptr, &|_, start, row: &mut [T]| {
-        let doc_len = row.iter().fold(T::ZERO, |s, &x| s + x);
-        for (x, c) in row.iter_mut().zip(&indices[start..]) {
-            *x = tf(*x, doc_len, tf_mode, lb) * idf_[*c as usize];
-        }
+    let lb = logbase.ln();
+    let s = Stats::new(axis, data, indices, indptr, n_cols, idf_mode, lb);
+    par_entries(data, indices, indptr, &|r, c, x| {
+        let (doc, term) = s.doc_term(r, c);
+        *x = (tf(*x as f64, s.doc_len[doc], tf_mode, lb) * s.idf[term]) as f32;
     });
     Ok(())
 }
 
-/// BM25+ in place (`delta = 0` is plain BM25); rows are documents, columns are terms.
+/// BM25+ in place (`delta = 0` is plain BM25); the documents are the rows
+/// (`Axis::Rows`) or the columns, the terms the other side.
 /// Weight `idf * (tf / (tf + k1 * (1 - b + b * len / avg_len)) + delta)`: the TF
 /// part without Robertson's `(k1 + 1)` numerator (Lucene, bm25s), so it is in
 /// [0, 1); 0.7.0's values are `(k1 + 1)` times these with `delta / (k1 + 1)`.
 #[allow(clippy::too_many_arguments)]
-pub fn bm25plus<T: Value>(
-    data: &mut [T],
+pub fn bm25plus(
+    axis: Axis,
+    data: &mut [f32],
     indices: &[i32],
     indptr: &[i64],
     n_cols: usize,
@@ -173,94 +179,112 @@ pub fn bm25plus<T: Value>(
     logbase: f64,
 ) -> Result<(), Error> {
     check_csr(data, indices, indptr, n_cols)?;
-    let lb = log_logbase::<T>(logbase);
-    let n_docs = indptr.len() - 1;
-    if n_docs == 0 {
-        return Ok(());
+    if data.is_empty() {
+        return Ok(()); // no document has a length: the average would be 0 / 0
     }
-    let (idf_, doc_len) = idf_and_doc_len(data, indices, indptr, n_cols, idf_mode, lb, true);
-    // Serial sum in row order, in the data type: one fixed rounding, O(rows).
-    let avg = doc_len.iter().fold(T::ZERO, |s, &x| s + x) / T::narrow(n_docs as f64);
-    let (k1, b, delta) = (T::narrow(k1), T::narrow(b), T::narrow(delta));
-    par_rows(data, indptr, &|r, start, row: &mut [T]| {
-        let norm_len = T::narrow((1.0 - b.wide()) + (b * doc_len[r] / avg).wide());
-        for (x, c) in row.iter_mut().zip(&indices[start..]) {
-            let t = tf(*x, doc_len[r], tf_mode, lb);
-            let w = t.wide() / (t + k1 * norm_len).wide() + delta.wide();
-            *x = T::narrow(idf_[*c as usize].wide() * w);
-        }
+    let lb = logbase.ln();
+    let s = Stats::new(axis, data, indices, indptr, n_cols, idf_mode, lb);
+    // Serial sum in document order: one fixed rounding, O(documents).
+    let avg = s.doc_len.iter().sum::<f64>() / s.doc_len.len() as f64;
+    par_entries(data, indices, indptr, &|r, c, x| {
+        let (doc, term) = s.doc_term(r, c);
+        let norm_len = (1.0 - b) + b * s.doc_len[doc] / avg;
+        let t = tf(*x as f64, s.doc_len[doc], tf_mode, lb);
+        *x = (s.idf[term] * (t / (t + k1 * norm_len) + delta)) as f32;
     });
     Ok(())
 }
 
-/// Per-column IDF (0 for unused columns) and, if asked, per-row document length.
-/// Serial: the count is a column histogram over all rows (O(nnz) increments).
-/// Counts are integers: an f32 counter would stop at 2^24.
-fn idf_and_doc_len<T: Value>(
-    data: &[T],
-    indices: &[i32],
-    indptr: &[i64],
-    n_cols: usize,
-    mode: IdfMode,
-    lb: T,
-    with_doc_len: bool,
-) -> (Vec<T>, Vec<T>) {
-    let n_docs = indptr.len() - 1;
-    let mut counts = vec![0usize; n_cols];
-    let mut doc_len = Vec::with_capacity(if with_doc_len { n_docs } else { 0 });
-    for r in 0..n_docs {
-        let (a, z) = (indptr[r] as usize, indptr[r + 1] as usize);
-        let mut len = T::ZERO;
-        for (&x, &c) in data[a..z].iter().zip(&indices[a..z]) {
-            len = len + x;
-            if x > T::ZERO {
-                counts[c as usize] += 1;
-            }
-        }
-        if with_doc_len {
-            doc_len.push(len);
-        }
-    }
-    let n = T::narrow(n_docs as f64);
-    let idf_ = counts
-        .iter()
-        .map(|&c| {
-            if c == 0 {
-                T::ZERO
-            } else {
-                idf(T::narrow(c as f64), n, mode, lb)
-            }
-        })
-        .collect();
-    (idf_, doc_len)
+/// The term weightings' statistics: each term's IDF (0 for unused terms) and
+/// each document's length (the sum of its values).
+struct Stats {
+    axis: Axis,
+    idf: Vec<f64>,
+    doc_len: Vec<f64>,
 }
 
-fn tf<T: Value>(freq: T, doc_len: T, mode: TfMode, lb: T) -> T {
+impl Stats {
+    /// One serial pass in row order (O(nnz) increments into O(rows + cols)
+    /// counters). Document frequencies are integers: an f32 counter would
+    /// stop at 2^24.
+    fn new(
+        axis: Axis,
+        data: &[f32],
+        indices: &[i32],
+        indptr: &[i64],
+        n_cols: usize,
+        mode: IdfMode,
+        lb: f64,
+    ) -> Self {
+        let n_rows = indptr.len() - 1;
+        let (n_docs, n_terms) = match axis {
+            Axis::Rows => (n_rows, n_cols),
+            Axis::Cols => (n_cols, n_rows),
+        };
+        let mut s = Stats {
+            axis,
+            idf: Vec::new(),
+            doc_len: vec![0.0; n_docs],
+        };
+        let mut df = vec![0usize; n_terms];
+        for r in 0..n_rows {
+            let (a, z) = (indptr[r] as usize, indptr[r + 1] as usize);
+            for (&x, &c) in data[a..z].iter().zip(&indices[a..z]) {
+                let (doc, term) = s.doc_term(r, c as usize);
+                s.doc_len[doc] += x as f64;
+                if x > 0.0 {
+                    df[term] += 1;
+                }
+            }
+        }
+        let n = n_docs as f64;
+        s.idf = df
+            .iter()
+            .map(|&d| {
+                if d == 0 {
+                    0.0
+                } else {
+                    idf(d as f64, n, mode, lb)
+                }
+            })
+            .collect();
+        s
+    }
+
+    /// (document, term) of the entry at (row, col).
+    fn doc_term(&self, r: usize, c: usize) -> (usize, usize) {
+        match self.axis {
+            Axis::Rows => (r, c),
+            Axis::Cols => (c, r),
+        }
+    }
+}
+
+fn tf(freq: f64, doc_len: f64, mode: TfMode, lb: f64) -> f64 {
     match mode {
         TfMode::Binary => {
-            if freq != T::ZERO {
-                T::ONE
+            if freq != 0.0 {
+                1.0
             } else {
-                T::ZERO
+                0.0
             }
         }
         TfMode::Raw => freq,
         TfMode::Sqrt => freq.sqrt(),
         TfMode::Freq => freq / doc_len,
-        TfMode::Log => T::narrow((T::ONE + freq).wide().ln() / lb.wide()),
+        TfMode::Log => freq.ln_1p() / lb,
     }
 }
 
-fn idf<T: Value>(df: T, n_docs: T, mode: IdfMode, lb: T) -> T {
-    let lb = lb.wide();
-    T::narrow(match mode {
-        IdfMode::Unary => return T::ONE,
-        IdfMode::Base => (n_docs / df).wide().ln() / lb,
-        IdfMode::Smooth => (n_docs / (T::ONE + df)).wide().ln() / lb,
-        IdfMode::Prob => ((n_docs - df) / df).wide().ln() / lb,
-        IdfMode::Bm25 => (((n_docs - df).wide() + 0.5) / (df.wide() + 0.5)).ln_1p() / lb,
-        IdfMode::Bm25Robertson => (((n_docs - df).wide() + 0.5) / (df.wide() + 0.5)).ln() / lb,
-    })
+fn idf(df: f64, n_docs: f64, mode: IdfMode, lb: f64) -> f64 {
+    match mode {
+        IdfMode::Unary => 1.0,
+        IdfMode::Base => (n_docs / df).ln() / lb,
+        IdfMode::Smooth => (n_docs / (1.0 + df)).ln() / lb,
+        IdfMode::Prob => ((n_docs - df) / df).ln() / lb,
+        IdfMode::Bm25 => ((n_docs - df + 0.5) / (df + 0.5)).ln_1p() / lb,
+        IdfMode::Bm25Robertson => ((n_docs - df + 0.5) / (df + 0.5)).ln() / lb,
+    }
 }
 
 /// A decay curve: the weight of an age (1 at age 0). `scale` > 0 (infinite =
@@ -419,14 +443,9 @@ pub fn user_ages(
     Ok(ages)
 }
 
-/// `log(logbase)` rounded to the data type, like every stored value.
-fn log_logbase<T: Value>(logbase: f64) -> T {
-    T::narrow(T::narrow(logbase).wide().ln())
-}
-
 /// The canonical CSR the Python prep passes (`_canonical_csr`): indptr from 0
 /// to nnz, one value per entry, column indices in `0..n_cols`.
-fn check_csr<T>(data: &[T], indices: &[i32], indptr: &[i64], n_cols: usize) -> Result<(), Error> {
+fn check_csr(data: &[f32], indices: &[i32], indptr: &[i64], n_cols: usize) -> Result<(), Error> {
     check_structure("normalize", indptr, indices, n_cols)?;
     if data.len() != indices.len() {
         return Err(Error::InvalidInput(
@@ -439,16 +458,26 @@ fn check_csr<T>(data: &[T], indices: &[i32], indptr: &[i64], n_cols: usize) -> R
 /// Runs `f(row, start, row_data)` for every row, in parallel, on
 /// `prep::par_leaves_one`'s leaves (split by entries, so popularity-ordered
 /// rows still balance); `start` is the row's offset in `data`.
-fn par_rows<T, F>(data: &mut [T], indptr: &[i64], f: &F)
-where
-    T: Send,
-    F: Fn(usize, usize, &mut [T]) + Sync,
-{
+fn par_rows<F: Fn(usize, usize, &mut [f32]) + Sync>(data: &mut [f32], indptr: &[i64], f: &F) {
     par_leaves_one(indptr, data, LEAF_NNZ, &|row0, ip, d| {
         let base = ip[0] as usize;
         for (i, w) in ip.windows(2).enumerate() {
             let (a, z) = (w[0] as usize, w[1] as usize);
             f(row0 + i, a, &mut d[a - base..z - base]);
+        }
+    });
+}
+
+/// Runs `f(row, col, value)` for every entry, rows in parallel (`par_rows`).
+fn par_entries<F: Fn(usize, usize, &mut f32) + Sync>(
+    data: &mut [f32],
+    indices: &[i32],
+    indptr: &[i64],
+    f: &F,
+) {
+    par_rows(data, indptr, &|r, start, row| {
+        for (x, &c) in row.iter_mut().zip(&indices[start..]) {
+            f(r, c as usize, x);
         }
     });
 }
@@ -506,8 +535,8 @@ mod tests {
     fn max_norm_divides_by_largest_abs() {
         // rows: mixed signs, all negative, all positive, empty, zeros
         let mut data = vec![2.0f32, -4.0, 1.0, -1.0, -0.5, 3.0, 6.0, 0.0, 0.0];
-        let indptr = [0i64, 3, 5, 7, 7, 9];
-        normalize_rows(Norm::Max, &mut data, &indptr).unwrap();
+        let (indices, indptr) = ([0, 1, 2, 0, 1, 0, 1, 0, 1], [0i64, 3, 5, 7, 7, 9]);
+        normalize(Norm::Max, Axis::Rows, &mut data, &indices, &indptr, 3).unwrap();
         assert_eq!(data, [0.5, -1.0, 0.25, -1.0, -0.5, 0.5, 1.0, 0.0, 0.0]);
     }
 
@@ -519,5 +548,97 @@ mod tests {
         assert!(!ok(&[1.0, 2.0], &[0, 2], &[0, 1, 1])); // indptr[-1] != nnz
         assert!(!ok(&[1.0], &[0, 2], &[0, 1, 2])); // one value per entry
         assert!(!ok(&[1.0, 2.0], &[0, 3], &[0, 1, 2])); // index out of range
+    }
+
+    /// The transpose of a canonical CSR (rows ascending within each column).
+    fn transpose(
+        m: &(Vec<i64>, Vec<i32>, Vec<f32>),
+        n_cols: usize,
+    ) -> (Vec<i64>, Vec<i32>, Vec<f32>) {
+        let (indptr, indices, data) = m;
+        let mut out = vec![Vec::new(); n_cols];
+        for r in 0..indptr.len() - 1 {
+            for j in indptr[r] as usize..indptr[r + 1] as usize {
+                out[indices[j] as usize].push((r as i32, data[j]));
+            }
+        }
+        let mut t = (vec![0i64], vec![], vec![]);
+        for col in out {
+            for (r, x) in col {
+                t.1.push(r);
+                t.2.push(x);
+            }
+            t.0.push(t.1.len() as i64);
+        }
+        t
+    }
+
+    type Op = Box<dyn Fn(Axis, &mut [f32], &[i32], &[i64], usize)>;
+
+    fn ops() -> Vec<Op> {
+        let mut ops: Vec<Op> = Vec::new();
+        for norm in [Norm::L1, Norm::L2, Norm::Max] {
+            ops.push(Box::new(move |a, d, i, p, n| {
+                normalize(norm, a, d, i, p, n).unwrap()
+            }));
+        }
+        let tfs = [
+            TfMode::Binary,
+            TfMode::Raw,
+            TfMode::Sqrt,
+            TfMode::Freq,
+            TfMode::Log,
+        ];
+        let idfs = [
+            IdfMode::Unary,
+            IdfMode::Base,
+            IdfMode::Smooth,
+            IdfMode::Prob,
+            IdfMode::Bm25,
+            IdfMode::Bm25Robertson,
+        ];
+        for tf in tfs {
+            for idf in idfs {
+                ops.push(Box::new(move |a, d, i, p, n| {
+                    tfidf(a, d, i, p, n, tf, idf, 2.0).unwrap()
+                }));
+                ops.push(Box::new(move |a, d, i, p, n| {
+                    bm25plus(a, d, i, p, n, 1.2, 0.75, 0.5, tf, idf, std::f64::consts::E).unwrap()
+                }));
+            }
+        }
+        ops
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(if cfg!(miri) { 2 } else { 64 }))]
+        // Axis::Cols on a matrix == Axis::Rows on its transpose, transposed back, bit for bit: the
+        // column sums add in row order, as the transpose's rows do.
+        #[test]
+        fn cols_is_rows_of_the_transpose(
+            dense in proptest::collection::vec(
+                proptest::collection::vec(proptest::prop_oneof![3 => proptest::strategy::Just(0.0f32), 1 => 0.1f32..9.0], 0..6),
+                0..7,
+            ),
+        ) {
+            let n_cols = dense.iter().map(Vec::len).max().unwrap_or(0);
+            let mut m = (vec![0i64], vec![], vec![]);
+            for row in &dense {
+                for (c, &x) in row.iter().enumerate().filter(|(_, x)| **x != 0.0) {
+                    m.1.push(c as i32);
+                    m.2.push(x);
+                }
+                m.0.push(m.1.len() as i64);
+            }
+            for op in ops() {
+                let mut cols = m.clone();
+                op(Axis::Cols, &mut cols.2, &cols.1, &cols.0, n_cols);
+                let mut t = transpose(&m, n_cols);
+                op(Axis::Rows, &mut t.2, &t.1, &t.0, dense.len());
+                let back = transpose(&t, dense.len());
+                proptest::prop_assert_eq!(cols.2.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                    back.2.iter().map(|x| x.to_bits()).collect::<Vec<_>>());
+            }
+        }
     }
 }

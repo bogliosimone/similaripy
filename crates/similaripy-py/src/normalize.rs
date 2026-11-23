@@ -1,104 +1,80 @@
 //! Bindings of the in-place normalizations on the canonical copy
-//! (`_canonical_csr`): data float32 | float64, indices int32, indptr int64.
+//! (`_canonical_csr`): data float32, indices int32, indptr int64.
 
-use numpy::{Element, IntoPyArray, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use similaripy_core::Error;
-use similaripy_core::normalize::{self as core, IdfMode, Norm, TfMode, Value};
+use similaripy_core::normalize::{self as core, Axis, IdfMode, Norm, TfMode};
 
 use crate::to_py;
 
-#[derive(Clone, Copy)]
-enum Op {
-    Norm(Norm),
-    Tfidf(TfMode, IdfMode, f64),
-    Bm25plus {
-        k1: f64,
-        b: f64,
-        delta: f64,
-        tf: TfMode,
-        idf: IdfMode,
-        logbase: f64,
-    },
+/// The canonical arrays, borrowed; `axis` 1 = rows, 0 = columns (numpy's).
+struct Args<'py> {
+    data: PyReadwriteArray1<'py, f32>,
+    indices: PyReadonlyArray1<'py, i32>,
+    indptr: PyReadonlyArray1<'py, i64>,
+    shape: (usize, usize),
+    axis: Axis,
 }
 
-impl Op {
-    fn apply<T: Value>(
-        self,
-        data: &mut [T],
-        indices: &[i32],
-        indptr: &[i64],
-        n_cols: usize,
-    ) -> Result<(), Error> {
-        match self {
-            Op::Norm(n) => core::normalize_rows(n, data, indptr),
-            Op::Tfidf(tf, idf, lb) => core::tfidf(data, indices, indptr, n_cols, tf, idf, lb),
-            Op::Bm25plus {
-                k1,
-                b,
-                delta,
-                tf,
-                idf,
-                logbase,
-            } => core::bm25plus(
-                data, indices, indptr, n_cols, k1, b, delta, tf, idf, logbase,
-            ),
+impl<'py> Args<'py> {
+    fn new(
+        data: PyReadwriteArray1<'py, f32>,
+        indices: PyReadonlyArray1<'py, i32>,
+        indptr: PyReadonlyArray1<'py, i64>,
+        shape: (usize, usize),
+        axis: usize,
+    ) -> PyResult<Self> {
+        let axis = match axis {
+            1 => Axis::Rows,
+            0 => Axis::Cols,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "axis must be 0 or 1, got {axis}"
+                )));
+            }
+        };
+        if indptr.len()? != shape.0 + 1 {
+            return Err(PyValueError::new_err("len(indptr) != n_rows + 1"));
         }
+        Ok(Args {
+            data,
+            indices,
+            indptr,
+            shape,
+            axis,
+        })
+    }
+
+    /// `op(axis, data, indices, indptr, n_cols)` with the GIL released.
+    fn run(
+        mut self,
+        py: Python<'_>,
+        op: impl FnOnce(Axis, &mut [f32], &[i32], &[i64], usize) -> Result<(), Error> + Send,
+    ) -> PyResult<()> {
+        let (axis, n_cols) = (self.axis, self.shape.1);
+        let (data, indices, indptr) = (
+            self.data.as_slice_mut()?,
+            self.indices.as_slice()?,
+            self.indptr.as_slice()?,
+        );
+        py.detach(move || op(axis, data, indices, indptr, n_cols))
+            .map_err(to_py)
     }
 }
 
-fn run<T: Value + Element>(
-    py: Python<'_>,
-    data: &Bound<'_, PyAny>,
-    indices: &Bound<'_, PyAny>,
-    indptr: &Bound<'_, PyAny>,
-    shape: (usize, usize),
-    op: Op,
-) -> PyResult<()> {
-    let mut data: PyReadwriteArray1<T> = data.extract()?;
-    let indices: PyReadonlyArray1<i32> = indices.extract()?;
-    let indptr: PyReadonlyArray1<i64> = indptr.extract()?;
-    let (data, indices, indptr) = (
-        data.as_slice_mut()?,
-        indices.as_slice()?,
-        indptr.as_slice()?,
-    );
-    if indptr.len() != shape.0 + 1 {
-        return Err(PyValueError::new_err("len(indptr) != n_rows + 1"));
-    }
-    py.detach(|| op.apply(data, indices, indptr, shape.1))
-        .map_err(to_py)
-}
-
-/// Picks the data dtype instantiation.
-fn dispatch(
-    py: Python<'_>,
-    data: &Bound<'_, PyAny>,
-    indices: &Bound<'_, PyAny>,
-    indptr: &Bound<'_, PyAny>,
-    shape: (usize, usize),
-    op: Op,
-) -> PyResult<()> {
-    if data.extract::<PyReadonlyArray1<f32>>().is_ok() {
-        run::<f32>(py, data, indices, indptr, shape, op)
-    } else if data.extract::<PyReadonlyArray1<f64>>().is_ok() {
-        run::<f64>(py, data, indices, indptr, shape, op)
-    } else {
-        Err(PyTypeError::new_err("expected 1-d float32/float64 data"))
-    }
-}
-
-/// In-place l1 / l2 / max row normalization.
+/// In-place l1 / l2 / max normalization of each row (axis 1) or column (axis 0).
 #[pyfunction]
-#[pyo3(signature = (*, data, indices, indptr, shape, norm))]
-pub fn normalize(
-    py: Python<'_>,
-    data: &Bound<'_, PyAny>,
-    indices: &Bound<'_, PyAny>,
-    indptr: &Bound<'_, PyAny>,
+#[pyo3(signature = (*, data, indices, indptr, shape, axis, norm))]
+pub fn normalize<'py>(
+    py: Python<'py>,
+    data: PyReadwriteArray1<'py, f32>,
+    indices: PyReadonlyArray1<'py, i32>,
+    indptr: PyReadonlyArray1<'py, i64>,
     shape: (usize, usize),
+    axis: usize,
     norm: &str,
 ) -> PyResult<()> {
     let norm = match norm {
@@ -107,41 +83,43 @@ pub fn normalize(
         "max" => Norm::Max,
         _ => return Err(PyValueError::new_err(format!("unknown norm '{norm}'"))),
     };
-    dispatch(py, data, indices, indptr, shape, Op::Norm(norm))
+    Args::new(data, indices, indptr, shape, axis)?
+        .run(py, |a, d, i, p, n| core::normalize(norm, a, d, i, p, n))
 }
 
-/// In-place TF-IDF (rows = documents).
+/// In-place TF-IDF (documents = rows for axis 1, columns for axis 0).
 #[pyfunction]
-#[pyo3(signature = (*, data, indices, indptr, shape, tf_mode, idf_mode, logbase))]
+#[pyo3(signature = (*, data, indices, indptr, shape, axis, tf_mode, idf_mode, logbase))]
 #[allow(clippy::too_many_arguments)]
-pub fn tfidf(
-    py: Python<'_>,
-    data: &Bound<'_, PyAny>,
-    indices: &Bound<'_, PyAny>,
-    indptr: &Bound<'_, PyAny>,
+pub fn tfidf<'py>(
+    py: Python<'py>,
+    data: PyReadwriteArray1<'py, f32>,
+    indices: PyReadonlyArray1<'py, i32>,
+    indptr: PyReadonlyArray1<'py, i64>,
     shape: (usize, usize),
+    axis: usize,
     tf_mode: &str,
     idf_mode: &str,
     logbase: f64,
 ) -> PyResult<()> {
-    let op = Op::Tfidf(
-        TfMode::parse(tf_mode).map_err(to_py)?,
-        IdfMode::parse(idf_mode).map_err(to_py)?,
-        logbase,
-    );
-    dispatch(py, data, indices, indptr, shape, op)
+    let tf = TfMode::parse(tf_mode).map_err(to_py)?;
+    let idf = IdfMode::parse(idf_mode).map_err(to_py)?;
+    Args::new(data, indices, indptr, shape, axis)?.run(py, |a, d, i, p, n| {
+        core::tfidf(a, d, i, p, n, tf, idf, logbase)
+    })
 }
 
-/// In-place BM25+ (rows = documents); `delta = 0` is BM25.
+/// In-place BM25+ (documents = rows for axis 1, columns for axis 0); `delta = 0` is BM25.
 #[pyfunction]
-#[pyo3(signature = (*, data, indices, indptr, shape, k1, b, delta, tf_mode, idf_mode, logbase))]
+#[pyo3(signature = (*, data, indices, indptr, shape, axis, k1, b, delta, tf_mode, idf_mode, logbase))]
 #[allow(clippy::too_many_arguments)]
-pub fn bm25plus(
-    py: Python<'_>,
-    data: &Bound<'_, PyAny>,
-    indices: &Bound<'_, PyAny>,
-    indptr: &Bound<'_, PyAny>,
+pub fn bm25plus<'py>(
+    py: Python<'py>,
+    data: PyReadwriteArray1<'py, f32>,
+    indices: PyReadonlyArray1<'py, i32>,
+    indptr: PyReadonlyArray1<'py, i64>,
     shape: (usize, usize),
+    axis: usize,
     k1: f64,
     b: f64,
     delta: f64,
@@ -149,15 +127,11 @@ pub fn bm25plus(
     idf_mode: &str,
     logbase: f64,
 ) -> PyResult<()> {
-    let op = Op::Bm25plus {
-        k1,
-        b,
-        delta,
-        tf: TfMode::parse(tf_mode).map_err(to_py)?,
-        idf: IdfMode::parse(idf_mode).map_err(to_py)?,
-        logbase,
-    };
-    dispatch(py, data, indices, indptr, shape, op)
+    let tf = TfMode::parse(tf_mode).map_err(to_py)?;
+    let idf = IdfMode::parse(idf_mode).map_err(to_py)?;
+    Args::new(data, indices, indptr, shape, axis)?.run(py, |a, d, i, p, n| {
+        core::bm25plus(a, d, i, p, n, k1, b, delta, tf, idf, logbase)
+    })
 }
 
 fn curve(shape: &str, scale: f64, exponent: Option<f64>) -> PyResult<core::Decay> {

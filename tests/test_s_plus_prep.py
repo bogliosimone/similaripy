@@ -626,7 +626,7 @@ def test_canonical_csr_indptr_int64(fmt):
     from similaripy._s_plus import _canonical_csr
 
     m = _m(20, 30).asformat(fmt)
-    assert _canonical_csr(m, np.float32, 0).indptr.dtype == np.int64
+    assert _canonical_csr(m, 0).indptr.dtype == np.int64
     assert sim.cosine(m, k=5, verbose=False).indptr.dtype == np.int32
 
 
@@ -742,17 +742,16 @@ def _dense_canonical(rows, cols, vals, shape):
 @pytest.mark.parametrize("form", list(_forms(*_entries())))
 @pytest.mark.parametrize("index_dtype", [np.int32, np.int64])
 @pytest.mark.parametrize("data_dtype", [np.float32, np.float64, np.int64])
-@pytest.mark.parametrize("dtype", [np.float32, np.float64])
-def test_canonical_csr_every_form(form, index_dtype, data_dtype, dtype):
+def test_canonical_csr_every_form(form, index_dtype, data_dtype):
     from similaripy._s_plus import _canonical_csr
 
     rows, cols, vals, shape = _entries()
     vals = vals.astype(data_dtype)
     m = _forms(rows.astype(index_dtype), cols.astype(index_dtype), vals, shape)[form]
     before = [a.copy() for a in _arrays(m)] if form != "lil" else None
-    c = _canonical_csr(m, dtype, 2)
-    want = _dense_canonical(rows, cols, vals.astype(dtype), shape)
-    assert (c.data.dtype, c.indices.dtype, c.indptr.dtype) == (np.dtype(dtype), np.int32, np.int64)
+    c = _canonical_csr(m, 2)
+    want = _dense_canonical(rows, cols, vals.astype(np.float32), shape)
+    assert (c.data.dtype, c.indices.dtype, c.indptr.dtype) == (np.float32, np.int32, np.int64)
     assert c.shape == shape and len(c.data) == len(c.indices) == c.indptr[-1]
     np.testing.assert_array_equal(c.indptr, want.indptr)
     np.testing.assert_array_equal(c.indices, want.indices)
@@ -767,9 +766,9 @@ def test_canonical_csr_passes_scipy_hint():
     from similaripy._s_plus import _canonical_csr
 
     m = sp.csr_array((np.array([1.0, 2.0]), np.array([1, 0]), np.array([0, 2])), shape=(1, 2))
-    assert _canonical_csr(m, np.float32, 0).indices.tolist() == [0, 1]
+    assert _canonical_csr(m, 0).indices.tolist() == [0, 1]
     m.has_canonical_format = True
-    assert _canonical_csr(m, np.float32, 0).indices.tolist() == [1, 0]
+    assert _canonical_csr(m, 0).indices.tolist() == [1, 0]
 
 
 def test_canonical_csr_csc_sums_in_stored_order():
@@ -779,20 +778,19 @@ def test_canonical_csr_csc_sums_in_stored_order():
 
     data = np.array([-1e8, 1e8, 1.0, 1e8, 1.0, -1e8])
     m = sp.csc_array((data, np.zeros(6, np.int32), np.array([0, 3, 6])), shape=(1, 2))
-    c = _canonical_csr(m, np.float32, 0)
+    c = _canonical_csr(m, 0)
     assert c.indices.tolist() == [0] and c.data.tolist() == [1.0]  # column 1: 1e8 + 1 - 1e8 = 0 in float32
 
 
 def test_canonical_csr_float64_overflow_and_underflow():
     # cast before summing: past float32's range -> inf (the similarities' finite check reports it),
-    # below it -> 0 (dropped); float64 output keeps both
+    # below it -> 0 (dropped)
     from similaripy._s_plus import _canonical_csr
 
     m = sp.coo_array((np.array([1e300, 1e-50, 1.0]), ([0, 0, 1], [0, 1, 1])), shape=(2, 2))
     for form in (m, m.tocsr(), m.tocsc()):
-        c = _canonical_csr(form, np.float32, 0)
+        c = _canonical_csr(form, 0)
         assert c.indptr.tolist() == [0, 1, 2] and c.data.tolist() == [np.inf, 1.0]
-        assert _canonical_csr(form, np.float64, 0).data.tolist() == [1e300, 1e-50, 1.0]
     with pytest.raises(ValueError, match="must be finite"):
         sim.cosine(m.tocsr(), k=5, verbose=False)
 
@@ -802,11 +800,11 @@ def test_canonical_csr_float64_overflow_and_underflow():
 def test_canonical_csr_empty(shape, fmt):
     from similaripy._s_plus import _canonical_csr
 
-    c = _canonical_csr(sp.csr_array(shape, dtype=np.float32).asformat(fmt), np.float32, 0)
+    c = _canonical_csr(sp.csr_array(shape, dtype=np.float32).asformat(fmt), 0)
     assert c.shape == shape and c.indptr.tolist() == [0] * (shape[0] + 1) and len(c.data) == 0
     # entries that all cancel or are zero: nnz 0 after the copy
     zero = sp.coo_array((np.array([1.0, -1.0, 0.0]), ([0, 0, 1], [1, 1, 2])), shape=(5, 3)).asformat(fmt)
-    assert _canonical_csr(zero, np.float32, 0).indptr.tolist() == [0] * 6
+    assert _canonical_csr(zero, 0).indptr.tolist() == [0] * 6
 
 
 def test_canonical_csr_unusual_arrays():
@@ -821,7 +819,7 @@ def test_canonical_csr_unusual_arrays():
     small.row, small.col = small.row.astype(np.int16), small.col.astype(np.int16)
     long = sp.csr_array((np.r_[want.data, 7.0], np.r_[want.indices, 0], want.indptr), shape=shape)
     for m in (strided, small, long):
-        c = _canonical_csr(m, np.float32, 0)
+        c = _canonical_csr(m, 0)
         np.testing.assert_array_equal(c.indices, want.indices)
         np.testing.assert_array_equal(c.data, want.data.astype(np.float32))
 
@@ -838,7 +836,6 @@ def test_core_canonical_rejects_bad_inputs():
             "minor": np.array([0, 1]),
             "data": np.ones(2, np.float32),
             "canonical": False,
-            "dtype": "float32",
             "num_threads": 0,
         }
         return _core.canonical(**args | kw)
@@ -854,7 +851,5 @@ def test_core_canonical_rejects_bad_inputs():
         run(format="coo", major=np.array([0]))
     with pytest.raises(ValueError, match="format"):
         run(format="bsr")
-    with pytest.raises(ValueError, match="dtype"):
-        run(dtype="float16")
     with pytest.raises(TypeError):
         run(minor=np.array([0, 1], np.int32))  # index types mixed

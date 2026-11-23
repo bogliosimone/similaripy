@@ -238,7 +238,7 @@ def urm_to_histories(URM, *, item_ids: ArrayLike | None = None) -> tuple[list[np
     """
     if not sp.issparse(URM):
         raise TypeError("URM must be a sparse matrix")
-    URM = _canonical_csr(URM, np.float32, 0)  # summed, no stored 0 (no event: exclude_history would hide it)
+    URM = _canonical_csr(URM, 0)  # summed, no stored 0 (no event: exclude_history would hide it)
     if item_ids is None:
         ids = URM.indices.astype(np.int64)
     else:

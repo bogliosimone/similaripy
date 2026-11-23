@@ -123,7 +123,7 @@ def serving_n_active(rec):
 def serving_batch_inputs(URM):
     """URM's rows as the core batch call takes them: (int64 offsets, int64 item ids, float32 weights),
     canonicalized as the kernel's prep does (ids = column indices: models built without item_ids)."""
-    H = _s_plus._canonical_csr(URM, np.float32, 0)
+    H = _s_plus._canonical_csr(URM, 0)
     return H.indptr.astype(np.int64), H.indices.astype(np.int64), H.data
 
 

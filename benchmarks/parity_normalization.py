@@ -4,7 +4,8 @@ Normalization parity: this install vs a reference install's `--dump`
 
 Every output value must match with rtol=1e-5 (`--rtol`), atol=1e-7 (NaN/inf must
 match too); the data dtype and the sparsity structure must be identical (index
-dtypes may differ: v1 outputs int32 indices for any input, 0.7.0 kept the input's).
+dtypes may differ: v1 outputs int32 indices for any input, 0.7.0 kept the input's;
+a float64 reference may meet float32 output: 1.0 returns float32 for any input).
 `--exact` makes any bit difference a failure (dtypes included): for changes that
 claim exactness, against a v1 dump.
 
@@ -86,7 +87,7 @@ def check_case(name, ref, rs, rtol=RTOL, exact=False):
     fail = None
     if exact and not same:
         fail = "not bit-identical (--exact)"
-    elif data.dtype != rs.data.dtype:
+    elif data.dtype != rs.data.dtype and (data.dtype, rs.data.dtype) != (np.float64, np.float32):
         fail = f"dtype {data.dtype} vs {rs.data.dtype}"
     elif not (tuple(shape) == rs.shape and np.array_equal(indptr, rs.indptr) and np.array_equal(indices, rs.indices)):
         fail = "structure differs"

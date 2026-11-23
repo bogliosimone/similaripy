@@ -6,7 +6,6 @@ use rayon::prelude::*;
 
 use crate::Error;
 use crate::csr::check_indptr;
-use crate::normalize::Value;
 
 /// Entries per sequential leaf; rows of ~100 entries sort in L1.
 pub(crate) const LEAF_NNZ: usize = 1 << 16;
@@ -58,25 +57,25 @@ fn remap_sort<V: Copy + Send>(
 
 /// Makes every row canonical, as scipy's `sum_duplicates` + `eliminate_zeros`:
 /// sorted by column, duplicate columns summed into one entry, zeros (explicit,
-/// or sums that cancel) dropped; float32 or float64 values. Rows are processed in parallel, then compacted
+/// or sums that cancel) dropped; float32 values. Rows are processed in parallel, then compacted
 /// to the front of `indices`/`data` in one sequential pass; returns the new
 /// indptr (the first `new_indptr[-1]` entries are the result).
 ///
 /// The canonical pass of `canonical` (parallel; scipy's `sum_duplicates` is
 /// single-threaded): duplicate entries would otherwise reach the kernel
 /// unsummed (wrong norms and binary counts).
-pub fn canonicalize_rows<V: Value>(
+pub fn canonicalize_rows(
     indptr: &[i64],
     indices: &mut [i32],
-    data: &mut [V],
+    data: &mut [f32],
 ) -> Result<Vec<i64>, Error> {
     canonicalize_with_leaf(indptr, indices, data, LEAF_NNZ)
 }
 
-fn canonicalize_with_leaf<V: Value>(
+fn canonicalize_with_leaf(
     indptr: &[i64],
     indices: &mut [i32],
-    data: &mut [V],
+    data: &mut [f32],
     leaf: usize,
 ) -> Result<Vec<i64>, Error> {
     let bad = |m: &str| Err(Error::InvalidInput(format!("canonicalize_rows: {m}")));
@@ -115,12 +114,12 @@ fn canonicalize_with_leaf<V: Value>(
 /// `eliminate_zeros`: sorted by column, duplicates summed (in sorted order),
 /// zeros dropped. Returns the kept length; the result is at the front.
 /// `pairs`: scratch reused across rows.
-fn canonical_row<V: Value>(cols: &mut [i32], vals: &mut [V], pairs: &mut Vec<(i32, V)>) -> usize {
+fn canonical_row(cols: &mut [i32], vals: &mut [f32], pairs: &mut Vec<(i32, f32)>) -> usize {
     sort_row(cols, vals, pairs);
     let mut n = 0; // entries kept so far, sums still open
     for j in 0..cols.len() {
         if n > 0 && cols[n - 1] == cols[j] {
-            vals[n - 1] = vals[n - 1] + vals[j];
+            vals[n - 1] += vals[j];
         } else {
             (cols[n], vals[n]) = (cols[j], vals[j]);
             n += 1;
@@ -128,7 +127,7 @@ fn canonical_row<V: Value>(cols: &mut [i32], vals: &mut [V], pairs: &mut Vec<(i3
     }
     let mut kept = 0;
     for j in 0..n {
-        if vals[j] != V::ZERO {
+        if vals[j] != 0.0 {
             (cols[kept], vals[kept]) = (cols[j], vals[j]);
             kept += 1;
         }
@@ -383,7 +382,7 @@ pub struct Csr<T> {
 }
 
 /// The one door in: a caller's `n_rows x n_cols` matrix copied once into an
-/// owned canonical CSR of `T` values. The cast comes before duplicates are
+/// owned canonical CSR of f32 values. The cast comes before duplicates are
 /// summed (a float64 value past float32's range becomes inf, a tiny one 0 and
 /// is dropped). `canonical`: the caller's hint that the input is sorted with
 /// no duplicates (scipy's `has_canonical_format`); zeros are dropped either way.
@@ -394,22 +393,21 @@ pub struct Csr<T> {
 /// rayon pool) unless the hint is true and no value is 0. Peak: the output +
 /// O(rows + cols). The bindings call it with the GIL released: under
 /// free-threading, a concurrent write to the input arrays races the copy.
-pub fn canonical<I, V, T>(
+pub fn canonical<I, V>(
     m: Sparse<'_, I, V>,
     (n_rows, n_cols): (usize, usize),
     canonical: bool,
-) -> Result<Csr<T>, Error>
+) -> Result<Csr<f32>, Error>
 where
     I: Copy + Into<i64>,
-    V: Value,
-    T: Value,
+    V: Copy + Into<f64>,
 {
     let bad = |m: &str| Error::InvalidInput(format!("canonical: {m}"));
     if n_cols > i32::MAX as usize + 1 {
         return Err(bad("more than 2^31 columns (column ids are int32)"));
     }
     let in_range = |ids: &[I], n: usize| ids.iter().all(|&x| (0..n as i64).contains(&x.into()));
-    let cast = |v: &V| T::narrow(v.wide());
+    let cast = |v: &V| (*v).into() as f32;
     let (mut indptr, mut indices, mut data) = match m {
         Sparse::Csr { indices, data, .. } | Sparse::Csc { indices, data, .. }
             if data.len() != indices.len() =>
@@ -461,7 +459,7 @@ where
             )
         }
     };
-    if !canonical || data.contains(&T::ZERO) {
+    if !canonical || data.contains(&0.0) {
         indptr = canonicalize_rows(&indptr, &mut indices, &mut data)?;
         let nnz = indptr[n_rows] as usize;
         indices.truncate(nnz);
@@ -488,13 +486,13 @@ fn offsets<I: Copy + Into<i64>>(ptr: &[I], n_major: usize, nnz: usize) -> Result
 
 /// Stable counting sort of entries by row (ids already checked): each row's
 /// entries in input order, values cast on the way.
-fn scatter<I: Copy + Into<i64>, V, T: Value>(
+fn scatter<I: Copy + Into<i64>, V>(
     rows: &[I],
     cols: impl Iterator<Item = i32>,
     data: &[V],
     n_rows: usize,
-    cast: impl Fn(&V) -> T,
-) -> (Vec<i64>, Vec<i32>, Vec<T>) {
+    cast: impl Fn(&V) -> f32,
+) -> (Vec<i64>, Vec<i32>, Vec<f32>) {
     let row = |r: I| r.into() as usize;
     let mut indptr = vec![0i64; n_rows + 1];
     for &r in rows {
@@ -504,7 +502,7 @@ fn scatter<I: Copy + Into<i64>, V, T: Value>(
         indptr[i + 1] += indptr[i];
     }
     let mut next = indptr.clone();
-    let (mut out_cols, mut out_vals) = (vec![0i32; rows.len()], vec![T::ZERO; rows.len()]);
+    let (mut out_cols, mut out_vals) = (vec![0i32; rows.len()], vec![0f32; rows.len()]);
     for ((&r, c), v) in rows.iter().zip(cols).zip(data) {
         let p = &mut next[row(r)];
         out_cols[*p as usize] = c;
@@ -586,13 +584,7 @@ mod tests {
                 }
                 indptr.push(indices.len() as i64);
             }
-            // float64 too: the values are exact in both types
-            let (mut indices64, mut data64): (Vec<i32>, Vec<f64>) = (indices.clone(), data.iter().map(|&v| v as f64).collect());
             let new_indptr = canonicalize_with_leaf(&indptr, &mut indices, &mut data, leaf).unwrap();
-            prop_assert_eq!(&canonicalize_with_leaf(&indptr, &mut indices64, &mut data64, leaf).unwrap(), &new_indptr);
-            let nnz = new_indptr[new_indptr.len() - 1] as usize;
-            prop_assert_eq!(&indices64[..nnz], &indices[..nnz]);
-            prop_assert!(data64[..nnz].iter().zip(&data[..nnz]).all(|(&a, &b)| a == b as f64));
             prop_assert_eq!(new_indptr.len(), indptr.len());
             for (i, r) in rows.iter().enumerate() {
                 let mut dense = [0.0f32; 6];
@@ -677,11 +669,7 @@ mod tests {
     }
 
     /// Every format and index type of `entries`, canonical with `hint`.
-    fn every_form<T: Value>(
-        entries: &[(i64, i64, f64)],
-        shape: (usize, usize),
-        hint: bool,
-    ) -> Vec<Csr<T>> {
+    fn every_form(entries: &[(i64, i64, f64)], shape: (usize, usize), hint: bool) -> Vec<Csr<f32>> {
         let (rp, rc, rv) = compressed(entries, shape.0, false);
         let (cp, cr, cv) = compressed(entries, shape.1, true);
         let (rows, cols, vals): (Vec<i64>, Vec<i64>, Vec<f64>) = (
@@ -765,7 +753,7 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 256 }))]
-        // Every format, index type and output type: the dense per-cell sum (values exact in
+        // Every format and index type: the dense per-cell sum (values exact in
         // any order), sorted rows, no zeros, spare capacity cut.
         #[test]
         fn canonical_matches_dense_sum(
@@ -788,13 +776,10 @@ mod tests {
                 }
                 want.0.push(want.1.len() as i64);
             }
-            for out in every_form::<f32>(&entries, shape, false) {
+            for out in every_form(&entries, shape, false) {
                 prop_assert_eq!(&out.indptr, &want.0);
                 prop_assert_eq!(&out.indices, &want.1);
                 prop_assert!(out.data.iter().zip(&want.2).all(|(&a, &b)| a as f64 == b));
-            }
-            for out in every_form::<f64>(&entries, shape, false) {
-                prop_assert_eq!((&out.indptr, &out.indices, &out.data), (&want.0, &want.1, &want.2));
             }
         }
     }
@@ -824,7 +809,7 @@ mod tests {
     #[test]
     fn canonical_casts_before_summing() {
         // f64 past f32's range -> inf (kept, the similarities report it); 1e-50 -> 0 in f32 (dropped);
-        // 0.1 + 0.2 summed in f32 after the cast; f64 output keeps the values as given
+        // 0.1 + 0.2 summed in f32 after the cast
         let (rows, cols) = ([0i64, 0, 1, 1], [0i64, 1, 0, 0]);
         let data = [1e300, 1e-50, 0.1, 0.2];
         let coo = || Sparse::Coo {
@@ -835,8 +820,6 @@ mod tests {
         let out: Csr<f32> = canonical(coo(), (2, 2), false).unwrap();
         assert_eq!((out.indptr, out.indices), (vec![0, 1, 2], vec![0, 0]));
         assert_eq!(out.data, [f32::INFINITY, 0.1f32 + 0.2f32]);
-        let out: Csr<f64> = canonical(coo(), (2, 2), false).unwrap();
-        assert_eq!(out.data, [1e300, 1e-50, 0.1 + 0.2]);
     }
 
     #[test]
@@ -849,16 +832,8 @@ mod tests {
             indices: &indices,
             data: &data,
         };
-        assert_eq!(
-            canonical::<_, _, f32>(csr(), (1, 2), true).unwrap().indices,
-            [1, 0]
-        );
-        assert_eq!(
-            canonical::<_, _, f32>(csr(), (1, 2), false)
-                .unwrap()
-                .indices,
-            [0, 1]
-        );
+        assert_eq!(canonical(csr(), (1, 2), true).unwrap().indices, [1, 0]);
+        assert_eq!(canonical(csr(), (1, 2), false).unwrap().indices, [0, 1]);
         let zero = [1.0f32, 0.0];
         let out: Csr<f32> = canonical(
             Sparse::Csr {
@@ -916,7 +891,7 @@ mod tests {
 
     #[test]
     fn canonical_rejects_bad_inputs() {
-        let c = |m: Sparse<'_, i64, f32>, shape| canonical::<_, _, f32>(m, shape, false).is_err();
+        let c = |m: Sparse<'_, i64, f32>, shape| canonical(m, shape, false).is_err();
         let d = [1.0f32, 2.0];
         assert!(c(
             Sparse::Csr {
