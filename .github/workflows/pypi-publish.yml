@@ -51,7 +51,7 @@ jobs:
           || '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest", "macos-latest", "macos-15-intel"]') }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install the pinned toolchain
         # macOS/Windows build on the host; Linux builds in the manylinux
@@ -60,12 +60,12 @@ jobs:
         uses: ./.github/actions/rust-toolchain
 
       - name: Build and test wheels
-        uses: pypa/cibuildwheel@v4.3.1
+        uses: pypa/cibuildwheel@b3395e271a35f73dad77f21802abe9b986dfe299 # v4.3.1
         env:
           # PRs build one Python (GIL + free-threaded) per platform; pushes and releases build all
           CIBW_BUILD: ${{ github.event_name == 'pull_request' && 'cp314-* cp314t-*' || '*' }}
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cibw-wheels-${{ matrix.os }}
           path: ./wheelhouse/*.whl
@@ -75,10 +75,10 @@ jobs:
     if: ${{ !startsWith(github.event.release.tag_name, 'server-v') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
 
@@ -109,7 +109,7 @@ jobs:
           pip install --group test
           pytest
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cibw-sdist
           path: dist/*.tar.gz
@@ -123,20 +123,20 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check tag matches package version
         run: |
           VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           test "$GITHUB_REF_NAME" = "v$VERSION" || { echo "Tag $GITHUB_REF_NAME does not match version v$VERSION"; exit 1; }
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: cibw-*
           path: dist
           merge-multiple: true
 
       - name: Upload to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.2
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           skip-existing: true

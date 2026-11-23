@@ -2,6 +2,7 @@
 # Not the Rust toolchain: rust-toolchain.toml stays a manual, benchmarked bump.
 version: 2
 updates:
+  # Actions are pinned by commit SHA with a "# vX.Y.Z" comment: Dependabot bumps both
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
