@@ -148,7 +148,7 @@ Harness in [benchmarks/](benchmarks/README.md): `run.py` (similarity, recommend,
 - `uv run` (e.g. `make test-dev`) rebuilds the extension after `.rs` edits (`[tool.uv] cache-keys`)
 - The Python prep guarantees the kernel's invariants (int32 indices, sorted rows, no explicit zeros); the core still validates once per call, the hot loops don't
 - Release the GIL (`py.detach`) around kernel calls; free-threaded builds (3.14t+) are supported
-- Threads: `num_threads=0` = rayon global pool (`RAYON_NUM_THREADS` to limit), `n` = a pool cached per calling thread
+- Threads: `num_threads=0` = rayon global pool (`RAYON_NUM_THREADS` to limit), `n` = a pool cached per calling thread; every rayon-running binding goes through `with_pool`, which in a forked child swaps the global pool for one per-process pool and rebuilds cached pools (pools don't survive `fork()`; `tests/test_fork.py`)
 - Ensure no shared mutable state across rayon workers
 - 0.7.0 (the last Cython release) is a tolerance reference, not a contract: `parity_kernel.py` / `parity_normalization.py` (`--dump` / `--compare`, see [benchmarks/README.md](benchmarks/README.md))
 
