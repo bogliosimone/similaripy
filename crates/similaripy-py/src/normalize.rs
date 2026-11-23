@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use similaripy_core::Error;
 use similaripy_core::normalize::{self as core, Axis, IdfMode, Norm, TfMode};
 
-use crate::to_py;
+use crate::{to_py, with_pool};
 
 /// The canonical arrays, borrowed; `axis` 1 = rows, 0 = columns (numpy's).
 struct Args<'py> {
@@ -60,7 +60,7 @@ impl<'py> Args<'py> {
             self.indices.as_slice()?,
             self.indptr.as_slice()?,
         );
-        py.detach(move || op(axis, data, indices, indptr, n_cols))
+        py.detach(move || with_pool(0, || op(axis, data, indices, indptr, n_cols)))
             .map_err(to_py)
     }
 }
@@ -180,7 +180,7 @@ pub fn user_ages<'py>(
     let users = users.as_slice()?;
     let t = t.as_ref().map(|t| t.as_slice()).transpose()?;
     let ages = py
-        .detach(|| core::user_ages(users, n_users, t, kind))
+        .detach(|| with_pool(0, || core::user_ages(users, n_users, t, kind)))
         .map_err(to_py)?;
     Ok(ages.into_pyarray(py))
 }

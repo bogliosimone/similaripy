@@ -9,7 +9,8 @@ mod serve;
 mod similarity;
 
 use std::cell::RefCell;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
@@ -29,22 +30,56 @@ pub(crate) fn to_py(e: Error) -> PyErr {
 
 thread_local! {
     /// `num_threads = n > 0`: one pool per calling thread, rebuilt when n changes.
-    /// Concurrent callers each get their own team, as with OpenMP.
-    static POOL: RefCell<Option<(usize, Arc<ThreadPool>)>> = const { RefCell::new(None) };
+    /// Concurrent callers each get their own team, as with OpenMP. Tagged with
+    /// the process that built it (see `with_pool`).
+    static POOL: RefCell<Option<(u32, usize, Arc<ThreadPool>)>> = const { RefCell::new(None) };
 }
 
-fn cached_pool(n: usize) -> Result<Arc<ThreadPool>, Error> {
+/// The process that imported the module: any other pid is a forked child.
+static MODULE_PID: AtomicU32 = AtomicU32::new(0);
+
+/// A forked child's stand-in for the global pool: one per process, shared
+/// by its threads as the global pool is. Never touched by the importing
+/// process, so it's unlocked at the fork that makes a child.
+static FORK_POOL: Mutex<Option<(u32, Arc<ThreadPool>)>> = Mutex::new(None);
+
+/// Built outside the lock, which is only held for a lookup or an insert.
+fn fork_pool(pid: u32) -> Result<Arc<ThreadPool>, Error> {
+    let lock = || FORK_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((p, pool)) = lock().as_ref()
+        && *p == pid
+    {
+        return Ok(pool.clone());
+    }
+    // num_threads(0): rayon's rule for the global pool (RAYON_NUM_THREADS, else the cores)
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(0)
+        .build()
+        .map_err(|e| Error::InvalidInput(e.to_string()))?;
+    let mut cached = lock();
+    match cached.as_ref() {
+        Some((p, other)) if *p == pid => return Ok(other.clone()), // another thread won
+        Some(_) => std::mem::forget(cached.take()), // a fork of a fork: as in `cached_pool`
+        None => {}
+    }
+    Ok(cached.insert((pid, Arc::new(pool))).1.clone())
+}
+
+fn cached_pool(n: usize, pid: u32) -> Result<Arc<ThreadPool>, Error> {
     POOL.with_borrow_mut(|cached| {
-        if let Some((m, pool)) = cached.as_ref()
-            && *m == n
-        {
-            return Ok(pool.clone());
+        match cached.as_ref() {
+            Some((p, m, pool)) if *p == pid && *m == n => return Ok(pool.clone()),
+            // Built by the parent before a fork: its workers stayed there. Leaked,
+            // not dropped: dropping wakes the (missing) workers through locks
+            // that may have been held at the fork.
+            Some((p, ..)) if *p != pid => std::mem::forget(cached.take()),
+            _ => {}
         }
         let pool = ThreadPoolBuilder::new()
             .num_threads(n)
             .build()
             .map_err(|e| Error::InvalidInput(e.to_string()))?;
-        Ok(cached.insert((n, Arc::new(pool))).1.clone())
+        Ok(cached.insert((pid, n, Arc::new(pool))).2.clone())
     })
 }
 
@@ -80,7 +115,15 @@ impl From<ParamsArg> for Params {
 }
 
 /// Runs `f` on the global rayon pool (`num_threads = 0`) or on the calling
-/// thread's cached pool of `num_threads` workers.
+/// thread's cached pool of `num_threads` workers. Every binding that may run
+/// rayon work goes through here.
+///
+/// Fork safety: `fork()` copies a pool's bookkeeping but not its worker
+/// threads, so work sent to a pool started before the fork waits forever.
+/// In a forked child (a pid other than the importing process's) the global
+/// pool, possibly started by the parent (any rayon call starts it), is
+/// replaced by one pool of the same size per process (`FORK_POOL`), and a
+/// cached pool built by the parent is rebuilt. One `getpid` per call.
 pub(crate) fn with_pool<R>(
     num_threads: usize,
     f: impl FnOnce() -> Result<R, Error> + Send,
@@ -88,10 +131,11 @@ pub(crate) fn with_pool<R>(
 where
     R: Send,
 {
-    if num_threads == 0 {
-        f()
-    } else {
-        cached_pool(num_threads)?.install(f)
+    let pid = std::process::id();
+    match num_threads {
+        0 if pid == MODULE_PID.load(Ordering::Relaxed) => f(),
+        0 => fork_pool(pid)?.install(f),
+        n => cached_pool(n, pid)?.install(f),
     }
 }
 
@@ -130,9 +174,11 @@ fn group_interactions<'py>(
     let t = t.as_ref().map(|t| t.as_slice()).transpose()?;
     let g = py
         .detach(|| {
-            similaripy_core::prep::group_interactions(
-                rows, cols, values, t, n_rows, n_cols, duplicates,
-            )
+            with_pool(0, || {
+                similaripy_core::prep::group_interactions(
+                    rows, cols, values, t, n_rows, n_cols, duplicates,
+                )
+            })
         })
         .map_err(to_py)?;
     Ok((
@@ -158,6 +204,7 @@ fn auto_block_size(n_cols: usize, num_threads: usize, col_bytes: usize) -> usize
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    MODULE_PID.store(std::process::id(), Ordering::Relaxed);
     m.add("DEFAULT_BLOCK_SIZE", similaripy_core::DEFAULT_BLOCK_SIZE)?;
     // The serving defaults (k, exclude_history, sorted): the Python signatures'
     // literals are checked against them (tests/test_serve.py).

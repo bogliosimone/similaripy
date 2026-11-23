@@ -171,8 +171,10 @@ impl PyModel {
             .map(|a| a.as_slice().map(<[u64]>::to_vec))
             .transpose()?;
         py.detach(|| {
-            Model::from_parts(indptr, pairs, new_to_old, n_cols, ext, allowed)
-                .and_then(|m| Self::wrap(m, block))
+            with_pool(0, || {
+                Model::from_parts(indptr, pairs, new_to_old, n_cols, ext, allowed)
+            })
+            .and_then(|m| Self::wrap(m, block))
         })
         .map_err(to_py)
     }
@@ -192,7 +194,7 @@ impl PyModel {
         block_size: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
         let block = self::block_size(block_size)?;
-        py.detach(|| Model::load(&path, mmap).and_then(|m| Self::wrap(m, block)))
+        py.detach(|| with_pool(0, || Model::load(&path, mmap)).and_then(|m| Self::wrap(m, block)))
             .map_err(to_py)
     }
 

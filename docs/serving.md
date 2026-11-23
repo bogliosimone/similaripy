@@ -85,6 +85,15 @@ ids, scores = model.recommend(history, weights=w, k=20)              # one user 
 ids, scores = model.recommend_batch(histories, weights=ws, k=20)     # many users (offline)
 ```
 
+A negative weight is a dislike: each item's score is the weighted sum of its
+similarities to the history, so a dislike pushes away what is similar to that
+item, and items whose score ends at 0 or below are not returned. The disliked
+item stays in the history (`exclude_history` keeps it out).
+
+```python
+ids, scores = model.recommend([10, 20], weights=[1, -1], k=3)   # likes 10, dislikes 20
+```
+
 Example: batch recommendations from an interaction log, in chunks for millions of users:
 
 ```python
@@ -251,6 +260,11 @@ A server that answers many users, one `recommend` per request:
 - **Share one model across threads.** `recommend` releases the GIL, so threads
   run requests in parallel (free-threaded Python too). Across worker
   processes, `load` with `mmap=True` shares one copy of S.
+- **Forked workers are fine** (gunicorn `--preload`, Celery prefork,
+  `multiprocessing` with `fork`): load or compute in the parent, then fork.
+  A forked child gets new threads for parallel calls (thread pools don't
+  survive `fork()`). Fork while no similaripy call is running in another
+  thread: a call in flight at the fork can't finish in the child.
 - **Keep `block_size='auto'`** for a server with concurrent requests: a single
   request sizes its work for every core being busy. A process that runs one
   request at a time on an idle machine can use `block_size=None`.
