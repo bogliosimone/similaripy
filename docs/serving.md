@@ -31,6 +31,7 @@ immutable: one instance can be shared by any number of threads.
 ## Methods
 
 Everything is on the `SparseKNN` class: build a `model`, then call its methods.
+The server side is in the same module (last rows).
 
 | Method | Description |
 |--------|-------------|
@@ -43,6 +44,8 @@ Everything is on the `SparseKNN` class: build a `model`, then call its methods.
 | `model.save(path)` | Writes the model to a directory. |
 | `model = SparseKNN.load(path)` | Class method: a saved model, memory-mapped by default. |
 | `model.item_ids` | Property: the id of each item (column of S). |
+| `ServerClient(url)` | The same `recommend` / `score` calls on a [`similaripy-server`](server.md) ([below](#calling-the-server-from-python)). |
+| `write_view(dir, name, include=, exclude=)`, `read_view(dir, name)` | The server's view files ([View files](#view-files)). |
 
 ## Parameters
 
@@ -219,6 +222,69 @@ with `np.load` ([format spec](saved-format.md)). The model is saved as built: it
 `candidate_items` come with it (`load` has no such options). A model saved by a newer format is a clear "upgrade
 similaripy" error.
 
+## Calling the server from Python
+
+[`similaripy-server`](server.md) serves a saved model over HTTP. `ServerClient`
+makes the same calls as `SparseKNN`, so code can move between the two: the
+model in the process, or a server shared by many processes.
+
+```python
+from similaripy.serving import ServerClient
+
+with ServerClient("http://127.0.0.1:8080") as client:
+    ids, scores = client.recommend(history, k=500)               # as model.recommend, over HTTP
+    ids, scores = client.recommend(history, k=20, sorted=True, view="in_stock")
+    features = client.score(history, candidates)                 # as model.score
+```
+
+The answers are the same bits as `SparseKNN.load(path)` on the server's model.
+What differs:
+
+| | `SparseKNN` | `ServerClient` |
+|---|---|---|
+| Views | `views=[model.view(...)]` objects | `view="name"`, `views=["name", ...]`: the server's views folder |
+| `k`, `sorted` | `10`, `False` | `None` = the server's `defaults.k` / `defaults.sorted` (`10`, `False` unless configured) |
+| Batch | `recommend_batch`, `score_batch` | one request per call: send them from several threads |
+| Errors | `ValueError`, `TypeError` | `ServerError` with the server's `status`, `code`, `message`, `request_id`; `OSError` on no answer |
+
+- **Options:** `ServerClient(url, timeout=10.0, max_retries=0)`. A retry is
+  for a failed connection, a timeout, a cut answer or a 503 (e.g. a load
+  balancer with no ready server), after 0.1 s, 0.2 s, 0.4 s, ...; an error
+  answer (a 400, a 500) is never retried.
+- **Context of an answer:** `request_id="..."` is sent as `x-request-id` (the
+  key to the server's log; 1-128 printable ASCII characters without spaces);
+  `return_info=True` adds a third value with the answer's other fields:
+  `request_id`, `model` (which version answered), `k`, `sorted`, `view`,
+  `views` and the `history` counts.
+- **Threads:** one client can be shared; each thread keeps its own
+  keep-alive connection. `close()` (or `with`) closes them, once no request
+  is in flight.
+- **asyncio:** `await asyncio.to_thread(client.recommend, history, k=20)`
+  (the client is stdlib HTTP, blocking).
+- **Probes:** `client.health()`, `client.ready()` (False on no answer);
+  `client.views()` is `GET /v1/views` as the server sends it.
+
+### View files
+
+The server's views come from files in its views folder, one id per line
+([format](server.md#views)). `write_view` writes them in that format (the
+same Rust code reads them in the server); `read_view` reads them back, e.g.
+to compute training features on the view the server serves:
+
+```python
+from similaripy.serving import read_view, write_view
+
+write_view("views", "in_stock", include=in_stock_ids)     # views/in_stock.include.txt
+write_view("views", "no_adult", exclude=adult_ids)        # views/no_adult.exclude.txt
+
+include, exclude = read_view("views", "in_stock")         # None: no such file
+in_stock = model.view(include=include, exclude=exclude)   # the server's view, in the process
+```
+
+Each file is replaced atomically: a server scanning the folder sees the old
+file or the new one, never part of one. A rule not given is left as it is on
+disk (delete its file to drop it). Names are 1-64 of `a-z 0-9 _ -`.
+
 ## Orientation of S
 
 A similarity matrix such as `sim.cosine(URM.T, k=100)` keeps the top 100 items per row: row `i` holds item `i`'s most similar items. It can be served in two ways:
@@ -284,7 +350,8 @@ A server that answers many users, one `recommend` per request:
 - **Deploy a new model version** by saving it to a new directory and switching
   what the workers load ([Saving and loading](#saving-and-loading)).
 - **No Python service to write?** [`similaripy-server`](server.md) serves a
-  saved model over HTTP/JSON and gRPC (experimental).
+  saved model over HTTP/JSON and gRPC (experimental); `ServerClient` calls it
+  from Python ([Calling the server from Python](#calling-the-server-from-python)).
 
 A minimal FastAPI service (`fetch_history` is your store):
 

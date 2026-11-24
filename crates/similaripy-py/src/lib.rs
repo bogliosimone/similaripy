@@ -7,6 +7,7 @@ mod normalize;
 mod progress;
 mod serve;
 mod similarity;
+mod view_file;
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -220,5 +221,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(normalize::tfidf, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::decay_weights, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::user_ages, m)?)?;
+    m.add_function(wrap_pyfunction!(view_file::write_view, m)?)?;
+    m.add_function(wrap_pyfunction!(view_file::read_view, m)?)?;
     m.add_function(wrap_pyfunction!(normalize::bm25plus, m)?)
 }

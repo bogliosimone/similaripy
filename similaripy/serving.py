@@ -21,9 +21,21 @@ items are ordered, so the candidates take the first internal ids (permanent
 until rebuilt); `view(include=, exclude=)` gives a model sharing S with a
 default mask (cheap to change: make a new view, swap the reference);
 `include=` / `exclude=` per call. They combine with AND.
+
+The server side: `ServerClient`, the same `recommend` / `score` calls over
+`similaripy-server`'s JSON API (stdlib HTTP, keep-alive, no dependency);
+`write_view` / `read_view`, the server's view files (the Rust core's format).
 """
 
-from typing import Literal
+import http.client
+import json
+import threading
+import time
+import urllib.parse
+import weakref
+from os import PathLike
+from pathlib import Path
+from typing import Any, Literal, Self
 
 import numpy as np
 from scipy.sparse import issparse, sparray, spmatrix
@@ -31,7 +43,7 @@ from scipy.sparse import issparse, sparray, spmatrix
 from . import _core  # ty: ignore[unresolved-import]  (compiled, no stub)
 from ._s_plus import SparseInput, _canonical_csr
 
-__all__ = ["SparseKNN"]
+__all__ = ["ServerClient", "ServerError", "SparseKNN", "read_view", "write_view"]
 
 _INT64_MAX = np.iinfo(np.int64).max
 # What `__reduce__` writes: pickles are same-version only, this makes another
@@ -168,7 +180,7 @@ class SparseKNN:
 
     `score[j] = sum_i w_i * S[i, j]` over the history items `i`; the best `k`
     items with a positive score (best first with `sorted=True`; ties: see
-    `item_order`). Ids
+    `item_order`). The same calls run on a server: `ServerClient`. Ids
     are yours (`item_ids`) everywhere; ids the model doesn't have are
     ignored. The model is immutable and safe to share across threads; each
     call releases the GIL.
@@ -577,3 +589,399 @@ def _from_parts(cls, pickle_format, *parts):
             "with save() / SparseKNN.load()"
         )
     return cls._wrap(_core.ServeModel.from_parts(*parts))
+
+
+def write_view(
+    dir: str | PathLike,
+    name: str,
+    *,
+    include: list[int] | np.ndarray | None = None,
+    exclude: list[int] | np.ndarray | None = None,
+) -> list[Path]:
+    """
+    Writes a view's files for `similaripy-server`'s views folder:
+    `dir/NAME.include.txt` (only these items) and / or `dir/NAME.exclude.txt`
+    (never these), one id per line, in the server's format (written by the
+    Rust core, as the server reads it). Each file replaces the old one
+    atomically (a hidden temporary file renamed over it): a server scanning
+    the folder sees the old file or the new one, never part of one. The
+    `model.view(include=, exclude=)` of a server: e.g. from a pipeline that
+    refreshes stock lists, then synced into the pods' folder.
+
+    A rule not given is left as it is on disk: to drop one, delete its file.
+    The two files are two writes, so a scan between them can see one new
+    and one old.
+
+    Args:
+        dir: the views folder (must exist).
+        name: the view's name, 1-64 of `a-z 0-9 _ -` (`view=` in requests).
+        include: the item ids the view allows (None: leave the file as is).
+        exclude: the item ids it removes (None: leave the file as is).
+
+    Returns:
+        paths: the files written, include first.
+
+    Raises:
+        TypeError: on non-integer ids.
+        ValueError: on a bad name, or neither `include` nor `exclude`.
+        OSError: on a file-system failure (e.g. FileNotFoundError: no `dir`).
+    """
+    return _core.write_view(dir, name, _opt_ids("include", include), _opt_ids("exclude", exclude))
+
+
+def read_view(dir: str | PathLike, name: str) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """
+    A view's ids as `similaripy-server` reads them from its views folder, e.g.
+    to compute offline on the view the server serves:
+    `include, exclude = read_view(dir, name)`, then
+    `model.view(include=include, exclude=exclude)`.
+
+    Args:
+        dir: the views folder.
+        name: the view's name.
+
+    Returns:
+        include: int64 ids of `NAME.include.txt`, None without that file.
+        exclude: int64 ids of `NAME.exclude.txt`, None without that file.
+
+    Raises:
+        ValueError: on a bad name, a line that isn't an integer id, or a
+            `NAME.meta.json` (settings of a later version, which a 1.0
+            server doesn't serve either).
+        FileNotFoundError: on no file of the view.
+        OSError: on another read failure.
+    """
+    return _core.read_view(dir, name)
+
+
+class ServerError(Exception):
+    """
+    An error answer of `similaripy-server` (`ServerClient`): branch on `code`
+    (fixed strings, e.g. 'k_over_max', 'unknown_view'; None for a non-JSON
+    answer, e.g. from a proxy), show `message` to people. `request_id`
+    joins it with the server's log.
+    """
+
+    def __init__(self, status: int, code: str | None, message: str, request_id: str | None):
+        super().__init__(f"{status} {code}: {message} (request_id {request_id})")
+        self.status = status
+        self.code = code
+        self.message = message
+        self.request_id = request_id
+
+
+# Errors of a kept-alive connection the server closed while idle: the request
+# never reached it, so it is sent again once on a new connection.
+_STALE = (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError)
+
+
+class ServerClient:
+    """
+    A client of `similaripy-server`'s JSON API: `recommend` and `score` as
+    `SparseKNN`'s, over HTTP (stdlib only). One keep-alive connection per
+    thread: share one client across threads. Answers are bit-identical to
+    `SparseKNN.load(path)` on the server's model (float32 scores).
+
+    Options left None take the server's config (`defaults.k`,
+    `defaults.sorted`: unsorted, as `SparseKNN`'s default). Views are named
+    (the server's views folder: `write_view`), not `SparseKNN` objects.
+
+    Args:
+        url: the server, e.g. 'http://127.0.0.1:8080' (https: behind a TLS
+            proxy; the server itself has no TLS).
+        timeout: seconds to connect and for each answer.
+        max_retries: times a failed connection, a timeout, a cut answer or
+            a 503 (e.g. a load balancer with no ready server) is tried
+            again, after 0.1 s, 0.2 s, 0.4 s, ...;
+            an error answer (4xx, 500) never is.
+
+    Examples:
+        ```python
+        from similaripy.serving import ServerClient
+
+        with ServerClient("http://127.0.0.1:8080") as client:
+            ids, scores = client.recommend([10, 20], k=3, sorted=True)
+        ```
+    """
+
+    def __init__(self, url: str = "http://127.0.0.1:8080", *, timeout: float = 10.0, max_retries: int = 0):
+        u = urllib.parse.urlsplit(url)
+        try:
+            u.port  # noqa: B018 (raises on a bad port)
+        except ValueError:
+            u = None
+        if u is None or u.scheme not in ("http", "https") or not u.hostname or u.username or u.query or u.fragment:
+            raise ValueError(f"url must be http://host[:port][/prefix] or https://..., got {url!r}")
+        if not isinstance(max_retries, int) or max_retries < 0:
+            raise ValueError(f"max_retries must be a non-negative integer, got {max_retries!r}")
+        self.url = url
+        self._https = u.scheme == "https"
+        self._host = u.netloc
+        self._prefix = u.path.rstrip("/")
+        self._timeout = timeout
+        self._max_retries = max_retries
+        self._local = threading.local()
+        # Weak: a finished thread's connection goes with its thread-local slot
+        self._conns: weakref.WeakSet[http.client.HTTPConnection] = weakref.WeakSet()
+        self._lock = threading.Lock()
+
+    def __repr__(self) -> str:
+        return f"ServerClient({self.url!r})"
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Closes the client's connections (every thread's; call it with no
+        request in flight); a later call opens a new one."""
+        with self._lock:
+            conns, self._conns = list(self._conns), weakref.WeakSet()
+            self._local = threading.local()  # every thread opens a new, tracked one
+        for c in conns:
+            c.close()
+
+    def recommend(
+        self,
+        history: list[int] | np.ndarray,
+        *,
+        weights: list[float] | np.ndarray | None = None,
+        k: int | None = None,
+        exclude_history: bool = True,
+        include: list[int] | np.ndarray | None = None,
+        exclude: list[int] | np.ndarray | None = None,
+        view: str | None = None,
+        views: list[str] | None = None,
+        sorted: bool | None = None,
+        request_id: str | None = None,
+        return_info: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+        """
+        The top `k` items for one history (`POST /v1/recommend`), as
+        `SparseKNN.recommend`.
+
+        Args:
+            history: item ids, oldest first (the server keeps the newest
+                `limits.max_history`).
+            weights: one finite weight per id (None = all 1.0).
+            k: results wanted (None: the server's `defaults.k`).
+            exclude_history: never recommend a history item.
+            include: only these items can be recommended (None = all).
+            exclude: never recommend these items.
+            view: a view's name (None: the whole model).
+            views: more view names, ANDed with `view`, at most 8.
+            sorted: best first (None: the server's `defaults.sorted`).
+            request_id: sent as `x-request-id` (None: the server makes one).
+            return_info: also return the answer's context.
+
+        Returns:
+            ids: int64, the item ids.
+            scores: float32, one per id.
+            info: with `return_info=True`: the answer's other fields
+                (`request_id`, `model`, `k`, `sorted`, `view`, `views`,
+                `history` counts).
+
+        Raises:
+            ServerError: on an error answer (e.g. `k_over_max`).
+            TypeError: on non-integer ids, or `views` that aren't a list of
+                names.
+            ValueError: on a negative `k`, non-finite weights, or a
+                `request_id` the server would replace (1-128 printable
+                ASCII characters without spaces).
+            OSError: on no answer after `max_retries` (a timeout,
+                ConnectionRefusedError, ...; ConnectionError: an answer cut
+                or not HTTP).
+        """
+        body = {
+            "history": _ids("history", history).tolist(),
+            "weights": _json_weights(weights),
+            "k": None if k is None else _check_k(k),
+            "exclude_history": bool(exclude_history),
+            "include": _json_ids("include", include),
+            "exclude": _json_ids("exclude", exclude),
+            "view": view,
+            "views": _names(views),
+            "sorted": None if sorted is None else bool(sorted),
+        }
+        a = self._call("POST", "/v1/recommend", body, request_id)
+        items = a.pop("items")
+        ids = np.array([it["id"] for it in items], dtype=np.int64)
+        scores = np.array([it["score"] for it in items], dtype=np.float32)
+        return (ids, scores, a) if return_info else (ids, scores)
+
+    def score(
+        self,
+        history: list[int] | np.ndarray,
+        items: list[int] | np.ndarray,
+        *,
+        weights: list[float] | np.ndarray | None = None,
+        view: str | None = None,
+        views: list[str] | None = None,
+        request_id: str | None = None,
+        return_info: bool = False,
+    ) -> np.ndarray | tuple[np.ndarray, dict[str, Any]]:
+        """
+        The scores of the given items for one history (`POST /v1/score`), as
+        `SparseKNN.score`: one per item, in its order, 0.0 for an item the
+        model doesn't have or a view excludes.
+
+        Args:
+            history: item ids, as `recommend`'s.
+            items: the item ids to score (at most the server's
+                `limits.max_items`).
+            weights: one finite weight per history id (None = all 1.0).
+            view: a view's name (None: the whole model).
+            views: more view names, as `recommend`'s.
+            request_id: sent as `x-request-id`.
+            return_info: also return the answer's context.
+
+        Returns:
+            scores: float32, one per item.
+            info: with `return_info=True`: the answer's other fields.
+
+        Raises:
+            ServerError: on an error answer (e.g. `items_over_max`).
+            TypeError: on non-integer ids, or `views` that aren't a list of
+                names.
+            ValueError: on non-finite weights or a bad `request_id`, as
+                `recommend`'s.
+            OSError: on no answer, as `recommend`'s.
+        """
+        body = {
+            "history": _ids("history", history).tolist(),
+            "items": _ids("items", items).tolist(),
+            "weights": _json_weights(weights),
+            "view": view,
+            "views": _names(views),
+        }
+        a = self._call("POST", "/v1/score", body, request_id)
+        scores = np.array(a.pop("scores"), dtype=np.float32)
+        return (scores, a) if return_info else scores
+
+    def views(self) -> dict[str, Any]:
+        """
+        The server's views (`GET /v1/views`), as it sends them: `items` (the
+        model's) and `views`, by name: `allowed` (null: failed to load),
+        `include` / `exclude` files (`file`, `ids`, `known`, `modified`) and
+        `error`.
+        """
+        return self._call("GET", "/v1/views")
+
+    def health(self) -> bool:
+        """True while the server's process answers (`GET /health`); False on no answer."""
+        return self._probe("/health")
+
+    def ready(self) -> bool:
+        """True while the server takes requests (`GET /ready`); False when it drains or doesn't answer."""
+        return self._probe("/ready")
+
+    def _probe(self, path):
+        try:
+            return self._send("GET", path, None, None)[0] == 200
+        except OSError:  # no answer (not HTTP: a ConnectionError too)
+            return False
+
+    def _conn(self):
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            cls = http.client.HTTPSConnection if self._https else http.client.HTTPConnection
+            c = self._local.conn = cls(self._host, timeout=self._timeout)
+            with self._lock:
+                self._conns.add(c)
+        return c
+
+    def _drop(self):
+        c = self._local.__dict__.pop("conn", None)
+        if c is not None:
+            c.close()
+            with self._lock:
+                self._conns.discard(c)
+
+    def _send(self, method, path, body, request_id):
+        """One request: (status, headers, raw body); a stale kept-alive connection is replaced once."""
+        headers = {} if request_id is None else {"x-request-id": _request_id(request_id)}
+        data = None
+        if body is not None:
+            data = json.dumps({k: v for k, v in body.items() if v is not None}).encode()
+            headers["content-type"] = "application/json"
+        for attempt in (0, 1):
+            reused = getattr(self._local, "conn", None) is not None
+            c = self._conn()
+            try:
+                c.request(method, self._prefix + path, data, headers)
+                r = c.getresponse()
+                raw = r.read()
+            except _STALE:
+                self._drop()
+                if reused and attempt == 0:
+                    continue
+                raise
+            except http.client.HTTPException as e:  # not HTTP, or a cut answer: no answer
+                self._drop()
+                raise ConnectionError(f"{self.url}: {e!r}") from e
+            except BaseException:
+                self._drop()  # half a request or answer on it: never reuse
+                raise
+            if r.will_close:
+                self._drop()
+            return r.status, r.headers, raw
+        raise AssertionError("unreachable")
+
+    def _call(self, method, path, body=None, request_id=None):
+        for attempt in range(self._max_retries + 1):
+            last = attempt == self._max_retries
+            try:
+                status, headers, raw = self._send(method, path, body, request_id)
+            except OSError:
+                if last:
+                    raise
+            else:
+                if status == 200:
+                    try:
+                        return json.loads(raw)
+                    except ValueError:  # not the server's answer (e.g. a proxy's page)
+                        raise _server_error(status, headers, raw) from None
+                if status != 503 or last:
+                    raise _server_error(status, headers, raw)
+            time.sleep(0.1 * 2**attempt)
+        raise AssertionError("unreachable")
+
+
+def _server_error(status, headers, raw):
+    try:
+        e = json.loads(raw)["error"]
+        return ServerError(status, e["code"], e["message"], e["request_id"])
+    except (ValueError, KeyError, TypeError):
+        text = raw.decode(errors="replace").strip()[:256]
+        return ServerError(status, None, text, headers.get("x-request-id"))
+
+
+def _request_id(rid):
+    """The server keeps 1-128 printable ASCII characters without spaces (else
+    replaces the id: a silent log-join miss), so anything else is an error here."""
+    if not (isinstance(rid, str) and 1 <= len(rid) <= 128 and all("!" <= ch <= "~" for ch in rid)):
+        raise ValueError(f"request_id must be 1-128 printable ASCII characters without spaces, got {rid!r}")
+    return rid
+
+
+def _names(views):
+    """`views=` as a list of names (a bare str is one name too many: a list is expected)."""
+    if views is None:
+        return None
+    names = None if isinstance(views, str) else list(views)  # any iterable, read once
+    if names is None or not all(isinstance(v, str) for v in names):
+        raise TypeError(f"views must be a list of view names, e.g. ['in_stock'], got {views!r}")
+    return names
+
+
+def _json_ids(name, ids):
+    return None if ids is None else _ids(name, ids).tolist()
+
+
+def _json_weights(weights):
+    w = _weights(weights)
+    if w is not None and not np.isfinite(w).all():
+        raise ValueError("weights must be finite")  # JSON has no NaN / inf: a bad_json, not bad_weights
+    return None if w is None else w.tolist()

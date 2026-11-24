@@ -29,8 +29,8 @@ def test_normalization_has_one_path():
 
 
 def test_serving_has_one_path():
-    assert serving.__all__ == ["SparseKNN"]
-    assert not hasattr(sim, "SparseKNN")
+    assert serving.__all__ == ["ServerClient", "ServerError", "SparseKNN", "read_view", "write_view"]
+    assert not any(hasattr(sim, name) for name in serving.__all__)
     assert sim.serving.SparseKNN is serving.SparseKNN
 
 
@@ -83,6 +83,18 @@ SIGNATURES = {
     "SparseKNN.score": "(self, history, items, *, weights=None, views=None)",
     "SparseKNN.score_batch": "(self, histories, items, *, weights=None, views=None, num_threads=0)",
     "SparseKNN.view": "(self, *, include=None, exclude=None)",
+    "serving.read_view": "(dir, name)",
+    "serving.write_view": "(dir, name, *, include=None, exclude=None)",
+    "ServerClient.__init__": "(self, url='http://127.0.0.1:8080', *, timeout=10.0, max_retries=0)",
+    "ServerClient.close": "(self)",
+    "ServerClient.health": "(self)",
+    "ServerClient.ready": "(self)",
+    "ServerClient.recommend": "(self, history, *, weights=None, k=None, exclude_history=True, include=None, "
+    "exclude=None, view=None, views=None, sorted=None, request_id=None, return_info=False)",
+    "ServerClient.score": "(self, history, items, *, weights=None, view=None, views=None, request_id=None, "
+    "return_info=False)",
+    "ServerClient.views": "(self)",
+    "ServerError.__init__": "(self, status, code, message, request_id)",
 }
 
 
@@ -98,11 +110,12 @@ def test_public_signatures():
         for m in (similarity, normalization, preprocessing)
         for n in m.__all__
     }
-    K = serving.SparseKNN
-    found |= {
-        f"SparseKNN.{n}": getattr(K, n)
-        for n in vars(K)
-        if (n == "__init__" or not n.startswith("_")) and callable(getattr(K, n))
-    }
+    found |= {f"serving.{n}": getattr(serving, n) for n in ("read_view", "write_view")}
+    for K in (serving.SparseKNN, serving.ServerClient, serving.ServerError):
+        found |= {
+            f"{K.__name__}.{n}": getattr(K, n)
+            for n in vars(K)
+            if (n == "__init__" or not n.startswith("_")) and callable(getattr(K, n))
+        }
     assert {k: _signature(f) for k, f in found.items()} == SIGNATURES
-    assert [n for n, v in vars(K).items() if isinstance(v, property)] == ["item_ids"]
+    assert [n for n, v in vars(serving.SparseKNN).items() if isinstance(v, property)] == ["item_ids"]
