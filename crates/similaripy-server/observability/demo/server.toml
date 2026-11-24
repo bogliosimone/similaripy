@@ -5,5 +5,6 @@
 k_max = 50
 max_history = 8
 
-[views.in_stock]
-include_file = "/config/in_stock.txt"
+# demo/views/in_stock.include.txt, mounted as /views
+[views]
+dir = "/views"

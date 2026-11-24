@@ -444,7 +444,7 @@
               "string",
               "null"
             ],
-            "description": "A named view (`GET /v1/views`); absent or null = `defaults.view`, `\"\"` = the whole model."
+            "description": "A named view (`GET /v1/views`); absent, null or `\"\"` = the whole model. An unknown name or a view that failed to load = 400 `unknown_view`."
           },
           "views": {
             "type": [
@@ -455,7 +455,7 @@
               "type": "string"
             },
             "maxItems": 8,
-            "description": "More named views, ANDed with `view` (absent: `defaults.view`; `\"\"`: none), `include` and `exclude`: an item must be allowed by every one. At most 8 (more = 400 `too_many_views`); absent or null = none."
+            "description": "More named views, ANDed with `view` (absent or `\"\"`: none), `include` and `exclude`: an item must be allowed by every one. At most 8 (more = 400 `too_many_views`); absent or null = none."
           }
         }
       },
@@ -701,18 +701,10 @@
       "Views": {
         "type": "object",
         "required": [
-          "default",
           "items",
           "views"
         ],
         "properties": {
-          "default": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "`defaults.view`; null = the whole model."
-          },
           "items": {
             "type": "integer",
             "description": "The model's items."
@@ -731,13 +723,15 @@
           "allowed",
           "include",
           "exclude",
-          "error",
           "error"
         ],
         "properties": {
           "allowed": {
-            "type": "integer",
-            "description": "Items the view allows (of the model's `items`)."
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Items the view allows (of the model's `items`); null = the view failed to load and isn't served (`error`)."
           },
           "include": {
             "oneOf": [
@@ -764,7 +758,7 @@
               "string",
               "null"
             ],
-            "description": "The last failed read of this view's files (null: none); the view still serves the files as described here."
+            "description": "The last failed read of this view's files (null: none); with `allowed` set the view still serves the files as described here."
           }
         }
       },
@@ -774,7 +768,6 @@
           "file",
           "ids",
           "known",
-          "modified",
           "modified"
         ],
         "properties": {
@@ -899,8 +892,7 @@
             "type": "object",
             "required": [
               "k",
-              "sorted",
-              "view"
+              "sorted"
             ],
             "properties": {
               "k": {
@@ -908,9 +900,6 @@
               },
               "sorted": {
                 "type": "boolean"
-              },
-              "view": {
-                "type": "string"
               }
             }
           },
@@ -935,15 +924,20 @@
           },
           "views": {
             "type": "object",
-            "additionalProperties": {
-              "type": "object",
-              "properties": {
-                "include_file": {
-                  "type": "string"
-                },
-                "exclude_file": {
-                  "type": "string"
-                }
+            "required": [
+              "dir",
+              "reload_interval",
+              "max_views"
+            ],
+            "properties": {
+              "dir": {
+                "type": "string"
+              },
+              "reload_interval": {
+                "type": "number"
+              },
+              "max_views": {
+                "type": "integer"
               }
             }
           }

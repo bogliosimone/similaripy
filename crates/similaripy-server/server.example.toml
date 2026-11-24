@@ -48,8 +48,6 @@ k = 10
 # false = the same items in no order (retrieval: a ranker re-scores them),
 # cheaper at large k; true = best first (Python's order).
 sorted = false
-# A view name; "" = the whole model.
-view = ""
 
 [timeouts]
 # Seconds a connection has to send a request's headers (and a JSON body: else
@@ -61,12 +59,16 @@ drain_delay = 0.0
 shutdown_grace = 10.0
 
 [views]
-# Seconds between checks of the view files (0 = read at start only, else at
-# least 0.1): a changed file is served from the next request on.
+# The views' folder ("" = no views; must be readable at start). A view NAME
+# (1-64 of a-z 0-9 _ -) = NAME.include.txt (allows only these ids) and / or
+# NAME.exclude.txt (never returns them), one id per line; a request picks it
+# with "view": "NAME", a request without view gets the whole model. Dot-files
+# and other names are ignored; symlinks are followed (a mounted ConfigMap).
+dir = ""
+# Seconds between scans of the folder (0 = read at start only, else at least
+# 0.1): new and changed views are served from the next request on, a view
+# whose files are gone two scans in a row is removed.
 reload_interval = 10.0
-
-# A named view: a request picks it with "view": "in_stock". One id per line;
-# include_file, exclude_file or both.
-# [views.in_stock]
-# include_file = "views/in_stock.txt"
-# exclude_file = "views/adult.txt"
+# Views served at most (each holds one bit per model item); more are skipped
+# and logged.
+max_views = 1024

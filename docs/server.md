@@ -118,8 +118,8 @@ name = "itemknn-v3"
 [limits]
 max_history = 500
 
-[views.in_stock]
-include_file = "views/in_stock.txt"
+[views]
+dir = "views"     # views/in_stock.include.txt, ...
 ```
 
 ```bash
@@ -152,13 +152,12 @@ and meaning: copy it and edit.
 | `limits.max_connections` | `1024` | Open connections (1 to 1000000). At the cap, new ones wait in the OS backlog until one closes (the open ones keep their file descriptors). An idle gRPC channel keeps its slot: size it for your clients' channels plus probes. |
 | `defaults.k` | `10` | `k` of a request that doesn't send it (at most `limits.k_max`): e.g. `500` for candidate generation. |
 | `defaults.sorted` | `false` | `sorted` of a request that doesn't send it ([Sorted or not](#sorted-or-not)); `true` = Python's order. |
-| `defaults.view` | `""` (the whole model) | `view` of a request that doesn't send it ([Views](#views)). |
 | `timeouts.header_read` | `30` | Seconds a connection has to send a request's headers, and a request its body (JSON: 408; gRPC: `CANCELLED`, `x-error-code` `body_timeout`). Also the idle time after which an HTTP/1.1 keep-alive connection is closed. |
 | `timeouts.drain_delay` | `0` | After SIGTERM: seconds still accepting connections with `/ready` answering 503 ([Shutdown](#shutdown)). |
 | `timeouts.shutdown_grace` | `10` | Then seconds for open requests to finish. |
-| `views.reload_interval` | `10` | Seconds between checks of the view files (`0` or at least `0.1`): a changed file is served from the next request on; `0` = read at start only ([Updating a view](#updating-a-view)). |
-| `views.NAME.include_file` | | View `NAME` allows only the ids in this file. |
-| `views.NAME.exclude_file` | | View `NAME` never returns the ids in this file (either file or both). |
+| `views.dir` | `""` (no views) | The views' folder ([Views](#views)); must be readable at start. |
+| `views.reload_interval` | `10` | Seconds between scans of the folder (`0` or at least `0.1`): new and changed views are served from the next request on, views gone two scans in a row are removed; `0` = read at start only ([Updating views](#updating-views)). |
+| `views.max_views` | `1024` | Views served at most (each holds one bit per item); more are skipped and logged, never a start error. |
 
 Relative file paths are relative to the server's working directory.
 
@@ -187,12 +186,12 @@ server's defaults):
 | `include` | every item | Only these items can be returned. |
 | `exclude` | none | Never these items. |
 | `sorted` | `defaults.sorted` | Best first (`true`) or in no particular order. |
-| `view` | `defaults.view` | A named view; `""` = the whole model. |
+| `view` | none (the whole model) | A named view ([Views](#views)); `""` = none. |
 | `views` | none | More named views, ANDed with `view` ([Views](#views)); at most 8. |
 
 The answer: `items` (best first when sorted), then the request's context:
 which `model` answered, the `request_id`, the `k`, `sorted` and `view` used
-(defaults applied), the `views` as sent, and `history` counts ([History](#history)).
+(defaults applied; `view` null = the whole model), the `views` as sent, and `history` counts ([History](#history)).
 
 Headers:
 
@@ -214,7 +213,7 @@ included.
 | `history` | (required) | As `/v1/recommend`'s (cut past `limits.max_history` the same way). |
 | `weights` | all 1.0 | One per id; a negative weight is a dislike ([Dislikes](#dislikes)). |
 | `items` | (required) | The items to score, at most `limits.max_items`; duplicates are scored again. |
-| `view` | `defaults.view` | A named view: its excluded items score 0. |
+| `view` | none (the whole model) | A named view: its excluded items score 0. |
 | `views` | none | More named views, as `/v1/recommend`'s: an item any of them excludes scores 0. |
 
 ```bash
@@ -245,7 +244,7 @@ Branch on `code` (fixed strings: new ones may be added, none change), show
 | 400 | `k_over_max` | `k` > `limits.k_max` |
 | 400 | `items_over_max` | More score `items` than `limits.max_items` |
 | 400 | `history_over_max` | A history over `max_history` with `history_policy = reject` |
-| 400 | `unknown_view` | A `view` (or a name in `views`) not in the config |
+| 400 | `unknown_view` | A `view` (or a name in `views`) with no such view, or a view that failed to load (the message has its error) |
 | 400 | `too_many_views` | More than 8 names in `views` |
 | 400 | `bad_weights` | Weights of the wrong length, not finite, or over 1e30 in magnitude |
 | 400 | `bad_body` | The body couldn't be read (e.g. malformed chunked encoding) |
@@ -291,7 +290,7 @@ Differences from JSON (protobuf's rules):
 | `GET /ready` | `ok`, or 503 `draining` after SIGTERM (readiness) |
 | `GET /metrics` | Prometheus text ([Metrics](#metrics)) |
 | `GET /config` | The resolved config (JSON) |
-| `GET /v1/views` | The views, their sizes, their files' known ids and modification times, a failed reload's error ([Views](#views)) |
+| `GET /v1/views` | The views, their sizes, their files' known ids and modification times, a failed read's error ([Views](#views)) |
 
 ## Answers
 
@@ -352,77 +351,113 @@ model version.
 ## Views
 
 A view is a named set of items that can be recommended (e.g. "in stock in
-Italy"), built at start from id files: the server-side form of
-[`model.view`](serving.md#availability), one bit per item, S shared.
+Italy"): the server-side form of [`model.view`](serving.md#availability),
+one bit per item, S shared. Views come from one folder, `views.dir`: each
+view is one or two files named after it, one integer id per line
+(`np.savetxt(path, ids, fmt="%d")`).
 
-```toml
-[views.in_stock]
-include_file = "views/in_stock.txt"     # only these items
-
-[views.in_stock_no_adult]
-include_file = "views/in_stock.txt"
-exclude_file = "views/adult.txt"        # minus these
+```text
+views/
+  in_stock.include.txt      # view in_stock: only these items
+  no_adult.exclude.txt      # view no_adult: every item but these
+  eu.include.txt            # view eu: these items...
+  eu.exclude.txt            #   ...minus these
 ```
 
-An id file has one integer id per line (`np.savetxt(path, ids, fmt="%d")`).
+- **Names:** 1-64 of `a-z 0-9 _ -`. A file with a view suffix and another
+  name is skipped (logged once).
+- **Ignored:** dot-files and dot-directories (temporary files, a
+  ConfigMap's `..data`), other names, sub-directories. Symlinks are followed.
+- **`NAME.meta.json` is reserved** for view settings of a later server: a
+  view that has one is listed with an error and not served, so an older
+  server never ignores its settings.
+- **At most `views.max_views`** (default 1024): past it the first names
+  (served views first, then by name) are served, the rest skipped and
+  logged.
+- A file is read by one view only: for "in stock, no adult", send
+  `"views": ["in_stock", "no_adult"]` (below), or write the combination as
+  its own view.
+
 Ids the model doesn't have are ignored: the start-up log and `GET /v1/views`
 show how many ids of each file the model knows (a file in the wrong id
 space reads "0 known").
 
-A request picks one view with `"view": "in_stock"`. Without one it gets
-`defaults.view`; `"view": ""` is the whole model. An unknown name is a 400.
-The request's own `include` / `exclude` apply on top (AND): a request can
-narrow a view, never widen it. Example: view `in_stock` = items 1-1000,
-request `"include": [5, 7, 2000]` → candidates 5 and 7 (2000 is not in
-stock).
+A request picks one view with `"view": "in_stock"`. Without one (or with
+`"view": ""`) it gets the whole model, as `SparseKNN.recommend` does: there
+is no default view. An unknown name is a 400 `unknown_view`; so is a view
+whose files failed to load at start (the message has the error; `GET
+/v1/views` lists it with `allowed: null`). The request's own `include` /
+`exclude` apply on top (AND): a request can narrow a view, never widen it.
+Example: view `in_stock` = items 1-1000, request `"include": [5, 7, 2000]` →
+candidates 5 and 7 (2000 is not in stock).
 
 `"views": ["no_adult", "eu"]` adds more views: an item must be allowed by
-`view` (or `defaults.view`) and by every one of them, so several rules
-combine per request without a view for each combination. `"view": ""` drops
-the default and keeps only `views`. At most 8 names (more: 400
+`view` (if any) and by every one of them, so several rules combine per
+request without a view for each combination. At most 8 names (more: 400
 `too_many_views`), by design: every view past the second adds a test per
 candidate, so a combination that needs more is cheaper precomputed as one
-configured view (its include / exclude files), or sent as the request's
-`include`. Each name must be configured (else `unknown_view`). The answer
-echoes them, and `view_requests_total{view}` counts each name a request used.
+view (its own files), or sent as the request's `include`. Each name must be
+a view in the folder (else `unknown_view`). The answer echoes them, and
+`view_requests_total{view}` counts each name a request used.
 
-### Updating a view
+### Updating views
 
-The server checks the view files every `views.reload_interval` seconds
-(default 10) and rebuilds the views whose files changed: the next request
-uses them, requests in flight finish with the old ones. Only the masks are
-rebuilt (one bit per item, milliseconds); the model is not touched. So a
-stock list refreshed every few minutes needs no restart and no new model.
+The server scans the folder every `views.reload_interval` seconds (default
+10): the next request uses the result, requests in flight finish with what
+they started with. Only the changed views are rebuilt (one bit per item,
+milliseconds); the others and the model are not touched. So a stock list
+refreshed every few minutes needs no restart and no new model.
 
-- **Write a new file, then rename it over the old one** (`mv` is atomic on
-  one file system), or swap a symlink: the reader never sees half a file.
-  Don't edit the file in place: a check during the write can read part of
-  it, and on file systems with coarse modification times the rest of the
-  write may never be noticed.
-- **A file that fails to read** (missing, a bad line) keeps its view as it
-  was: logged once per change of the file, counted in
+- **Add a view:** write its file(s). **Change one:** write a new file, then
+  rename it over the old one (`mv` is atomic on one file system; name the
+  temporary file with a leading dot so the scan ignores it), or swap a
+  symlink: the reader never sees half a file. Don't edit a file in place: a
+  scan during the write can read part of it, and on file systems with
+  coarse modification times the rest of the write may never be noticed.
+- **Remove a view:** delete its file(s). It is removed once they are gone
+  two scans in a row (a sync that deletes then copies a file never drops a
+  view); deleting one of a view's two files leaves the other rule, the same
+  way.
+- **A file that fails to read** (a bad line, unreadable) keeps its view as
+  it was: logged once per change of the file, counted in
   `view_reload_errors_total{view}`, and shown as the view's `error` in
   `GET /v1/views`. The other views still reload. A view in error is read
-  again at every check, so a passing failure heals by itself.
+  again at every scan, so a passing failure heals by itself. At start
+  there is nothing to keep: the view is listed with its error and not
+  served until a scan reads it (never a start error: a bad file must not
+  crash-loop every pod).
+- **An unreadable folder** at start is a start error; later, every view is
+  kept as it is (logged once).
 - **Is my edit live?** `GET /v1/views` shows each file's `modified` time as
-  read and its `ids`; `view_last_reload_timestamp_seconds` the last reload.
-- **Adding or removing a view** is a config change: restart (a rolling
-  update in Kubernetes).
+  read and its `ids`; `view_last_reload_timestamp_seconds` the last scan
+  that changed a view.
+- **Two files of one view** are two writes: for one scan a reader can see
+  one new and one old. Change one rule per write, or accept one scan of
+  mixed state.
+- **A new model** (1.1's hot swap, or a restart) rebuilds every view over
+  it, from the folder at that moment. If the new model changes item ids
+  (a new catalog), write the new view files first, then publish the model.
+
+Each pod reads its own folder: the source of truth for the views lives
+outside the pods (object storage, a ConfigMap, a volume), and every pod
+pulls it. A new pod gets the views at start; every pod converges within
+`reload_interval` of its copy changing.
 
 **Small lists: a ConfigMap.** A ConfigMap holds at most 1 MiB, about 100k
-ids. Kubernetes updates a mounted ConfigMap by writing a new directory and
+ids over all its files. Mount it as the folder: its keys are the file names.
+Kubernetes updates a mounted ConfigMap by writing a new directory and
 swapping a symlink, which the server follows; the change reaches the pods
 within about a minute, plus `reload_interval`. Don't mount it with
 `subPath`: those files never update.
 
 ```yaml
-# kubectl create configmap views --from-file=in_stock.txt \
+# kubectl create configmap views --from-file=views/ \
 #   --dry-run=client -o yaml | kubectl apply -f -      (to create or update it)
 spec:
   containers:
     - name: server
       env:
-        - {name: SIMILARIPY_VIEWS__IN_STOCK__INCLUDE_FILE, value: /views/in_stock.txt}
+        - {name: SIMILARIPY_VIEWS__DIR, value: /views}
       volumeMounts:
         - {name: views, mountPath: /views, readOnly: true}
   volumes:
@@ -430,38 +465,118 @@ spec:
       configMap: {name: views}
 ```
 
-**Large lists: a sidecar.** A container in the same pod downloads the file
-into a shared `emptyDir` and renames it into place; an init container does
-the first copy (the server reads the views at start, so the file must be
-there):
+**Large lists: a sidecar from object storage.** A pipeline writes the view
+files to a bucket prefix; in each pod, an init container copies them into a
+shared `emptyDir` before the server starts (it reads the folder at start),
+and a sidecar keeps the copy in sync: it downloads into a dot-directory the
+server ignores, renames each changed file into place, and deletes the files
+gone from the bucket:
 
 ```yaml
 spec:
   initContainers:
     - name: views-init
       image: amazon/aws-cli
-      command: [sh, -c, "aws s3 cp s3://my-bucket/views/in_stock.txt /views/in_stock.txt"]
+      command: [sh, -c, "aws s3 sync s3://my-bucket/views/ /views/"]
       volumeMounts: [{name: views, mountPath: /views}]
   containers:
     - name: server
       env:
-        - {name: SIMILARIPY_VIEWS__IN_STOCK__INCLUDE_FILE, value: /views/in_stock.txt}
+        - {name: SIMILARIPY_VIEWS__DIR, value: /views}
       volumeMounts: [{name: views, mountPath: /views, readOnly: true}]
     - name: views-sync
       image: amazon/aws-cli
-      command: [sh, -c, "while true; do sleep 300; aws s3 cp s3://my-bucket/views/in_stock.txt /views/.in_stock.tmp && mv /views/.in_stock.tmp /views/in_stock.txt; done"]
+      command:
+        - sh
+        - -c
+        - |
+          while true; do
+            sleep 300
+            aws s3 sync s3://my-bucket/views/ /views/.next/ --delete || continue
+            for f in /views/.next/*; do
+              b=$(basename "$f")
+              [ "$(md5sum < "$f")" = "$(md5sum < "/views/$b" 2>/dev/null)" ] ||
+                { cp "$f" "/views/.$b.tmp" && mv "/views/.$b.tmp" "/views/$b"; }
+            done
+            for f in /views/*; do
+              [ -e "/views/.next/$(basename "$f")" ] || rm -f "$f"
+            done
+          done
       volumeMounts: [{name: views, mountPath: /views}]
   volumes:
     - {name: views, emptyDir: {}}
 ```
+
+Unchanged files keep their inode (the checksum skips them), so only the
+changed views are rebuilt. The bucket is the source of truth: a rescheduled pod
+starts from it, never from another pod.
 
 Cost (Yambda 500M, one thread): a request without a view pays nothing; a
 broad view (90% of the items) about +3% CPU per request; a narrow one (10%)
 +10-14% at `k` 100 and +3% at `k` 2000, as more candidates are checked
 against it. `view` plus one name in `views` (two masks) costs what one view
 costs; three or more masks pay a test per mask for each candidate (+15-50%
-per request vs the same rules as one configured view): for a combination
-served often, configure it as one view.
+per request vs the same rules as one view): for a combination served often,
+write it as one view.
+
+### View folder format (stable in 1.0)
+
+The contract between the server and anything that writes views (a pipeline,
+a sync sidecar, a later `write_view` helper). Within 1.x a server reads
+every folder valid by these rules the same way; new settings come only
+through the reserved `NAME.meta.json`.
+
+**Folder.** `views.dir`: only its direct entries count. Regular files and
+symlinks to them are read (a dangling symlink = absent); sub-directories,
+names starting with `.`, names that aren't UTF-8 and names with another
+suffix are ignored.
+
+**File names.** `NAME.include.txt`, `NAME.exclude.txt`, `NAME.meta.json`,
+with `NAME` 1-64 characters of `a-z 0-9 _ -`. A file with one of these
+suffixes and any other `NAME` is skipped (logged once). A view exists while
+at least one of its files does.
+
+| File | Meaning |
+|------|---------|
+| `NAME.include.txt` | The items the view allows; absent = every item. Empty = no item. |
+| `NAME.exclude.txt` | Items the view never returns, applied after `include`; absent or empty = none. |
+| `NAME.meta.json` | Reserved for view settings of a later server. A 1.0 server lists the view with an error and doesn't serve it (whatever the content), so an older server never ignores settings it can't apply. |
+
+**Id file syntax** (`include` / `exclude`):
+
+- UTF-8 text, one id per line; lines end with `\n` or `\r\n`, the last one
+  may have no line end; a byte-order mark before the first id is allowed.
+- A line is a decimal integer in the signed 64-bit range (`-` or `+` sign
+  allowed), with optional spaces or tabs around it: the item ids of the
+  model (`SparseKNN.fit(item_ids=...)`, else column indices).
+- Blank lines (empty or only spaces) and comment lines (`#` as the first
+  character after optional spaces) are ignored: e.g. a first line
+  `# in_stock from job inventory-export, snapshot 2026-11-24T10:00Z` says
+  where the file came from. Nothing else is allowed on a line: no comment
+  after an id, no second column, no separators.
+- Order doesn't matter, duplicates are allowed, ids the model doesn't have
+  are ignored (`GET /v1/views` shows how many it knows).
+- Any other line makes the whole file fail to read: the error names the
+  file and line, and the view keeps its previous ids (at start: not served).
+- Written by numpy: `np.savetxt(path, ids, fmt="%d", header="...")` (the
+  header becomes `#` comment lines). The Rust core reads and writes this
+  format (`similaripy_core::serve::view_file`: `read_ids`, `write_ids`
+  with the atomic replace below).
+
+**Writing safely.**
+
+- **Replace a file:** write the new content to a temporary file in the same
+  folder whose name starts with `.` (e.g. `.in_stock.include.txt.tmp`: the
+  scan ignores it), flush it to disk, then rename it over the target. The
+  rename is atomic on one file system, so a scan sees the old file or the
+  new one, never part of one. Never edit a file in place. Swapping a symlink
+  (as a Kubernetes ConfigMap does) is safe too.
+- **Add a view:** write its file(s) the same way. **Remove a view:** delete
+  its files; it goes once they are gone two scans in a row. Deleting one of
+  two files removes that rule the same way.
+- **One view, two files:** two renames; a scan between them sees one new and
+  one old file. Change one rule per write, or accept one scan of mixed state.
+
 
 ## Metrics
 
@@ -477,10 +592,10 @@ served often, configure it as one view.
 | `errors_total` | Requests the model rejected (weights) |
 | `truncated_total` | Histories cut to `max_history` |
 | `history_ids_total`, `known_ids_total` | History ids used, and those the model has |
-| `view_requests_total{view}` | Requests per named view, `view` and each name in `views` (only with views configured) |
-| `view_reloads_total` | View reloads that rebuilt a view whose file changed ([Updating a view](#updating-a-view)) |
-| `view_reload_errors_total{view}` | Changes to a view's files that failed to read (it kept its previous ids) |
-| `view_last_reload_timestamp_seconds` | Unix time of the last reload that rebuilt a view, 0 = none since start: alert when it gets older than your update period |
+| `view_requests_total{view}` | Requests per named view, `view` and each name in `views` (one series per view in the folder: a removed view's series disappear, a re-added one restarts at 0) |
+| `view_reloads_total` | Folder scans that added, rebuilt or removed a view ([Updating views](#updating-views)) |
+| `view_reload_errors_total{view}` | Changes to a view's files that failed to read (it kept its previous ids, or isn't served if it had none) |
+| `view_last_reload_timestamp_seconds` | Unix time of the last scan that changed a view, 0 = none since start: alert when it gets older than your update period |
 | `compute_seconds{endpoint, proto}` | Histogram: the model's compute, per endpoint (`recommend`, `score`) and format (`json`, `grpc`) |
 | `request_seconds{endpoint, proto}` | Histogram: the handler (JSON: parse + compute + serialize) |
 

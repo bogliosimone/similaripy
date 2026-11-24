@@ -42,7 +42,7 @@ containers share its network.
 ## The demo data
 
 The default model is the committed `tests/data/sparseknn-format1` (ids 10..70)
-with `demo/server.toml` (k_max 50, max_history 8, view `in_stock`) and
+with `demo/server.toml` (k_max 50, max_history 8, view `in_stock` from `demo/views/`) and
 `demo/requests.jsonl`, whose 20 lines are mostly valid but include one
 `k: 100` (a 400), one 10-id history (truncated), unknown ids 99 and 1000, and
 `in_stock` requests, so every panel has data.

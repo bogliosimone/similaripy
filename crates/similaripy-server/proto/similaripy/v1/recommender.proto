@@ -35,11 +35,11 @@ message RecommendRequest {
   repeated int64 exclude = 6;
   // Default true: by score, descending.
   optional bool sorted = 7;
-  // A named view (`GET /v1/views`): absent = the `defaults.view` config key;
-  // "" = the whole model; an unknown name = INVALID_ARGUMENT. ANDed with
+  // A named view (`GET /v1/views`): absent or "" = the whole model; an
+  // unknown name or a view that failed to load = INVALID_ARGUMENT. ANDed with
   // include / exclude.
   optional string view = 8;
-  // More named views, ANDed with `view` (absent: `defaults.view`; "": none)
+  // More named views, ANDed with `view` (absent or "": none)
   // and include / exclude: an item must be allowed by every one. At most 8
   // (more = INVALID_ARGUMENT, x-error-code too_many_views); an unknown name =
   // INVALID_ARGUMENT (unknown_view).
