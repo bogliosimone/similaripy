@@ -167,7 +167,8 @@ class SparseKNN:
     square sparse KNN graph ("Beyond items" in the Serving guide).
 
     `score[j] = sum_i w_i * S[i, j]` over the history items `i`; the best `k`
-    items with a positive score, best first (ties: see `item_order`). Ids
+    items with a positive score (best first with `sorted=True`; ties: see
+    `item_order`). Ids
     are yours (`item_ids`) everywhere; ids the model doesn't have are
     ignored. The model is immutable and safe to share across threads; each
     call releases the GIL.
@@ -319,7 +320,7 @@ class SparseKNN:
         include: list[int] | np.ndarray | None = None,
         exclude: list[int] | np.ndarray | None = None,
         views: list["SparseKNN"] | None = None,
-        sorted: bool = True,
+        sorted: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         The top `k` items for one history.
@@ -338,14 +339,15 @@ class SparseKNN:
                 `views`) cost what one costs; three or more cost +15..+50%
                 per request: for a combination served often, build it once
                 (a view of a view).
-            sorted: best first; False returns the same items in an
-                unspecified order, which can differ between calls (e.g. this
-                and `recommend_batch`: 'auto' picks the block size per call).
-                No final sort: a few % faster at k in the thousands, nothing
-                at k ~ 100.
+            sorted: False (default, retrieval: a ranker re-scores the
+                candidates) returns the top `k` in an unspecified order,
+                which can differ between calls (e.g. this and
+                `recommend_batch`: 'auto' picks the block size per call);
+                no final sort, a few % faster at k in the thousands. True:
+                best first, e.g. to show the first N.
 
         Returns:
-            ids: int64, your item ids, best first (unless `sorted=False`).
+            ids: int64, your item ids, best first with `sorted=True`.
             scores: float32, one per id.
 
         Raises:
@@ -376,7 +378,7 @@ class SparseKNN:
         include: list[list[int] | np.ndarray | None] | None = None,
         exclude: list[list[int] | np.ndarray | None] | None = None,
         views: list["SparseKNN"] | None = None,
-        sorted: bool = True,
+        sorted: bool = False,
         num_threads: int = 0,
     ) -> tuple[list[np.ndarray], list[np.ndarray]]:
         """

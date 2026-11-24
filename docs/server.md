@@ -46,7 +46,7 @@ curl -s 127.0.0.1:8080/v1/recommend -d '{"history": [10, 20], "k": 3, "sorted": 
  "history":{"sent":2,"truncated":0,"unknown":0}}
 ```
 
-Same answer as `SparseKNN.load("models/v3").recommend([10, 20], k=3)`: same
+Same answer as `SparseKNN.load("models/v3").recommend([10, 20], k=3, sorted=True)`: same
 ids, same `float32` scores, at most `k` items (only those with a positive
 score: here 2).
 
@@ -151,7 +151,7 @@ and meaning: copy it and edit.
 | `limits.max_items` | `10000` | A score request with more items is rejected, never cut ([`POST /v1/score`](#post-v1score-json)). |
 | `limits.max_connections` | `1024` | Open connections (1 to 1000000). At the cap, new ones wait in the OS backlog until one closes (the open ones keep their file descriptors). An idle gRPC channel keeps its slot: size it for your clients' channels plus probes. |
 | `defaults.k` | `10` | `k` of a request that doesn't send it (at most `limits.k_max`): e.g. `500` for candidate generation. |
-| `defaults.sorted` | `false` | `sorted` of a request that doesn't send it ([Sorted or not](#sorted-or-not)); `true` = Python's order. |
+| `defaults.sorted` | `false` | `sorted` of a request that doesn't send it ([Sorted or not](#sorted-or-not)); `true` = best first (Python's `sorted=True`). |
 | `timeouts.header_read` | `30` | Seconds a connection has to send a request's headers, and a request its body (JSON: 408; gRPC: `CANCELLED`, `x-error-code` `body_timeout`). Also the idle time after which an HTTP/1.1 keep-alive connection is closed. |
 | `timeouts.drain_delay` | `0` | After SIGTERM: seconds still accepting connections with `/ready` answering 503 ([Shutdown](#shutdown)). |
 | `timeouts.shutdown_grace` | `10` | Then seconds for open requests to finish. |
@@ -307,7 +307,7 @@ differently.
 
 ### Sorted or not
 
-The server's default is unsorted (`defaults.sorted = false`), unlike Python's
+The server's default is unsorted (`defaults.sorted = false`), as Python's
 `recommend`: its main use is candidate generation, where a ranker re-scores
 the candidates anyway. `sorted: false` returns the same items and scores in
 no particular order and saves the final sort: 19-50% of the compute at `k` ≥

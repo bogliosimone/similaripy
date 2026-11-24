@@ -75,10 +75,10 @@ SIGNATURES = {
     "num_threads=0)",
     "SparseKNN.load": "(path, *, mmap=True, block_size='auto')",
     "SparseKNN.recommend": "(self, history, *, weights=None, k=10, exclude_history=True, include=None, exclude=None, "
-    "views=None, sorted=True)",
+    "views=None, sorted=False)",
     "SparseKNN.recommend_batch": "(self, histories, *, weights=None, k=10, exclude_history=True, include=None, exclude=None, "
     "views=None, "
-    "sorted=True, num_threads=0)",
+    "sorted=False, num_threads=0)",
     "SparseKNN.save": "(self, path)",
     "SparseKNN.score": "(self, history, items, *, weights=None, views=None)",
     "SparseKNN.score_batch": "(self, histories, items, *, weights=None, views=None, num_threads=0)",

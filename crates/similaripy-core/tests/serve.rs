@@ -469,6 +469,7 @@ proptest! {
             include: pi.as_ref().map(|(o, i)| Lists { offsets: o, ids: i }),
             no_include: inc.as_ref().map(|_| &[false, true, false][..]),
             exclude: pe.as_ref().map(|(o, i)| Lists { offsets: o, ids: i }),
+            sorted: true,
             ..Default::default()
         }).unwrap();
         let l = want.0.len();
@@ -1178,6 +1179,7 @@ fn loads_the_committed_format_1_model() {
         let r = Request {
             ids: &[20, 40],
             k: 3,
+            sorted: true,
             ..Default::default()
         };
         recommend(&m, 2, &r, &mut out.0, &mut out.1).unwrap();

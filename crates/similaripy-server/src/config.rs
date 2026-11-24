@@ -822,7 +822,7 @@ mod tests {
         ));
         // `--print-config` prints the core's k (the Python signatures
         // are checked against the same in test_serve.py) and the server's own
-        // sorted default: false (retrieval), Python's is true.
+        // sorted default: false (retrieval), as Python's (D132).
         let d = similaripy_core::serve::Request::default();
         let toml = cfg(&["--model", "/m"], &[]).unwrap().to_toml();
         assert!(toml.contains(&format!("\nk = {}\n", d.k)), "{toml}");

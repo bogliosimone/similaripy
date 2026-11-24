@@ -64,7 +64,7 @@ def main():
                     f.write(json.dumps(body) + "\n")
             with open(args.out / f"expected-c{cap}-k{k}.jsonl", "w") as f:
                 for h, w in zip(hists[: args.check], weights, strict=False):
-                    ids, scores = rec.recommend(h, weights=w, k=k, exclude_history=True)
+                    ids, scores = rec.recommend(h, weights=w, k=k, exclude_history=True, sorted=True)
                     f.write(json.dumps({"ids": ids.tolist(), "score_bits": scores.view(np.uint32).tolist()}) + "\n")
             print(f"{args.out}: {len(hists)} requests (cap {cap}, k {k}), {min(args.check, len(hists))} expected")
 

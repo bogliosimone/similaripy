@@ -63,7 +63,7 @@ def test_urm_small_example_feeds_sparseknn():
     assert URM.toarray().tolist() == [[1, 0, 1], [0, 1, 2], [1, 0, 0]]
     # feeds SparseKNN in the original item ids
     rec = sim.serving.SparseKNN(sim.cosine(URM.T, k=5), item_ids=item_ids)
-    assert rec.recommend([100], k=3)[0].tolist() == [42, 5]  # cosine 2/sqrt(5) > 1/sqrt(10)
+    assert rec.recommend([100], k=3, sorted=True)[0].tolist() == [42, 5]  # cosine 2/sqrt(5) > 1/sqrt(10)
 
 
 def test_first_last_follow_time_then_input_order():

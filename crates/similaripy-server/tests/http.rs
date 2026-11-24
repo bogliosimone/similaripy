@@ -197,10 +197,16 @@ impl Reply {
 
 /// Python's call: `SparseKNN.recommend` → `serve::recommend` with the block
 /// resolved for every core busy (`ServeModel`).
+/// Python's `recommend(..., sorted=True)`: the tests' servers answer sorted
+/// (`defaults.sorted = true` in `config`).
 fn python(m: &Model, req: &Request) -> (Vec<i64>, Vec<u32>) {
     let block = BlockSize::Auto.resolve(m.n_active(), usize::MAX).unwrap();
     let (mut ids, mut scores) = (vec![], vec![]);
-    recommend(m, block, req, &mut ids, &mut scores).unwrap();
+    let req = Request {
+        sorted: true,
+        ..*req
+    };
+    recommend(m, block, &req, &mut ids, &mut scores).unwrap();
     (ids, scores.iter().map(|s| s.to_bits()).collect())
 }
 

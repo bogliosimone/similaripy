@@ -43,8 +43,12 @@ if HAS_SERVING:
     EXCLUDE_HISTORY = (
         "exclude_history" if "exclude_history" in inspect.signature(SparseKNN.recommend).parameters else "exclude_seen"
     )
+    # D132: `sorted` defaults to False since 1.0; True before (and always sorted without the option):
+    # timed calls pin True so every version does the same work. Not a case param (older builds lack it).
+    SORTED = {"sorted": True} if "sorted" in inspect.signature(SparseKNN.recommend).parameters else {}
 else:
     SparseKNN = EXCLUDE_HISTORY = None
+    SORTED = {}
     HAS_ITEM_ORDER = HAS_LOAD_BLOCK_SIZE = False
 
 

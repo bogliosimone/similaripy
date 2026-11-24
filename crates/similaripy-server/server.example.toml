@@ -46,7 +46,7 @@ max_connections = 1024
 # k (at most limits.k_max): e.g. 500 for candidate generation.
 k = 10
 # false = the same items in no order (retrieval: a ranker re-scores them),
-# cheaper at large k; true = best first (Python's order).
+# cheaper at large k, as Python's default; true = best first.
 sorted = false
 
 [timeouts]

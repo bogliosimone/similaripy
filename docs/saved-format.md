@@ -86,8 +86,8 @@ files belong together (and size memory before reading them).
 ## Reading it without similaripy
 
 S in internal ids is a CSR matrix, and a recommendation is a sum of rows. This
-plain numpy version returns what `recommend(history, k=k)` returns with the
-default options (unit weights, history items excluded):
+plain numpy version returns what `recommend(history, k=k, sorted=True)` returns with the
+other options' defaults (unit weights, history items excluded):
 
 ```python
 import json
@@ -130,7 +130,7 @@ def recommend(history, k=10):
 
 
 ids, scores = recommend([30, 70, 120], k=5)
-want_ids, want_scores = SparseKNN.load(path).recommend([30, 70, 120], k=5)
+want_ids, want_scores = SparseKNN.load(path).recommend([30, 70, 120], k=5, sorted=True)
 assert np.array_equal(ids, want_ids) and np.allclose(scores, want_scores)
 ```
 

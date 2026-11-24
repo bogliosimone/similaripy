@@ -19,11 +19,13 @@ SparseKNN(S.T, item_ids=item_ids).save("models/v3")
 
 # online, in each worker: load (mmap: one copy of S shared by every process)
 model = SparseKNN.load("models/v3")
-ids, scores = model.recommend(history, k=20)       # history: your item ids
+ids, scores = model.recommend(history, k=20)       # history: your item ids; any order (sorted=True: best first)
 ```
 
 `score[j] = sum_i w_i * S[i, j]` over the history items `i` (weights 1.0 by
-default): the best `k` items with a positive score, best first. The model is
+default): the best `k` items with a positive score, in no particular order
+(`sorted=True`: best first; candidate generation doesn't need the sort, a
+ranker re-scores them). The model is
 immutable: one instance can be shared by any number of threads.
 
 ## Methods
@@ -66,7 +68,7 @@ Everything is on the `SparseKNN` class: build a `model`, then call its methods.
 | `include` | Only these items can be recommended. In batch: one entry per user. *(default: `None` = all)* |
 | `exclude` | Never recommend these items. In batch: one entry per user. *(default: `None`)* |
 | `views` | More views of the same base model (`model.view(...)`), at most 8: an item must be allowed by every one too (AND). In batch: for every user. See [Availability](#availability). *(default: `None`)* |
-| `sorted` | Best first; `False` skips the final sort (a few % faster at k in the thousands); the order is then unspecified and can differ between calls. *(default: `True`)* |
+| `sorted` | `True`: best first, e.g. to show the first N. `False` skips the final sort (a few % faster at k in the thousands): the same items in an unspecified order, which can differ between calls. *(default: `False`, as the server's: retrieval)* |
 | `num_threads` | Batch only. `0` = all cores (one shared pool), `n` = `n` threads. *(default: `0`)* |
 
 **`score(history, items, ...)`, `score_batch(histories, items, ...)`**
@@ -337,7 +339,7 @@ class ItemKNNRecommender:
     def recommend(self, URM, k=10):
         histories = np.split(URM.indices, URM.indptr[1:-1])
         weights = np.split(URM.data, URM.indptr[1:-1])
-        return self.model.recommend_batch(histories, weights=weights, k=k)   # (ids, scores) per user
+        return self.model.recommend_batch(histories, weights=weights, k=k, sorted=True)   # best first: ranking metrics
 
 
 rec = ItemKNNRecommender(sim.cosine, k=100, shrink=10).fit(URM_train)

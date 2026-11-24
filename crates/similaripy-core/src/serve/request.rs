@@ -34,8 +34,9 @@ pub const MAX_VIEWS: usize = 8;
 
 /// One history. Ids are the caller's (the model's external ids, or S's column
 /// indices without them); ids the model doesn't have are ignored everywhere.
-/// `Default`: the library's defaults (k 10, exclude_history, sorted), no history,
-/// no rules: set what differs, `..Default::default()` for the rest.
+/// `Default`: the library's defaults (k 10, exclude_history, unsorted: retrieval,
+/// D132), no history, no rules: set what differs, `..Default::default()` for
+/// the rest.
 pub struct Request<'a> {
     pub ids: &'a [i64],
     /// One finite weight per id; None = all 1.0.
@@ -68,7 +69,7 @@ impl Default for Request<'_> {
             exclude_history: true,
             include: None,
             exclude: None,
-            sorted: true,
+            sorted: false,
             views: &[],
         }
     }

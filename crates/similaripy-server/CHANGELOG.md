@@ -34,7 +34,7 @@ First release, beside similaripy 1.0.0. Reads models saved by similaripy 1.x
   weights over 1e30 in magnitude are `bad_weights`; error messages cut to 256
   bytes.
 - `defaults.k`, `defaults.sorted` (default `false`: candidate generation,
-  unlike Python's `recommend`; `true` = best first).
+  as Python's `recommend`; `true` = best first).
 - Errors as JSON `{"error": {"code", "message", "request_id"}}` (413 and 408
   included), `code` a fixed string (`bad_json`, `k_over_max`,
   `items_over_max`, `history_over_max`, `unknown_view`, `too_many_views`, `bad_weights`,

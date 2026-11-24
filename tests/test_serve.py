@@ -93,12 +93,12 @@ def test_matches_dense_reference(signed, external, n):
         exclude = np.r_[rng.choice(ext, size=n // 5, replace=False), unknown] if trial % 4 == 0 else None
         k = int(rng.integers(0, n + 3))
         for exclude_history in (True, False):
-            opts = {"k": k, "exclude_history": exclude_history, "exclude": exclude}
+            opts = {"k": k, "exclude_history": exclude_history, "exclude": exclude, "sorted": True}
             got = rec.recommend(hist, weights=weights, include=include, **opts)
             want = _reference(S, ext, hist, weights, k, exclude_history, include, exclude)
             np.testing.assert_array_equal(got[0], want[0])
             np.testing.assert_allclose(got[1], want[1], rtol=1e-6)
-            unsorted = rec.recommend(hist, weights=weights, include=include, sorted=False, **opts)
+            unsorted = rec.recommend(hist, weights=weights, include=include, **{**opts, "sorted": False})
             assert sorted(zip(unsorted[0], unsorted[1].view(np.int32))) == sorted(zip(got[0], got[1].view(np.int32)))
             if include is not None:  # trimmed S == a view == the per-call include (small integers under the head: bits)
                 for other in (
@@ -110,7 +110,7 @@ def test_matches_dense_reference(signed, external, n):
 
 def test_default_path_and_dtypes():
     rec = SparseKNN(_S(30, False, seed=3))
-    ids, scores = rec.recommend([5, 6, 7], k=5)
+    ids, scores = rec.recommend([5, 6, 7], k=5, sorted=True)
     assert ids.dtype == np.int64 and scores.dtype == np.float32
     assert np.all(np.diff(scores) <= 0)
     assert not np.isin(ids, [5, 6, 7]).any()
@@ -131,11 +131,11 @@ def test_keyword_only_options():
 
 def test_defaults_match_the_core():
     # k, exclude_history, sorted: the signatures' literals == the Rust core's
-    # Request::default() (the server reads the same: config.rs test, D-A2-3).
+    # Request::default() (the server reads the same: config.rs test, D-A2-3)
     for f in (SparseKNN.recommend, SparseKNN.recommend_batch):
         p = inspect.signature(f).parameters
         got = (p["k"].default, p["exclude_history"].default, p["sorted"].default)
-        assert got == _core.REQUEST_DEFAULTS, f.__name__
+        assert got == _core.REQUEST_DEFAULTS == (10, True, False), f.__name__
 
 
 def test_item_ids_property():
@@ -192,14 +192,15 @@ def test_batch_matches_single_bits(block):
         {"include": include, "exclude": exclude, "weights": weights},
         {"sorted": False, "exclude_history": False},
     ):
+        opts = {"sorted": True, **opts}
         got_ids, got_scores = rec.recommend_batch(hists, k=10, num_threads=2, **opts)
         assert len(got_ids) == len(got_scores) == users
         for u in range(users):
             single = {key: (v[u] if isinstance(v, list) else v) for key, v in opts.items()}
             want = rec.recommend(hists[u], k=10, **single)
-            assert (_same if opts.get("sorted", True) else _same_set)((got_ids[u], got_scores[u]), want)
-            if not opts:  # blocking never changes bits
-                assert _same(one_block.recommend(hists[u], k=10), want)
+            assert (_same if opts["sorted"] else _same_set)((got_ids[u], got_scores[u]), want)
+            if len(opts) == 1:  # blocking never changes bits
+                assert _same(one_block.recommend(hists[u], k=10, sorted=True), want)
 
 
 def test_batch_from_a_user_item_matrix():
@@ -364,7 +365,7 @@ def test_item_orders_same_scores_ties_by_internal_order(tmp_path):
                     keep &= np.isin(np.arange(n), cand)
                 cols = np.flatnonzero(keep)
                 best = cols[np.lexsort((internal[cols], -scores[cols]))[:k]]
-                assert _same(rec.recommend(h, k=k), (best, scores[best].astype(np.float32))), (order, trim)
+                assert _same(rec.recommend(h, k=k, sorted=True), (best, scores[best].astype(np.float32))), (order, trim)
     pop, orig = layout["popularity"], layout["original"]
     assert np.all(np.diff(counts[pop]) <= 0)
     n_col = np.count_nonzero(counts)  # 'original': S's order, items with no column last
@@ -597,8 +598,8 @@ def test_zero_as_a_real_external_id():
     D = S.toarray()
     hist = [ext[j] for j in range(10) if D[j].any()][:3]
     want = _reference(S, ext, hist, None, 10, True)
-    assert np.array_equal(rec.recommend(hist, k=10)[0], want[0])
-    assert np.array_equal(rec.recommend([0], k=10)[0], _reference(S, ext, [0], None, 10, True)[0])
+    assert np.array_equal(rec.recommend(hist, k=10, sorted=True)[0], want[0])
+    assert np.array_equal(rec.recommend([0], k=10, sorted=True)[0], _reference(S, ext, [0], None, 10, True)[0])
 
 
 def test_reuse_after_an_error():
@@ -821,8 +822,8 @@ def test_loads_a_committed_format_1_model(mmap):
     model = SparseKNN.load(Path(__file__).parent / "data" / "sparseknn-format1", mmap=mmap)
     assert np.array_equal(model.item_ids, [10, 20, 30, 40, 50, 60, 70])
     f32 = lambda x: np.array(x, dtype=np.float32)
-    assert _same(model.recommend([20, 40], k=3), ([30, 10, 50], f32([1.75, 0.75, 0.5])))
-    got = model.recommend([10, 50, 70], weights=[1.0, 0.5, 3.0], k=3)
+    assert _same(model.recommend([20, 40], k=3, sorted=True), ([30, 10, 50], f32([1.75, 0.75, 0.5])))
+    got = model.recommend([10, 50, 70], weights=[1.0, 0.5, 3.0], k=3, sorted=True)
     assert _same(got, ([60, 40, 20], f32([1.0, 0.5, 0.5])))
 
 

@@ -299,7 +299,7 @@ def serve_cases(URM, opts):
             hists = _histories(URM, users, None if cap == "none" else int(cap), rng)
             for regime in ("warm", "cold"):
                 kwargs = {"k": k, compat.EXCLUDE_HISTORY: True}
-                run = _latency_run(rec, hists, kwargs, evict if regime == "cold" else None)
+                run = _latency_run(rec, hists, kwargs | compat.SORTED, evict if regime == "cold" else None)
                 cases.append(Case(f"latency_cap{cap}_{regime}", {**kwargs, "cap": cap, "regime": regime}, run))
 
     if "block" in modes:
@@ -326,8 +326,12 @@ def serve_cases(URM, opts):
             sfx = "" if cap == "none" else f"_cap{cap}"
             for c in callers:
                 p = {**kwargs, "callers": c, "cap": cap}
-                cases.append(Case(f"concurrent_default{sfx}_c{c}", p, _concurrent_run(rec, hists, kwargs, c)))
-                cases.append(Case(f"concurrent_one{sfx}_c{c}", p, _concurrent_run(one, hists, kwargs, c)))
+                cases.append(
+                    Case(f"concurrent_default{sfx}_c{c}", p, _concurrent_run(rec, hists, kwargs | compat.SORTED, c))
+                )
+                cases.append(
+                    Case(f"concurrent_one{sfx}_c{c}", p, _concurrent_run(one, hists, kwargs | compat.SORTED, c))
+                )
 
     if "build" in modes:
         path = _save_tmp(S)
