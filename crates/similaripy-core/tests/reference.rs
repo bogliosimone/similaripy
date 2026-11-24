@@ -51,6 +51,21 @@ fn mask(rows: usize, cols: usize) -> impl Strategy<Value = Option<Vec<Vec<f32>>>
     ))
 }
 
+/// Miri: 4 cases and no persisted seeds. Replaying the regression file cost
+/// ~7 s per proptest test under Miri (each test replays every seed in the
+/// file); the normal run still replays them.
+fn proptest_cases(cases: u32) -> ProptestConfig {
+    if cfg!(miri) {
+        ProptestConfig {
+            cases: 4,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        }
+    } else {
+        ProptestConfig::with_cases(cases)
+    }
+}
+
 #[derive(Debug)]
 struct Case {
     m1: Vec<Vec<f32>>,
@@ -295,7 +310,7 @@ fn check(c: &Case) -> Result<(), TestCaseError> {
 
 proptest! {
     // Miri runs ~1000x slower: a few cases still exercise every unsafe path.
-    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 2000 }))]
+    #![proptest_config(proptest_cases(2000))]
     #[test]
     fn matches_dense_reference(c in case()) {
         check(&c)?;
@@ -507,7 +522,7 @@ fn top_scores(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 1000 }))]
+    #![proptest_config(proptest_cases(1000))]
     // m2 with columns renumbered (kernel col j = original col map[j]) + col_map
     // gives the same packed rows as the original m2. k = n keeps every column,
     // so the tie rule (on kernel ids) can't pick different ones.
@@ -532,7 +547,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 1000 }))]
+    #![proptest_config(proptest_cases(1000))]
     // Non-integer values make f32 sums order-dependent: blocking must add each
     // column's terms in the same order as the single-block path (bit-equal).
     #[test]
@@ -553,7 +568,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 1000 }))]
+    #![proptest_config(proptest_cases(1000))]
     // Small integers make ties common; with k < n the tie rule (lower column
     // wins) decides which tied columns stay, so blocked == single-block only
     // if the result is independent of the order columns reach the top-K.
@@ -577,7 +592,7 @@ proptest! {
 // target rows, every column order and block size. ----
 
 mod driver {
-    use super::{dense, to_csr};
+    use super::{dense, proptest_cases, to_csr};
     use proptest::prelude::*;
     use similaripy_core::Params;
     use similaripy_core::block::BlockSize;
@@ -1084,7 +1099,7 @@ mod driver {
 
     proptest! {
         // Miri runs ~1000x slower: a few cases still go through every step.
-        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 2000 }))]
+        #![proptest_config(proptest_cases(2000))]
         #[test]
         fn similarity_matches_dense_reference(c in case()) {
             check(&c)?;
@@ -1209,7 +1224,7 @@ mod driver {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 500 }))]
+    #![proptest_config(proptest_cases(500))]
     // Depop-only weights (rp3beta) through the cosine slots (the driver's
     // `depop_as_cosine`: COSINE mode instead of FULL) give the same bits, with
     // a shrink, a power and zero weights (empty rows / columns), blocked or not.
