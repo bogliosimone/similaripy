@@ -6,7 +6,6 @@
 //! the key). Keys are a contract (additive within 1.x); `GET /config`
 //! serves the resolved config, so no key may hold a secret.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -89,8 +88,6 @@ pub struct Defaults {
     /// ranker (saves the final sort: JSON +8..+13% req/s at k 1000-2000); true
     /// = Python's `recommend` order, best first.
     pub sorted: bool,
-    /// The view of a request that doesn't name one; "" = the whole model.
-    pub view: String,
 }
 
 /// Seconds (a TOML integer or float).
@@ -111,30 +108,22 @@ pub struct Timeouts {
     pub shutdown_grace: f64,
 }
 
-/// `[views]`: the named views and how often their files are checked.
+/// `[views]`: the folder the named views come from and how often it is
+/// scanned. A view `NAME` = `NAME.include.txt` (the items it allows; absent:
+/// all) and / or `NAME.exclude.txt` (the items it removes), one id per line.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(default)]
+#[serde(deny_unknown_fields, default)]
 pub struct Views {
-    /// Seconds between checks of the view files: a changed file
-    /// (contents, or a renamed / symlinked new file in its place) rebuilds
-    /// the views, served from the next request on; 0 = read at start only.
+    /// The views' folder; "" = no views. Must be readable at start.
+    pub dir: PathBuf,
+    /// Seconds between scans of the folder: a new view is added, a changed
+    /// file (contents, or a renamed / symlinked new file in its place)
+    /// rebuilds its view, a view whose files are gone for two scans in a row
+    /// is removed; served from the next request on. 0 = read at start only.
     pub reload_interval: f64,
-    /// `[views.<name>]` with an include and / or exclude id file
-    /// (`reload_interval` is not a view name; flatten allows no
-    /// deny_unknown_fields: `parse` names a stray key).
-    #[serde(flatten)]
-    pub named: BTreeMap<String, ViewConfig>,
-}
-
-/// A named view: the items in `include_file` (absent: all) minus those in
-/// `exclude_file` (absent: none); files hold one id per line.
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ViewConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub include_file: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exclude_file: Option<PathBuf>,
+    /// Views served at most (each holds one bit per model item); names past
+    /// it are skipped and logged, never a start error.
+    pub max_views: usize,
 }
 
 impl Default for ModelConfig {
@@ -170,14 +159,13 @@ impl Default for Limits {
     }
 }
 
-/// `k` from the core's `Request::default` (one source); `sorted` and `view` are the server's own.
+/// `k` from the core's `Request::default` (one source); `sorted` is the server's own.
 impl Default for Defaults {
     fn default() -> Self {
         let r = similaripy_core::serve::Request::default();
         Self {
             k: r.k,
             sorted: false,
-            view: String::new(),
         }
     }
 }
@@ -185,8 +173,9 @@ impl Default for Defaults {
 impl Default for Views {
     fn default() -> Self {
         Self {
+            dir: PathBuf::new(),
             reload_interval: 10.0,
-            named: BTreeMap::new(),
+            max_views: 1024,
         }
     }
 }
@@ -253,9 +242,9 @@ impl Config {
         Ok(())
     }
 
-    /// `defaults.k` <= `limits.k_max`, `max_body_bytes` and `max_items` > 0,
-    /// `max_connections` 1 to 1e6 (tokio's semaphore panics past 2^61); `parse` and
-    /// `App::new` both call it.
+    /// `defaults.k` <= `limits.k_max`, `max_body_bytes`, `max_items` and
+    /// `views.max_views` > 0, `max_connections` 1 to 1e6 (tokio's semaphore
+    /// panics past 2^61); `parse` and `App::new` both call it.
     pub fn check_limits(&self) -> Result<(), String> {
         let (k, k_max) = (self.defaults.k, self.limits.k_max);
         if k > k_max {
@@ -270,28 +259,8 @@ impl Config {
         if !(1..=1_000_000).contains(&self.limits.max_connections) {
             return Err("limits.max_connections must be 1 to 1000000".into());
         }
-        Ok(())
-    }
-
-    /// The view rules a config alone can break: names of 1-64 of
-    /// `a-z 0-9 _ -` (settable as a flag or env var: no `.`, lowercase;
-    /// Prometheus labels and URLs without escaping), at least one file each,
-    /// `defaults.view` "" or a view.
-    pub fn check_views(&self) -> Result<(), String> {
-        for (name, v) in &self.views.named {
-            let ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b);
-            if !(1..=64).contains(&name.len()) || !name.bytes().all(ok) {
-                return Err(format!("view {name:?}: a name is 1-64 of a-z 0-9 _ -"));
-            }
-            if v.include_file.is_none() && v.exclude_file.is_none() {
-                return Err(format!(
-                    "view {name:?}: needs include_file and / or exclude_file"
-                ));
-            }
-        }
-        let d = &self.defaults.view;
-        if !d.is_empty() && !self.views.named.contains_key(d) {
-            return Err(format!("defaults.view = {d:?}: no such view"));
+        if self.views.max_views == 0 {
+            return Err("views.max_views must be >= 1".into());
         }
         Ok(())
     }
@@ -390,16 +359,6 @@ pub fn parse(
     for (key, v, source) in env.into_iter().chain(flags) {
         set(&mut table, &defaults, &key, v).map_err(|e| format!("{source}: {e}"))?;
     }
-    // [views] holds reload_interval and view sections: any other value is a typo
-    if let Some(Value::Table(views)) = table.get("views")
-        && let Some((k, _)) = views
-            .iter()
-            .find(|(k, v)| *k != "reload_interval" && !v.is_table())
-    {
-        return Err(format!(
-            "views.{k}: unknown key (a view is a [views.NAME] section)"
-        ));
-    }
     let mut cfg: Config = Value::Table(table)
         .try_into()
         .map_err(|e| format!("config: {}", e.to_string().trim_end().replace('\n', " ")))?;
@@ -414,7 +373,6 @@ pub fn parse(
     }
     cfg.check_timeouts()?;
     cfg.check_limits()?;
-    cfg.check_views()?;
     Ok(if print {
         Cli::PrintConfig(cfg)
     } else {
@@ -436,8 +394,7 @@ fn merge(dst: &mut Table, src: Table) {
 
 /// `key` (dotted) = `raw`, typed as the key's default (so "2026" stays a
 /// string for a string key, and `block_size`, default "auto", takes "off" or
-/// "64" whatever an earlier source set); a `*_file` key (views: no default)
-/// is a string; another key without a default takes `raw` as a TOML literal,
+/// "64" whatever an earlier source set); a key without a default takes `raw` as a TOML literal,
 /// else a string. An unknown key is set too: the deserialize names it.
 // ponytail: no list keys yet; one would take "a,b" from a flag or env var.
 fn set(table: &mut Table, defaults: &Table, key: &str, raw: String) -> Result<(), String> {
@@ -464,7 +421,6 @@ fn set(table: &mut Table, defaults: &Table, key: &str, raw: String) -> Result<()
         Some(Value::Boolean(_)) => Value::Boolean(raw.parse().map_err(|e| bad(&e))?),
         Some(Value::Float(_)) => Value::Float(raw.parse().map_err(|e| bad(&e))?),
         Some(_) => return Err(bad(&"not settable from a flag or env var")),
-        None if last.ends_with("_file") => Value::String(raw),
         None => toml::from_str::<Table>(&format!("v = {raw}"))
             .ok()
             .and_then(|mut t| t.remove("v"))
@@ -604,26 +560,16 @@ mod tests {
                 max_items: 9,
                 max_connections: 11,
             },
-            defaults: Defaults {
-                k: 5,
-                sorted: true,
-                view: "instock".into(),
-            },
+            defaults: Defaults { k: 5, sorted: true },
             timeouts: Timeouts {
                 header_read: 2.5,
                 drain_delay: 5.0,
                 shutdown_grace: 0.25,
             },
             views: Views {
+                dir: "2026".into(),
                 reload_interval: 2.0,
-                named: [(
-                    "instock".to_string(),
-                    ViewConfig {
-                        include_file: Some("2026.txt".into()),
-                        exclude_file: Some("/ids/adult.txt".into()),
-                    },
-                )]
-                .into(),
+                max_views: 12,
             },
         };
         let keys = [
@@ -641,15 +587,14 @@ mod tests {
             ("limits.max_connections", "11"),
             ("defaults.k", "5"),
             ("defaults.sorted", "true"),
-            ("defaults.view", "instock"),
             ("timeouts.header_read", "2.5"),
             // an integer for a float key
             ("timeouts.drain_delay", "5"),
             ("timeouts.shutdown_grace", "0.25"),
+            // a number-like path stays a string
+            ("views.dir", "2026"),
             ("views.reload_interval", "2"),
-            // a number-like path stays a string (`*_file`)
-            ("views.instock.include_file", "2026.txt"),
-            ("views.instock.exclude_file", "/ids/adult.txt"),
+            ("views.max_views", "12"),
         ];
         // Every field of Config is in `keys`: the TOML of `want` has as many.
         assert_eq!(want.to_toml().matches(" = ").count(), keys.len());
@@ -725,13 +670,20 @@ mod tests {
         }
         let e = cfg(&["--model", "/m", "--limits.max_items", "0"], &[]).unwrap_err();
         assert!(e.contains("max_items"), "{e}");
-        // views.reload_interval: seconds; a typo in [views] reads as a view
+        // views.reload_interval: seconds; [views] holds only its keys (no
+        // [views.NAME] sections, no defaults.view: views come from views.dir)
         let e = cfg(&["--model", "/m", "--views.reload_interval", "-1"], &[]).unwrap_err();
         assert!(e.contains("views.reload_interval = -1"), "{e}");
         let e = cfg(&["--model", "/m", "--views.reload_interval", "1e-10"], &[]).unwrap_err();
         assert!(e.contains("at least 0.1"), "{e}");
         let e = cfg(&["--model", "/m", "--views.reload_intervall", "5"], &[]).unwrap_err();
-        assert!(e.contains("views.reload_intervall: unknown key"), "{e}");
+        assert!(e.contains("reload_intervall"), "{e}");
+        for key in ["--views.instock.include_file", "--defaults.view"] {
+            let e = cfg(&["--model", "/m", key, "x"], &[]).unwrap_err();
+            assert!(e.contains("unknown field"), "{key}: {e}");
+        }
+        let e = cfg(&["--model", "/m", "--views.max_views", "0"], &[]).unwrap_err();
+        assert!(e.contains("views.max_views"), "{e}");
         let f = file("[model]\npath = \"/m\"\n[views]\nreload_interval = 0\n");
         assert_eq!(
             cfg(&["--config", &f.0], &[]).unwrap().views.reload_interval,

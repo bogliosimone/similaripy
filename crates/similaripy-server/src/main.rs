@@ -30,13 +30,14 @@ Config: built-in defaults < FILE (TOML) < env SIMILARIPY_<SECTION>__<KEY> < flag
   --limits.max_connections N  open connections; more wait in the OS backlog; default 1024
   --defaults.k N              a request's k when it doesn't send one (<= k_max); default 10
   --defaults.sorted BOOL      a request's sorted when it doesn't send one; default false
-  --defaults.view NAME        a request's view when it doesn't send one; default empty (the whole model)
-  --views.reload_interval S   seconds between checks of the view files: a changed
-                              file is served from the next request on; 0 = read at
-                              start only; default 10
-  --views.NAME.include_file F  view NAME allows only the ids in F (one per line)
-  --views.NAME.exclude_file F  view NAME never returns the ids in F; either or both
-                               (NAME: 1-64 of a-z 0-9 _ -; F relative to the working directory)
+  --views.dir DIR             the views' folder; default empty (no views). View NAME =
+                              NAME.include.txt (allows only these ids) and / or
+                              NAME.exclude.txt (never returns them), one id per line;
+                              NAME: 1-64 of a-z 0-9 _ -. A request without view: the whole model
+  --views.reload_interval S   seconds between scans of the folder: new / changed views are
+                              served from the next request on, views gone two scans in a row
+                              are removed; 0 = read at start only; default 10
+  --views.max_views N         views served at most (more are skipped, logged); default 1024
   --timeouts.header_read S    seconds to send a request's headers (and a JSON body: else 408),
                               the first bytes after connecting, HTTP/1.1 keep-alive idle; default 30
   --timeouts.drain_delay S    after SIGTERM / SIGINT: seconds still accepting with /ready 503

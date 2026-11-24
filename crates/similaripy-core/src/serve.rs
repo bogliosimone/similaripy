@@ -22,11 +22,13 @@
 //! (`reports/step4-explore.md` in the planning notes, D64); API D69, A0.
 //!
 //! Files: `model` (build, the one check, save/load, views), `ids` (id maps),
-//! `request` (the worker, one history, batch).
+//! `request` (the worker, one history, batch), `view_file` (the server's
+//! view id files: read, atomic write, names).
 
 mod ids;
 mod model;
 mod request;
+pub mod view_file;
 
 pub use model::{BlockSize, CLUSTER_HEAD, Core, Entry, FORMAT, ItemOrder, Model, Parts};
 pub use request::{

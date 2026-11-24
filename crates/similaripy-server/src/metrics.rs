@@ -133,10 +133,10 @@ pub struct Info<'a> {
     pub block: usize,
     pub items: usize,
     pub active_items: usize,
-    /// (name, requests over every thread, failed reloads); names need no
-    /// escaping (`Config::check_views`).
+    /// (name, requests over every thread, failed reads); names need no
+    /// escaping (`view_file::valid_name`).
     pub views: Vec<(&'a str, u64, u64)>,
-    /// View reloads that rebuilt a view and the last one (Unix
+    /// View scans that added, rebuilt or removed a view and the last one (Unix
     /// seconds, 0 = none).
     pub view_reloads: u64,
     pub last_view_reload: f64,
@@ -262,14 +262,15 @@ pub fn render(threads: &[Thread], info: &Info) -> String {
             "similaripy_server_view_requests_total{{view=\"{name}\"}} {v}"
         );
     }
-    let help = "View reloads that rebuilt a view whose file changed (views.reload_interval).";
+    let help =
+        "View scans that added, rebuilt or removed a view (views.dir, views.reload_interval).";
     head(&mut o, "view_reloads_total", "counter", help);
     let _ = writeln!(
         o,
         "similaripy_server_view_reloads_total {}",
         info.view_reloads
     );
-    let help = "Changes per view whose files failed to read (the view kept its previous ids).";
+    let help = "Changes per view whose files failed to read (the view kept its previous ids, or is not served if it had none).";
     head(&mut o, "view_reload_errors_total", "counter", help);
     for (name, _, e) in &info.views {
         let _ = writeln!(

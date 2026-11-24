@@ -19,7 +19,7 @@ services:
     volumes:
       - ${MODEL_DIR:-../../../tests/data/sparseknn-format1}:/model:ro
       - ${SERVER_CONFIG:-./demo/server.toml}:/config/server.toml:ro
-      - ./demo/in_stock.txt:/config/in_stock.txt:ro
+      - ./demo/views:/views:ro
     ports:
       # 18080: something on macOS intercepts 8080 for h2c (S5g notes)
       - 127.0.0.1:18080:8080

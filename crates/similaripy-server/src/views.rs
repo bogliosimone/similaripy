@@ -1,44 +1,43 @@
-//! Named views: each a core `Model::view` of the served model
-//! (S shared, one bit per item), built at start from the config's id files.
+//! Named views: each a core `Model::view` of the served model (S shared, one
+//! bit per item), read from the `views.dir` folder: `NAME.include.txt` (the
+//! items it allows; absent: all) and / or `NAME.exclude.txt` (the items it
+//! removes), one id per line. Each scan adds new names, rebuilds the views
+//! whose files changed, shares the others (`Arc`, same model only) and
+//! removes a view whose files are gone two scans in a row.
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::Relaxed;
 
 use serde::Serialize;
 use similaripy_core::serve::Model;
+use similaripy_core::serve::view_file::{self, Rule};
 
-use crate::config::{Config, ViewConfig};
 use crate::metrics::Counter;
 
-/// One named view: the model behind it, what it was built from, and its
-/// requests per server thread.
+/// One named view: the model behind it, what it was built from, its
+/// requests per server thread and its failed reads.
 pub struct View {
-    pub model: Model,
+    /// None: the view failed to load and isn't served (`info.error`).
+    pub model: Option<Model>,
     pub info: ViewInfo,
+    /// Kept across the view's rebuilds; a removed view's go with it (a
+    /// re-added name starts at 0).
     pub served: Arc<[Counter]>,
-}
-
-impl View {
-    /// This view again (the mask copied, S shared).
-    fn copy(&self) -> View {
-        View {
-            model: self.model.view(None, None),
-            info: self.info.clone(),
-            served: self.served.clone(),
-        }
-    }
+    pub errors: Arc<AtomicU64>,
 }
 
 /// `GET /v1/views`' entry for a view.
 #[derive(Serialize, Clone)]
 pub struct ViewInfo {
-    /// Items the view allows (of the model's `items`).
-    pub allowed: usize,
+    /// Items the view allows (of the model's `items`); null: not loaded.
+    pub allowed: Option<usize>,
     pub include: Option<FileInfo>,
     pub exclude: Option<FileInfo>,
-    /// The last reload's failure (null: none): the view still serves the
-    /// files as described here, read before it.
+    /// The last read's failure (null: none): with `allowed` set the view
+    /// still serves the files as described here, read before it.
     pub error: Option<String>,
 }
 
@@ -56,10 +55,10 @@ pub struct FileInfo {
 
 /// What tells a file's change: the file it resolves to (a swapped
 /// symlink, as Kubernetes' ConfigMap updates), its mtime, size and inode
-/// (an atomic rename). None: unreadable (a change too, when it comes back).
-#[derive(PartialEq, Debug)]
+/// (an atomic rename). None: absent (or a dangling symlink, a directory).
+#[derive(PartialEq, Debug, Clone)]
 pub struct Stamp {
-    path: std::path::PathBuf,
+    path: PathBuf,
     modified: Option<std::time::SystemTime>,
     len: u64,
     #[cfg(unix)]
@@ -67,7 +66,7 @@ pub struct Stamp {
 }
 
 pub fn stamp(path: &Path) -> Option<Stamp> {
-    let m = std::fs::metadata(path).ok()?;
+    let m = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
     Some(Stamp {
         path: path.canonicalize().ok()?,
         modified: m.modified().ok(),
@@ -80,123 +79,235 @@ pub fn stamp(path: &Path) -> Option<Stamp> {
     })
 }
 
-/// Per view of `cfg`, the stamps of its files.
-pub type Stamps = BTreeMap<String, Vec<Option<Stamp>>>;
-
-pub fn stamps(cfg: &Config) -> Stamps {
-    cfg.views
-        .named
-        .iter()
-        .map(|(name, v)| (name.clone(), view_stamps(v)))
-        .collect()
+/// A view's files in the folder: [include, exclude] stamps, and whether
+/// `NAME.meta.json` is there (reserved for 1.1's view settings).
+#[derive(PartialEq, Debug, Clone, Default)]
+struct Files {
+    stamps: [Option<Stamp>; 2],
+    meta: bool,
 }
 
-fn view_stamps(v: &ViewConfig) -> Vec<Option<Stamp>> {
-    [&v.include_file, &v.exclude_file]
-        .into_iter()
-        .flatten()
-        .map(|p| stamp(p))
-        .collect()
+/// What the writer knows of the folder between scans.
+#[derive(Default)]
+pub struct Seen {
+    /// Per view, the files it was last read from.
+    views: BTreeMap<String, Files>,
+    /// Files (view, rule) absent on the last scan, still served: absent on
+    /// the next one too = gone (an `rm` + `cp` sync never drops a view).
+    missing: BTreeSet<(String, usize)>,
+    /// Skipped files (bad name) and views (past `max_views`), logged once
+    /// while they stay skipped.
+    bad: BTreeSet<String>,
+    skipped: BTreeSet<String>,
+    /// The folder failed to read on the last scan (logged once).
+    pub dir_failed: bool,
 }
 
-/// The ids of `path`: one integer per line, blank lines skipped, spaces
-/// around a number allowed. Errors name the file (and the line).
-pub fn read_ids(path: &Path) -> Result<Vec<i64>, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut ids = Vec::new();
-    for (i, line) in text.lines().enumerate() {
-        // A BOM (Windows / Excel exports) before the first id
-        let t = line.trim_start_matches('\u{feff}').trim();
-        if t.is_empty() {
+/// The folder's view files now (dot-files, other suffixes, sub-dirs
+/// ignored; symlinks followed); a file with a view suffix and a bad name
+/// is skipped, logged once.
+fn list(
+    dir: &Path,
+    logged: &mut BTreeSet<String>,
+    lines: &mut Vec<String>,
+) -> std::io::Result<BTreeMap<String, Files>> {
+    let mut out = BTreeMap::<String, Files>::new();
+    let mut bad = BTreeSet::new();
+    for e in std::fs::read_dir(dir)? {
+        let path = e?.path();
+        let Some(file) = path.file_name().and_then(|f| f.to_str()) else {
+            continue;
+        };
+        if file.starts_with('.') {
             continue;
         }
-        let id = t.parse().map_err(|_| {
-            format!(
-                "{}:{}: {t:?} is not an integer id (numpy: np.savetxt(path, ids, fmt=\"%d\"))",
-                path.display(),
-                i + 1
-            )
-        })?;
-        ids.push(id);
+        let Some((name, rule)) = view_file::parse_file_name(file) else {
+            continue;
+        };
+        if !view_file::valid_name(name) {
+            if !logged.contains(file) {
+                lines.push(format!(
+                    "{}: not a view name (1-64 of a-z 0-9 _ -): skipped",
+                    path.display()
+                ));
+            }
+            bad.insert(file.to_string());
+            continue;
+        }
+        let f = out.entry(name.to_string()).or_default();
+        match rule {
+            None => f.meta = path.is_file(),
+            Some(r) => f.stamps[r as usize] = stamp(&path),
+        }
     }
-    Ok(ids)
+    out.retain(|_, f| f.meta || f.stamps.iter().any(Option::is_some));
+    *logged = bad;
+    Ok(out)
 }
 
-/// Every view of `cfg` over `base`, each with its counters from `served`
-/// (one entry per view name, kept across swaps); the first error fails.
-pub fn build(
-    base: &Model,
-    cfg: &Config,
-    served: &BTreeMap<String, Arc<[Counter]>>,
-) -> Result<BTreeMap<String, View>, String> {
-    cfg.check_views()?;
-    cfg.views
-        .named
-        .iter()
-        .map(|(name, v)| Ok((name.clone(), build_one(base, name, v, &served[name])?)))
-        .collect()
-}
-
-/// A reload's outcome: every view, and the names of those whose files
-/// changed, rebuilt or failed.
+/// A scan's outcome: every view, the log lines of those added, rebuilt,
+/// failed (once per change) or removed, and of the files and views skipped
+/// (bad name, past `max_views`; once while they stay skipped).
 pub struct Rebuilt {
-    pub views: BTreeMap<String, View>,
-    pub rebuilt: Vec<String>,
-    pub failed: Vec<String>,
+    pub views: BTreeMap<String, Arc<View>>,
+    pub lines: Vec<String>,
+    pub skipped: Vec<String>,
+    /// A view was added, rebuilt or removed (`view_reloads_total`; a
+    /// failed read alone is not a reload).
+    pub changed: bool,
 }
 
-/// The views of `old` whose files changed since `seen` (then updated) or
-/// whose last read failed, rebuilt over `base`; one whose files fail to
-/// read keeps its old mask with the error; the others stay as they are.
-/// None if nothing changed.
-pub fn rebuild(
+/// The folder's views over `base`, from `old` (served over `base` if
+/// `same_model`, else every view is rebuilt: a mask is per model) and
+/// `seen` (updated). A view whose files fail to read keeps its old mask
+/// (same model) with the error, else is listed unloaded; retried every
+/// scan, counted and logged once per change. None: nothing changed. Err:
+/// the folder is unreadable (nothing changed either).
+pub fn scan(
     base: &Model,
-    cfg: &Config,
-    old: &BTreeMap<String, View>,
-    seen: &mut Stamps,
-) -> Option<Rebuilt> {
-    let mut r = Rebuilt {
-        views: BTreeMap::new(),
-        rebuilt: vec![],
-        failed: vec![],
-    };
-    for (name, v) in &cfg.views.named {
-        let old = &old[name];
-        // Stamped before the reads: a write during them is a change next time.
-        let now = view_stamps(v);
-        let changed = seen[name] != now;
-        let view = if !changed && old.info.error.is_none() {
-            old.copy()
-        } else {
-            seen.insert(name.clone(), now);
-            match build_one(base, name, v, &old.served) {
-                Ok(view) => {
-                    r.rebuilt.push(name.clone());
-                    view
-                }
-                // A view in error is retried every check (a passing EMFILE,
-                // EIO), but logged and counted once per change.
-                Err(e) => {
-                    if changed {
-                        r.failed.push(name.clone());
-                    }
-                    let mut kept = old.copy();
-                    kept.info.error = Some(e);
-                    kept
+    cfg: &crate::config::Views,
+    old: &BTreeMap<String, Arc<View>>,
+    seen: &mut Seen,
+    same_model: bool,
+    threads: usize,
+) -> Result<Option<Rebuilt>, String> {
+    let dir = &cfg.dir;
+    let mut skipped_lines = vec![];
+    // Stamped before the reads: a write during them is a change next time.
+    let mut now = list(dir, &mut seen.bad, &mut skipped_lines)
+        .map_err(|e| format!("views.dir {}: {e}", dir.display()))?;
+    // A file gone since the last scan stays one more scan (A15).
+    let mut missing = BTreeSet::new();
+    for (name, was) in &seen.views {
+        let f = now.entry(name.clone()).or_default();
+        for i in 0..2 {
+            if f.stamps[i].is_none() && was.stamps[i].is_some() {
+                let key = (name.clone(), i);
+                if !seen.missing.contains(&key) {
+                    f.stamps[i] = was.stamps[i].clone();
+                    missing.insert(key);
                 }
             }
-        };
-        r.views.insert(name.clone(), view);
+        }
     }
-    (!r.rebuilt.is_empty() || !r.failed.is_empty()).then_some(r)
+    seen.missing = missing;
+    now.retain(|_, f| f.meta || f.stamps.iter().any(Option::is_some));
+    // Served names first, then new ones by name, up to max_views.
+    let (served, new): (Vec<_>, Vec<_>) = now.keys().partition(|n| old.contains_key(*n));
+    let kept: BTreeSet<&String> = served.into_iter().chain(new).take(cfg.max_views).collect();
+    let skipped: BTreeSet<String> = now.keys().filter(|n| !kept.contains(n)).cloned().collect();
+    for name in skipped.difference(&seen.skipped) {
+        let max = cfg.max_views;
+        skipped_lines.push(format!(
+            "view {name:?}: past views.max_views = {max}: skipped"
+        ));
+    }
+    seen.skipped = skipped;
+
+    let mut r = Rebuilt {
+        views: BTreeMap::new(),
+        lines: vec![],
+        skipped: skipped_lines,
+        changed: false,
+    };
+    let items = base.n_items();
+    for name in kept {
+        let files = &now[name];
+        let old = old.get(name);
+        let changed = !same_model || seen.views.get(name) != Some(files);
+        // A file absent for one scan (A15) is not read: its view stays as
+        // it is until the file is back or gone for good.
+        // ponytail: a swap during that scan has no mask over the new model
+        // to keep: the view is unloaded (error) until the next scan.
+        let pending = (0..2).any(|i| seen.missing.contains(&(name.clone(), i)));
+        if let Some(v) = old
+            && same_model
+            && (pending || !changed && v.info.error.is_none())
+        {
+            r.views.insert(name.clone(), v.clone());
+            continue;
+        }
+        seen.views.insert(name.clone(), files.clone());
+        let (served, errors) = match old {
+            Some(v) => (v.served.clone(), v.errors.clone()),
+            None => (
+                (0..threads).map(|_| Counter::default()).collect(),
+                Arc::default(),
+            ),
+        };
+        let paths =
+            [Rule::Include, Rule::Exclude].map(|r| dir.join(format!("{name}{}", r.suffix())));
+        let built = if files.meta {
+            Err(format!(
+                "view {name:?}: {name}.meta.json (view settings) needs a newer server: not served"
+            ))
+        } else {
+            let p = |i: usize| files.stamps[i].as_ref().map(|_| paths[i].as_path());
+            build_one(base, name, p(0), p(1))
+        };
+        let view = match built {
+            Ok((model, info)) => {
+                r.changed = true;
+                View {
+                    model: Some(model),
+                    info,
+                    served,
+                    errors,
+                }
+            }
+            Err(e) => {
+                // A view in error is retried every scan (a passing EMFILE,
+                // EIO), but logged and counted once per change.
+                // A kept mask: over this model, and never a meta.json view.
+                let keep = old.filter(|v| same_model && !files.meta && v.model.is_some());
+                let mut view = match keep {
+                    Some(v) => View {
+                        model: v.model.as_ref().map(|m| m.view(None, None)),
+                        info: v.info.clone(),
+                        served,
+                        errors,
+                    },
+                    None => View {
+                        model: None,
+                        info: ViewInfo {
+                            allowed: None,
+                            include: None,
+                            exclude: None,
+                            error: None,
+                        },
+                        served,
+                        errors,
+                    },
+                };
+                view.info.error = Some(e);
+                if changed || old.is_none() {
+                    view.errors.fetch_add(1, Relaxed);
+                    r.lines.push(describe_one(name, &view, items));
+                }
+                r.views.insert(name.clone(), Arc::new(view));
+                continue;
+            }
+        };
+        r.lines.push(describe_one(name, &view, items));
+        r.views.insert(name.clone(), Arc::new(view));
+    }
+    for name in old.keys().filter(|n| !r.views.contains_key(*n)) {
+        r.changed = true;
+        seen.views.remove(name);
+        r.lines
+            .push(format!("view {name:?}: its files are gone: removed"));
+    }
+    seen.views.retain(|n, _| r.views.contains_key(n));
+    // A failure alone changes the listing (`error`): installed, not a reload.
+    Ok((r.changed || !r.lines.is_empty() || !r.skipped.is_empty()).then_some(r))
 }
 
 fn build_one(
     base: &Model,
     name: &str,
-    v: &ViewConfig,
-    served: &Arc<[Counter]>,
-) -> Result<View, String> {
+    include: Option<&Path>,
+    exclude: Option<&Path>,
+) -> Result<(Model, ViewInfo), String> {
     // The mtime before the read: a write during it shows as a change next time.
     /// A file, its ids and mtime.
     type Read<'a> = (&'a Path, Vec<i64>, Option<f64>);
@@ -207,13 +318,14 @@ fn build_one(
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs_f64());
-            Ok((p, read_ids(p)?, modified))
+            let ids = view_file::read_ids(p).map_err(|e| e.to_string())?;
+            Ok((p, ids, modified))
         })
         .transpose()
     }
     let named = |e: String| format!("view {name:?}: {e}");
-    let include = read(v.include_file.as_deref()).map_err(named)?;
-    let exclude = read(v.exclude_file.as_deref()).map_err(named)?;
+    let include = read(include).map_err(named)?;
+    let exclude = read(exclude).map_err(named)?;
     let model = base.view(
         include.as_ref().map(|(_, ids, _)| &ids[..]),
         exclude.as_ref().map(|(_, ids, _)| &ids[..]),
@@ -232,47 +344,48 @@ fn build_one(
         })
     };
     let info = ViewInfo {
-        allowed: model.n_allowed(),
+        allowed: Some(model.n_allowed()),
         include: file(include),
         exclude: file(exclude),
         error: None,
     };
-    Ok(View {
-        model,
-        info,
-        served: served.clone(),
-    })
+    Ok((model, info))
 }
 
 /// The start-up log's lines: one per view, then the memory they hold.
-pub fn describe(views: &BTreeMap<String, View>, items: usize) -> Vec<String> {
+pub fn describe(views: &BTreeMap<String, Arc<View>>, items: usize) -> Vec<String> {
     let mut lines: Vec<String> = views
         .iter()
         .map(|(name, v)| describe_one(name, v, items))
         .collect();
-    if !views.is_empty() {
+    let loaded = views.values().filter(|v| v.model.is_some()).count();
+    if loaded > 0 {
         let each = items.div_ceil(64) * 8;
         lines.push(format!(
-            "views: {} x {each} B = {} KiB",
-            views.len(),
-            (views.len() * each).div_ceil(1024)
+            "views: {loaded} x {each} B = {} KiB",
+            (loaded * each).div_ceil(1024)
         ));
     }
     lines
 }
 
 /// A view's log line: its files, what it allows (a warning at 0), or the
-/// failed reload it kept its previous ids through.
+/// failure it kept its previous ids through (or isn't served for).
 pub fn describe_one(name: &str, v: &View, items: usize) -> String {
     let i = &v.info;
     if let Some(e) = &i.error {
-        return format!("{e} (reload failed: serving the previous ids)");
+        let then = match i.allowed {
+            Some(_) => "serving the previous ids",
+            None => "not served",
+        };
+        return format!("{e} ({then})");
     }
+    let allowed = i.allowed.unwrap_or_default();
     let file = |kind: &str, f: &Option<FileInfo>| match f {
         Some(f) => format!(" {kind} {} ({} of {} ids known)", f.file, f.known, f.ids),
         None => String::new(),
     };
-    let warn = if i.allowed == 0 {
+    let warn = if allowed == 0 {
         " (warning: every answer will be empty)"
     } else {
         ""
@@ -281,7 +394,7 @@ pub fn describe_one(name: &str, v: &View, items: usize) -> String {
         "view {name:?}:{}{}, allows {} of {items} items{warn}",
         file("include", &i.include),
         file("exclude", &i.exclude),
-        i.allowed,
+        allowed,
     )
 }
 
@@ -289,42 +402,52 @@ pub fn describe_one(name: &str, v: &View, items: usize) -> String {
 mod tests {
     use super::*;
 
-    /// A file removed on drop.
-    struct File(std::path::PathBuf);
-
-    impl Drop for File {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    fn file(text: &str) -> File {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let p =
-            std::env::temp_dir().join(format!("similaripy-views-{}-{n}.txt", std::process::id()));
-        std::fs::write(&p, text).unwrap();
-        File(p)
-    }
-
+    /// A14: a scan shares the unchanged views (pointer-equal) and rebuilds
+    /// the changed one; over another model it rebuilds every view.
     #[test]
-    fn ids_one_per_line_errors_name_file_and_line() {
-        let f = file("\u{feff}3\r\n\n  -7 \n10\n");
-        assert_eq!(read_ids(&f.0).unwrap(), [3, -7, 10]);
-        let f = file("3\n4\nabc\n");
-        let e = read_ids(&f.0).unwrap_err();
+    fn unchanged_views_shared_only_over_the_same_model() {
+        let model = || {
+            let (indptr, indices, data) = ([0i64, 1, 2, 3], [1i32, 2, 0], [1.0f32; 3]);
+            let s = similaripy_core::CsrView::new("S", &indptr, &indices, &data, 3).unwrap();
+            let order = similaripy_core::serve::ItemOrder::Auto;
+            Model::new(s, Some(vec![10, 20, 30]), None, order).unwrap()
+        };
+        let dir =
+            std::env::temp_dir().join(format!("similaripy-views-share-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.include.txt"), "10\n").unwrap();
+        std::fs::write(dir.join("b.exclude.txt"), "20\n").unwrap();
+        let cfg = crate::config::Views {
+            dir: dir.clone(),
+            ..Default::default()
+        };
+        let (base, mut seen) = (model(), Seen::default());
+        let none = BTreeMap::new();
+        let v1 = scan(&base, &cfg, &none, &mut seen, true, 1)
+            .unwrap()
+            .unwrap()
+            .views;
         assert!(
-            e.contains(&format!("{}:3:", f.0.display())) && e.contains("abc"),
-            "{e}"
+            scan(&base, &cfg, &v1, &mut seen, true, 1)
+                .unwrap()
+                .is_none()
         );
-        let f = file("1 2\n");
-        assert!(read_ids(&f.0).unwrap_err().contains(":1:"));
-        let missing = Path::new("/nonexistent/similaripy-views.txt");
-        assert!(
-            read_ids(missing)
-                .unwrap_err()
-                .contains("/nonexistent/similaripy-views.txt")
-        );
+        std::fs::write(dir.join("b.exclude.txt"), "20\n30\n").unwrap();
+        let v2 = scan(&base, &cfg, &v1, &mut seen, true, 1)
+            .unwrap()
+            .unwrap()
+            .views;
+        assert!(Arc::ptr_eq(&v1["a"], &v2["a"]));
+        assert!(!Arc::ptr_eq(&v1["b"], &v2["b"]));
+        assert_eq!(v2["b"].info.allowed, Some(1));
+        // A swap: nothing shared, the counters kept.
+        let v3 = scan(&model(), &cfg, &v2, &mut seen, false, 1)
+            .unwrap()
+            .unwrap()
+            .views;
+        assert!(v3.iter().all(|(k, v)| !Arc::ptr_eq(v, &v2[k])));
+        assert!(Arc::ptr_eq(&v3["a"].served, &v2["a"].served));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

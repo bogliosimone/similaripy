@@ -23,7 +23,7 @@ use serde::Deserialize;
 use similaripy_core::CsrView;
 use similaripy_core::serve::{BlockSize, ItemOrder, Model, Request, recommend, score};
 use similaripy_server::client::{connect, metric, send, send_with};
-use similaripy_server::config::{self, HistoryPolicy};
+use similaripy_server::config::HistoryPolicy;
 use similaripy_server::pb::recommender_client::RecommenderClient;
 use similaripy_server::pb::{IdList, RecommendRequest, ScoreRequest};
 use similaripy_server::{App, BODY_LIMIT, Config, proto_from_json, router, serve};
@@ -951,50 +951,74 @@ fn lines(ids: impl IntoIterator<Item = i64>) -> String {
     ids.into_iter().map(|i| format!("{i}\n")).collect()
 }
 
-/// Views over `model()`: `even` = even items (+ two ids it doesn't have),
-/// `head` = all but the first 10, `both` = even minus the first 10.
-fn views_config(threads: usize) -> (Config, [IdFile; 2]) {
-    let even = id_file(
-        "even",
-        &format!(
-            "{}5\n\n 6 \n",
-            lines((0..N as i64).step_by(2).map(|i| 1000 + 7 * i))
-        ),
-    );
-    let head = id_file("head", &lines((0..10).map(|i| 1000 + 7 * i)));
-    let mut c = config(threads);
-    let view = |inc: Option<&IdFile>, exc: Option<&IdFile>| config::ViewConfig {
-        include_file: inc.map(|f| f.0.clone()),
-        exclude_file: exc.map(|f| f.0.clone()),
-    };
-    c.views.named = [
-        ("even".to_string(), view(Some(&even), None)),
-        ("head".to_string(), view(None, Some(&head))),
-        ("both".to_string(), view(Some(&even), Some(&head))),
-    ]
-    .into();
-    (c, [even, head])
-}
+/// A views folder (`views.dir`) in the temp dir, removed on drop.
+struct ViewsDir(std::path::PathBuf);
 
-/// The core view each name stands for.
-fn core_view(m: &Model, name: &str, files: &[IdFile; 2]) -> Model {
-    let ids = |f: &IdFile| read_ids(&f.0);
-    match name {
-        "" => m.view(None, None),
-        "even" => m.view(Some(&ids(&files[0])), None),
-        "head" => m.view(None, Some(&ids(&files[1]))),
-        "both" => m.view(Some(&ids(&files[0])), Some(&ids(&files[1]))),
-        _ => unreachable!(),
+impl Drop for ViewsDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
+impl ViewsDir {
+    fn new() -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let d = std::env::temp_dir().join(format!("similaripy-http-views-{pid}-{n}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        ViewsDir(d)
+    }
+
+    fn path(&self, file: &str) -> std::path::PathBuf {
+        self.0.join(file)
+    }
+
+    fn write(&self, file: &str, text: &str) {
+        std::fs::write(self.path(file), text).unwrap();
+    }
+
+    fn remove(&self, file: &str) {
+        std::fs::remove_file(self.path(file)).unwrap();
+    }
+}
+
+/// `even`'s include file and `head`'s exclude file in `views_config`.
+const EVEN_FILE: &str = "even.include.txt";
+const HEAD_FILE: &str = "head.exclude.txt";
+
+/// Views over `model()` in a folder: `even` = even items (+ two ids it
+/// doesn't have), `head` = all but the first 10, `both` = even minus the
+/// first 10 (copies of the two files: a file backs one view).
+fn views_config(threads: usize) -> (Config, ViewsDir) {
+    let even = format!(
+        "{}5\n\n 6 \n",
+        lines((0..N as i64).step_by(2).map(|i| 1000 + 7 * i))
+    );
+    let head = lines((0..10).map(|i| 1000 + 7 * i));
+    let d = ViewsDir::new();
+    d.write(EVEN_FILE, &even);
+    d.write(HEAD_FILE, &head);
+    d.write("both.include.txt", &even);
+    d.write("both.exclude.txt", &head);
+    let mut c = config(threads);
+    c.views.dir = d.0.clone();
+    (c, d)
+}
+
+/// The core view `name` stands for: its files in `d` ("" = the whole model).
+fn core_view(m: &Model, name: &str, d: &ViewsDir) -> Model {
+    let ids = |rule: &str| {
+        let p = d.path(&format!("{name}.{rule}.txt"));
+        (!name.is_empty() && p.exists()).then(|| read_ids(&p))
+    };
+    m.view(ids("include").as_deref(), ids("exclude").as_deref())
+}
+
 fn read_ids(p: &std::path::Path) -> Vec<i64> {
-    std::fs::read_to_string(p)
-        .unwrap()
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| l.trim().parse().unwrap())
-        .collect()
+    similaripy_core::serve::view_file::read_ids(p).unwrap()
 }
 
 #[test]
@@ -1043,14 +1067,13 @@ fn view_answers_equal_core_view_and_and_with_include_exclude() {
     });
 }
 
-/// `views`: the masks are (`view` ?? `defaults.view`) AND every
-/// named view, `"view": ""` drops the default; names echoed in both formats;
+/// `views`: the masks are `view` (absent or "": the whole model) AND every
+/// named view; names echoed in both formats;
 /// each served name counted; > MAX_VIEWS = too_many_views, an unknown name =
 /// unknown_view (neither counted as served).
 #[test]
-fn views_and_with_view_and_default_view() {
-    let (mut cfg, files) = views_config(2);
-    cfg.defaults.view = "head".into();
+fn views_and_with_view() {
+    let (cfg, files) = views_config(2);
     let addr = start(cfg, false);
     let reference = model();
     let mut rng = Rng(11);
@@ -1061,7 +1084,7 @@ fn views_and_with_view_and_default_view() {
         for case in 0..200 {
             let len = 1 + rng.below(20);
             let ids: Vec<i64> = (0..len).map(|_| 1000 + rng.below(N) as i64 * 7).collect();
-            // view: absent (= the default "head"), "" (none) or a name
+            // view: absent, "" (both the whole model) or a name
             let view: Option<&str> = [None, Some(""), Some("even"), Some("both")][case % 4];
             let views: Vec<String> = (0..case % 4)
                 .map(|_| names[rng.below(3)].to_string())
@@ -1072,7 +1095,7 @@ fn views_and_with_view_and_default_view() {
                 body["view"] = v.into();
             }
             let body = body.to_string();
-            let used = view.unwrap_or("head");
+            let used = view.unwrap_or("");
             let extra: Vec<Model> = views
                 .iter()
                 .map(|n| core_view(&reference, n, &files))
@@ -1107,7 +1130,7 @@ fn views_and_with_view_and_default_view() {
             let (status, _, text) = post_score(addr, &sbody.to_string()).await;
             assert_eq!(status, StatusCode::OK, "{text}");
             let got: ScoreReply = serde_json::from_str(&text).unwrap();
-            let base = core_view(&reference, view.unwrap_or("head"), &files);
+            let base = core_view(&reference, view.unwrap_or(""), &files);
             let swant = python_score(
                 &base,
                 &similaripy_core::serve::ScoreRequest {
@@ -1168,7 +1191,6 @@ fn views_and_with_view_and_default_view() {
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 struct Views {
-    default: Option<String>,
     items: usize,
     views: std::collections::BTreeMap<String, ViewInfo>,
 }
@@ -1176,7 +1198,7 @@ struct Views {
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 struct ViewInfo {
-    allowed: usize,
+    allowed: Option<usize>,
     include: Option<FileInfo>,
     exclude: Option<FileInfo>,
     error: Option<String>,
@@ -1202,9 +1224,8 @@ fn mtime(p: &std::path::Path) -> Option<f64> {
 }
 
 #[test]
-fn default_view_empty_name_unknown_name_and_views_listing() {
-    let (mut cfg, files) = views_config(1);
-    cfg.defaults.view = "even".into();
+fn no_view_is_the_whole_model_unknown_name_and_views_listing() {
+    let (cfg, files) = views_config(1);
     let addr = start(cfg, false);
     let reference = model();
     let ids = [1000i64, 1014, 1021];
@@ -1218,33 +1239,34 @@ fn default_view_empty_name_unknown_name_and_views_listing() {
         )
     };
     block_on(async {
-        // Absent and null = defaults.view; "" = the whole model.
+        // Absent, null and "" = the whole model (no default view).
         for body in [
             r#"{"history": [1000, 1014, 1021]}"#,
             r#"{"history": [1000, 1014, 1021], "view": null}"#,
+            r#"{"history": [1000, 1014, 1021], "view": ""}"#,
         ] {
             let (_, text) = post(addr, body).await;
             let got: Reply = serde_json::from_str(&text).unwrap();
-            assert_eq!(got.view.as_deref(), Some("even"));
-            assert_eq!(got.answer(), req(&core_view(&reference, "even", &files)));
+            assert_eq!((got.answer(), got.view), (req(&reference), None), "{body}");
         }
-        let (_, text) = post(addr, r#"{"history": [1000, 1014, 1021], "view": ""}"#).await;
+        let (_, text) = post(addr, r#"{"history": [1000, 1014, 1021], "view": "even"}"#).await;
         let got: Reply = serde_json::from_str(&text).unwrap();
-        assert_eq!((got.answer(), got.view), (req(&reference), None));
+        assert_eq!(got.view.as_deref(), Some("even"));
+        assert_eq!(got.answer(), req(&core_view(&reference, "even", &files)));
         let mut c = grpc(addr).await;
         let q = RecommendRequest {
             history: ids.to_vec(),
             ..Default::default()
         };
         let r = c.recommend(q.clone()).await.unwrap().into_inner();
-        assert_eq!(r.view.as_deref(), Some("even"));
-        let whole = RecommendRequest {
-            view: Some(String::new()),
-            ..q.clone()
-        };
-        let r = c.recommend(whole).await.unwrap().into_inner();
         let bits = r.scores.iter().map(|s| s.to_bits()).collect();
         assert_eq!((r.view, (r.ids, bits)), (None, req(&reference)));
+        let even = RecommendRequest {
+            view: Some("even".into()),
+            ..q.clone()
+        };
+        let r = c.recommend(even).await.unwrap().into_inner();
+        assert_eq!(r.view.as_deref(), Some("even"));
         // Unknown: 400 / INVALID_ARGUMENT, counted as a bad request; a
         // history past max_history is rejected before the cut (not counted
         // as truncated).
@@ -1270,28 +1292,28 @@ fn default_view_empty_name_unknown_name_and_views_listing() {
             Some(2.0)
         );
         assert_eq!(metric(&m, "similaripy_server_truncated_total"), Some(0.0));
-        // even: 2 JSON + 1 gRPC; "" and unknown names aren't counted.
+        // even: 1 JSON + 1 gRPC; no view, "" and unknown names aren't counted.
         let even = "similaripy_server_view_requests_total{view=\"even\"}";
-        assert_eq!(metric(&m, even), Some(3.0), "{m}");
+        assert_eq!(metric(&m, even), Some(2.0), "{m}");
         let head = "similaripy_server_view_requests_total{view=\"head\"}";
         assert_eq!(metric(&m, head), Some(0.0));
         // The listing.
         let v: Views = serde_json::from_str(&get_text(addr, "/v1/views").await).unwrap();
-        assert_eq!((v.default.as_deref(), v.items), (Some("even"), N));
+        assert_eq!(v.items, N);
         assert_eq!(v.views.keys().collect::<Vec<_>>(), ["both", "even", "head"]);
-        let file = |f: &IdFile, ids, known| FileInfo {
-            file: f.0.display().to_string(),
+        let file = |f: &str, ids, known| FileInfo {
+            file: files.path(f).display().to_string(),
             ids,
             known,
-            modified: mtime(&f.0),
+            modified: mtime(&files.path(f)),
         };
         let even = &v.views["even"];
-        assert_eq!(even.allowed, N / 2);
-        assert_eq!(even.include, Some(file(&files[0], N / 2 + 2, N / 2)));
+        assert_eq!(even.allowed, Some(N / 2));
+        assert_eq!(even.include, Some(file(EVEN_FILE, N / 2 + 2, N / 2)));
         assert_eq!(even.exclude, None);
-        assert_eq!(v.views["head"].allowed, N - 10);
-        assert_eq!(v.views["head"].exclude, Some(file(&files[1], 10, 10)));
-        assert_eq!(v.views["both"].allowed, N / 2 - 5);
+        assert_eq!(v.views["head"].allowed, Some(N - 10));
+        assert_eq!(v.views["head"].exclude, Some(file(HEAD_FILE, 10, 10)));
+        assert_eq!(v.views["both"].allowed, Some(N / 2 - 5));
         assert!(v.views.values().all(|v| v.error.is_none()));
     });
 }
@@ -1309,19 +1331,26 @@ fn swap_serves_new_views_from_the_next_request() {
     let served = app.clone();
     std::thread::spawn(move || serve(listener, served, r, std::future::pending()));
     let body = r#"{"history": [1000, 1014, 1021], "k": 50, "view": "even"}"#;
+    let head = r#"{"history": [1000, 1014, 1021], "k": 50, "view": "head"}"#;
+    let q = Request {
+        ids: &[1000, 1014, 1021],
+        k: 50,
+        ..Default::default()
+    };
     block_on(async {
         let before = ask_json(addr, body).await;
         assert!(before.0.iter().all(|id| (id - 1000) / 7 % 2 == 0));
         // The file now holds the odd items: served only after the swap.
-        std::fs::write(
-            &files[0].0,
-            lines((1..N as i64).step_by(2).map(|i| 1000 + 7 * i)),
-        )
-        .unwrap();
+        files.write(EVEN_FILE, &odd_items());
         assert_eq!(ask_json(addr, body).await, before);
         let even = "similaripy_server_view_requests_total{view=\"even\"}";
         assert_eq!(metric(&get_text(addr, "/metrics").await, even), Some(2.0));
-        app.swap(model()).unwrap();
+        // Another model: every view rebuilt over it, `head` (unchanged
+        // files) too: a mask is per model, never shared across a swap.
+        let other = model_times(3.0);
+        app.swap(model_times(3.0)).unwrap();
+        let want = python(&core_view(&other, "head", &files), &q);
+        assert_eq!(ask_json(addr, head).await, want);
         // Counters survive the swap.
         assert_eq!(metric(&get_text(addr, "/metrics").await, even), Some(2.0));
         // Both threads (round-robin per connection) take the new state.
@@ -1333,16 +1362,22 @@ fn swap_serves_new_views_from_the_next_request() {
                 "{after:?}"
             );
         }
-        // A broken file: the swap fails, the served state stays.
-        std::fs::write(&files[0].0, "1007\nx\n").unwrap();
-        let e = app.swap(model()).unwrap_err();
-        assert!(e.contains(":2:") && e.contains("\"x\""), "{e}");
+        // A broken file: no mask over the new model to keep, so the view is
+        // listed unloaded and a request naming it is a 400; the others serve.
+        files.write(EVEN_FILE, "1007\nx\n");
+        app.swap(model()).unwrap();
+        let (status, h, text) = post_with(addr, body, &[]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        let e = error_of(&h, &text);
+        assert_eq!(e.code, "unknown_view", "{text}");
         assert!(
-            ask_json(addr, body)
-                .await
-                .0
-                .iter()
-                .all(|id| (id - 1000) / 7 % 2 == 1)
+            e.message.contains("not loaded") && e.message.contains(":2:"),
+            "{text}"
+        );
+        assert_eq!(views_listing(addr).await.views["even"].allowed, None);
+        assert_eq!(
+            ask_json(addr, head).await,
+            python(&core_view(&model(), "head", &files), &q)
         );
     });
 }
@@ -1383,7 +1418,7 @@ fn view_reload_serves_a_renamed_file_from_the_next_request() {
         assert!(all_of(&ask_json(addr, EVEN).await.0, 0));
         // Atomic replace: a new file renamed over the old one (new inode).
         let tmp = id_file("even-new", &odd_items());
-        std::fs::rename(&tmp.0, &files[0].0).unwrap();
+        std::fs::rename(&tmp.0, files.path(EVEN_FILE)).unwrap();
         // The poller's next tick (100 ms): bounded wait, then every thread.
         let t = std::time::Instant::now();
         while !all_of(&ask_json(addr, EVEN).await.0, 1) {
@@ -1395,7 +1430,10 @@ fn view_reload_serves_a_renamed_file_from_the_next_request() {
         }
         let v = views_listing(addr).await;
         let even = v.views["even"].include.as_ref().unwrap();
-        assert_eq!((even.ids, even.modified), (N / 2, mtime(&files[0].0)));
+        assert_eq!(
+            (even.ids, even.modified),
+            (N / 2, mtime(&files.path(EVEN_FILE)))
+        );
         let m = get_text(addr, "/metrics").await;
         assert_eq!(
             metric(&m, "similaripy_server_view_reloads_total"),
@@ -1417,26 +1455,26 @@ fn view_reload_only_on_a_change_and_a_broken_file_keeps_its_view() {
     block_on(async {
         assert!(!app.reload_views(), "nothing changed");
         // Edited in place (same inode): mtime / size.
-        std::fs::write(&files[0].0, odd_items()).unwrap();
+        files.write(EVEN_FILE, &odd_items());
         assert!(app.reload_views());
         assert!(!app.reload_views(), "already read");
         assert!(all_of(&ask_json(addr, EVEN).await.0, 1));
-        // A broken `even` file and an edited `head` file: `even` (and
-        // `both`, which reads it too) keep their ids, `head` reloads.
-        std::fs::write(&files[0].0, "1007\nx\n").unwrap();
-        std::fs::write(&files[1].0, lines([1000])).unwrap();
+        // A broken `even` file and an edited `head` file: `even` keeps its
+        // ids, `head` reloads, `both` (its own files) is untouched.
+        files.write(EVEN_FILE, "1007\nx\n");
+        files.write(HEAD_FILE, &lines([1000]));
         assert!(app.reload_views());
         assert!(all_of(&ask_json(addr, EVEN).await.0, 1));
         let v = views_listing(addr).await;
-        for name in ["even", "both"] {
-            let e = v.views[name].error.as_deref().unwrap();
-            assert!(e.contains(":2:") && e.contains("\"x\""), "{e}");
-        }
+        let e = v.views["even"].error.as_deref().unwrap();
+        assert!(e.contains(":2:") && e.contains("\"x\""), "{e}");
         assert_eq!(v.views["even"].include.as_ref().unwrap().ids, N / 2);
+        assert_eq!(v.views["even"].allowed, Some(N / 2));
         assert_eq!(
             (v.views["head"].allowed, &v.views["head"].error),
-            (N - 1, &None)
+            (Some(N - 1), &None)
         );
+        assert!(v.views["both"].error.is_none());
         let m = get_text(addr, "/metrics").await;
         let errors =
             |view| format!("similaripy_server_view_reload_errors_total{{view=\"{view}\"}}");
@@ -1444,36 +1482,42 @@ fn view_reload_only_on_a_change_and_a_broken_file_keeps_its_view() {
         assert_eq!(metric(&m, &errors("head")), Some(0.0), "{m}");
         let reloads = "similaripy_server_view_reloads_total";
         assert_eq!(metric(&m, reloads), Some(2.0), "{m}");
-        // Another view's change: the broken file is not read (or counted) again.
-        std::fs::write(&files[1].0, lines([1000, 1007])).unwrap();
+        // Another view's change: the broken file is not counted again.
+        files.write(HEAD_FILE, &lines([1000, 1007]));
         assert!(app.reload_views());
         let m = get_text(addr, "/metrics").await;
         assert_eq!(metric(&m, &errors("even")), Some(1.0), "{m}");
         assert_eq!(metric(&m, reloads), Some(3.0), "{m}");
-        // A missing file: same; only failures: not a reload in the metrics.
-        std::fs::remove_file(&files[0].0).unwrap();
-        assert!(app.reload_views());
-        assert!(!app.reload_views(), "still missing: retried, not a change");
-        assert!(all_of(&ask_json(addr, EVEN).await.0, 1));
+        // Only a failure: listed and counted as an error, not a reload (the
+        // last-reload time stays: a staleness alert still fires).
+        let last = "similaripy_server_view_last_reload_timestamp_seconds";
+        let before = metric(&m, last);
+        files.write(EVEN_FILE, "x\n");
+        assert!(!app.reload_views(), "a failure alone is not a reload");
         let m = get_text(addr, "/metrics").await;
-        assert_eq!(metric(&m, reloads), Some(3.0), "{m}");
         assert_eq!(metric(&m, &errors("even")), Some(2.0), "{m}");
+        assert_eq!((metric(&m, reloads), metric(&m, last)), (Some(3.0), before));
+        let e = views_listing(addr).await.views["even"]
+            .error
+            .clone()
+            .unwrap();
+        assert!(e.contains(":1:"), "{e}");
+        assert!(all_of(&ask_json(addr, EVEN).await.0, 1));
         // Ids the model doesn't have (another id space): allows 0, served
         // as such.
-        std::fs::write(&files[0].0, lines([5, 6])).unwrap();
+        files.write(EVEN_FILE, &lines([5, 6]));
         assert!(app.reload_views());
         let v = views_listing(addr).await;
         assert_eq!(
             (v.views["even"].allowed, &v.views["even"].error),
-            (0, &None)
+            (Some(0), &None)
         );
         assert!(ask_json(addr, EVEN).await.0.is_empty());
         // Fixed: served, error cleared.
-        std::fs::write(
-            &files[0].0,
-            lines((0..N as i64).step_by(2).map(|i| 1000 + 7 * i)),
-        )
-        .unwrap();
+        files.write(
+            EVEN_FILE,
+            &lines((0..N as i64).step_by(2).map(|i| 1000 + 7 * i)),
+        );
         assert!(app.reload_views());
         assert!(all_of(&ask_json(addr, EVEN).await.0, 0));
         assert!(
@@ -1486,42 +1530,160 @@ fn view_reload_only_on_a_change_and_a_broken_file_keeps_its_view() {
     });
 }
 
-/// A Kubernetes ConfigMap volume: `ids.txt` -> `..data/ids.txt`, `..data`
-/// -> `..<version>`; an update writes a new version directory and renames
-/// a new `..data` link over the old one.
+/// The folder: a new name is added, a view gone two scans in a row is
+/// removed (its metric series too; a re-added name restarts at 0), a file
+/// gone for one scan only (`rm` + `cp`) changes nothing, one rule gone
+/// leaves the other.
+#[test]
+fn view_folder_adds_and_removes_views_after_two_scans() {
+    let (mut cfg, files) = views_config(1);
+    cfg.views.reload_interval = 0.0;
+    let app = Arc::new(App::new(model(), cfg).unwrap());
+    let addr = start_app(&app);
+    let series = |view| format!("similaripy_server_view_requests_total{{view=\"{view}\"}}");
+    block_on(async {
+        // Added: served from the next request on.
+        files.write("odd.include.txt", &odd_items());
+        assert!(app.reload_views());
+        let odd = r#"{"history": [1000, 1014, 1021], "k": 50, "view": "odd"}"#;
+        assert!(all_of(&ask_json(addr, odd).await.0, 1));
+        assert!(all_of(&ask_json(addr, EVEN).await.0, 0));
+        let m = get_text(addr, "/metrics").await;
+        assert_eq!(metric(&m, &series("odd")), Some(1.0), "{m}");
+        // rm + cp: absent for one scan, back before the next: kept as is.
+        files.remove(EVEN_FILE);
+        assert!(!app.reload_views(), "one scan absent: no change");
+        assert!(all_of(&ask_json(addr, EVEN).await.0, 0));
+        files.write(
+            EVEN_FILE,
+            &lines((0..N as i64).step_by(2).map(|i| 1000 + 7 * i)),
+        );
+        assert!(app.reload_views(), "rewritten: a change");
+        assert!(all_of(&ask_json(addr, EVEN).await.0, 0));
+        // Gone two scans in a row: removed, its series with it.
+        files.remove("odd.include.txt");
+        assert!(!app.reload_views());
+        assert!(all_of(&ask_json(addr, odd).await.0, 1));
+        assert!(app.reload_views());
+        let (status, h, text) = post_with(addr, odd, &[]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert_eq!(error_of(&h, &text).code, "unknown_view");
+        let m = get_text(addr, "/metrics").await;
+        assert_eq!(metric(&m, &series("odd")), None, "{m}");
+        assert!(!views_listing(addr).await.views.contains_key("odd"));
+        // Re-added: its counters start at 0.
+        files.write("odd.include.txt", &odd_items());
+        assert!(app.reload_views());
+        let m = get_text(addr, "/metrics").await;
+        assert_eq!(metric(&m, &series("odd")), Some(0.0), "{m}");
+        // One rule gone for a scan while the other changes (`rm` both +
+        // `cp` both, caught half-way): not read, no error, nothing changes.
+        files.remove("both.include.txt");
+        files.write("both.exclude.txt", &lines([1000]));
+        assert!(!app.reload_views());
+        let both = &views_listing(addr).await.views["both"];
+        assert_eq!((both.allowed, &both.error), (Some(N / 2 - 5), &None));
+        // Gone for a second scan: the view keeps only the other rule.
+        assert!(app.reload_views());
+        let both = &views_listing(addr).await.views["both"];
+        assert_eq!((both.allowed, both.include.is_none()), (Some(N - 1), true));
+    });
+}
+
+/// A Kubernetes ConfigMap mounted as the views folder: `even.include.txt`
+/// -> `..data/even.include.txt`, `..data` -> `..<version>` (dot names:
+/// ignored by the scan); an update writes a new version directory and
+/// renames a new `..data` link over the old one.
 #[cfg(unix)]
 #[test]
 fn view_reload_follows_a_configmap_symlink_swap() {
     use std::os::unix::fs::symlink;
-    let dir = std::env::temp_dir().join(format!("similaripy-cm-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = ViewsDir::new();
     let version = |name: &str, text: String| {
-        std::fs::create_dir_all(dir.join(name)).unwrap();
-        std::fs::write(dir.join(name).join("ids.txt"), text).unwrap();
+        std::fs::create_dir_all(dir.path(name)).unwrap();
+        std::fs::write(dir.path(name).join(EVEN_FILE), text).unwrap();
     };
     version(
         "..v1",
         lines((0..N as i64).step_by(2).map(|i| 1000 + 7 * i)),
     );
-    symlink("..v1", dir.join("..data")).unwrap();
-    symlink("..data/ids.txt", dir.join("ids.txt")).unwrap();
-    let (mut cfg, _files) = views_config(1);
+    symlink("..v1", dir.path("..data")).unwrap();
+    symlink(format!("..data/{EVEN_FILE}"), dir.path(EVEN_FILE)).unwrap();
+    let mut cfg = config(1);
+    cfg.views.dir = dir.0.clone();
     cfg.views.reload_interval = 0.0;
-    cfg.views.named.retain(|k, _| k == "even");
-    cfg.views.named.get_mut("even").unwrap().include_file = Some(dir.join("ids.txt"));
     let app = Arc::new(App::new(model(), cfg).unwrap());
     let addr = start_app(&app);
     block_on(async {
         assert!(all_of(&ask_json(addr, EVEN).await.0, 0));
+        assert_eq!(views_listing(addr).await.views.len(), 1);
         version("..v2", odd_items());
-        symlink("..v2", dir.join("..data_tmp")).unwrap();
-        std::fs::rename(dir.join("..data_tmp"), dir.join("..data")).unwrap();
-        std::fs::remove_dir_all(dir.join("..v1")).unwrap();
+        symlink("..v2", dir.path("..data_tmp")).unwrap();
+        std::fs::rename(dir.path("..data_tmp"), dir.path("..data")).unwrap();
+        std::fs::remove_dir_all(dir.path("..v1")).unwrap();
         assert!(app.reload_views());
         assert!(all_of(&ask_json(addr, EVEN).await.0, 1));
         assert!(!app.reload_views());
     });
-    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The core's view file format end to end: `view_file::write_ids` writes,
+/// the server loads it (start and reload), answers = the core view of the
+/// ids read back; a hand-written file with `#` comments loads too.
+#[test]
+fn core_written_view_files_load_in_the_server() {
+    use similaripy_core::serve::view_file::{Rule, write_ids};
+    let dir = ViewsDir::new();
+    let even: Vec<i64> = (0..N as i64).step_by(2).map(|i| 1000 + 7 * i).collect();
+    let p = write_ids(&dir.0, "even", Rule::Include, &even).unwrap();
+    assert_eq!(read_ids(&p), even);
+    dir.write(
+        "head.exclude.txt",
+        &format!(
+            "# head: the first 10 items\n\n{}  # end\n",
+            lines((0..10).map(|i| 1000 + 7 * i))
+        ),
+    );
+    let mut cfg = config(1);
+    cfg.views.dir = dir.0.clone();
+    cfg.views.reload_interval = 0.0;
+    let app = Arc::new(App::new(model(), cfg).unwrap());
+    let addr = start_app(&app);
+    let reference = model();
+    let q = Request {
+        ids: &[1000, 1014, 1021],
+        k: 50,
+        ..Default::default()
+    };
+    let head = r#"{"history": [1000, 1014, 1021], "k": 50, "view": "head"}"#;
+    block_on(async {
+        assert_eq!(
+            ask_json(addr, EVEN).await,
+            python(&core_view(&reference, "even", &dir), &q)
+        );
+        assert_eq!(
+            ask_json(addr, head).await,
+            python(&core_view(&reference, "head", &dir), &q)
+        );
+        assert_eq!(
+            views_listing(addr).await.views["head"].allowed,
+            Some(N - 10)
+        );
+        // Rewritten by the core (a rename: a change), served after a scan.
+        write_ids(
+            &dir.0,
+            "even",
+            Rule::Include,
+            &read_ids(&dir.path("head.exclude.txt")),
+        )
+        .unwrap();
+        assert!(app.reload_views());
+        assert_eq!(views_listing(addr).await.views["even"].allowed, Some(10));
+        assert_eq!(
+            ask_json(addr, EVEN).await,
+            python(&core_view(&reference, "even", &dir), &q)
+        );
+    });
 }
 
 /// A view reload racing a model swap never reinstalls the older model.
@@ -1538,7 +1700,7 @@ fn view_reload_never_rolls_back_a_swapped_model() {
     );
     let reloader = {
         let (app, stop, reloads) = (app.clone(), stop.clone(), reloads.clone());
-        let head = files[1].0.clone();
+        let head = files.path(HEAD_FILE);
         std::thread::spawn(move || {
             // Every reload a change: head's file alternates 9 / 10 ids.
             for i in 0.. {
@@ -1589,45 +1751,89 @@ fn view_reload_never_rolls_back_a_swapped_model() {
     });
 }
 
+/// At start: a view whose file fails is listed unloaded with its error
+/// (never a start error: a bad file on a shared volume must not crash-loop
+/// every pod) and a request naming it is a 400 naming the file and line;
+/// `NAME.meta.json` (1.1's view settings) = not served; dot-files, other
+/// names and sub-dirs ignored, bad names skipped; past `max_views`: the
+/// first names served; an unreadable folder is a start error.
 #[test]
-fn view_errors_at_start_name_view_file_and_line() {
+fn view_folder_rules_at_start() {
     let (mut cfg, files) = views_config(1);
-    std::fs::write(&files[1].0, "1000\n1007\n\nten\n").unwrap();
-    let e = App::new(model(), cfg.clone()).err().unwrap();
-    let at = format!("{}:4:", files[1].0.display());
-    assert!(
-        e.contains("\"both\"") && e.contains(&at) && e.contains("ten"),
-        "{e}"
-    );
-    cfg.views.named.get_mut("head").unwrap().exclude_file = Some("/nonexistent/ids.txt".into());
-    cfg.views.named.remove("both");
-    let e = App::new(model(), cfg.clone()).err().unwrap();
-    assert!(
-        e.contains("\"head\"") && e.contains("/nonexistent/ids.txt"),
-        "{e}"
-    );
-    cfg.views.named.remove("head");
-    cfg.defaults.view = "head".into();
-    let e = App::new(model(), cfg.clone()).err().unwrap();
-    assert!(e.contains("defaults.view"), "{e}");
-    cfg.defaults.view = String::new();
-    // Not settable as a flag / env var (a dot splits the key, env is
-    // lowercase), or not a plain label.
-    for bad in ["bad name", "in.stock", "InStock", ""] {
-        let mut c = cfg.clone();
-        c.views
-            .named
-            .insert(bad.into(), cfg.views.named["even"].clone());
-        let e = App::new(model(), c).err().unwrap();
-        assert!(e.contains(&format!("{bad:?}")), "{e}");
+    files.write(HEAD_FILE, "1000\n1007\n\nten\n");
+    files.write("meta.include.txt", &odd_items());
+    files.write("meta.meta.json", "{}");
+    for ignored in [
+        ".even2.include.txt.tmp",
+        ".hidden.include.txt",
+        "notes.md",
+        "odd.txt",
+    ] {
+        files.write(ignored, &odd_items());
     }
-    cfg.views.named.insert("none".into(), Default::default());
-    assert!(
-        App::new(model(), cfg)
-            .err()
-            .unwrap()
-            .contains("needs include_file")
-    );
+    std::fs::create_dir(files.path("sub.include.txt")).unwrap();
+    for bad in [
+        "InStock.include.txt",
+        "in.stock.include.txt",
+        "bad name.exclude.txt",
+    ] {
+        files.write(bad, &odd_items());
+    }
+    let app = Arc::new(App::new(model(), cfg.clone()).unwrap());
+    let addr = start_app(&app);
+    block_on(async {
+        let v = views_listing(addr).await;
+        assert_eq!(
+            v.views.keys().collect::<Vec<_>>(),
+            ["both", "even", "head", "meta"]
+        );
+        let head = &v.views["head"];
+        let at = format!("{}:4:", files.path(HEAD_FILE).display());
+        let e = head.error.as_deref().unwrap();
+        assert!(
+            e.contains("\"head\"") && e.contains(&at) && e.contains("ten"),
+            "{e}"
+        );
+        assert_eq!((head.allowed, &head.exclude), (None, &None));
+        let e = v.views["meta"].error.as_deref().unwrap();
+        assert!(e.contains("meta.json") && e.contains("newer server"), "{e}");
+        assert_eq!(v.views["meta"].allowed, None);
+        assert_eq!(v.views["even"].allowed, Some(N / 2));
+        for name in ["head", "meta"] {
+            let body = format!(r#"{{"history": [1000], "view": "{name}"}}"#);
+            let (status, h, text) = post_with(addr, &body, &[]).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+            let e = error_of(&h, &text);
+            assert!(
+                e.code == "unknown_view" && e.message.contains("not loaded"),
+                "{text}"
+            );
+            // In `views` too.
+            let body = format!(r#"{{"history": [1000], "views": ["even", "{name}"]}}"#);
+            let (status, _, text) = post_with(addr, &body, &[]).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        }
+        let m = get_text(addr, "/metrics").await;
+        let errors = "similaripy_server_view_reload_errors_total{view=\"head\"}";
+        assert_eq!(metric(&m, errors), Some(1.0), "{m}");
+        // Fixed: loaded at the next scan (a PUT-free fix: just the file).
+        files.write(HEAD_FILE, &lines([1000]));
+        assert!(app.reload_views());
+        assert_eq!(views_listing(addr).await.views["head"].allowed, Some(N - 1));
+    });
+    // The cap: the first names (sorted) served, the rest skipped.
+    cfg.views.max_views = 2;
+    let app = App::new(model(), cfg.clone()).unwrap();
+    let names: Vec<String> = app
+        .describe_views()
+        .iter()
+        .filter_map(|l| l.split('"').nth(1).map(String::from))
+        .collect();
+    assert_eq!(names, ["both", "even"]);
+    // The folder itself must be readable.
+    cfg.views.dir = "/nonexistent/similaripy-views".into();
+    let e = App::new(model(), cfg).err().unwrap();
+    assert!(e.contains("views.dir /nonexistent/similaripy-views"), "{e}");
 }
 
 // ---- hardening ----
@@ -2097,7 +2303,7 @@ fn score_presence_rules_errors_and_metrics() {
     let addr = start(cfg, false);
     block_on(async {
         let ok = |text: &str| serde_json::from_str::<ScoreReply>(text).unwrap();
-        // view absent / null = defaults.view (none); weights null = unweighted;
+        // view absent / null = the whole model; weights null = unweighted;
         // no item = no score; unknown items 0; history.unknown exact with no
         // scorable item.
         let (s, _, t) = post_score(addr, r#"{"history": [1000, 5], "items": []}"#).await;

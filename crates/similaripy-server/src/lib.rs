@@ -196,10 +196,11 @@ impl Fail {
 }
 
 /// What is served: the model and its named views (each a `Model::view` of
-/// it). Never changed: replaced whole by `App::install`.
+/// it: one unit, a model swap installs both). Never changed: replaced whole
+/// by `App::install`; an unchanged view is shared with the next one.
 struct Served {
     model: Model,
-    views: BTreeMap<String, View>,
+    views: BTreeMap<String, Arc<View>>,
 }
 
 /// What every thread shares: the config, the metrics, the serving state.
@@ -217,28 +218,24 @@ pub struct App {
     // 1.1's hot swap nudges idle threads if an old model must be freed.
     state: Mutex<Arc<Served>>,
     version: AtomicU64,
-    /// Requests per view and thread: kept across swaps (the views' names
-    /// come from the config, which a swap doesn't change).
-    served: BTreeMap<String, Arc<[Counter]>>,
-    /// Held through a whole swap or view reload, never by a serving thread:
-    /// one writer at a time, so a reload rebuilds over the model it then
+    /// Held through a whole swap or view scan, never by a serving thread:
+    /// one writer at a time, so a scan rebuilds over the model it then
     /// installs, never an older one; the state lock is only taken to
-    /// read and to install (a scrape never waits on file reads). Holds the
-    /// stamps of the files the served views were read from.
-    writer: Mutex<views::Stamps>,
-    /// View reloads (written under `writer`) that rebuilt a view,
-    /// the last one (Unix seconds as f64 bits, 0 = none), failed reads per
-    /// view.
+    /// read and to install (a scrape never waits on file reads). Holds what
+    /// the last scan saw of `views.dir`.
+    writer: Mutex<views::Seen>,
+    /// View scans (written under `writer`) that added, rebuilt or removed
+    /// a view, the last one (Unix seconds as f64 bits, 0 = none).
     reloads: AtomicU64,
     last_reload: AtomicU64,
-    reload_errors: BTreeMap<String, AtomicU64>,
     /// Set by `serve` on shutdown: `/ready` answers 503.
     draining: AtomicBool,
 }
 
 impl App {
-    /// The app serving `model` with `cfg`'s views (id files read here: errors
-    /// name the view, file and line).
+    /// The app serving `model` with the views of `cfg.views.dir` (read here:
+    /// an unreadable folder is an error; a view whose files fail is listed
+    /// unloaded with its error, logged by `describe_views`).
     pub fn new(model: Model, mut cfg: Config) -> Result<Self, String> {
         cfg.model.fill_name();
         cfg.check_timeouts()?;
@@ -251,28 +248,24 @@ impl App {
         let metrics = (0..cfg.server.threads)
             .map(|_| Default::default())
             .collect();
-        let served: BTreeMap<_, Arc<[Counter]>> = cfg
-            .views
-            .named
-            .keys()
-            .map(|k| {
-                (
-                    k.clone(),
-                    (0..cfg.server.threads)
-                        .map(|_| Counter::default())
-                        .collect(),
-                )
+        let mut seen = views::Seen::default();
+        let views = if cfg.views.dir.as_os_str().is_empty() {
+            BTreeMap::new()
+        } else {
+            let none = BTreeMap::new();
+            let threads = cfg.server.threads;
+            let r = views::scan(&model, &cfg.views, &none, &mut seen, true, threads)?;
+            // The views themselves: `describe_views`, after the config.
+            r.map(|r| {
+                for line in r.skipped {
+                    eprintln!("similaripy-server: {line}");
+                }
+                r.views
             })
-            .collect();
-        let stamps = views::stamps(&cfg);
-        let views = views::build(&model, &cfg, &served)?;
+            .unwrap_or_default()
+        };
         Ok(Self {
-            reload_errors: served
-                .keys()
-                .map(|k| (k.clone(), AtomicU64::new(0)))
-                .collect(),
-            served,
-            writer: Mutex::new(stamps),
+            writer: Mutex::new(seen),
             reloads: AtomicU64::new(0),
             last_reload: AtomicU64::new(0),
             n_active: model.n_active(),
@@ -285,9 +278,9 @@ impl App {
         })
     }
 
-    /// Serves `model` with the config's views, rebuilt from their files, from
-    /// each thread's next request on (1.1's model hot swap calls this). An
-    /// error leaves the served state as it was.
+    /// Serves `model` with the folder's views, every one rebuilt over it (a
+    /// mask is per model), from each thread's next request on (1.1's model
+    /// hot swap calls this). An error leaves the served state as it was.
     // ponytail: the workers' block size was resolved from the first model's
     // n_active: another n_active is refused, not re-resolved (1.1's hot swap
     // re-resolves it per worker if models of other sizes must swap).
@@ -300,36 +293,65 @@ impl App {
             ));
         }
         let mut seen = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
-        let stamps = views::stamps(&self.cfg);
-        let views = views::build(&model, &self.cfg, &self.served)?;
-        *seen = stamps;
+        let old = self.state();
+        let views = if self.cfg.views.dir.as_os_str().is_empty() {
+            BTreeMap::new()
+        } else {
+            let threads = self.cfg.server.threads;
+            let r = views::scan(
+                &model,
+                &self.cfg.views,
+                &old.views,
+                &mut seen,
+                false,
+                threads,
+            )?;
+            r.map(|r| r.views).unwrap_or_default()
+        };
         self.install(Served { model, views });
         Ok(())
     }
 
-    /// Rebuilds the views whose files changed since they were read
-    /// over the served model, from each thread's next request on; one whose
-    /// files fail keeps what it served (logged and counted once per change,
-    /// its `error` in `GET /v1/views`). True if a file changed.
+    /// Scans `views.dir` over the served model: adds new views, rebuilds
+    /// those whose files changed, removes those gone two scans in a row,
+    /// from each thread's next request on; one whose files fail keeps what
+    /// it served (logged and counted once per change, its `error` in
+    /// `GET /v1/views`); an unreadable folder keeps every view (logged
+    /// once). True if a view was added, rebuilt or removed (a failed read
+    /// alone: false, not counted as a reload).
     pub fn reload_views(&self) -> bool {
         let mut seen = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
         // Under `writer`: no swap can serve another model before ours lands.
         let s = self.state();
-        let Some(r) = views::rebuild(&s.model, &self.cfg, &s.views, &mut seen) else {
+        let threads = self.cfg.server.threads;
+        let r = match views::scan(
+            &s.model,
+            &self.cfg.views,
+            &s.views,
+            &mut seen,
+            true,
+            threads,
+        ) {
+            Ok(r) => {
+                seen.dir_failed = false;
+                r
+            }
+            Err(e) => {
+                if !std::mem::replace(&mut seen.dir_failed, true) {
+                    eprintln!("similaripy-server: reload: {e} (keeping every view)");
+                }
+                None
+            }
+        };
+        let Some(r) = r else {
             return false;
         };
-        for name in &r.failed {
-            self.reload_errors[name].fetch_add(1, Relaxed);
-        }
-        let items = s.model.n_items();
-        let lines: Vec<String> = (r.rebuilt.iter().chain(&r.failed))
-            .map(|name| views::describe_one(name, &r.views[name], items))
-            .collect();
+        let lines: Vec<String> = r.skipped.into_iter().chain(r.lines).collect();
         self.install(Served {
             model: s.model.view(None, None),
             views: r.views,
         });
-        if !r.rebuilt.is_empty() {
+        if r.changed {
             let now = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default();
@@ -339,7 +361,7 @@ impl App {
         for line in lines {
             eprintln!("similaripy-server: reload: {line}");
         }
-        true
+        r.changed
     }
 
     /// `s` served from each thread's next request on.
@@ -374,7 +396,7 @@ impl App {
     /// A history (whole, with its weights) through the edge checks, the
     /// history cap and this thread's worker (`call`, given the kept ids and
     /// weights, the request's `views` and the reused outputs), over the model
-    /// of `view` (None: `defaults.view`; "": the whole model) ANDed with the
+    /// of `view` (None or "": the whole model) ANDed with the
     /// named `views` (at most `MAX_VIEWS`); `encode` turns the answer
     /// into the response while the worker's buffers are borrowed.
     #[allow(clippy::too_many_arguments)]
@@ -420,28 +442,32 @@ impl App {
                 state,
                 ..
             } = l;
-            let unknown = |name: &str| {
+            // A name not in the folder, or a view that failed to load.
+            let unknown = |name: &str, v: Option<&View>| {
                 m.bad_request();
-                Fail(
-                    Code::UnknownView,
-                    format!("unknown view {name:?} (GET /v1/views lists them)"),
-                )
+                let e = match v.and_then(|v| v.info.error.as_deref()) {
+                    Some(e) => format!("view {name:?} is not loaded: {e}"),
+                    None => format!("unknown view {name:?} (GET /v1/views lists them)"),
+                };
+                Fail(Code::UnknownView, e)
             };
-            let name = view.unwrap_or(&self.cfg.defaults.view);
-            let (model, view, served) = if name.is_empty() {
-                (&state.model, None, None)
-            } else {
-                match state.views.get_key_value(name) {
-                    Some((name, v)) => (&v.model, Some(name.as_str()), Some(&v.served)),
-                    None => return Err(unknown(name)),
-                }
+            let (model, view, served) = match view {
+                None | Some("") => (&state.model, None, None),
+                Some(name) => match state.views.get_key_value(name) {
+                    Some((name, v)) => match &v.model {
+                        Some(model) => (model, Some(name.as_str()), Some(&v.served)),
+                        None => return Err(unknown(name, Some(v))),
+                    },
+                    None => return Err(unknown(name, None)),
+                },
             };
             // On the stack: no allocation for a request with views.
             let mut extra = [&state.model; MAX_VIEWS];
             for (slot, name) in extra.iter_mut().zip(views) {
-                match state.views.get(name) {
-                    Some(v) => *slot = &v.model,
-                    None => return Err(unknown(name)),
+                let v = state.views.get(name);
+                match v.and_then(|v| v.model.as_ref()) {
+                    Some(model) => *slot = model,
+                    None => return Err(unknown(name, v.map(|v| &**v))),
                 }
             }
             let extra = &extra[..views.len()];
@@ -783,7 +809,7 @@ struct Query {
     exclude: Option<Vec<i64>>,
     #[serde(default)]
     sorted: Option<bool>,
-    /// Absent or null = `defaults.view`; "" = the whole model.
+    /// Absent, null or "" = the whole model.
     #[serde(default)]
     view: Option<String>,
     /// More named views, ANDed with `view` (at most `MAX_VIEWS`); absent or
@@ -1358,19 +1384,16 @@ async fn config(State(app): State<Arc<App>>) -> Response {
     json(StatusCode::OK, &app.cfg)
 }
 
-/// `GET /v1/views`: the default view (null = the whole model), the model's
-/// items, and per view what it allows and its files' known ids.
+/// `GET /v1/views`: the model's items, and per view what it allows and its
+/// files' known ids.
 async fn views(State(app): State<Arc<App>>) -> Response {
     #[derive(Serialize)]
     struct Views<'a> {
-        default: Option<&'a str>,
         items: usize,
         views: BTreeMap<&'a str, &'a ViewInfo>,
     }
     let s = app.state();
-    let d = &app.cfg.defaults.view;
     let body = Views {
-        default: (!d.is_empty()).then_some(d.as_str()),
         items: s.model.n_items(),
         views: s.views.iter().map(|(k, v)| (k.as_str(), &v.info)).collect(),
     };
@@ -1386,12 +1409,10 @@ async fn metrics(State(app): State<Arc<App>>) -> String {
         block: app.block,
         items: s.model.n_items(),
         active_items: s.model.n_active(),
-        views: app
-            .served
-            .iter()
-            .map(|(k, c)| {
-                let errors = app.reload_errors[k].load(Relaxed);
-                (k.as_str(), c.iter().map(Counter::get).sum(), errors)
+        views: (s.views.iter())
+            .map(|(k, v)| {
+                let served = v.served.iter().map(Counter::get).sum();
+                (k.as_str(), served, v.errors.load(Relaxed))
             })
             .collect(),
         view_reloads: app.reloads.load(Relaxed),
@@ -1546,7 +1567,7 @@ pub fn serve(
         .build()?;
     let result = rt.block_on(async {
         let every = app.cfg.views.reload_interval;
-        if every > 0.0 && !app.served.is_empty() {
+        if every > 0.0 && !app.cfg.views.dir.as_os_str().is_empty() {
             tokio::spawn(reload_views(app.clone(), secs(every)));
         }
         listener.set_nonblocking(true)?;
@@ -1588,7 +1609,7 @@ pub fn serve(
     result
 }
 
-/// Checks the view files every `every` and reloads them on a change, on
+/// Scans `views.dir` every `every` and reloads the views on a change, on
 /// the acceptor's runtime (never a serving thread); the stat and
 /// reads in a blocking task. Ends with the runtime.
 async fn reload_views(app: Arc<App>, every: Duration) {
