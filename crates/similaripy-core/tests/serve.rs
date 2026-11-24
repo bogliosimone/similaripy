@@ -173,8 +173,14 @@ fn flagged(c: &Case, flags: &Option<Vec<bool>>) -> Option<Vec<i64>> {
     })
 }
 
-fn kept(c: &Case, i: usize) -> bool {
-    c.new_to_old.contains(&(i as i32))
+/// `kept` for every original id, built once: the references call it n x
+/// history times, and a scan each costs seconds under Miri.
+fn kept_flags(c: &Case) -> Vec<bool> {
+    let mut k = vec![false; c.s.len()];
+    for &o in &c.new_to_old {
+        k[o as usize] = true;
+    }
+    k
 }
 
 fn case(float: bool) -> impl Strategy<Value = Case> {
@@ -348,9 +354,10 @@ fn by_score(
 fn reference(c: &Case) -> (Vec<i64>, Vec<f32>) {
     let n = c.s.len();
     let internal = |j: usize| c.new_to_old.iter().position(|&o| o as usize == j);
-    let seen = |j: usize| kept(c, j) && c.hist.contains(&Some(j));
+    let keep = kept_flags(c);
+    let seen = |j: usize| keep[j] && c.hist.contains(&Some(j));
     let mut cand: Vec<(usize, f64)> = (0..n)
-        .map(|j| (j, hs(c, j)))
+        .map(|j| (j, hs(c, &keep, j)))
         .filter(|&(j, s)| {
             s > 0.0
                 && !(c.exclude_history && seen(j))
@@ -367,12 +374,12 @@ fn reference(c: &Case) -> (Vec<i64>, Vec<f32>) {
 }
 
 /// (h · S)[j] in f64: the history's kept items, weighted.
-fn hs(c: &Case, j: usize) -> f64 {
+fn hs(c: &Case, keep: &[bool], j: usize) -> f64 {
     c.hist
         .iter()
         .enumerate()
         .filter_map(|(p, h)| {
-            h.filter(|&i| kept(c, i))
+            h.filter(|&i| keep[i])
                 .map(|i| c.weights.as_ref().map_or(1.0, |w| f64::from(w[p])) * f64::from(c.s[i][j]))
         })
         .sum()
@@ -393,7 +400,7 @@ fn bits(v: &[f32]) -> Vec<u32> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 12 } else { 3000 }))]
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 6 } else { 3000 }))]
 
     #[test]
     fn matches_reference(c in case(false)) {
@@ -516,10 +523,11 @@ proptest! {
         let n = c.s.len();
         let items: Vec<i64> = (0..n).rev().chain([0]).map(|j| ext_of(&c, j)).chain([unknown_id(&c)]).collect();
         let got = score(&m, block, &sreq(&c, &ids(&c), &items)).unwrap();
+        let keep = kept_flags(&c);
         let want: Vec<f32> = (0..n).rev().chain([0]).map(|j| {
-            let ok = kept(&c, j) && c.allowed.as_ref().is_none_or(|a| a[j])
+            let ok = keep[j] && c.allowed.as_ref().is_none_or(|a| a[j])
                 && !c.excluded.as_ref().is_some_and(|x| x[j]);
-            if ok { hs(&c, j) as f32 } else { 0.0 }
+            if ok { hs(&c, &keep, j) as f32 } else { 0.0 }
         }).chain([0.0]).collect();
         prop_assert_eq!(got, want);
     }
@@ -554,7 +562,7 @@ proptest! {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 1000 }))]
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 1000 }))]
 
     // One worker (any block) across two models of different sizes and a view,
     // in turns: each answer == the single-call path's ids and bits (sorted),

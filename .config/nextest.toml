@@ -1,0 +1,6 @@
+# `cargo miri nextest` (make test-miri) uses the default-miri profile.
+# A test past 3 x 120 s on the CI runner is killed: a new heavy test shows up
+# as a failure instead of creeping into the job's wall time (top test on the
+# slow runners is ~1.9x the usual time).
+[profile.default-miri]
+slow-timeout = { period = "120s", terminate-after = 3 }
